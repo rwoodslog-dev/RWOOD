@@ -6238,6 +6238,7 @@ async function initRwoodStorage(){
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
+  setTimeout(()=> pushMyUserRegistration(), 5000);
 }
 
 async function getStorageUsageInfo(){
@@ -15693,6 +15694,7 @@ function updateCompanyCode(value){
   data.settings.companyCode = value.trim().toUpperCase();
   saveData();
   showToast('Code Entreprise enregistré');
+  pushMyUserRegistration();
 }
 
 /* ============ SÉCURITÉ : mot de passe ============
@@ -16613,6 +16615,7 @@ function submitComptableCode(){
       applyComptableNavRestrictions();
       applyRoleLockUI();
       _pendingComptableIsProfileSwitch = false;
+      pushMyUserRegistration();
     } else {
       // Cas : creation de profil
       document.querySelectorAll('#authRoleChips .chip').forEach(c=>c.classList.remove('selected'));
@@ -16692,6 +16695,7 @@ function finishAuthCreation(){
   // Sync arrière-plan
   setTimeout(() => {
     if(navigator.onLine) syncPush().then(()=>startSyncPolling());
+    pushMyUserRegistration();
   }, 500);
 }
 
@@ -17018,6 +17022,7 @@ function setMyProfileRole(el, role){
   applyRoleLockUI();
   // Re-verifier les alertes : le destinataire pertinent change avec le role
   checkForNewAlerts();
+  pushMyUserRegistration();
 }
 
 /* Affiche/masque le verrou visuel sur les chips de rôle */
@@ -17099,6 +17104,7 @@ function submitRoleMigration(){
   applyNavOrder();
   applyNavHidden();
   loadAccentColor();
+  pushMyUserRegistration();
 
   const profile = data.settings.myProfile;
   if(profile.role === 'comptable'){
@@ -19188,7 +19194,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.11.0';
+const APP_VERSION = '2.11.1';
 
 const CHANGELOG = [
   {
@@ -24602,6 +24608,68 @@ const SHARED_SITES_KEY = 'company_shared_sites'; // cle Supabase fixe partagee, 
    ═══════════════════════════════════════════════════════════════════ */
 const COMPANIES_REGISTRY_KEY = 'dev_companies_registry';
 
+/* ═══════════════════════════════════════════════════════════════════
+   REGISTRE DES UTILISATEURS — permet à un conducteur de retrouver les
+   chefs d'équipe enregistrés avec le même Code Entreprise que le sien.
+   Cle dediee, separee du reste (pointages, alertes, chantiers...).
+   ═══════════════════════════════════════════════════════════════════ */
+const USERS_REGISTRY_KEY = 'company_users_registry';
+
+async function _fetchUsersRegistry(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(USERS_REGISTRY_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.users) || [];
+  } catch(e){ return []; }
+}
+
+async function _saveUsersRegistry(users){
+  await supaFetch('/rest/v1/rwood_sync', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      user_id: USERS_REGISTRY_KEY,
+      updated_at: new Date().toISOString(),
+      data: JSON.stringify({ users })
+    })
+  });
+}
+
+/* Pousse (creation ou mise a jour) MON profil dans le registre.
+   A appeler a chaque fois que role/companyCode/identite changent. */
+async function pushMyUserRegistration(){
+  try{
+    const auth = data.settings && data.settings.auth;
+    const profile = data.settings && data.settings.myProfile;
+    if(!auth || !auth.authId || !profile || !profile.role) return;
+
+    const entry = {
+      authId: auth.authId,
+      name: ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim(),
+      role: profile.role,
+      companyCode: (data.settings.companyCode || '').toUpperCase(),
+      phone: normalizePhone((data.contacts||[]).find(c=>c.role==='Moi')?.phone || ''),
+      updatedAt: new Date().toISOString()
+    };
+
+    const users = await _fetchUsersRegistry();
+    const idx = users.findIndex(u => u.authId === entry.authId);
+    if(idx === -1) users.push(entry); else users[idx] = entry;
+    await _saveUsersRegistry(users);
+  } catch(e){ /* silencieux */ }
+}
+
+/* Recupere les chefs d'equipe enregistres avec le MEME Code Entreprise que moi */
+async function fetchChefsForMyCompany(){
+  const myCode = (data.settings.companyCode || '').toUpperCase();
+  if(!myCode) return [];
+  const users = await _fetchUsersRegistry();
+  return users.filter(u => u.role === 'chef' && (u.companyCode||'').toUpperCase() === myCode);
+}
+
 async function _fetchCompaniesRegistry(){
   try{
     const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(COMPANIES_REGISTRY_KEY) + '&select=data', { headers:{'Prefer':''} });
@@ -24794,39 +24862,58 @@ async function pullSharedSites(){
 }
 
 /* Ouvre la selection d'un chef d'equipe (parmi les contacts) pour assigner un chantier */
-function assignChefToSite(siteId){
+let _assignChefCandidates = [];
+
+async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
-  const chefs = (data.contacts || []).filter(c => (c.role||'').toLowerCase().includes('chef'));
-  if(chefs.length === 0){
-    showToast('Aucun chef d\'équipe dans les contacts');
+
+  const myCode = (data.settings.companyCode || '').toUpperCase();
+  let candidates = [];
+
+  if(myCode){
+    const registryChefs = await fetchChefsForMyCompany();
+    candidates = registryChefs
+      .filter(u => normalizePhone(u.phone))
+      .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone) }));
+  }
+
+  // Complète avec les contacts locaux "chef" non déjà présents (par téléphone), en secours
+  const localChefs = (data.contacts || [])
+    .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
+    .map(c => ({ name: c.name, phone: normalizePhone(c.phone) }));
+  localChefs.forEach(lc => {
+    if(!candidates.some(c => c.phone === lc.phone)) candidates.push(lc);
+  });
+
+  if(candidates.length === 0){
+    showToast(myCode
+      ? 'Aucun chef d\'équipe trouvé avec le code ' + myCode
+      : 'Renseigne d\'abord ton Code Entreprise dans Paramètres → Mode');
     return;
   }
+
+  _assignChefCandidates = candidates;
   document.getElementById('contactActionsTitle').textContent = 'Assigner un chef d\'équipe';
   const list = document.getElementById('contactActionsList');
-  list.innerHTML = chefs.map(c => `
-    <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', '${c.id}')">${escapeHtml(c.name)}</button>
+  list.innerHTML = candidates.map((c, idx) => `
+    <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', ${idx})">${escapeHtml(c.name)}</button>
   `).join('');
   openModal('contactActions');
 }
 
-function doAssignChef(siteId, contactId){
+function doAssignChef(siteId, candidateIdx){
   const site = data.sites.find(s => s.id === siteId);
-  const contact = (data.contacts || []).find(c => c.id === contactId);
-  if(!site || !contact) return;
-  if(!normalizePhone(contact.phone)){
-    showToast('Ce contact n\'a pas de numéro de téléphone renseigné');
-    return;
-  }
-  site.assignedChefContactId = contact.id;
-  site.assignedChefPhone = normalizePhone(contact.phone);
-  site.assignedChefName = contact.name;
+  const candidate = _assignChefCandidates[candidateIdx];
+  if(!site || !candidate) return;
+  site.assignedChefPhone = candidate.phone;
+  site.assignedChefName = candidate.name;
   site.assignedAt = new Date().toISOString();
   if(site.status === 'brouillon') site.status = 'a-faire';
   site.ownerDeviceId = site.ownerDeviceId || getDeviceSyncId();
   saveData();
   renderSites();
-  showToast('Chantier assigné à ' + contact.name);
+  showToast('Chantier assigné à ' + candidate.name);
   pushSharedSite(site);
 }
 
