@@ -2674,6 +2674,27 @@
 
 
   /* Scroll document standard — pas de !important agressif */
+
+  /* ── Bulle d'alerte comptable (ouvrier/chef) ── */
+  #alertBubble{
+    position:fixed; top:calc(env(safe-area-inset-top,0px) + 64px); right:14px;
+    width:46px; height:46px; border-radius:50%;
+    background:#C0392B; box-shadow:0 3px 12px rgba(0,0,0,0.45);
+    display:none; align-items:center; justify-content:center;
+    font-size:21px; cursor:pointer; z-index:480;
+    animation: alertPulse 1.8s ease-in-out infinite;
+  }
+  #alertBubble.show{ display:flex; }
+  @keyframes alertPulse{
+    0%,100%{ transform:scale(1); }
+    50%{ transform:scale(1.08); }
+  }
+  #alertBubbleBadge{
+    position:absolute; top:-4px; right:-4px;
+    background:#fff; color:#C0392B; font-size:10px; font-weight:800;
+    border-radius:20px; padding:1px 5px; min-width:16px; text-align:center;
+    border:2px solid var(--bg);
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -6094,6 +6115,8 @@ async function initRwoodStorage(){
   setTimeout(()=> pushPointageToSupabase(), 3000);
   // Verifier si ce compte a ete revoque par le developpeur
   setTimeout(()=> checkDeviceRevocation(), 3500);
+  // Verifier les alertes de la comptable (bulle flottante si message en attente)
+  setTimeout(()=> checkForNewAlerts(), 4000);
 }
 
 async function getStorageUsageInfo(){
@@ -14332,6 +14355,7 @@ function renderComptableFiches(){
     </div>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="printComptableWeekPDF()">🖨 Imprimer (PDF)</button>
     <div class="hint" style="margin-top:6px;text-align:center;">Un ouvrier ouvert → sa fiche seule. Sinon → toute l'équipe de la semaine.</div>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAlertComposer()">📢 Envoyer une alerte</button>
   `;
 
   container.innerHTML = '<div class="empty"><div class="icon">⏳</div><h3>Chargement…</h3><p>Récupération des fiches de toute l\'équipe.</p></div>';
@@ -14375,6 +14399,12 @@ function _workerKey(deviceId, workerId){ return deviceId + '::' + workerId; }
 let _comptableWorkerWeekOffsets = {};
 function _getWorkerWeekOffset(key){ return _comptableWorkerWeekOffsets[key] || 0; }
 
+/* Offset de MOIS individuel par ouvrier + mode d'affichage (semaine/mois) */
+let _comptableWorkerMonthOffsets = {};
+let _comptableWorkerViewMode = {}; // key -> 'week' | 'month'
+function _getWorkerMonthOffset(key){ return _comptableWorkerMonthOffsets[key] || 0; }
+function _getWorkerViewMode(key){ return _comptableWorkerViewMode[key] || 'week'; }
+
 /* Ouvrier actuellement deplie dans l'accordeon (un seul a la fois) */
 let _comptableOpenWorkerKey = null;
 
@@ -14405,6 +14435,46 @@ function _computeWorkerWeekData(aw, offset){
   return { monday, days, weekNum, year, weekTotal, dayRows: dayRows.filter(r=>r.h>0) };
 }
 
+const _monthNamesShort = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+/* Calcule le cumul mensuel d'un ouvrier : total du mois + ventilation par semaine ISO.
+   Reprend la meme logique que le recap PDF mensuel existant (semaines ISO touchant le mois). */
+function _computeWorkerMonthData(aw, monthOffset){
+  const base = new Date();
+  const target = new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
+  const year = target.getFullYear();
+  const month = target.getMonth(); // 0-indexed
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month+1, 0);
+  const device = aw.device;
+
+  const weekTotals = {}; // weekKey -> heures
+  const weekInfo = {};   // weekKey -> {weekNum, year, monday}
+  let monthTotal = 0;
+
+  let cursor = new Date(firstDay);
+  while(cursor <= lastDay){
+    const ed = device.attendance[dateKeyOf(cursor)];
+    if(ed && ed.workers && ed.workers[aw.workerId]){
+      const h = parseFloat(ed.workers[aw.workerId].hours||0) || 0;
+      if(h > 0){
+        const monday = getMondayOfWeek(cursor, 0);
+        const wn = getISOWeekNumber(monday);
+        const wkKey = monday.getFullYear() + '-W' + wn;
+        weekTotals[wkKey] = (weekTotals[wkKey]||0) + h;
+        if(!weekInfo[wkKey]) weekInfo[wkKey] = { weekNum: wn, year: monday.getFullYear(), monday: new Date(monday) };
+        monthTotal += h;
+      }
+    }
+    cursor.setDate(cursor.getDate()+1);
+  }
+
+  const weekKeys = Object.keys(weekInfo).sort((a,b)=> weekInfo[a].monday - weekInfo[b].monday);
+  const weeks = weekKeys.map(k => ({ weekNum: weekInfo[k].weekNum, year: weekInfo[k].year, total: weekTotals[k] }));
+
+  return { year, month, monthLabel: _monthNamesShort[month] + ' ' + year, monthTotal, weeks };
+}
+
 const _formatDayDate = d => String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0');
 
 function renderComptableFichesContent(rows){
@@ -14433,8 +14503,10 @@ function renderComptableFichesContent(rows){
 
   html += allWorkers.map(aw => {
     const isOpen = _comptableOpenWorkerKey === aw.key;
-    const offset = _getWorkerWeekOffset(aw.key);
-    const { weekTotal } = _computeWorkerWeekData(aw, offset);
+    const mode = _getWorkerViewMode(aw.key);
+    const weekTotal = mode === 'month'
+      ? _computeWorkerMonthData(aw, _getWorkerMonthOffset(aw.key)).monthTotal
+      : _computeWorkerWeekData(aw, _getWorkerWeekOffset(aw.key)).weekTotal;
     return `
       <div class="accordion-section${isOpen?' open':''}" id="comptableWorker-${aw.key}">
         <div class="accordion-header" onclick="toggleComptableWorker('${aw.key}')">
@@ -14460,10 +14532,23 @@ function toggleComptableWorker(key){
 }
 
 function _renderComptableWorkerWeek(aw){
+  const mode = _getWorkerViewMode(aw.key);
+
+  const modeSwitch = `
+    <div style="display:flex;gap:6px;margin-bottom:10px;" onclick="event.stopPropagation();">
+      <button onclick="setComptableWorkerViewMode('${aw.key}','week')"
+        style="flex:1;padding:6px;border-radius:8px;border:1.5px solid ${mode==='week'?'var(--wood)':'var(--line)'};background:${mode==='week'?'var(--wood)':'var(--card)'};color:${mode==='week'?'#1a0f00':'var(--ink)'};font-size:12px;font-weight:700;">Semaine</button>
+      <button onclick="setComptableWorkerViewMode('${aw.key}','month')"
+        style="flex:1;padding:6px;border-radius:8px;border:1.5px solid ${mode==='month'?'var(--wood)':'var(--line)'};background:${mode==='month'?'var(--wood)':'var(--card)'};color:${mode==='month'?'#1a0f00':'var(--ink)'};font-size:12px;font-weight:700;">Mois</button>
+    </div>
+  `;
+
+  if(mode === 'month') return modeSwitch + _renderComptableWorkerMonth(aw);
+
   const offset = _getWorkerWeekOffset(aw.key);
   const { days, weekNum, year, weekTotal, dayRows } = _computeWorkerWeekData(aw, offset);
 
-  return `
+  return modeSwitch + `
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
       <span style="font-weight:800;font-size:16px;">${escapeHtml(aw.name)}</span>
       <span style="font-weight:800;color:var(--wood);font-size:16px;">${weekTotal}h <span style="font-weight:500;font-size:11px;color:var(--ink-soft);">cette semaine</span></span>
@@ -14493,6 +14578,32 @@ function _renderComptableWorkerWeek(aw){
   `;
 }
 
+function _renderComptableWorkerMonth(aw){
+  const offset = _getWorkerMonthOffset(aw.key);
+  const { monthLabel, monthTotal, weeks } = _computeWorkerMonthData(aw, offset);
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+      <span style="font-weight:800;font-size:16px;">${escapeHtml(aw.name)}</span>
+      <span style="font-weight:800;color:var(--wood);font-size:16px;">${monthTotal}h <span style="font-weight:500;font-size:11px;color:var(--ink-soft);">ce mois</span></span>
+    </div>
+    <div class="week-nav" style="margin-bottom:10px;">
+      <button class="week-nav-btn" onclick="event.stopPropagation(); changeComptableWorkerMonth('${aw.key}',-1)">←</button>
+      <div style="text-align:center; flex:1;">
+        <div class="week-title">${monthLabel}</div>
+      </div>
+      <button class="week-nav-btn" onclick="event.stopPropagation(); changeComptableWorkerMonth('${aw.key}',1)">→</button>
+    </div>
+    ${offset !== 0 ? `<div style="text-align:center;margin-bottom:10px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); resetComptableWorkerMonth('${aw.key}')">Revenir à ce mois-ci</button></div>` : ''}
+    ${weeks.length ? weeks.map(w => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);">
+        <span style="font-weight:700;font-size:13px;">Semaine ${w.weekNum} — ${w.year}</span>
+        <span style="font-weight:800;color:var(--wood);font-size:13px;">${w.total}h</span>
+      </div>
+    `).join('') : `<div class="hint" style="text-align:center;padding:14px 0;">Aucune heure ce mois-ci</div>`}
+  `;
+}
+
 function changeComptableWorkerWeek(key, delta){
   _comptableWorkerWeekOffsets[key] = _getWorkerWeekOffset(key) + delta;
   _refreshOpenComptableWorker(key, true);
@@ -14500,6 +14611,21 @@ function changeComptableWorkerWeek(key, delta){
 
 function resetComptableWorkerWeek(key){
   _comptableWorkerWeekOffsets[key] = 0;
+  _refreshOpenComptableWorker(key, true);
+}
+
+function changeComptableWorkerMonth(key, delta){
+  _comptableWorkerMonthOffsets[key] = _getWorkerMonthOffset(key) + delta;
+  _refreshOpenComptableWorker(key, true);
+}
+
+function resetComptableWorkerMonth(key){
+  _comptableWorkerMonthOffsets[key] = 0;
+  _refreshOpenComptableWorker(key, true);
+}
+
+function setComptableWorkerViewMode(key, mode){
+  _comptableWorkerViewMode[key] = mode;
   _refreshOpenComptableWorker(key, true);
 }
 
@@ -14518,16 +14644,81 @@ function _refreshOpenComptableWorker(key, alsoUpdateHeaderTotal){
   if(!aw) return;
   if(body) body.innerHTML = _renderComptableWorkerWeek(aw);
   if(alsoUpdateHeaderTotal){
-    const offset = _getWorkerWeekOffset(key);
-    const { weekTotal } = _computeWorkerWeekData(aw, offset);
+    const mode = _getWorkerViewMode(key);
+    let total;
+    if(mode === 'month'){
+      total = _computeWorkerMonthData(aw, _getWorkerMonthOffset(key)).monthTotal;
+    } else {
+      total = _computeWorkerWeekData(aw, _getWorkerWeekOffset(key)).weekTotal;
+    }
     const headerTotalEl = section.querySelector('.accordion-header span[style*="color:var(--wood)"]');
-    if(headerTotalEl) headerTotalEl.textContent = weekTotal + 'h';
+    if(headerTotalEl) headerTotalEl.textContent = total + 'h';
   }
 }
 
 /* Impression PDF de la semaine affichee, toute equipe confondue */
+async function printComptableMonthPDF(workerKey){
+  let aw = null;
+  (_comptableLiveData||[]).forEach(device=>{
+    (device.workers||[]).forEach(w=>{
+      if(_workerKey(device.deviceId, w.id) === workerKey) aw = { key:workerKey, workerId:w.id, name:w.name, device };
+    });
+  });
+  if(!aw){ showToast('Ouvrier introuvable'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const margin = 14;
+  const pageW = doc.internal.pageSize.getWidth();
+
+  const offset = _getWorkerMonthOffset(workerKey);
+  const { monthLabel, monthTotal, weeks } = _computeWorkerMonthData(aw, offset);
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(16);
+  doc.text('Recap mensuel - ' + aw.name, margin, 16);
+  doc.setFontSize(11); doc.setFont('helvetica','normal');
+  doc.text(monthLabel, margin, 24);
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(13);
+  doc.text('Total du mois : ' + monthTotal + 'h', margin, 36);
+
+  let y = 48;
+  doc.setFontSize(9);
+  doc.setFillColor(230,224,211);
+  doc.rect(margin, y, pageW-margin*2-40, 8, 'F'); doc.rect(margin, y, pageW-margin*2-40, 8);
+  doc.text('Semaine', margin+3, y+5.5);
+  doc.rect(pageW-margin-40, y, 40, 8, 'F'); doc.rect(pageW-margin-40, y, 40, 8);
+  doc.text('Heures', pageW-margin-20, y+5.5, {align:'center'});
+  y += 8;
+
+  doc.setFont('helvetica','normal');
+  if(!weeks.length){
+    doc.text('Aucune heure ce mois-ci.', margin+3, y+6);
+  } else {
+    weeks.forEach(w=>{
+      doc.rect(margin, y, pageW-margin*2-40, 8);
+      doc.text('Semaine ' + w.weekNum + ' (' + w.year + ')', margin+3, y+5.5);
+      doc.rect(pageW-margin-40, y, 40, 8);
+      doc.setFont('helvetica','bold');
+      doc.text(w.total + 'h', pageW-margin-20, y+5.5, {align:'center'});
+      doc.setFont('helvetica','normal');
+      y += 8;
+    });
+  }
+
+  const blob = doc.output('blob');
+  const fname = 'recap-mensuel-' + aw.name.replace(/[^a-z0-9]+/gi,'-') + '-' + monthLabel.replace(/\s+/g,'-') + '.pdf';
+  await saveBlobToDevice(blob, fname, 'application/pdf', ['.pdf']);
+}
+
 async function printComptableWeekPDF(){
   if(!_comptableLiveData || !_comptableLiveData.length){ showToast('Aucune donnée à imprimer'); return; }
+
+  // Si l'ouvrier ouvert est en vue MOIS, deleguer vers l'impression mensuelle dediee
+  if(_comptableOpenWorkerKey && _getWorkerViewMode(_comptableOpenWorkerKey) === 'month'){
+    return printComptableMonthPDF(_comptableOpenWorkerKey);
+  }
+
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   const margin = 12;
@@ -18653,7 +18844,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.8.1';
+const APP_VERSION = '2.9.0';
 
 const CHANGELOG = [
   {
@@ -23975,6 +24166,281 @@ async function _fetchRevokedDevices(){
 }
 
 /* ── Verification cote ouvrier : suis-je revoque ? ─────────────────── */
+
+/* ═══════════════════════════════════════════════════════════════════
+   SYSTEME D'ALERTES — comptable -> equipe (cible ou globale)
+   ═══════════════════════════════════════════════════════════════════ */
+const ALERTS_SYNC_KEY = 'company_alerts_v1'; // cle Supabase fixe partagee
+
+async function _fetchAlerts(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(ALERTS_SYNC_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.alerts) || [];
+  } catch(e){ return []; }
+}
+
+async function _saveAlerts(alerts){
+  await supaFetch('/rest/v1/rwood_sync', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      user_id: ALERTS_SYNC_KEY,
+      updated_at: new Date().toISOString(),
+      data: JSON.stringify({ alerts })
+    })
+  });
+}
+
+/* Envoyer une nouvelle alerte (cote comptable) */
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName){
+  if(!text || !text.trim()) return false;
+  try{
+    const alerts = await _fetchAlerts();
+    alerts.push({
+      id: uid(),
+      text: text.trim(),
+      recipientType: recipientType,           // 'all' | 'device'
+      recipientDeviceId: recipientDeviceId || null,
+      recipientName: recipientName || null,    // pour affichage dans l'historique comptable
+      createdAt: new Date().toISOString(),
+      readBy: []
+    });
+    await _saveAlerts(alerts);
+    return true;
+  } catch(e){
+    return false;
+  }
+}
+
+/* Supprimer une alerte de l'historique (cote comptable) */
+async function deleteAlert(alertId){
+  try{
+    const alerts = await _fetchAlerts();
+    const filtered = alerts.filter(a=>a.id!==alertId);
+    await _saveAlerts(filtered);
+    return true;
+  } catch(e){ return false; }
+}
+
+/* Marquer une alerte comme lue par CE telephone (cote ouvrier/chef) */
+async function markAlertRead(alertId){
+  try{
+    const myId = getDeviceSyncId();
+    const alerts = await _fetchAlerts();
+    const alert = alerts.find(a=>a.id===alertId);
+    if(alert && !alert.readBy.includes(myId)){
+      alert.readBy.push(myId);
+      await _saveAlerts(alerts);
+    }
+  } catch(e){ /* silencieux */ }
+}
+
+/* Recupere les alertes qui ME concernent (globales + ciblees sur mon appareil) */
+function _filterAlertsForMe(alerts){
+  const myId = getDeviceSyncId();
+  return alerts.filter(a => a.recipientType === 'all' || a.recipientDeviceId === myId);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   UI ALERTES — comptable (composer/historique) + ouvrier (bulle/inbox)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Comptable : composer une alerte ───────────────────────────────── */
+function openAlertComposer(){
+  document.getElementById('alertTextInput').value = '';
+  document.getElementById('alertTemplateFields').innerHTML = '';
+
+  // Remplir le select destinataire avec les profils synchronises (hors comptable)
+  const select = document.getElementById('alertRecipientSelect');
+  const rows = _comptableLiveData || [];
+  select.innerHTML = '<option value="all">🌍 Tous (alerte globale)</option>' +
+    rows.map(r => `<option value="${r.deviceId}">${escapeHtml(r.ownerName)} (${escapeHtml(r.ownerRole)})</option>`).join('');
+
+  openModal('alertComposer');
+}
+
+function useAlertTemplate(type){
+  const fieldsEl = document.getElementById('alertTemplateFields');
+  const today = new Date();
+  const isoWeek = getISOWeekNumber(getMondayOfWeek(today,0));
+  const friday = new Date(getMondayOfWeek(today,0)); friday.setDate(friday.getDate()+4);
+  const fmt = d => d.toLocaleDateString('fr-FR',{day:'numeric',month:'long'});
+
+  if(type === 'hebdo'){
+    fieldsEl.innerHTML = `
+      <div class="row-actions" style="margin-bottom:10px;">
+        <div class="field" style="flex:1;margin-bottom:0;">
+          <label>N° semaine</label>
+          <input type="number" id="tplWeekNum" value="${isoWeek}" oninput="_regenAlertTemplate('hebdo')">
+        </div>
+        <div class="field" style="flex:1;margin-bottom:0;">
+          <label>Date limite</label>
+          <input type="date" id="tplWeekDate" value="${friday.toISOString().slice(0,10)}" oninput="_regenAlertTemplate('hebdo')">
+        </div>
+      </div>
+    `;
+    _regenAlertTemplate('hebdo');
+  } else if(type === 'conges'){
+    const plus30 = new Date(today); plus30.setDate(plus30.getDate()+30);
+    fieldsEl.innerHTML = `
+      <div class="field" style="margin-bottom:10px;">
+        <label>Date limite de pose</label>
+        <input type="date" id="tplCongesLimite" value="${plus30.toISOString().slice(0,10)}" oninput="_regenAlertTemplate('conges')">
+      </div>
+      <div class="row-actions" style="margin-bottom:10px;">
+        <div class="field" style="flex:1;margin-bottom:0;">
+          <label>Début fermeture</label>
+          <input type="date" id="tplCongesDebut" oninput="_regenAlertTemplate('conges')">
+        </div>
+        <div class="field" style="flex:1;margin-bottom:0;">
+          <label>Fin fermeture</label>
+          <input type="date" id="tplCongesFin" oninput="_regenAlertTemplate('conges')">
+        </div>
+      </div>
+    `;
+    _regenAlertTemplate('conges');
+  }
+}
+
+function _regenAlertTemplate(type){
+  const fmt = v => v ? new Date(v+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'long'}) : '…';
+  if(type === 'hebdo'){
+    const wn = document.getElementById('tplWeekNum').value;
+    const date = fmt(document.getElementById('tplWeekDate').value);
+    document.getElementById('alertTextInput').value = `⚠️ Remplir fiche d'heure semaine ${wn} avant le ${date}`;
+  } else if(type === 'conges'){
+    const limite = fmt(document.getElementById('tplCongesLimite').value);
+    const debut = fmt(document.getElementById('tplCongesDebut').value);
+    const fin = fmt(document.getElementById('tplCongesFin').value);
+    document.getElementById('alertTextInput').value = `⚠️ Penser à poser vos congés été avant le ${limite}. La boîte ferme du ${debut} au ${fin}`;
+  }
+}
+
+async function submitAlert(){
+  const text = document.getElementById('alertTextInput').value.trim();
+  if(!text){ showToast('Écris un message'); return; }
+
+  const select = document.getElementById('alertRecipientSelect');
+  const recipientValue = select.value;
+  const recipientType = recipientValue === 'all' ? 'all' : 'device';
+  const recipientName = recipientValue === 'all' ? null : select.options[select.selectedIndex].textContent;
+
+  const ok = await sendAlert(text, recipientType, recipientValue === 'all' ? null : recipientValue, recipientName);
+  if(ok){
+    showToast(recipientType === 'all' ? '📢 Alerte envoyée à toute l\'équipe' : '📢 Alerte envoyée à ' + recipientName);
+    closeModal('alertComposer');
+  } else {
+    showToast('Erreur lors de l\'envoi');
+  }
+}
+
+/* ── Comptable : historique des alertes envoyees ───────────────────── */
+async function refreshAlertHistory(){
+  const list = document.getElementById('alertHistoryList');
+  list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Chargement…</div>';
+  const alerts = await _fetchAlerts();
+  if(!alerts.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte envoyée pour l\'instant.</div>';
+    return;
+  }
+  const sorted = [...alerts].sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+  list.innerHTML = sorted.map(a => {
+    const dest = a.recipientType === 'all' ? '🌍 Tous' : (a.recipientName || 'Un destinataire');
+    const readCount = a.readBy.length;
+    const readLabel = a.recipientType === 'all'
+      ? `Lu par ${readCount} appareil${readCount>1?'s':''}`
+      : (readCount > 0 ? '✓ Lu' : '○ Non lu');
+    return `
+      <div class="card" style="margin-bottom:8px;">
+        <div style="font-size:13px;margin-bottom:6px;">${escapeHtml(a.text)}</div>
+        <div class="card-row" style="align-items:center;">
+          <div class="meta">${dest} · ${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${readLabel}</div>
+          <button class="remove-worker" onclick="confirmDeleteAlert('${a.id}')" title="Supprimer">×</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openAlertHistoryFromComposer(){
+  closeModal('alertComposer');
+  openModal('alertHistory');
+  refreshAlertHistory();
+}
+
+function confirmDeleteAlert(alertId){
+  if(!confirm('Supprimer cette alerte de l\'historique ?')) return;
+  deleteAlert(alertId).then(()=> refreshAlertHistory());
+}
+
+/* ── Ouvrier/chef : verification au demarrage + bulle ──────────────── */
+async function checkForNewAlerts(){
+  if(!navigator.onLine) return;
+  const profile = (data.settings && data.settings.myProfile) || {};
+  if(profile.role === 'comptable') return; // la comptable n'a pas de bulle entrante
+
+  try{
+    const all = await _fetchAlerts();
+    const mine = _filterAlertsForMe(all);
+    const myId = getDeviceSyncId();
+    const unread = mine.filter(a => !a.readBy.includes(myId));
+
+    _myAlertsCache = mine;
+
+    const bubble = document.getElementById('alertBubble');
+    const badge = document.getElementById('alertBubbleBadge');
+    if(!bubble) return;
+
+    if(unread.length > 0){
+      bubble.classList.add('show');
+      if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
+    } else {
+      bubble.classList.remove('show');
+      if(badge) badge.style.display = 'none';
+    }
+  } catch(e){ /* silencieux */ }
+}
+
+let _myAlertsCache = [];
+
+function openAlertInbox(){
+  const list = document.getElementById('alertInboxList');
+  const myId = getDeviceSyncId();
+  const sorted = [..._myAlertsCache].sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+
+  if(!sorted.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun message.</div>';
+  } else {
+    list.innerHTML = sorted.map(a => {
+      const isRead = a.readBy.includes(myId);
+      return `
+        <div class="card" style="margin-bottom:8px;${isRead?'opacity:0.6;':''}" id="alertInboxItem-${a.id}">
+          <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
+          <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}${isRead?' · ✓ Lu':''}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  openModal('alertInbox');
+
+  // Marquer toutes les alertes affichees comme lues
+  sorted.forEach(a => { if(!a.readBy.includes(myId)) markAlertRead(a.id); });
+
+  // Mettre a jour la bulle (cachee une fois tout lu)
+  setTimeout(()=>{
+    const bubble = document.getElementById('alertBubble');
+    const badge = document.getElementById('alertBubbleBadge');
+    if(bubble) bubble.classList.remove('show');
+    if(badge) badge.style.display = 'none';
+  }, 300);
+}
+
 async function checkDeviceRevocation(){
   if(!navigator.onLine) return;
   try{
@@ -24165,6 +24631,10 @@ async function checkDeviceRevocation(){
 
 
 <!-- Bulle note épinglée -->
+<div id="alertBubble" onclick="openAlertInbox()">
+  📢
+  <span id="alertBubbleBadge" style="display:none;"></span>
+</div>
 <div id="pinnedNoteBubble" style="display:none;position:fixed;" onclick="togglePinnedNotePopup(event)">
   <span id="pinnedBubbleEmoji">⚠️</span>
   <span id="pinnedNoteBadge"></span>
@@ -24262,6 +24732,61 @@ async function checkDeviceRevocation(){
       <button class="btn btn-outline btn-block" onclick="refreshDevPanel()" id="devPanelRefreshBtn">🔄 Actualiser</button>
     </div>
     <div id="devPanelList"></div>
+  </div>
+</div>
+
+<!-- MODAL : Composer une alerte (comptable) -->
+<div class="modal-overlay" id="modal-alertComposer">
+  <div class="modal" style="max-height:90vh;">
+    <div class="modal-header">
+      <h2>📢 Nouvelle alerte</h2>
+      <button class="modal-close" onclick="closeModal('alertComposer')">×</button>
+    </div>
+
+    <div style="font-size:12px;font-weight:700;color:var(--ink-soft);margin-bottom:6px;">MODÈLES RAPIDES</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px;">
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="useAlertTemplate('hebdo')">🗓 Fiche d'heures</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="useAlertTemplate('conges')">🏖 Congés</button>
+    </div>
+
+    <div id="alertTemplateFields"></div>
+
+    <div class="field" style="margin-bottom:10px;">
+      <label>Message</label>
+      <textarea id="alertTextInput" rows="4" placeholder="Tape ton message ici…" style="width:100%;box-sizing:border-box;resize:vertical;"></textarea>
+    </div>
+
+    <div class="field" style="margin-bottom:14px;">
+      <label>Destinataire</label>
+      <select id="alertRecipientSelect" style="width:100%;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:14px;">
+        <option value="all">🌍 Tous (alerte globale)</option>
+      </select>
+    </div>
+
+    <button class="btn btn-primary btn-block" onclick="submitAlert()">Envoyer l'alerte</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAlertHistoryFromComposer()">📜 Voir l'historique des alertes</button>
+  </div>
+</div>
+
+<!-- MODAL : Historique des alertes (comptable) -->
+<div class="modal-overlay" id="modal-alertHistory">
+  <div class="modal" style="max-height:88vh;">
+    <div class="modal-header">
+      <h2>📜 Alertes envoyées</h2>
+      <button class="modal-close" onclick="closeModal('alertHistory')">×</button>
+    </div>
+    <div id="alertHistoryList"></div>
+  </div>
+</div>
+
+<!-- MODAL : Boite de reception alertes (ouvrier/chef) -->
+<div class="modal-overlay" id="modal-alertInbox">
+  <div class="modal" style="max-height:88vh;">
+    <div class="modal-header">
+      <h2>📢 Message de la comptable</h2>
+      <button class="modal-close" onclick="closeModal('alertInbox')">×</button>
+    </div>
+    <div id="alertInboxList"></div>
   </div>
 </div>
 </body>
