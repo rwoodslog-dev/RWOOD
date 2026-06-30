@@ -2677,11 +2677,11 @@
 
   /* ── Bulle d'alerte comptable (ouvrier/chef) ── */
   #alertBubble{
-    position:fixed; top:calc(env(safe-area-inset-top,0px) + 64px); right:14px;
+    position:fixed !important; top:calc(env(safe-area-inset-top,0px) + 64px); right:14px;
     width:46px; height:46px; border-radius:50%;
     background:#C0392B; box-shadow:0 3px 12px rgba(0,0,0,0.45);
     display:none; align-items:center; justify-content:center;
-    font-size:21px; cursor:pointer; z-index:480;
+    font-size:21px; cursor:pointer; z-index:600;
     animation: alertPulse 1.8s ease-in-out infinite;
   }
   #alertBubble.show{ display:flex; }
@@ -16722,6 +16722,8 @@ function setMyProfileRole(el, role){
   saveData();
   updateMyProfileExplain();
   applyComptableNavRestrictions();
+  // Re-verifier les alertes : le destinataire pertinent change avec le role
+  checkForNewAlerts();
 }
 
 let _pendingComptableIsProfileSwitch = false;
@@ -18844,7 +18846,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '2.9.1';
 
 const CHANGELOG = [
   {
@@ -24239,6 +24241,19 @@ async function markAlertRead(alertId){
   } catch(e){ /* silencieux */ }
 }
 
+/* Inverse de markAlertRead : remettre une alerte en non-lu pour ce telephone */
+async function markAlertUnread(alertId){
+  try{
+    const myId = getDeviceSyncId();
+    const alerts = await _fetchAlerts();
+    const alert = alerts.find(a=>a.id===alertId);
+    if(alert && alert.readBy.includes(myId)){
+      alert.readBy = alert.readBy.filter(id=>id!==myId);
+      await _saveAlerts(alerts);
+    }
+  } catch(e){ /* silencieux */ }
+}
+
 /* Recupere les alertes qui ME concernent (globales + ciblees sur mon appareil) */
 function _filterAlertsForMe(alerts){
   const myId = getDeviceSyncId();
@@ -24379,6 +24394,54 @@ function confirmDeleteAlert(alertId){
 }
 
 /* ── Ouvrier/chef : verification au demarrage + bulle ──────────────── */
+
+/* ── Son de notification (Web Audio API, aucun fichier externe necessaire) ── */
+let _audioCtx = null;
+
+/* Sur mobile (iOS/Android), un AudioContext doit etre debloque par un geste utilisateur
+   avant de pouvoir jouer un son automatiquement plus tard. On le debloque silencieusement
+   au tout premier contact avec l'app (touch ou clic). */
+function _unlockAudioContext(){
+  if(_audioCtx) return;
+  try{
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Jouer un son silencieux pour debloquer le contexte
+    const buffer = _audioCtx.createBuffer(1, 1, 22050);
+    const src = _audioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(_audioCtx.destination);
+    src.start(0);
+  } catch(e){ /* Web Audio indisponible */ }
+}
+document.addEventListener('touchstart', _unlockAudioContext, { once:true, passive:true });
+document.addEventListener('click', _unlockAudioContext, { once:true });
+
+/* Joue un petit signal sonore type notification (deux bips ascendants) */
+function _playAlertSound(){
+  try{
+    if(!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(_audioCtx.state === 'suspended') _audioCtx.resume();
+
+    const playBeep = (freq, startTime, duration) => {
+      const osc = _audioCtx.createOscillator();
+      const gain = _audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.25, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+      osc.connect(gain);
+      gain.connect(_audioCtx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+
+    const now = _audioCtx.currentTime;
+    playBeep(740, now, 0.14);        // premier bip
+    playBeep(990, now + 0.16, 0.18); // second bip, plus aigu
+  } catch(e){ /* silencieux si Web Audio indisponible */ }
+}
+
 async function checkForNewAlerts(){
   if(!navigator.onLine) return;
   const profile = (data.settings && data.settings.myProfile) || {};
@@ -24396,9 +24459,13 @@ async function checkForNewAlerts(){
     const badge = document.getElementById('alertBubbleBadge');
     if(!bubble) return;
 
+    const wasAlreadyShown = bubble.classList.contains('show');
+
     if(unread.length > 0){
       bubble.classList.add('show');
       if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
+      // Son uniquement au moment ou la bulle APPARAIT (pas a chaque verification)
+      if(!wasAlreadyShown) _playAlertSound();
     } else {
       bubble.classList.remove('show');
       if(badge) badge.style.display = 'none';
@@ -24409,36 +24476,65 @@ async function checkForNewAlerts(){
 let _myAlertsCache = [];
 
 function openAlertInbox(){
+  _renderAlertInboxList();
+  openModal('alertInbox');
+  // Pas de marquage automatique : l'utilisateur choisit explicitement Lu / Non lu par message
+}
+
+function _renderAlertInboxList(){
   const list = document.getElementById('alertInboxList');
   const myId = getDeviceSyncId();
   const sorted = [..._myAlertsCache].sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
   if(!sorted.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun message.</div>';
-  } else {
-    list.innerHTML = sorted.map(a => {
-      const isRead = a.readBy.includes(myId);
-      return `
-        <div class="card" style="margin-bottom:8px;${isRead?'opacity:0.6;':''}" id="alertInboxItem-${a.id}">
-          <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
-          <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}${isRead?' · ✓ Lu':''}</div>
-        </div>
-      `;
-    }).join('');
+    return;
   }
 
-  openModal('alertInbox');
+  list.innerHTML = sorted.map(a => {
+    const isRead = a.readBy.includes(myId);
+    return `
+      <div class="card" style="margin-bottom:8px;${isRead?'opacity:0.6;':''}" id="alertInboxItem-${a.id}">
+        <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
+        <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="btn btn-outline btn-sm" style="flex:1;${isRead?'border-color:var(--wood);color:var(--wood);font-weight:700;':''}" onclick="_setAlertReadState('${a.id}', true)">✓ Lu</button>
+          <button class="btn btn-outline btn-sm" style="flex:1;${!isRead?'border-color:var(--red);color:var(--red);font-weight:700;':''}" onclick="_setAlertReadState('${a.id}', false)">○ Non lu</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
 
-  // Marquer toutes les alertes affichees comme lues
-  sorted.forEach(a => { if(!a.readBy.includes(myId)) markAlertRead(a.id); });
+async function _setAlertReadState(alertId, read){
+  if(read) await markAlertRead(alertId);
+  else await markAlertUnread(alertId);
 
-  // Mettre a jour la bulle (cachee une fois tout lu)
-  setTimeout(()=>{
-    const bubble = document.getElementById('alertBubble');
-    const badge = document.getElementById('alertBubbleBadge');
-    if(bubble) bubble.classList.remove('show');
+  // Mettre a jour le cache local sans tout re-fetcher
+  const myId = getDeviceSyncId();
+  const alert = _myAlertsCache.find(a=>a.id===alertId);
+  if(alert){
+    if(read && !alert.readBy.includes(myId)) alert.readBy.push(myId);
+    if(!read) alert.readBy = alert.readBy.filter(id=>id!==myId);
+  }
+
+  _renderAlertInboxList();
+  _updateAlertBubbleFromCache();
+}
+
+function _updateAlertBubbleFromCache(){
+  const myId = getDeviceSyncId();
+  const unread = _myAlertsCache.filter(a => !a.readBy.includes(myId));
+  const bubble = document.getElementById('alertBubble');
+  const badge = document.getElementById('alertBubbleBadge');
+  if(!bubble) return;
+  if(unread.length > 0){
+    bubble.classList.add('show');
+    if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
+  } else {
+    bubble.classList.remove('show');
     if(badge) badge.style.display = 'none';
-  }, 300);
+  }
 }
 
 async function checkDeviceRevocation(){
