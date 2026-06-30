@@ -2844,7 +2844,7 @@
 
   <header class="top">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-      <img src="icons/logo-header.png" alt="RWOOD" class="logo-icon">
+      <img src="icons/logo-header.png" alt="RWOOD" class="logo-icon" onclick="openDevCodeModal()" style="cursor:pointer;">
 
       <!-- ── MÉTÉO ── -->
       <div id="weatherWidget" onclick="toggleWeatherDropdown()"
@@ -6092,6 +6092,8 @@ async function initRwoodStorage(){
   // Push initial des pointages (si pas en mode comptable) pour que la comptable
   // voie les donnees des le premier chargement, sans attendre une modification
   setTimeout(()=> pushPointageToSupabase(), 3000);
+  // Verifier si ce compte a ete revoque par le developpeur
+  setTimeout(()=> checkDeviceRevocation(), 3500);
 }
 
 async function getStorageUsageInfo(){
@@ -18651,7 +18653,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.7.4';
+const APP_VERSION = '2.8.0';
 
 const CHANGELOG = [
   {
@@ -23800,8 +23802,9 @@ function getDeviceSyncId(){
 async function pushPointageToSupabase(){
   if(!navigator.onLine) return false;
   // Pas de push depuis le mode comptable lui-meme (lecture seule)
+  // Pas de push non plus si le profil est vide (compte revoque, en attente de recreation)
   const profile = (data.settings && data.settings.myProfile) || {};
-  if(profile.role === 'comptable') return false;
+  if(profile.role === 'comptable' || !profile.role) return false;
 
   const deviceId = getDeviceSyncId();
   const ownerName = (profile.firstName ? (profile.firstName + ' ' + (profile.lastName||'')) : (data.settings.teamName || 'Equipe')).trim();
@@ -23859,6 +23862,135 @@ async function pullAllPointagesForComptable(){
     console.warn('[Sync pointages] pull echoue', e);
     return null;
   }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODE DEVELOPPEUR — cache, code 8 chiffres, gestion des comptes synchronises
+   ═══════════════════════════════════════════════════════════════════ */
+const DEV_ACCESS_CODE = '31072021'; // code fourni par le developpeur
+const REVOKED_DEVICES_KEY = 'company_revoked_devices'; // cle Supabase fixe
+
+function openDevCodeModal(){
+  document.getElementById('devCodeInput').value = '';
+  document.getElementById('devCodeError').style.display = 'none';
+  openModal('devCode');
+  setTimeout(()=> document.getElementById('devCodeInput').focus(), 200);
+}
+
+function submitDevCode(){
+  const code = document.getElementById('devCodeInput').value.trim();
+  if(code === DEV_ACCESS_CODE){
+    closeModal('devCode');
+    openModal('devPanel');
+    refreshDevPanel();
+  } else {
+    document.getElementById('devCodeError').style.display = 'block';
+    document.getElementById('devCodeInput').value = '';
+    document.getElementById('devCodeInput').focus();
+  }
+}
+
+/* Recupere la liste des comptes synchronises (memes donnees que pour la comptable) */
+async function refreshDevPanel(){
+  const btn = document.getElementById('devPanelRefreshBtn');
+  const list = document.getElementById('devPanelList');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Chargement…'; }
+  list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Chargement…</div>';
+
+  const rows = await pullAllPointagesForComptable();
+
+  if(btn){ btn.disabled = false; btn.textContent = '🔄 Actualiser'; }
+
+  if(rows === null){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Hors-ligne — impossible de charger la liste.</div>';
+    return;
+  }
+  if(!rows.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun compte synchronisé pour l\'instant.</div>';
+    return;
+  }
+
+  _devPanelRows = rows;
+  list.innerHTML = rows.map(r => `
+    <div class="card" style="margin-bottom:8px;">
+      <div class="card-row" style="align-items:center;">
+        <div>
+          <div style="font-weight:700;">${escapeHtml(r.ownerName)}</div>
+          <div class="meta">${escapeHtml(r.ownerRole)} · ${(r.workers||[]).length} ouvrier${(r.workers||[]).length>1?'s':''} · maj ${new Date(r.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+        <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;" onclick="confirmDeleteDevAccount('${r.deviceId}','${escapeHtml(r.ownerName)}')">🗑 Supprimer</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+let _devPanelRows = [];
+
+function confirmDeleteDevAccount(deviceId, ownerName){
+  if(!confirm('Supprimer le compte de ' + ownerName + ' ?\n\n— Il disparaît immédiatement des fiches vues par la comptable.\n— Son téléphone devra recréer un profil à sa prochaine ouverture de l\'app.\n\nCette action est irréversible.')) return;
+  deleteDevAccount(deviceId);
+}
+
+async function deleteDevAccount(deviceId){
+  try{
+    // 1. Supprimer la ligne Supabase de ce compte (disparait immediatement chez la comptable)
+    await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(COMPANY_SYNC_KEY + '_' + deviceId), {
+      method: 'DELETE'
+    });
+
+    // 2. Ajouter ce deviceId a la liste des appareils revoques
+    //    (force ce telephone a se reinitialiser a sa prochaine synchro)
+    const revoked = await _fetchRevokedDevices();
+    if(!revoked.includes(deviceId)) revoked.push(deviceId);
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: REVOKED_DEVICES_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ deviceIds: revoked })
+      })
+    });
+
+    showToast('Compte supprimé');
+    refreshDevPanel();
+  } catch(e){
+    showToast('Erreur lors de la suppression');
+  }
+}
+
+async function _fetchRevokedDevices(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(REVOKED_DEVICES_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.deviceIds) || [];
+  } catch(e){ return []; }
+}
+
+/* ── Verification cote ouvrier : suis-je revoque ? ─────────────────── */
+async function checkDeviceRevocation(){
+  if(!navigator.onLine) return;
+  try{
+    const myId = getDeviceSyncId();
+    const revoked = await _fetchRevokedDevices();
+    if(!revoked.includes(myId)) return;
+
+    // Compte revoque par le developpeur : reinitialiser le profil local
+    if(data.settings){
+      data.settings.auth = {};
+      data.settings.myProfile = {};
+    }
+    // Nouveau deviceId pour repartir propre (l'ancien reste revoque, sans effet sur le nouveau)
+    localStorage.removeItem('rwood-device-sync-id');
+    saveData();
+
+    showToast('⚠️ Accès réinitialisé — merci de recréer un profil');
+    setTimeout(()=>{ location.reload(); }, 1500);
+  } catch(e){ /* silencieux */ }
 }
 
 </script>
@@ -24095,6 +24227,38 @@ async function pullAllPointagesForComptable(){
       onkeydown="if(event.key==='Enter') submitComptableCode()">
     <div id="comptableCodeError" style="display:none;color:var(--red);font-size:13px;text-align:center;margin-top:8px;">Code incorrect</div>
     <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="submitComptableCode()">Valider</button>
+  </div>
+</div>
+
+<!-- MODAL : Code Mode Developpeur (cache) -->
+<div class="modal-overlay" id="modal-devCode">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>🛠️ Mode Développeur</h2>
+      <button class="modal-close" onclick="closeModal('devCode')">×</button>
+    </div>
+    <div class="hint" style="margin-bottom:14px;">Accès réservé au développeur de l'application.</div>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" id="devCodeInput"
+      placeholder="• • • • • • • •"
+      style="width:100%;box-sizing:border-box;padding:16px;font-size:24px;letter-spacing:8px;text-align:center;border-radius:12px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-family:monospace;"
+      onkeydown="if(event.key==='Enter') submitDevCode()">
+    <div id="devCodeError" style="display:none;color:var(--red);font-size:13px;text-align:center;margin-top:8px;">Code incorrect</div>
+    <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="submitDevCode()">Valider</button>
+  </div>
+</div>
+
+<!-- MODAL : Panneau Mode Developpeur -->
+<div class="modal-overlay" id="modal-devPanel">
+  <div class="modal" style="max-height:88vh;">
+    <div class="modal-header">
+      <h2>🛠️ Comptes synchronisés</h2>
+      <button class="modal-close" onclick="closeModal('devPanel')">×</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px;">Liste de tous les téléphones ayant synchronisé des pointages. Supprimer un compte le retire des fiches vues par la comptable et force ce téléphone à recréer un profil à sa prochaine ouverture.</div>
+    <div class="row-actions" style="margin-bottom:12px;">
+      <button class="btn btn-outline btn-block" onclick="refreshDevPanel()" id="devPanelRefreshBtn">🔄 Actualiser</button>
+    </div>
+    <div id="devPanelList"></div>
   </div>
 </div>
 </body>
