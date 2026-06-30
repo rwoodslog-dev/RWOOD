@@ -18846,7 +18846,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.9.1';
+const APP_VERSION = '2.9.2';
 
 const CHANGELOG = [
   {
@@ -24241,19 +24241,6 @@ async function markAlertRead(alertId){
   } catch(e){ /* silencieux */ }
 }
 
-/* Inverse de markAlertRead : remettre une alerte en non-lu pour ce telephone */
-async function markAlertUnread(alertId){
-  try{
-    const myId = getDeviceSyncId();
-    const alerts = await _fetchAlerts();
-    const alert = alerts.find(a=>a.id===alertId);
-    if(alert && alert.readBy.includes(myId)){
-      alert.readBy = alert.readBy.filter(id=>id!==myId);
-      await _saveAlerts(alerts);
-    }
-  } catch(e){ /* silencieux */ }
-}
-
 /* Recupere les alertes qui ME concernent (globales + ciblees sur mon appareil) */
 function _filterAlertsForMe(alerts){
   const myId = getDeviceSyncId();
@@ -24417,7 +24404,16 @@ document.addEventListener('touchstart', _unlockAudioContext, { once:true, passiv
 document.addEventListener('click', _unlockAudioContext, { once:true });
 
 /* Joue un petit signal sonore type notification (deux bips ascendants) */
+let _lastAlertSoundTime = 0;
+
+/* Son d'alarme critique : onde carree stridente, alternance rapide de 2 frequences,
+   volume maximal — concu pour etre difficile a ignorer. */
 function _playAlertSound(){
+  // Garde-fou anti-doublons rapproches (evenements visibilitychange parfois multiples)
+  const nowMs = Date.now();
+  if(nowMs - _lastAlertSoundTime < 2000) return;
+  _lastAlertSoundTime = nowMs;
+
   try{
     if(!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if(_audioCtx.state === 'suspended') _audioCtx.resume();
@@ -24425,10 +24421,10 @@ function _playAlertSound(){
     const playBeep = (freq, startTime, duration) => {
       const osc = _audioCtx.createOscillator();
       const gain = _audioCtx.createGain();
-      osc.type = 'sine';
+      osc.type = 'square'; // onde carree = son dur/strident, pas une sinusoide douce
       osc.frequency.value = freq;
       gain.gain.setValueAtTime(0.0001, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.25, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.9, startTime + 0.008); // volume quasi-maximal
       gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
       osc.connect(gain);
       gain.connect(_audioCtx.destination);
@@ -24437,8 +24433,12 @@ function _playAlertSound(){
     };
 
     const now = _audioCtx.currentTime;
-    playBeep(740, now, 0.14);        // premier bip
-    playBeep(990, now + 0.16, 0.18); // second bip, plus aigu
+    const beepDur = 0.11, gap = 0.13;
+    const freqA = 1000, freqB = 1450; // alternance type sirene/alarme
+    const repetitions = 6;
+    for(let i=0; i<repetitions; i++){
+      playBeep(i % 2 === 0 ? freqA : freqB, now + i*gap, beepDur);
+    }
   } catch(e){ /* silencieux si Web Audio indisponible */ }
 }
 
@@ -24459,13 +24459,12 @@ async function checkForNewAlerts(){
     const badge = document.getElementById('alertBubbleBadge');
     if(!bubble) return;
 
-    const wasAlreadyShown = bubble.classList.contains('show');
-
     if(unread.length > 0){
       bubble.classList.add('show');
       if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
-      // Son uniquement au moment ou la bulle APPARAIT (pas a chaque verification)
-      if(!wasAlreadyShown) _playAlertSound();
+      // Tant que l'alerte n'est pas levee : pop + son a CHAQUE ouverture de l'app
+      // (plus de suppression "deja affichee" — comportement persistant voulu)
+      _playAlertSound();
     } else {
       bubble.classList.remove('show');
       if(badge) badge.style.display = 'none';
@@ -24475,51 +24474,48 @@ async function checkForNewAlerts(){
 
 let _myAlertsCache = [];
 
+/* "Ouverture de l'application" = retour au premier plan, pas seulement le tout premier
+   chargement. On re-verifie les alertes a chaque fois que l'app redevient visible. */
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'visible') checkForNewAlerts();
+});
+
 function openAlertInbox(){
   _renderAlertInboxList();
   openModal('alertInbox');
-  // Pas de marquage automatique : l'utilisateur choisit explicitement Lu / Non lu par message
 }
 
 function _renderAlertInboxList(){
   const list = document.getElementById('alertInboxList');
   const myId = getDeviceSyncId();
-  const sorted = [..._myAlertsCache].sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+  const pending = _myAlertsCache
+    .filter(a => !a.readBy.includes(myId))
+    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
-  if(!sorted.length){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun message.</div>';
+  if(!pending.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte en attente.</div>';
     return;
   }
 
-  list.innerHTML = sorted.map(a => {
-    const isRead = a.readBy.includes(myId);
-    return `
-      <div class="card" style="margin-bottom:8px;${isRead?'opacity:0.6;':''}" id="alertInboxItem-${a.id}">
-        <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
-        <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>
-        <div style="display:flex;gap:8px;margin-top:10px;">
-          <button class="btn btn-outline btn-sm" style="flex:1;${isRead?'border-color:var(--wood);color:var(--wood);font-weight:700;':''}" onclick="_setAlertReadState('${a.id}', true)">✓ Lu</button>
-          <button class="btn btn-outline btn-sm" style="flex:1;${!isRead?'border-color:var(--red);color:var(--red);font-weight:700;':''}" onclick="_setAlertReadState('${a.id}', false)">○ Non lu</button>
-        </div>
-      </div>
-    `;
-  }).join('');
+  list.innerHTML = pending.map(a => `
+    <div class="card" style="margin-bottom:8px;" id="alertInboxItem-${a.id}">
+      <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
+      <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>
+      <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_clearAlert('${a.id}')">Lever alerte</button>
+    </div>
+  `).join('');
 }
 
-async function _setAlertReadState(alertId, read){
-  if(read) await markAlertRead(alertId);
-  else await markAlertUnread(alertId);
+async function _clearAlert(alertId){
+  await markAlertRead(alertId);
 
-  // Mettre a jour le cache local sans tout re-fetcher
   const myId = getDeviceSyncId();
   const alert = _myAlertsCache.find(a=>a.id===alertId);
-  if(alert){
-    if(read && !alert.readBy.includes(myId)) alert.readBy.push(myId);
-    if(!read) alert.readBy = alert.readBy.filter(id=>id!==myId);
-  }
+  if(alert && !alert.readBy.includes(myId)) alert.readBy.push(myId);
 
   _renderAlertInboxList();
   _updateAlertBubbleFromCache();
+  showToast('Alerte levee');
 }
 
 function _updateAlertBubbleFromCache(){
