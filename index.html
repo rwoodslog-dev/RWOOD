@@ -19751,7 +19751,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.14.1';
+const APP_VERSION = '2.14.2';
 
 const CHANGELOG = [
   {
@@ -24233,40 +24233,43 @@ function togglePinnedNotePopup(e){
   e && e.stopPropagation();
   const popup = document.getElementById('pinnedNotePopup');
   if(popup.classList.contains('open')){ closePinnedNotePopup(); return; }
+
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+
+  // Ouvrier → vue spéciale avec sélecteur de chef
+  if(role === 'ouvrier'){
+    _positionPinnedPopup(popup);
+    popup.classList.add('open');
+    setTimeout(()=> document.addEventListener('click', _closePinnedOnOutside, {once:true}), 10);
+    renderOuvrierTodoPopup();
+    return;
+  }
+
+  // Chef/autres → vue normale (leur propre liste)
   const pn = _getPinnedNote();
   if(!pn.tasks.length) return;
-
-  // Remplir la liste
   _renderPinnedTasksInPopup();
-  // Vider le champ d'ajout
   const inp = document.getElementById('pinnedPopupAddInput');
+  const addRow = document.getElementById('pinnedPopupAddRow');
   if(inp) inp.value = '';
+  if(addRow) addRow.style.display = '';
+  _positionPinnedPopup(popup);
+  popup.classList.add('open');
+  setTimeout(()=> document.addEventListener('click', _closePinnedOnOutside, {once:true}), 10);
+}
 
-  // Positionner le popup près de la bulle
+function _positionPinnedPopup(popup){
   const bubble = document.getElementById('pinnedNoteBubble');
   const rect   = bubble.getBoundingClientRect();
+  const pn = _getPinnedNote();
   const corner = pn.corner || 'bottom-right';
   popup.style.position = 'fixed';
   popup.style.maxWidth = '290px';
   popup.style.width    = '290px';
-
-  if(corner.includes('right')){
-    popup.style.right = (window.innerWidth - rect.right) + 'px';
-    popup.style.left  = 'auto';
-  } else {
-    popup.style.left  = rect.left + 'px';
-    popup.style.right = 'auto';
-  }
-  if(corner.includes('bottom')){
-    popup.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
-    popup.style.top    = 'auto';
-  } else {
-    popup.style.top    = (rect.bottom + 8) + 'px';
-    popup.style.bottom = 'auto';
-  }
-
-  popup.classList.add('open');
-  setTimeout(()=> document.addEventListener('click', _closePinnedOnOutside, {once:true}), 10);
+  if(corner.includes('right')){ popup.style.right = (window.innerWidth - rect.right) + 'px'; popup.style.left  = 'auto'; }
+  else { popup.style.left  = rect.left + 'px'; popup.style.right = 'auto'; }
+  if(corner.includes('bottom')){ popup.style.bottom = (window.innerHeight - rect.top + 8) + 'px'; popup.style.top    = 'auto'; }
+  else { popup.style.top    = (rect.bottom + 8) + 'px'; popup.style.bottom = 'auto'; }
 }
 
 function closePinnedNotePopup(){
@@ -24281,7 +24284,141 @@ function _closePinnedOnOutside(e){
   else if(!popup.contains(e.target)){} // Clic sur bubble → toggle gère
 }
 
-/* ── Actions sur les tâches ──────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   SYNC TODO CHEF → OUVRIER
+   Chaque chef push sa liste sous todo_chef_{authId}.
+   L'ouvrier choisit un chef → pull en lecture seule, peut cocher mais pas supprimer.
+   ═══════════════════════════════════════════════════════════════════ */
+const TODO_SYNC_KEY_PREFIX = 'todo_chef_';
+
+function _myTodoSyncKey(){
+  const auth = data.settings && data.settings.auth;
+  return auth && auth.authId ? TODO_SYNC_KEY_PREFIX + auth.authId : null;
+}
+
+/* Chef : push sa liste à chaque modif */
+async function pushMyTodoList(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'chef') return;
+  const key = _myTodoSyncKey();
+  if(!key) return;
+  try{
+    const pn = _getPinnedNote();
+    const name = ((data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim()
+              || (data.settings.teamName || 'Chef');
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: key,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ chefName: name, tasks: pn.tasks })
+      })
+    });
+  } catch(e){ /* silencieux */ }
+}
+
+/* Ouvrier : pull la liste du chef sélectionné */
+async function pullChefTodoList(authId){
+  try{
+    const key = TODO_SYNC_KEY_PREFIX + authId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return null;
+    const rows = await res.json();
+    if(!rows || !rows.length) return null;
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return d || null;
+  } catch(e){ return null; }
+}
+
+/* authId du chef actuellement suivi par l'ouvrier (persisté en settings) */
+function _getFollowedChefId(){ return data.settings && data.settings.followedChefTodoId || null; }
+function _setFollowedChefId(id){ if(!data.settings) data.settings = {}; data.settings.followedChefTodoId = id; saveData(); }
+
+/* Rendu du sélecteur de chef + liste todo dans le popup (mode ouvrier) */
+async function renderOuvrierTodoPopup(){
+  const container = document.getElementById('pinnedTaskList');
+  const addRow    = document.getElementById('pinnedPopupAddRow');
+  if(!container) return;
+
+  // Cacher le champ d'ajout (en lecture seule sauf si chef lui-même)
+  if(addRow) addRow.style.display = 'none';
+
+  const chefs = await fetchChefsForMyCompany();
+  if(!chefs.length){
+    container.innerHTML = '<div style="color:var(--ink-soft);font-size:13px;padding:8px 0;">Aucun chef enregistré pour l\'instant.</div>';
+    return;
+  }
+
+  const followedId = _getFollowedChefId();
+  const currentChef = chefs.find(c => c.authId === followedId);
+
+  // Sélecteur
+  const selectorHtml = `
+    <div style="margin-bottom:10px;">
+      <select id="chefTodoSelector" style="width:100%; background:var(--bg-elev); border:1.5px solid var(--line); color:var(--ink); border-radius:9px; padding:8px 10px; font-size:13px;"
+        onchange="onChefTodoSelectorChange(this.value)">
+        <option value="">— Choisir un chef —</option>
+        ${chefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name || c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('')}
+      </select>
+    </div>`;
+
+  if(!followedId || !currentChef){
+    container.innerHTML = selectorHtml + '<div style="color:var(--ink-soft);font-size:12px;text-align:center;padding:8px 0;">Choisis un chef pour voir sa liste.</div>';
+    return;
+  }
+
+  container.innerHTML = selectorHtml + '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0;">⏳ Chargement…</div>';
+
+  const todoData = await pullChefTodoList(followedId);
+  if(!todoData || !todoData.tasks || !todoData.tasks.length){
+    container.innerHTML = selectorHtml + '<div style="color:var(--ink-soft);font-size:13px;padding:8px 0;">Liste vide pour le moment.</div>';
+    return;
+  }
+
+  const sorted = [...todoData.tasks].sort((a,b)=> (a.done?1:0)-(b.done?1:0));
+  container.innerHTML = selectorHtml +
+    `<div style="font-size:11px;color:var(--wood);margin-bottom:8px;font-weight:700;">📋 Liste de ${escapeHtml(todoData.chefName||'le chef')} — lecture + cocher autorisé</div>` +
+    sorted.map(t => `
+      <div class="pinned-task-item" data-id="${t.id}">
+        <div class="pinned-task-cb ${t.done?'done':''}" onclick="toggleChefTodoTask('${escapeHtml(followedId)}','${t.id}',this)"></div>
+        <div style="flex:1;min-width:0;">
+          <div class="pinned-task-text ${t.done?'done':''}">${escapeHtml(t.text)}</div>
+        </div>
+      </div>`).join('');
+}
+
+async function onChefTodoSelectorChange(authId){
+  _setFollowedChefId(authId || null);
+  await renderOuvrierTodoPopup();
+}
+
+/* Ouvrier coche une tâche : push le changement sur la clé du chef */
+async function toggleChefTodoTask(chefAuthId, taskId, cbEl){
+  const todoData = await pullChefTodoList(chefAuthId);
+  if(!todoData || !todoData.tasks) return;
+  const task = todoData.tasks.find(t => t.id === taskId);
+  if(!task) return;
+  task.done = !task.done;
+  // Re-push sous la clé du chef (l'ouvrier écrit sur la même clé)
+  try{
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: TODO_SYNC_KEY_PREFIX + chefAuthId,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify(todoData)
+      })
+    });
+    if(cbEl){ cbEl.classList.toggle('done', task.done); }
+    const textEl = cbEl && cbEl.nextElementSibling && cbEl.nextElementSibling.querySelector('.pinned-task-text');
+    if(textEl) textEl.classList.toggle('done', task.done);
+    showToast(task.done ? '✅ Tâche cochée' : '↩ Remise à faire');
+  } catch(e){ showToast('Erreur de synchro'); }
+}
+
+
 function togglePinnedTask(taskId){
   const pn = _getPinnedNote();
   const task = pn.tasks.find(t=>t.id===taskId);
@@ -24290,6 +24427,7 @@ function togglePinnedTask(taskId){
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInPopup();
+  pushMyTodoList();
 }
 
 function reopenPinnedTask(taskId){
@@ -24321,6 +24459,7 @@ function addPinnedTaskFromPopup(){
   _renderPinnedBubble(pn);
   _renderPinnedTasksInPopup();
   if(inp) inp.value = '';
+  pushMyTodoList();
 }
 
 function addPinnedTaskFromParams(){
