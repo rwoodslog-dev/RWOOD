@@ -3136,10 +3136,8 @@
       </div>
 
       <div class="chip-row" id="detailTabs" style="margin: 16px 0 12px;">
-        <div class="chip selected" data-tab="journal" onclick="setDetailTab('journal')">Journal</div>
         <div class="chip" data-tab="photos" onclick="setDetailTab('photos')">Photos</div>
         <div class="chip" data-tab="documents" onclick="setDetailTab('documents')">Documents</div>
-        <div class="chip" data-tab="stock" onclick="setDetailTab('stock')">Stock</div>
         <div class="chip" data-tab="zinc" onclick="setDetailTab('zinc')">Zinc</div>
         <div class="chip" data-tab="synchro" id="tabSynchroEquipe" style="display:none;" onclick="setDetailTab('synchro')">🔄 Synchro Équipe</div>
       </div>
@@ -4513,21 +4511,42 @@
 
       <!-- Statut sync -->
       <div id="depotSyncStatus" style="font-size:12px;color:var(--ink-soft);text-align:center;padding:4px 0;margin-bottom:6px;display:none;"></div>
-      <!-- Bouton refresh manuel -->
-      <div style="text-align:right;margin-bottom:8px;">
-        <button onclick="pullDepotFromSupabase().then(ok=>{ if(ok) renderDepot(); showToast('Dépôt mis à jour'); })"
-          style="background:transparent;border:none;font-size:12px;color:var(--ink-soft);cursor:pointer;padding:4px 8px;">
-          🔄 Actualiser
-        </button>
+
+      <!-- ACCORDÉON MACHINES -->
+      <div class="accordion-section open" id="depotAccordionMachines" style="margin-bottom:8px;">
+        <div class="accordion-header" onclick="toggleDepotAccordion('Machines')"
+          style="padding:12px 14px; background:var(--card); border-radius:12px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-weight:700;">
+          <span>🔧 Machines</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button onclick="event.stopPropagation(); pullDepotFromSupabase().then(ok=>{ if(ok) renderDepot(); showToast('Actualisé'); })"
+              style="background:transparent;border:none;font-size:12px;color:var(--ink-soft);cursor:pointer;padding:2px 6px;">🔄</button>
+            <span id="depotMachinesArrow" class="accordion-arrow">▾</span>
+          </div>
+        </div>
+        <div id="depotMachinesBody" style="padding-top:8px;">
+          <div id="depotBorrowList"></div>
+          <div id="depotAvailList" style="margin-top:4px;"></div>
+        </div>
       </div>
 
-      <!-- Liste complète : emprunté en haut, dispo en bas -->
-      <div id="depotBorrowList"></div>
-      <div id="depotAvailList" style="margin-top:4px;"></div>
+      <!-- ACCORDÉON DISPO CAMION -->
+      <div class="accordion-section" id="depotAccordionCamion" style="margin-bottom:8px;">
+        <div class="accordion-header" onclick="toggleDepotAccordion('Camion')"
+          style="padding:12px 14px; background:var(--card); border-radius:12px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-weight:700;">
+          <span>🚐 Dispo Camion</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button onclick="event.stopPropagation(); renderDispoCamion()" style="background:transparent;border:none;font-size:12px;color:var(--ink-soft);cursor:pointer;padding:2px 6px;">🔄</button>
+            <span id="depotCamionArrow" class="accordion-arrow">▾</span>
+          </div>
+        </div>
+        <div id="depotCamionBody" style="display:none;padding-top:8px;">
+          <div id="dispoCamionList"></div>
+        </div>
+      </div>
 
       <!-- Aide QR porte -->
       <div id="depotDoorHint" style="display:none; background:var(--card); border-radius:12px; padding:10px 14px; margin-bottom:12px; border-left:3px solid var(--wood); font-size:12px; line-height:1.6; color:var(--ink-soft);">
-        🔄 La liste se synchronise automatiquement. Ouvre l'onglet Dépôt sur n'importe quel téléphone pour voir qui a quoi en temps réel. Le QR porte est disponible en option pour les étiquettes physiques.
+        🔄 La liste se synchronise automatiquement. Ouvre l'onglet Dépôt sur n'importe quel téléphone pour voir qui a quoi en temps réel.
       </div>
 
       <!-- ── Première utilisation : saisie ID entreprise ── -->
@@ -6198,7 +6217,10 @@ async function initRwoodStorage(){
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
   setTimeout(()=> pushMyUserRegistration(), 5000);
-  setTimeout(()=> pushMyTodoList(), 5500); // push la liste à faire du chef au démarrage
+  setTimeout(()=> pushMyTodoList(), 5500);
+  setTimeout(()=> checkForConductorAlerts(), 6000); // alertes conducteur → chef
+  // Mettre en cache le registre pour les lookups authId
+  _fetchUsersRegistry().then(users => { window._usersRegistryCache = users; });
   // Démarrer le polling temps réel si des chantiers syncLive sont déjà présents localement
   if((data.sites||[]).some(s => s.syncLive)) startSyncLivePolling();
 }
@@ -7485,10 +7507,6 @@ function renderDetail(siteId){
     <div class="field" style="margin-top:12px;">
       <label>Date de fin prévue (optionnel)</label>
       <input type="date" value="${site.dueDate || ''}" onchange="updateSiteField('${site.id}','dueDate',this.value)">
-    </div>
-    <div class="field" style="margin-top:12px; margin-bottom:0;">
-      <label>Équipe assignée</label>
-      <div class="chip-row" id="siteAssignedWorkersChips"></div>
     </div>
     ${isConducteurDetail ? `
     <div class="field" style="margin-top:12px; margin-bottom:0;">
@@ -19762,7 +19780,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.15.0';
+const APP_VERSION = '2.15.3';
 
 const CHANGELOG = [
   {
@@ -20113,8 +20131,9 @@ function toggleCarMode(on){
 }
 
 function detectCarMode(){
-  const wasActive = localStorage.getItem('rwood-car-mode') === '1';
-  if(wasActive){ toggleCarMode(true); }
+  // Mode voiture supprimé — effacer le flag s'il reste d'une ancienne version
+  localStorage.removeItem('rwood-car-mode');
+  toggleCarMode(false);
   initCarModeCheckboxes();
   initPinnedNote();
 }
@@ -22684,6 +22703,21 @@ function renderDepot(){
   } catch(e){ console.error('[renderDepot]', e); }
 }
 
+function toggleDepotAccordion(name){
+  const body  = document.getElementById('depotAccordion' + name + 'Body' in document ? 'depot'+name+'Body' : 'depot' + name.charAt(0).toUpperCase() + name.slice(1) + 'Body');
+  // Utiliser les ids corrects selon le nom
+  const bodyEl  = name === 'Machines' ? document.getElementById('depotMachinesBody') : document.getElementById('depotCamionBody');
+  const arrowEl = name === 'Machines' ? document.getElementById('depotMachinesArrow') : document.getElementById('depotCamionArrow');
+  if(!bodyEl) return;
+  const isOpen = bodyEl.style.display !== 'none';
+  bodyEl.style.display = isOpen ? 'none' : '';
+  if(arrowEl) arrowEl.textContent = isOpen ? '▸' : '▾';
+  // Charger la liste camion au premier clic
+  if(!isOpen && name === 'Camion') renderDispoCamion();
+}
+
+function _renderDepotMachinesArrow(){ /* accordéon Machines ouvert par défaut */ }
+
 function _setupDepotFAB(){
   const fab = document.getElementById('fabBtn');
   if(!fab) return;
@@ -24367,6 +24401,126 @@ function _closePinnedOnOutside(e){
    ═══════════════════════════════════════════════════════════════════ */
 const TODO_SYNC_KEY_PREFIX = 'todo_chef_';
 
+/* ═══════════════════════════════════════════════════════════════════
+   DISPO CAMION — véhicules partagés en temps réel
+   Clé Supabase dédiée, même pattern que les autres syncs.
+   Chaque utilisateur peut déclarer qu'il prend un véhicule.
+   ═══════════════════════════════════════════════════════════════════ */
+const VEHICLES_SYNC_KEY = 'company_vehicles_v1';
+
+async function _fetchVehicles(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(VEHICLES_SYNC_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows||!rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.vehicles) || [];
+  } catch(e){ return []; }
+}
+
+async function _saveVehicles(vehicles){
+  await supaFetch('/rest/v1/rwood_sync', {
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body: JSON.stringify({ user_id: VEHICLES_SYNC_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ vehicles }) })
+  });
+}
+
+async function renderDispoCamion(){
+  const el = document.getElementById('dispoCamionList');
+  if(!el) return;
+  el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">⏳ Chargement…</div>';
+  const vehicles = await _fetchVehicles();
+  const myName = (data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || 'Moi';
+
+  if(!vehicles.length){
+    el.innerHTML = `<div class="hint" style="text-align:center;padding:12px 0;">Aucun véhicule configuré.<br>Le chef peut en ajouter.</div>
+      ${isChef() ? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAddVehicleModal()">+ Ajouter un véhicule</button>` : ''}`;
+    return;
+  }
+
+  const avail    = vehicles.filter(v => !v.takenBy);
+  const borrowed = vehicles.filter(v =>  v.takenBy);
+
+  el.innerHTML = (borrowed.length ? `<div class="section-title" style="color:#E05555;margin-top:0;">🔴 Pris (${borrowed.length})</div>`
+    + borrowed.map(v => vehicleCard(v, myName)).join('') : '')
+    + (avail.length ? `<div class="section-title" style="color:#4CAF79;margin-top:${borrowed.length?'10px':'0'};">🟢 Disponible (${avail.length})</div>`
+    + avail.map(v => vehicleCard(v, myName)).join('') : '')
+    + (isChef() ? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openAddVehicleModal()">+ Ajouter un véhicule</button>` : '');
+}
+
+function vehicleCard(v, myName){
+  const isTaken = !!v.takenBy;
+  const isMe    = v.takenBy === myName;
+  const takenAt = v.takenAt ? new Date(v.takenAt).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+  return `
+    <div class="card" style="padding:12px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:26px;">${escapeHtml(v.emoji||'🚐')}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:700;">${escapeHtml(v.name)}</div>
+          ${isTaken ? `<div style="font-size:12px;color:#E05555;font-weight:600;">👤 ${escapeHtml(v.takenBy)}</div>`
+                    : '<div style="font-size:12px;color:#4CAF79;font-weight:600;">Disponible</div>'}
+          ${takenAt ? `<div style="font-size:11px;color:var(--ink-soft);">📅 ${takenAt}</div>` : ''}
+        </div>
+        ${isTaken
+          ? (isMe ? `<button class="btn btn-sm" onclick="releaseVehicle('${v.id}')" style="background:#4CAF79;border:none;color:#fff;font-weight:700;padding:8px 12px;border-radius:10px;">↩ Je dépose</button>`
+                  : `<span style="font-size:11px;color:var(--ink-soft);">Indisponible</span>`)
+          : `<button class="btn btn-primary btn-sm" onclick="takeVehicle('${v.id}')" style="padding:8px 12px;font-weight:700;">+ Je prends</button>`
+        }
+        ${isChef() ? `<button onclick="confirmDeleteVehicle('${v.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;padding:4px;font-size:14px;">🗑</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function takeVehicle(vehicleId){
+  const myName = (data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || 'Moi';
+  const vehicles = await _fetchVehicles();
+  const v = vehicles.find(x => x.id === vehicleId);
+  if(!v || v.takenBy){ showToast('Véhicule déjà pris'); return; }
+  v.takenBy = myName;
+  v.takenAt = new Date().toISOString();
+  await _saveVehicles(vehicles);
+  showToast('✅ ' + v.name + ' — pris par toi');
+  renderDispoCamion();
+}
+
+async function releaseVehicle(vehicleId){
+  const vehicles = await _fetchVehicles();
+  const v = vehicles.find(x => x.id === vehicleId);
+  if(!v) return;
+  v.takenBy = null; v.takenAt = null;
+  await _saveVehicles(vehicles);
+  showToast('↩ ' + v.name + ' remis disponible');
+  renderDispoCamion();
+}
+
+async function confirmDeleteVehicle(vehicleId){
+  if(!confirm('Supprimer ce véhicule ?')) return;
+  const vehicles = (await _fetchVehicles()).filter(x => x.id !== vehicleId);
+  await _saveVehicles(vehicles);
+  renderDispoCamion();
+}
+
+const VEHICLE_EMOJIS = ['🚐','🚚','🏗️','🛻','🚗','🚛','🪜'];
+function openAddVehicleModal(){
+  const name = prompt('Nom du véhicule (ex : Grue, Kangoo, Camion benne…)');
+  if(!name || !name.trim()) return;
+  const emoji = prompt('Emoji (laisse vide pour 🚐) :', '🚐') || '🚐';
+  addVehicle(name.trim(), emoji.trim() || '🚐');
+}
+
+async function addVehicle(name, emoji){
+  const vehicles = await _fetchVehicles();
+  vehicles.push({ id: uid(), name, emoji, takenBy: null, takenAt: null });
+  await _saveVehicles(vehicles);
+  showToast('Véhicule ajouté');
+  renderDispoCamion();
+}
+
+
+
 function _myTodoSyncKey(){
   const auth = data.settings && data.settings.auth;
   return auth && auth.authId ? TODO_SYNC_KEY_PREFIX + auth.authId : null;
@@ -25649,8 +25803,137 @@ function _filterAlertsForMe(alerts){
 
 
 /* ═══════════════════════════════════════════════════════════════════
-   SYNCHRO CHANTIERS — conducteur de travaux -> chef d'équipe assigné
+   ALERTES CONDUCTEUR → CHEF D'ÉQUIPE
+   Clé dédiée par chef (ciblage par authId), même pattern que alerts/inbox.
+   Le conducteur push une notif → le chef voit un popup persistant.
    ═══════════════════════════════════════════════════════════════════ */
+const CONDUCTOR_ALERT_PREFIX = 'conductor_alert_'; // + authId du chef
+
+async function _fetchConductorAlerts(chefAuthId){
+  try{
+    const key = CONDUCTOR_ALERT_PREFIX + chefAuthId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows||!rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.alerts) || [];
+  } catch(e){ return []; }
+}
+
+async function _saveConductorAlerts(chefAuthId, alerts){
+  const key = CONDUCTOR_ALERT_PREFIX + chefAuthId;
+  await supaFetch('/rest/v1/rwood_sync', {
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ alerts }) })
+  });
+}
+
+/* Conducteur envoie une alerte à un chef (via authId) */
+async function sendConductorAlertToChef(chefAuthId, siteName, element, isNote){
+  if(!chefAuthId) return;
+  const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' + ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+  const text = isNote
+    ? 'Le conducteur ' + conductorName.trim() + ' vous a envoyé une note sur le chantier ' + siteName + ' : "' + element + '"'
+    : 'Le conducteur ' + conductorName.trim() + ' a modifié ' + element + ' sur le chantier ' + siteName;
+  try{
+    const alerts = await _fetchConductorAlerts(chefAuthId);
+    alerts.push({ id: uid(), text, createdAt: new Date().toISOString(), read: false, dismissed: false });
+    await _saveConductorAlerts(chefAuthId, alerts);
+  } catch(e){ /* silencieux */ }
+}
+
+/* Récupère les authIds des chefs assignés à un chantier */
+function _getChefAuthIdsForSite(site){
+  const ids = [];
+  if(Array.isArray(site.assignedChefs)){
+    site.assignedChefs.forEach(c => {
+      if(c.authId) ids.push(c.authId);
+      else if(c.phone){
+        // Retrouver l'authId via le registre en cache (synchrone — best effort)
+        const reg = window._usersRegistryCache || [];
+        const found = reg.find(u => u.phone === c.phone || u.phone === normalizePhone(c.phone));
+        if(found && found.authId) ids.push(found.authId);
+      }
+    });
+  }
+  return ids;
+}
+
+/* Vérifier les alertes conducteur à l'ouverture (côté chef) */
+async function checkForConductorAlerts(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'chef') return;
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!myAuthId) return;
+  try{
+    const alerts = await _fetchConductorAlerts(myAuthId);
+    const pending = alerts.filter(a => !a.dismissed);
+    if(!pending.length) return;
+    // Afficher le premier non-dismissed
+    const alert = pending[0];
+    showConductorAlertPopup(alert, myAuthId, alerts);
+  } catch(e){ /* silencieux */ }
+}
+
+function showConductorAlertPopup(alert, myAuthId, allAlerts){
+  // Réutilise le modal alertInbox existant mais avec contenu conducteur
+  const existing = document.getElementById('modal-conductorAlert');
+  if(existing) existing.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.id = 'modal-conductorAlert';
+  div.style.cssText = 'display:flex;z-index:700;';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>📋 Message du conducteur</h2>
+      </div>
+      <div class="card" style="margin-bottom:14px; border-left:3px solid var(--wood);">
+        <div style="font-size:14px;line-height:1.6;">${escapeHtml(alert.text)}</div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">${new Date(alert.createdAt).toLocaleString('fr-FR')}</div>
+      </div>
+      <button class="btn btn-primary btn-block" style="margin-bottom:8px;"
+        onclick="dismissConductorAlert('${alert.id}','${myAuthId}')">
+        ✅ Lever l'alerte
+      </button>
+      <button class="btn btn-outline btn-block" style="color:var(--ink-soft);"
+        onclick="document.getElementById('modal-conductorAlert').remove()">
+        Ignorer (réapparaîtra à la prochaine ouverture)
+      </button>
+    </div>`;
+  document.body.appendChild(div);
+  div.classList.add('open');
+  _playAlertSound();
+}
+
+async function dismissConductorAlert(alertId, myAuthId){
+  try{
+    const alerts = await _fetchConductorAlerts(myAuthId);
+    const a = alerts.find(x => x.id === alertId);
+    if(a) a.dismissed = true;
+    await _saveConductorAlerts(myAuthId, alerts);
+  } catch(e){ /* silencieux */ }
+  document.getElementById('modal-conductorAlert').remove();
+  // Vérifier s'il en reste d'autres
+  setTimeout(() => checkForConductorAlerts(), 300);
+}
+
+/* Interface conducteur : envoyer une note directe à un chef */
+function openSendNoteToChef(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site){ showToast('Chantier introuvable'); return; }
+  const chefIds = _getChefAuthIdsForSite(site);
+  if(!chefIds.length){ showToast('Aucun chef assigné sur ce chantier'); return; }
+  const note = prompt('Note pour le chef assigné (' + (site.teamName||'chef') + ') :');
+  if(!note || !note.trim()) return;
+  chefIds.forEach(id => sendConductorAlertToChef(id, site.name, note.trim(), true));
+  showToast('Note envoyée au chef');
+}
+
+
 const SHARED_SITES_KEY = 'company_shared_sites'; // cle Supabase fixe partagee, separee du reste
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -25873,7 +26156,10 @@ function renderSynchroEquipe(siteId){
         </div>
       </div>
 
-      <button class="btn btn-outline btn-block" style="margin-top:16px; color:var(--red); border-color:var(--red);" onclick="stopSynchroEquipe('${siteId}')">
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openSendNoteToChef('${siteId}')">
+        📩 Envoyer une note au chef
+      </button>
+      <button class="btn btn-outline btn-block" style="margin-top:8px; color:var(--red); border-color:var(--red);" onclick="stopSynchroEquipe('${siteId}')">
         ⏹ Arrêter la synchro
       </button>
     `;
@@ -25925,6 +26211,11 @@ async function updateSiteFieldAndPush(siteId, field, value){
   site.lastSyncAt = new Date().toISOString();
   saveData();
   await pushSharedSite(site);
+  // Notifier les chefs assignés
+  const fieldLabels = { keyboxCode:'le code boîte à clés', dueDate:'la date de fin', startDate:'la date de début', address:'l\'adresse' };
+  const label = fieldLabels[field] || field;
+  const chefIds = _getChefAuthIdsForSite(site);
+  chefIds.forEach(id => sendConductorAlertToChef(id, site.name, label, false));
   showToast('Modif envoyée aux chefs');
 }
 
@@ -26484,6 +26775,7 @@ document.addEventListener('visibilitychange', function(){
   if(document.visibilityState === 'visible'){
     checkForNewAlerts();
     pullSharedSites();
+    checkForConductorAlerts();
   }
 });
 
