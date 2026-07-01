@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v306';
+const CACHE_NAME = 'rwood-cache-v307';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -10,13 +10,7 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      Promise.all(
-        ASSETS.map((url) =>
-          cache.add(url).catch((err) =>
-            console.warn('[SW] Asset ignoré :', url, err)
-          )
-        )
-      )
+      Promise.all(ASSETS.map((url) => cache.add(url).catch(() => {})))
     )
   );
 });
@@ -28,66 +22,39 @@ self.addEventListener('message', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
-      ))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-const CACHE_FIRST_PATTERNS = [
-  /\.(png|jpg|jpeg|svg|ico|webp|woff2?)(\?.*)?$/,
-];
-const NETWORK_ONLY_PATTERNS = [
-  /supabase\.co/,
-  /api-adresse\.data\.gouv\.fr/,
-  /router\.project-osrm\.org/,
-  /nominatim\.openstreetmap\.org/,
-  /unpkg\.com/,
-  /cdnjs\.cloudflare\.com/,
-];
+const CACHE_FIRST = /\.(png|jpg|jpeg|svg|ico|webp|woff2?)(\?.*)?$/;
+const NET_ONLY    = /supabase\.co|api-adresse|osrm|nominatim|unpkg\.com|cdnjs/;
 
 self.addEventListener('fetch', (event) => {
   if(event.request.method !== 'GET') return;
   const url = event.request.url;
-  if(NETWORK_ONLY_PATTERNS.some(p => p.test(url))) return;
+  if(NET_ONLY.test(url)) return;
 
-  // index.html : TOUJOURS network-first, jamais de cache stale
-  if(url.endsWith('index.html') || url.endsWith('/') || url.split('?')[0].endsWith('/')){
+  // index.html — TOUJOURS réseau, jamais de cache
+  if(/index\.html|\/([^.]*)?$/.test(url)){
     event.respondWith(
       fetch(event.request, { cache: 'no-cache' })
-        .then((response) => {
-          if(response && response.status === 200){
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
-          }
-          return response;
-        })
+        .then((r) => { if(r.ok) caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
         .catch(() => caches.match(event.request))
     );
     return;
   }
 
-  const isCacheFirst = CACHE_FIRST_PATTERNS.some(p => p.test(url));
-  if(isCacheFirst){
-    event.respondWith(
-      caches.open(CACHE_NAME).then(async (cache) => {
-        const cached = await cache.match(event.request);
-        const networkPromise = fetch(event.request)
-          .then((response) => {
-            if(response && response.status === 200) cache.put(event.request, response.clone());
-            return response;
-          }).catch(() => null);
-        return cached || networkPromise;
-      })
-    );
+  if(CACHE_FIRST.test(url)){
+    event.respondWith(caches.open(CACHE_NAME).then(async (cache) => {
+      const cached = await cache.match(event.request);
+      fetch(event.request).then(r => { if(r.ok) cache.put(event.request, r.clone()); }).catch(()=>{});
+      return cached || fetch(event.request);
+    }));
   } else {
     event.respondWith(
       fetch(event.request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          return response;
-        })
+        .then((r) => { caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
         .catch(() => caches.match(event.request))
     );
   }
@@ -95,36 +62,17 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('push', (event) => {
   if(!event.data) return;
-  let payload;
-  try { payload = event.data.json(); }
-  catch(e) { payload = { title: 'RWOOD', body: event.data.text() }; }
-  event.waitUntil(
-    self.registration.showNotification(payload.title || 'RWOOD', {
-      body: payload.body || '',
-      icon: './icons/icon-192.png',
-      badge: './icons/icon-192.png',
-      tag: payload.tag || 'rwood-notif',
-      data: payload.data || {},
-      vibrate: [200, 100, 200, 100, 200],
-      requireInteraction: payload.requireInteraction || false,
-      actions: payload.actions || [],
-    })
-  );
+  let p; try { p = event.data.json(); } catch(e) { p = {title:'RWOOD', body:event.data.text()}; }
+  event.waitUntil(self.registration.showNotification(p.title||'RWOOD', {
+    body:p.body||'', icon:'./icons/icon-192.png', badge:'./icons/icon-192.png',
+    tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
+  }));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const data = event.notification.data || {};
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      for(const client of list){
-        if(client.url.includes('index.html') && 'focus' in client){
-          client.focus();
-          if(data.view) client.postMessage({ type: 'navigate', view: data.view });
-          return;
-        }
-      }
-      if(clients.openWindow) return clients.openWindow(data.url || './index.html');
-    })
-  );
+  event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
+    for(const c of list){ if('focus' in c){ c.focus(); return; } }
+    if(clients.openWindow) return clients.openWindow('./index.html');
+  }));
 });
