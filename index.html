@@ -19868,7 +19868,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.9';
+const APP_VERSION = '2.14.0';
 
 const CHANGELOG = [
   {
@@ -25260,7 +25260,8 @@ function submitDevCode(){
   if(code === DEV_ACCESS_CODE){
     closeModal('devCode');
     openModal('devPanel');
-    refreshDevPanel();
+    _devCurrentTab = 'comptes';
+    switchDevTab('comptes'); // force l'onglet Comptes actif + charge la liste
     renderDevCompaniesList();
   } else {
     document.getElementById('devCodeError').style.display = 'block';
@@ -25270,37 +25271,108 @@ function submitDevCode(){
 }
 
 /* Recupere la liste des comptes synchronises (memes donnees que pour la comptable) */
+let _devCurrentTab = 'comptes'; // 'comptes' | 'pointages'
+
+function switchDevTab(tab){
+  _devCurrentTab = tab;
+  const btnC = document.getElementById('devTabComptes');
+  const btnP = document.getElementById('devTabPointages');
+  if(btnC){ btnC.className = tab==='comptes' ? 'btn btn-primary' : 'btn btn-outline'; btnC.style.flex='1'; btnC.style.fontSize='12px'; }
+  if(btnP){ btnP.className = tab==='pointages' ? 'btn btn-primary' : 'btn btn-outline'; btnP.style.flex='1'; btnP.style.fontSize='12px'; }
+  refreshDevPanel();
+}
+
 async function refreshDevPanel(){
-  const btn = document.getElementById('devPanelRefreshBtn');
+  const btn  = document.getElementById('devPanelRefreshBtn');
   const list = document.getElementById('devPanelList');
   if(btn){ btn.disabled = true; btn.textContent = '⏳ Chargement…'; }
   list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Chargement…</div>';
 
-  const rows = await pullAllPointagesForComptable();
+  if(_devCurrentTab === 'comptes'){
+    await _renderDevTabComptes(list);
+  } else {
+    await _renderDevTabPointages(list);
+  }
 
   if(btn){ btn.disabled = false; btn.textContent = '🔄 Actualiser'; }
+}
 
+/* ── Onglet Comptes : tous les utilisateurs inscrits (registre USERS_REGISTRY_KEY) ── */
+async function _renderDevTabComptes(list){
+  const users = await _fetchUsersRegistry();
+  if(!users || !users.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
+    return;
+  }
+  const roleLabel = { chef:'Chef d\'équipe', ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron' };
+  const roleIcon  = { chef:'👷', ouvrier:'🪚', conducteur:'📋', comptable:'🧾', patron:'👑' };
+  const sorted = [...users].sort((a,b)=> (a.role||'').localeCompare(b.role||'') || (a.name||'').localeCompare(b.name||'','fr'));
+
+  list.innerHTML = `
+    <div class="hint" style="margin-bottom:10px;">
+      ${sorted.length} utilisateur${sorted.length>1?'s':''} inscrit${sorted.length>1?'s':''}
+      <span style="float:right;font-size:10px;opacity:0.6;">🗑 = registre + pointages</span>
+    </div>` +
+  sorted.map(u => `
+    <div class="card" style="margin-bottom:8px;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="font-size:22px; flex-shrink:0;">${roleIcon[u.role]||'👤'}</span>
+        <div style="flex:1; min-width:0; overflow:hidden;">
+          <div style="font-weight:700; font-size:14px;">${escapeHtml(u.name||'Sans nom')}</div>
+          <div class="meta">${roleLabel[u.role]||u.role||'—'}${u.teamName?' · 🏗 '+escapeHtml(u.teamName):''}</div>
+          ${u.phone ? `<div class="meta">📞 ${escapeHtml(u.phone)}</div>` : ''}
+          <div class="meta" style="font-size:10px; opacity:0.6; margin-top:2px;">
+            ID: ${escapeHtml(u.authId||'—')} · ${u.updatedAt ? new Date(u.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',year:'numeric'}) : '—'}
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;"
+          onclick="confirmDeleteUserFull('${escapeHtml(u.authId)}','${escapeHtml(u.name||'?')}')">🗑</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function confirmDeleteUserFull(authId, name){
+  if(!confirm('Supprimer ' + name + ' ?\n\n— Retiré du registre\n— Ses pointages supprimés de la vue comptable\n\nIl pourra se reconnecter mais devra se réinscrire pour réapparaître.')) return;
+  try{
+    const users = await _fetchUsersRegistry();
+    await _saveUsersRegistry(users.filter(u => u.authId !== authId));
+    const rows = await pullAllPointagesForComptable() || [];
+    const match = rows.find(r => r.ownerName === name);
+    if(match){
+      await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(COMPANY_SYNC_KEY + '_' + match.deviceId), {
+        method: 'DELETE', headers:{ 'Prefer':'' }
+      });
+    }
+    showToast(name + ' supprimé');
+    refreshDevPanel();
+  } catch(e){ showToast('Erreur : ' + e.message); }
+}
+
+/* ── Onglet Pointages : devices de synchro (COMPANY_SYNC_KEY) ── */
+async function _renderDevTabPointages(list){
+  const rows = await pullAllPointagesForComptable();
   if(rows === null){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Hors-ligne — impossible de charger la liste.</div>';
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Hors-ligne.</div>';
     return;
   }
   if(!rows.length){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun compte synchronisé pour l\'instant.</div>';
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun device synchronisé.</div>';
     return;
   }
-
   _devPanelRows = rows;
-  list.innerHTML = rows.map(r => `
+  list.innerHTML = `<div class="hint" style="margin-bottom:10px;">${rows.length} device${rows.length>1?'s':''} synchronisé${rows.length>1?'s':''}</div>` +
+  rows.map(r => `
     <div class="card" style="margin-bottom:10px;">
       <div class="card-row" style="align-items:center; margin-bottom:6px;">
         <div>
           <div style="font-weight:700;">${escapeHtml(r.ownerName)}</div>
-          <div class="meta">${escapeHtml(r.ownerRole)} · ${(r.workers||[]).length} ouvrier${(r.workers||[]).length>1?'s':''} · maj ${new Date(r.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+          <div class="meta">${escapeHtml(r.ownerRole)} · ${(r.workers||[]).length} ouvrier${(r.workers||[]).length>1?'s':''} · ${new Date(r.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
         </div>
         <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;" onclick="confirmDeleteDevAccount('${r.deviceId}','${escapeHtml(r.ownerName)}')">🗑 Device</button>
       </div>
-      ${(r.workers||[]).length > 0 ? `
-        <div style="font-size:11px; color:var(--ink-dim); margin-bottom:5px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Ouvriers sur ce device</div>
+      ${(r.workers||[]).length > 1 ? `
+        <div style="font-size:11px; color:var(--red); margin-bottom:5px; font-weight:700;">⚠ Plusieurs ouvriers (données corrompues)</div>
         ${(r.workers||[]).map(w => `
           <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; background:var(--bg-elev); border-radius:8px; margin-bottom:4px;">
             <span style="flex:1; font-size:13px;">👷 ${escapeHtml(w.name)}</span>
@@ -26717,21 +26789,22 @@ async function checkDeviceRevocation(){
       <button class="modal-close" onclick="closeModal('devPanel')">×</button>
     </div>
 
+    <!-- Actions rapides -->
     <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
       <div style="font-weight:700; margin-bottom:6px;">👁 Mode Spectateur</div>
-      <div class="hint" style="margin-bottom:10px;">Simule n'importe quel rôle sans modifier ton compte. Ta session réelle reste intacte en arrière-plan — tu reprends exactement là où tu étais en quittant.</div>
+      <div class="hint" style="margin-bottom:10px;">Simule n'importe quel rôle sans modifier ton compte. Ta session réelle reste intacte en arrière-plan.</div>
       <button class="btn btn-primary btn-block" onclick="enterSpectatorMode()">Entrer en Mode Spectateur</button>
     </div>
 
     <div class="card" style="margin-bottom:14px;">
       <div style="font-weight:700; margin-bottom:6px;">🔓 Déverrouiller le rôle</div>
-      <div class="hint" style="margin-bottom:10px;">Débloque le changement de rôle sur CET appareil. L'utilisateur pourra choisir un nouveau rôle une fois — il se reverrouillera automatiquement juste après.</div>
+      <div class="hint" style="margin-bottom:10px;">Débloque le changement de rôle sur CET appareil — un seul changement autorisé, se reverrouille après.</div>
       <button class="btn btn-outline btn-block" onclick="unlockRoleOnThisDevice()">Débloquer le rôle ici</button>
     </div>
 
     <div class="card" style="margin-bottom:14px;">
       <div style="font-weight:700; margin-bottom:6px;">🏢 Code Creator</div>
-      <div class="hint" style="margin-bottom:10px;">Génère un Code Entreprise unique à donner à un nouveau client pour qu'il rattache son équipe.</div>
+      <div class="hint" style="margin-bottom:10px;">Génère un Code Entreprise unique à donner à un nouveau client.</div>
       <div style="display:flex; gap:8px;">
         <input type="text" id="devCompanyNameInput" placeholder="Nom de l'entreprise" style="flex:1; padding:10px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink);">
         <button class="btn btn-primary" onclick="generateCompanyCode()">Générer</button>
@@ -26739,9 +26812,13 @@ async function checkDeviceRevocation(){
       <div id="devCompanyCodesList" style="margin-top:12px;"></div>
     </div>
 
-    <div class="hint" style="margin-bottom:10px;">Liste de tous les téléphones ayant synchronisé des pointages. Supprimer un compte le retire des fiches vues par la comptable et force ce téléphone à recréer un profil à sa prochaine ouverture.</div>
-    <div class="row-actions" style="margin-bottom:12px;">
-      <button class="btn btn-outline btn-block" onclick="refreshDevPanel()" id="devPanelRefreshBtn">🔄 Actualiser</button>
+    <!-- Onglets Comptes / Pointages -->
+    <div style="display:flex; gap:6px; margin-bottom:12px;">
+      <button id="devTabComptes" class="btn btn-primary" style="flex:1;font-size:12px;" onclick="switchDevTab('comptes')">👥 Comptes</button>
+      <button id="devTabPointages" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('pointages')">⏱ Pointages</button>
+    </div>
+    <div style="margin-bottom:12px;">
+      <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
     </div>
     <div id="devPanelList"></div>
   </div>
