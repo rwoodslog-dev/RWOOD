@@ -19771,7 +19771,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.14.5';
+const APP_VERSION = '2.14.6';
 
 const CHANGELOG = [
   {
@@ -24278,18 +24278,37 @@ function togglePinnedNotePopup(e){
   refreshSharedTodoInPopup();
 }
 
+let _currentTodoTab = 'ma'; // 'ma' | 'partage'
+
+function switchTodoTab(tab){
+  _currentTodoTab = tab;
+  const maSect = document.getElementById('todoSectionMaListe');
+  const parSect= document.getElementById('todoSectionPartage');
+  const btnMa  = document.getElementById('todoTabMaListe');
+  const btnPar = document.getElementById('todoTabPartage');
+  if(maSect)  maSect.style.display  = tab==='ma' ? '' : 'none';
+  if(parSect) parSect.style.display = tab==='partage' ? '' : 'none';
+  if(btnMa){  btnMa.style.background  = tab==='ma'? 'var(--wood)':'transparent'; btnMa.style.color  = tab==='ma'? '#1a0f00':'var(--ink-soft)'; }
+  if(btnPar){ btnPar.style.background = tab==='partage'? 'var(--wood)':'transparent'; btnPar.style.color = tab==='partage'? '#1a0f00':'var(--ink-soft)'; }
+  if(tab === 'partage') refreshSharedTodoInPopup();
+}
+
 async function refreshSharedTodoInPopup(){
   const labelEl = document.getElementById('sharedTodoLabel');
   const itemsEl = document.getElementById('sharedTodoItems');
   if(!itemsEl) return;
 
   const followedId = _getFollowedChefId();
-  if(!followedId){
+  const myAuthId   = data.settings && data.settings.auth && data.settings.auth.authId;
+
+  // Fix doublon : un chef ne peut pas se suivre lui-même
+  if(!followedId || followedId === myAuthId){
     itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">Aucun chef sélectionné · Paramètres → Liste à faire</span>';
     if(labelEl) labelEl.textContent = 'Liste partagée';
     return;
   }
 
+  if(labelEl) labelEl.textContent = '⏳ Chargement…';
   itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">⏳ Chargement…</span>';
 
   const todoData = await pullChefTodoList(followedId);
@@ -24485,10 +24504,14 @@ async function initChefTodoParamsSection(){
     const sel = document.getElementById('chefTodoSelectorParams');
     if(sel){
       const chefs = await fetchChefsForMyCompany();
+      const myAuthId   = data.settings && data.settings.auth && data.settings.auth.authId;
       const followedId = _getFollowedChefId();
+      // Exclure soi-même de la liste
+      const filteredChefs = chefs.filter(c => c.authId !== myAuthId);
       sel.innerHTML = '<option value="">— Choisir un chef —</option>' +
-        chefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name||c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('');
+        filteredChefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name||c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('');
     }
+    const followedId = _getFollowedChefId();
     if(followedId) await refreshChefTodoInParams();
   } else if(role === 'chef'){
     if(ouvrierSection) ouvrierSection.style.display = 'none';
@@ -26739,20 +26762,33 @@ async function checkDeviceRevocation(){
     <button onclick="closePinnedNotePopup()">×</button>
   </h4>
 
-  <!-- MA LISTE (privée, locale) -->
-  <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;">Ma liste</div>
-  <div id="pinnedTaskList"></div>
-  <div id="pinnedPopupAddRow">
-    <input id="pinnedPopupAddInput" type="text" placeholder="Ajouter une tâche…"
-      onkeydown="if(event.key==='Enter') addPinnedTaskFromPopup()">
-    <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()">+</button>
+  <!-- Toggle Ma liste / Liste partagée -->
+  <div style="display:flex; gap:4px; margin-bottom:10px; background:var(--bg); border-radius:10px; padding:3px;">
+    <button id="todoTabMaListe" onclick="switchTodoTab('ma')"
+      style="flex:1; padding:6px 8px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; background:var(--wood); color:#1a0f00;">
+      Ma liste
+    </button>
+    <button id="todoTabPartage" onclick="switchTodoTab('partage')"
+      style="flex:1; padding:6px 8px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; background:transparent; color:var(--ink-soft);">
+      Liste partagée
+    </button>
   </div>
 
-  <!-- LISTE PARTAGÉE (chef suivi) -->
-  <div id="sharedTodoSection" style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line);">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-      <span id="sharedTodoLabel" style="font-size:11px;font-weight:800;color:var(--wood);text-transform:uppercase;letter-spacing:0.6px;">Liste partagée</span>
-      <button onclick="refreshSharedTodoInPopup()" style="background:none;border:none;font-size:12px;color:var(--wood);cursor:pointer;padding:2px 6px;">🔄</button>
+  <!-- MA LISTE -->
+  <div id="todoSectionMaListe">
+    <div id="pinnedTaskList"></div>
+    <div id="pinnedPopupAddRow">
+      <input id="pinnedPopupAddInput" type="text" placeholder="Ajouter une tâche…"
+        onkeydown="if(event.key==='Enter') addPinnedTaskFromPopup()">
+      <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()">+</button>
+    </div>
+  </div>
+
+  <!-- LISTE PARTAGÉE -->
+  <div id="todoSectionPartage" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <span id="sharedTodoLabel" style="font-size:12px; font-weight:700; color:var(--wood);">Liste partagée</span>
+      <button onclick="refreshSharedTodoInPopup()" style="background:none;border:none;font-size:13px;color:var(--wood);cursor:pointer;padding:2px 6px;" title="Resync">🔄</button>
     </div>
     <div id="sharedTodoItems" style="color:var(--ink-soft);font-size:12px;">
       <span style="opacity:0.6;">Aucun chef sélectionné · Paramètres → Liste à faire</span>
