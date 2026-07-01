@@ -146,6 +146,33 @@
   }
 
   .nav-section-label{ display:none; }
+
+  /* ── Barre flottante Mode Spectateur ── */
+  #devSpectatorBar{
+    display:none;
+    position:fixed; bottom:74px; left:50%; transform:translateX(-50%);
+    z-index:900;
+    background:linear-gradient(135deg,#1a0a00,#2a1400);
+    border:1.5px solid var(--wood);
+    border-radius:40px;
+    padding:8px 14px;
+    box-shadow:0 4px 20px rgba(232,172,61,0.35);
+    align-items:center; gap:10px;
+    white-space:nowrap;
+  }
+  #devSpectatorBar.visible{ display:flex; }
+  #devSpectatorBar select{
+    background:rgba(255,255,255,0.08); border:1px solid var(--wood);
+    color:var(--wood); border-radius:20px; padding:5px 10px;
+    font-size:12px; font-weight:700;
+  }
+  #devSpectatorBar .dev-label{
+    font-size:11px; font-weight:800; color:var(--wood); letter-spacing:0.5px;
+  }
+  #devSpectatorBar .dev-exit{
+    background:var(--wood); color:#1a0a00; border:none; border-radius:20px;
+    padding:5px 12px; font-size:11px; font-weight:800; cursor:pointer;
+  }
   /* Carte Zone Chantier comptable */
   #zoneChantierMap{
     width:100%; height:340px; border-radius:14px;
@@ -14978,6 +15005,15 @@ function renderComptableFichesContent(rows){
 
   let html = `<div class="hint" style="margin-bottom:10px;">${allWorkers.length} ouvrier${allWorkers.length>1?'s':''} synchronisé${allWorkers.length>1?'s':''} — touche un nom pour voir sa fiche.</div>`;
 
+  // Avertissement si des devices ont plusieurs workers (données corrompues à nettoyer)
+  const corruptedDevices = rows.filter(d => (d.workers||[]).length > 1);
+  if(corruptedDevices.length){
+    html += `<div style="padding:10px 12px; margin-bottom:10px; background:var(--red-soft); border:1px solid var(--red); border-radius:10px; font-size:12.5px; color:var(--red);">
+      ⚠️ ${corruptedDevices.length} device${corruptedDevices.length>1?'s ont':'a'} envoyé plusieurs ouvriers (ancien bug corrigé).
+      Utilisez 🗑 pour supprimer les entrées en double — le prochain push du device sera propre.
+    </div>`;
+  }
+
   html += allWorkers.map(aw => {
     const isOpen = _comptableOpenWorkerKey === aw.key;
     const mode = _getWorkerViewMode(aw.key);
@@ -14990,6 +15026,8 @@ function renderComptableFichesContent(rows){
           <span>👷 ${escapeHtml(aw.name)} <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-soft);font-size:11px;">— ${escapeHtml(aw.device.ownerName)}</span></span>
           <span style="display:flex;align-items:center;gap:8px;">
             <span style="font-weight:800;color:var(--wood);font-size:13px;text-transform:none;letter-spacing:0;">${weekTotal}h</span>
+            <button onclick="event.stopPropagation(); confirmDeleteWorkerFromSync('${aw.key}','${aw.device.deviceId}','${aw.workerId}',${escapeHtml(JSON.stringify(aw.name))})"
+              style="background:transparent;border:none;color:var(--red);font-size:15px;cursor:pointer;padding:4px 6px;" title="Supprimer cet ouvrier">🗑</button>
             <span class="accordion-arrow">▾</span>
           </span>
         </div>
@@ -15006,6 +15044,62 @@ function renderComptableFichesContent(rows){
 function toggleComptableWorker(key){
   _comptableOpenWorkerKey = (_comptableOpenWorkerKey === key) ? null : key;
   renderComptableFichesContent(_comptableLiveData || []);
+}
+
+/* Supprime un ouvrier de la vue comptable (et de Supabase si possible) */
+async function confirmDeleteWorkerFromSync(workerKey, deviceId, workerId, workerName){
+  if(!confirm(`Supprimer ${workerName} de la liste des fiches synchronisées ?\nCette action est définitive.`)) return;
+
+  // Trouver le device dans les données live
+  const device = (_comptableLiveData||[]).find(d => d.deviceId === deviceId);
+  if(!device){ showToast('Device introuvable'); return; }
+
+  const supaKey = COMPANY_SYNC_KEY + '_' + deviceId;
+
+  if(device.workers.length <= 1){
+    // Ce device n'a que cet ouvrier : supprimer toute la ligne Supabase
+    try{
+      await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(supaKey), {
+        method: 'DELETE', headers:{ 'Prefer':'' }
+      });
+    } catch(e){ /* silencieux */ }
+    // Retirer le device des données live locales
+    _comptableLiveData = (_comptableLiveData||[]).filter(d => d.deviceId !== deviceId);
+  } else {
+    // Ce device a plusieurs workers (cas de Baptiste) :
+    // retirer uniquement CE worker et re-pusher le JSON modifié
+    device.workers = device.workers.filter(w => w.id !== workerId);
+    // Retirer aussi ses pointages de l'attendance
+    if(device.attendance && typeof device.attendance === 'object'){
+      Object.keys(device.attendance).forEach(dateKey => {
+        const day = device.attendance[dateKey];
+        if(day && day.workers && day.workers[workerId]){
+          delete day.workers[workerId];
+        }
+      });
+    }
+    // Re-pusher la ligne nettoyée sur Supabase
+    try{
+      await supaFetch('/rest/v1/rwood_sync', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({
+          user_id: supaKey,
+          updated_at: new Date().toISOString(),
+          data: JSON.stringify({
+            ownerName: device.ownerName,
+            ownerRole: device.ownerRole,
+            workers: device.workers,
+            attendance: device.attendance,
+            sites: device.sites
+          })
+        })
+      });
+    } catch(e){ /* silencieux */ }
+  }
+
+  showToast(workerName + ' supprimé');
+  renderComptableFichesContent(_comptableLiveData);
 }
 
 function _renderComptableWorkerWeek(aw){
@@ -19762,7 +19856,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.4';
+const APP_VERSION = '2.13.6';
 
 const CHANGELOG = [
   {
@@ -24919,14 +25013,33 @@ async function pushPointageToSupabase(){
   const deviceId = getDeviceSyncId();
   const ownerName = (profile.firstName ? (profile.firstName + ' ' + (profile.lastName||'')) : (data.settings.teamName || 'Equipe')).trim();
 
+  const myWorkerId = profile.workerId || null;
+
+  // RÈGLE STRICTE : n'envoyer QUE son propre ouvrier + ses propres pointages.
+  const myWorkers = myWorkerId
+    ? (data.workers||[]).filter(w => w.id === myWorkerId).map(w => ({ id:w.id, name:w.name }))
+    : [];
+
+  // Filtrer l'attendance : garder uniquement les jours où MON ouvrier a pointé
+  const myAttendance = {};
+  if(myWorkerId){
+    Object.entries(data.attendance || {}).forEach(([dateKey, dayData]) => {
+      if(!dayData || !dayData.workers || !dayData.workers[myWorkerId]) return;
+      myAttendance[dateKey] = {
+        ...dayData,
+        workers: { [myWorkerId]: dayData.workers[myWorkerId] }
+      };
+    });
+  }
+
   const payload = {
     user_id: COMPANY_SYNC_KEY + '_' + deviceId,
     updated_at: new Date().toISOString(),
     data: JSON.stringify({
       ownerName: ownerName,
       ownerRole: profile.role || 'chef',
-      workers: (data.workers||[]).map(w => ({ id:w.id, name:w.name })),
-      attendance: data.attendance || {},
+      workers: myWorkers,
+      attendance: myAttendance,
       sites: (data.sites||[]).map(s => ({ id:s.id, name:s.name, address:s.address||'', trajetZone:s.trajetZone||'' }))
     })
   };
@@ -24979,8 +25092,90 @@ async function pullAllPointagesForComptable(){
 
 
 /* ═══════════════════════════════════════════════════════════════════
-   MODE DEVELOPPEUR — cache, code 8 chiffres, gestion des comptes synchronises
+   MODE SPECTATEUR (dev) — bascule de rôle temporaire en mémoire
+   Le vrai rôle de l'utilisateur (data.settings.myProfile.role) n'est
+   JAMAIS modifié. On intercepte les lectures via _devSpectatorRole.
    ═══════════════════════════════════════════════════════════════════ */
+let _devSpectatorRole = null; // null = mode normal, sinon rôle simulé
+let _devSpectatorOriginalGoTo = null;
+
+/* Toutes les fonctions qui lisent le rôle doivent passer par getEffectiveRole()
+   quand elles utilisent data.settings.myProfile. Pour les 42 lectures existantes
+   qui font directement "profile.role", on injecte un getter sur l'objet myProfile
+   au lieu de patcher chaque ligne — propre et non-invasif. */
+function _installSpectatorRoleProxy(){
+  const profile = data.settings.myProfile;
+  if(!profile || profile.__spectatorProxied) return;
+  let _realRole = profile.role;
+  Object.defineProperty(profile, 'role', {
+    get(){ return _devSpectatorRole !== null ? _devSpectatorRole : _realRole; },
+    set(v){ _realRole = v; },
+    configurable:true, enumerable:true
+  });
+  profile.__spectatorProxied = true;
+}
+
+function _uninstallSpectatorRoleProxy(){
+  const profile = data.settings.myProfile;
+  if(!profile || !profile.__spectatorProxied) return;
+  const currentReal = profile.role; // déclenche le getter → retourne _realRole si proxy actif
+  _devSpectatorRole = null; // désactive le proxy en premier
+  // Réinstaller comme valeur simple
+  delete profile.role;
+  profile.role = currentReal;
+  delete profile.__spectatorProxied;
+}
+
+function enterSpectatorMode(){
+  const realRole = data.settings.myProfile && data.settings.myProfile.role;
+  if(!realRole){ showToast('Aucun profil actif'); return; }
+
+  _devSpectatorRole = realRole; // démarre sur le rôle actuel de l'utilisateur
+  _installSpectatorRoleProxy();
+
+  // Pré-sélectionner le rôle actuel dans le select
+  const sel = document.getElementById('devSpectatorRoleSelect');
+  if(sel) sel.value = realRole;
+
+  // Afficher la barre
+  document.getElementById('devSpectatorBar').classList.add('visible');
+
+  closeModal('devPanel');
+  showToast('Mode Spectateur actif — ton vrai rôle est préservé');
+  _refreshAfterRoleSwitch();
+}
+
+function applySpectatorRole(role){
+  if(!_devSpectatorRole && role === (data.settings.myProfile && data.settings.myProfile.role)) return;
+  _devSpectatorRole = role;
+  _refreshAfterRoleSwitch();
+  showToast('Vue : ' + _roleLabel(role));
+}
+
+function exitSpectatorMode(){
+  _uninstallSpectatorRoleProxy();
+  document.getElementById('devSpectatorBar').classList.remove('visible');
+  _refreshAfterRoleSwitch();
+  showToast('Mode Spectateur quitté — rôle réel restauré');
+}
+
+function _roleLabel(role){
+  return ({chef:'Chef d\'équipe', ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron'})[role] || role;
+}
+
+function _refreshAfterRoleSwitch(){
+  // Réappliquer toute la logique qui dépend du rôle
+  applyNavHidden();
+  applyNavOrder();
+  applyComptableNavRestrictions();
+  applyRoleLockUI();
+  // Naviguer vers la vue par défaut du nouveau rôle
+  const role = data.settings.myProfile && data.settings.myProfile.role;
+  if(role === 'comptable') goTo('heures');
+  else goTo('chantiers');
+}
+
+
 const DEV_ACCESS_CODE = '31072021'; // code fourni par le developpeur
 const REVOKED_DEVICES_KEY = 'company_revoked_devices'; // cle Supabase fixe
 
@@ -25027,14 +25222,24 @@ async function refreshDevPanel(){
 
   _devPanelRows = rows;
   list.innerHTML = rows.map(r => `
-    <div class="card" style="margin-bottom:8px;">
-      <div class="card-row" style="align-items:center;">
+    <div class="card" style="margin-bottom:10px;">
+      <div class="card-row" style="align-items:center; margin-bottom:6px;">
         <div>
           <div style="font-weight:700;">${escapeHtml(r.ownerName)}</div>
           <div class="meta">${escapeHtml(r.ownerRole)} · ${(r.workers||[]).length} ouvrier${(r.workers||[]).length>1?'s':''} · maj ${new Date(r.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
         </div>
-        <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;" onclick="confirmDeleteDevAccount('${r.deviceId}','${escapeHtml(r.ownerName)}')">🗑 Supprimer</button>
+        <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;" onclick="confirmDeleteDevAccount('${r.deviceId}','${escapeHtml(r.ownerName)}')">🗑 Device</button>
       </div>
+      ${(r.workers||[]).length > 0 ? `
+        <div style="font-size:11px; color:var(--ink-dim); margin-bottom:5px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Ouvriers sur ce device</div>
+        ${(r.workers||[]).map(w => `
+          <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; background:var(--bg-elev); border-radius:8px; margin-bottom:4px;">
+            <span style="flex:1; font-size:13px;">👷 ${escapeHtml(w.name)}</span>
+            <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;"
+              onclick="confirmDeleteWorkerFromSync('${r.deviceId}::${w.id}','${r.deviceId}','${w.id}',${JSON.stringify(w.name)})">Retirer</button>
+          </div>
+        `).join('')}
+      ` : ''}
     </div>
   `).join('');
 }
@@ -26447,9 +26652,15 @@ async function checkDeviceRevocation(){
       <button class="modal-close" onclick="closeModal('devPanel')">×</button>
     </div>
 
+    <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
+      <div style="font-weight:700; margin-bottom:6px;">👁 Mode Spectateur</div>
+      <div class="hint" style="margin-bottom:10px;">Simule n'importe quel rôle sans modifier ton compte. Ta session réelle reste intacte en arrière-plan — tu reprends exactement là où tu étais en quittant.</div>
+      <button class="btn btn-primary btn-block" onclick="enterSpectatorMode()">Entrer en Mode Spectateur</button>
+    </div>
+
     <div class="card" style="margin-bottom:14px;">
       <div style="font-weight:700; margin-bottom:6px;">🔓 Déverrouiller le rôle</div>
-      <div class="hint" style="margin-bottom:10px;">Débloque le changement de rôle sur CET appareil (le tien, ou celui sur lequel tu as entré ce code). L'utilisateur pourra alors choisir un nouveau rôle une fois — il se reverrouillera automatiquement juste après.</div>
+      <div class="hint" style="margin-bottom:10px;">Débloque le changement de rôle sur CET appareil. L'utilisateur pourra choisir un nouveau rôle une fois — il se reverrouillera automatiquement juste après.</div>
       <button class="btn btn-outline btn-block" onclick="unlockRoleOnThisDevice()">Débloquer le rôle ici</button>
     </div>
 
@@ -26525,5 +26736,18 @@ async function checkDeviceRevocation(){
     <div id="alertInboxList"></div>
   </div>
 </div>
+<!-- Barre flottante Mode Spectateur (dev) -->
+<div id="devSpectatorBar">
+  <span class="dev-label">🛠 SPECTATEUR</span>
+  <select id="devSpectatorRoleSelect" onchange="applySpectatorRole(this.value)">
+    <option value="chef">Chef d'équipe</option>
+    <option value="ouvrier">Ouvrier</option>
+    <option value="conducteur">Conducteur de travaux</option>
+    <option value="comptable">Comptable</option>
+    <option value="patron">Patron</option>
+  </select>
+  <button class="dev-exit" onclick="exitSpectatorMode()">✕ Quitter</button>
+</div>
+
 </body>
 </html>
