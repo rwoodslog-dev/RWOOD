@@ -19868,7 +19868,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.8';
+const APP_VERSION = '2.13.9';
 
 const CHANGELOG = [
   {
@@ -24786,43 +24786,82 @@ function renderTeamNamesList(){
 
 /* ── Sélecteur rapide d'équipe (popup depuis CT dashboard) ──────────── */
 let _teamPickerSiteId = null;
+let _teamPickerCandidates = []; // [{label, phone, teamName}]
 
-function openTeamPicker(siteId){
+async function openTeamPicker(siteId){
   _teamPickerSiteId = siteId;
   const site = data.sites.find(s=>s.id===siteId);
   if(!site) return;
 
-  const teams = getTeamNames();
   const modal = document.getElementById('modal-teamPicker');
   const list  = document.getElementById('teamPickerList');
   const title = document.getElementById('teamPickerTitle');
   if(!modal || !list) return;
-
   if(title) title.textContent = escapeHtml(site.name);
 
-  if(!teams.length){
-    list.innerHTML = '<div style="color:var(--ink-soft);text-align:center;padding:20px 0;">Aucune équipe enregistrée.<br><span style="font-size:12px;">Ajoute des équipes dans Paramètres → Équipe.</span></div>';
-  } else {
-    list.innerHTML = teams.map(t=>`
-      <button onclick="assignTeamToSite('${escapeHtml(t)}')"
-        style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:13px 14px;
-               border-radius:12px;border:1.5px solid ${site.teamName===t?'var(--wood)':'var(--line)'};
-               background:${site.teamName===t?'rgba(232,172,61,0.12)':'var(--bg-elev)'};
-               color:var(--ink);font-size:15px;font-weight:${site.teamName===t?'700':'500'};
-               cursor:pointer;font-family:inherit;margin-bottom:8px;">
-        <span style="font-size:20px;">🏗</span>
-        <span style="flex:1;">${escapeHtml(t)}</span>
-        ${site.teamName===t?'<span style="color:var(--wood);">✓</span>':''}
-      </button>`).join('');
+  list.innerHTML = '<div style="color:var(--ink-soft);text-align:center;padding:16px 0;font-size:13px;">⏳ Chargement des équipes…</div>';
+  if(site.teamName) document.getElementById('teamPickerClear').style.display = 'block';
+  else document.getElementById('teamPickerClear').style.display = 'none';
+  openModal('teamPicker');
+
+  // Charger depuis le registre Supabase (chefs enregistrés)
+  const registryChefs = await fetchChefsForMyCompany();
+  _teamPickerCandidates = registryChefs
+    .filter(u => u.teamName || u.name)
+    .map(u => ({
+      label: u.teamName || ('Équipe de ' + u.name),
+      phone: normalizePhone(u.phone),
+      chefName: u.name
+    }));
+
+  // Fusionner avec les équipes locales (teamNames manuelles)
+  const localTeams = getTeamNames();
+  localTeams.forEach(t => {
+    if(!_teamPickerCandidates.some(c => c.label === t))
+      _teamPickerCandidates.push({ label: t, phone: '', chefName: '' });
+  });
+
+  if(!_teamPickerCandidates.length){
+    list.innerHTML = '<div style="color:var(--ink-soft);text-align:center;padding:20px 0;">Aucun chef d\'équipe enregistré.<br><span style="font-size:12px;">Les chefs apparaîtront ici une fois leur compte créé.</span></div>';
+    return;
   }
 
-  // Bouton Retirer
-  document.getElementById('teamPickerClear').style.display = site.teamName ? 'block' : 'none';
+  list.innerHTML = _teamPickerCandidates.map((c,i)=>`
+    <button onclick="assignTeamToSiteFromPicker(${i})"
+      style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:13px 14px;
+             border-radius:12px;border:1.5px solid ${site.teamName===c.label?'var(--wood)':'var(--line)'};
+             background:${site.teamName===c.label?'rgba(232,172,61,0.12)':'var(--bg-elev)'};
+             color:var(--ink);font-size:15px;font-weight:${site.teamName===c.label?'700':'500'};
+             cursor:pointer;font-family:inherit;margin-bottom:8px;">
+      <span style="font-size:20px;">🏗</span>
+      <span style="flex:1;">
+        ${escapeHtml(c.label)}
+        ${c.chefName && c.label !== c.chefName ? `<br><span style="font-size:11px;color:var(--ink-soft);font-weight:400;">👷 ${escapeHtml(c.chefName)}</span>` : ''}
+      </span>
+      ${site.teamName===c.label?'<span style="color:var(--wood);">✓</span>':''}
+    </button>`).join('');
+}
 
-  openModal('teamPicker');
+function assignTeamToSiteFromPicker(idx){
+  const site = data.sites.find(s=>s.id===_teamPickerSiteId);
+  const candidate = _teamPickerCandidates[idx];
+  if(!site || !candidate) return;
+  site.teamName = candidate.label;
+  // Lier aussi le chef par téléphone pour la synchro chantier si dispo
+  if(candidate.phone && !site.assignedChefs){
+    site.assignedChefs = [{ name: candidate.chefName||candidate.label, phone: candidate.phone }];
+  } else if(candidate.phone && site.assignedChefs){
+    if(!site.assignedChefs.some(c=>c.phone===candidate.phone))
+      site.assignedChefs.push({ name: candidate.chefName||candidate.label, phone: candidate.phone });
+  }
+  saveData();
+  closeModal('teamPicker');
+  renderConducteurDashboard();
+  showToast('🏗 ' + candidate.label + ' assignée à ' + site.name);
 }
 
 function assignTeamToSite(teamName){
+  // Compat ascendante (appelé depuis d'anciens boutons éventuels)
   const site = data.sites.find(s=>s.id===_teamPickerSiteId);
   if(!site) return;
   site.teamName = teamName;
@@ -24843,32 +24882,50 @@ function clearTeamFromSite(){
 }
 
 /* Rendre les chips équipe dans la fiche chantier (pour CT) */
-function renderSiteTeamNameQuickPick(siteId){
+async function renderSiteTeamNameQuickPick(siteId){
   const el = document.getElementById('siteTeamNameQuickPick');
   if(!el) return;
-  const teams = getTeamNames();
   const site = data.sites.find(s=>s.id===siteId);
   if(!site) return;
-  if(!teams.length){
-    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Ajoute des équipes dans Paramètres → Équipe</span>';
+
+  el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">⏳ Chargement…</span>';
+
+  const registryChefs = await fetchChefsForMyCompany();
+  const candidates = registryChefs
+    .filter(u => u.teamName || u.name)
+    .map(u => ({ label: u.teamName || ('Équipe de ' + u.name), phone: normalizePhone(u.phone), chefName: u.name }));
+
+  getTeamNames().forEach(t => {
+    if(!candidates.some(c=>c.label===t)) candidates.push({ label:t, phone:'', chefName:'' });
+  });
+
+  if(!candidates.length){
+    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Aucun chef enregistré pour l\'instant</span>';
     return;
   }
-  el.innerHTML = teams.map(t=>`
-    <button onclick="assignTeamToSiteFromDetail('${siteId}','${escapeHtml(t)}')"
+
+  el.innerHTML = candidates.map((c,i)=>`
+    <button onclick="assignTeamToSiteFromDetailPicker('${siteId}',${i},${JSON.stringify(candidates)})"
       style="padding:6px 12px;border-radius:20px;
-             border:1.5px solid ${site.teamName===t?'var(--wood)':'var(--line)'};
-             background:${site.teamName===t?'var(--wood)':'var(--card)'};
-             color:${site.teamName===t?'#1a0f00':'var(--ink)'};
-             font-size:12px;font-weight:700;cursor:pointer;">${escapeHtml(t)}</button>`).join('');
+             border:1.5px solid ${site.teamName===c.label?'var(--wood)':'var(--line)'};
+             background:${site.teamName===c.label?'var(--wood)':'var(--card)'};
+             color:${site.teamName===c.label?'#1a0f00':'var(--ink)'};
+             font-size:12px;font-weight:700;cursor:pointer;">${escapeHtml(c.label)}</button>`).join('');
 }
 
-function assignTeamToSiteFromDetail(siteId, teamName){
+function assignTeamToSiteFromDetailPicker(siteId, idx, candidates){
   const site = data.sites.find(s=>s.id===siteId);
-  if(!site) return;
-  site.teamName = teamName;
+  const c = Array.isArray(candidates) ? candidates[idx] : null;
+  if(!site || !c) return;
+  site.teamName = c.label;
+  if(c.phone){
+    if(!site.assignedChefs) site.assignedChefs = [];
+    if(!site.assignedChefs.some(x=>x.phone===c.phone))
+      site.assignedChefs.push({ name: c.chefName||c.label, phone: c.phone });
+  }
   saveData();
   renderDetail(siteId);
-  showToast('🏗 ' + teamName);
+  showToast('🏗 ' + c.label);
 }
 
 
