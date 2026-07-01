@@ -14897,27 +14897,11 @@ function renderComptableFichesContent(rows){
     return;
   }
 
-  // Construire la liste dédoublonnée (un seul slot par ouvrier, identifié par nom normalisé)
+  // Construire la liste de tous les ouvriers synchronisés (toutes equipes/appareils confondus)
   const allWorkers = [];
-  const seenNames = new Map(); // normName → index dans allWorkers
-
   rows.forEach(device => {
     (device.workers||[]).forEach(w => {
-      const normName = (w.name||'').trim().toLowerCase().replace(/\s+/g, ' ');
-
-    // Exclure les comptes test par nom ou authId
-    const TEST_IDS = ['.test', '.dupont'];
-    const authId = (device.ownerAuthId||device.deviceId||'').toLowerCase();
-    if(TEST_IDS.some(s => authId.endsWith(s))) return;
-
-      if(seenNames.has(normName)){
-        // Doublon : garder le device le plus récent (déjà trié par updatedAt desc)
-        // → on saute cette entrée car la première est déjà la plus récente
-        return;
-      }
-      const key = _workerKey(device.deviceId, w.id);
-      seenNames.set(normName, key);
-      allWorkers.push({ key, workerId: w.id, name: w.name, device });
+      allWorkers.push({ key: _workerKey(device.deviceId, w.id), workerId: w.id, name: w.name, device });
     });
   });
   allWorkers.sort((a,b)=> a.name.localeCompare(b.name, 'fr'));
@@ -19796,7 +19780,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.16.3';
+const APP_VERSION = '2.16.4';
 
 const CHANGELOG = [
   {
@@ -22397,6 +22381,7 @@ function _showQRModal(label, jsonStr){
   img.onerror = () => { container.innerHTML = '<div style="color:var(--red);font-size:12px;padding:10px;">Erreur réseau</div>'; };
   img.src = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=10&ecc=M&data=${encodeURIComponent(jsonStr)}`;
 }
+
 
 
 /* ════════════════════════════════════════════════════════════════════
@@ -25517,7 +25502,6 @@ async function pushPointageToSupabase(){
     data: JSON.stringify({
       ownerName: ownerName,
       ownerRole: profile.role || 'chef',
-      ownerAuthId: auth.authId || '',
       workers: myWorkers,
       attendance: myAttendance,
       sites: (data.sites||[]).map(s => ({ id:s.id, name:s.name, address:s.address||'', trajetZone:s.trajetZone||'' }))
@@ -25549,47 +25533,21 @@ async function pullAllPointagesForComptable(){
     const rows = await res.json();
     if(!rows) return [];
 
-    // IDs de comptes test à exclure (suffixes)
-    const TEST_SUFFIXES = ['.test', '.dupont'];
-
-    const parsed = rows.map(row => {
+    return rows.map(row => {
       const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
       return {
+        // Retirer le prefixe COMPANY_SYNC_KEY pour obtenir le deviceId brut
+        // (meme format que getDeviceSyncId() — necessaire pour que la suppression
+        // et la revocation fonctionnent correctement, sinon double-prefixage)
         deviceId: row.user_id.replace(COMPANY_SYNC_KEY + '_', ''),
         updatedAt: row.updated_at,
         ownerName: d.ownerName || 'Inconnu',
         ownerRole: d.ownerRole || 'chef',
-        ownerAuthId: d.ownerAuthId || '',
         workers: d.workers || [],
         attendance: d.attendance || {},
         sites: d.sites || []
       };
-    })
-    // 1. Exclure les comptes test
-    .filter(device => {
-      const authId = (device.ownerAuthId || device.deviceId || '').toLowerCase();
-      return !TEST_SUFFIXES.some(suffix => authId.endsWith(suffix));
-    })
-    // Trier du plus récent au plus ancien pour que le dédoublon garde le dernier push
-    .sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-
-    // 2. Dédoublonner : une seule entrée par ouvrier (identifié par authId ou nom normalisé)
-    // On garde le push le plus récent pour chaque utilisateur unique
-    const seenWorkers = new Map(); // clé = authId || normalisedName → device le plus récent
-
-    parsed.forEach(device => {
-      // Clé d'identification : authId si dispo, sinon nom normalisé (lowercase, sans espaces extra)
-      const authId = (device.ownerAuthId || '').trim();
-      const normName = (device.ownerName || '').trim().toLowerCase().replace(/\s+/g, ' ');
-      const dedupKey = authId || normName;
-      if(!dedupKey) return;
-      if(!seenWorkers.has(dedupKey)){
-        seenWorkers.set(dedupKey, device);
-      }
-      // sinon : doublon → on ignore (le plus récent est déjà en place grâce au sort)
-    });
-
-    return [...seenWorkers.values()];
+    }).sort((a,b)=> new Date(b.updatedAt) - new Date(a.updatedAt));
   } catch(e){
     console.warn('[Sync pointages] pull echoue', e);
     return null;
@@ -26145,11 +26103,10 @@ async function pushMyUserRegistration(){
   } catch(e){ /* silencieux */ }
 }
 
-/* Récupère tous les chefs d'équipe du registre — toujours frais depuis Supabase */
+/* Récupère tous les chefs d'équipe du registre — pas de filtre par code entreprise
+   car RWOOD est mono-entreprise (le Code Entreprise est réservé à RWOOD Log SaaS) */
 async function fetchChefsForMyCompany(){
-  window._usersRegistryCache = null; // invalider le cache à chaque appel
   const users = await _fetchUsersRegistry();
-  window._usersRegistryCache = users; // mettre à jour le cache après fetch
   return users.filter(u => u.role === 'chef');
 }
 
@@ -26630,23 +26587,30 @@ async function openMultiChefSelector(siteId){
   document.getElementById('multiChefLoading').style.display = '';
   document.getElementById('multiChefList').innerHTML = '';
 
-  // Pull frais depuis Supabase SANS cache (invalider pour détecter les nouveaux comptes)
-  window._usersRegistryCache = null;
+  // Auto-refresh du registre à chaque ouverture pour détecter les nouveaux comptes
   const registryChefs = await fetchChefsForMyCompany();
 
-  // UNIQUEMENT les chefs avec un compte actif — pas de teamNames locaux (sources de fantômes)
-  const candidates = registryChefs
-    .filter(u => u.authId && u.name)
-    .map(u => ({
-      name: u.name,
-      authId: u.authId,
+  // Fusionner registre + contacts locaux + teamNames manuels
+  const candidates = [];
+  registryChefs.filter(u => u.name || u.authId).forEach(u => {
+    candidates.push({
+      name: u.teamName || u.name || u.authId,
+      subLabel: u.teamName ? u.name : '',
       phone: normalizePhone(u.phone),
-      teamName: u.teamName || '',
+      authId: u.authId || '',
       fromRegistry: true
-    }))
-    .sort((a,b) => a.name.localeCompare(b.name, 'fr'));
+    });
+  });
+  (data.contacts||[]).filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone)).forEach(c => {
+    if(!candidates.some(x => x.phone === normalizePhone(c.phone)))
+      candidates.push({ name: c.name, subLabel: '', phone: normalizePhone(c.phone), authId: '', fromRegistry: false });
+  });
+  getTeamNames().forEach(t => {
+    if(!candidates.some(x => x.name === t || x.subLabel === t))
+      candidates.push({ name: t, subLabel: '(sans compte)', phone: '', authId: '', fromRegistry: false });
+  });
 
-  _multiChefCandidates = candidates;
+  _multiChefCandidates = candidates.sort((a,b) => a.name.localeCompare(b.name, 'fr'));
 
   const assigned = site.assignedChefs || [];
 
@@ -26654,20 +26618,16 @@ async function openMultiChefSelector(siteId){
 
   if(!_multiChefCandidates.length){
     document.getElementById('multiChefList').innerHTML =
-      '<div class="hint" style="text-align:center;padding:12px;">Aucun chef d\'équipe avec un compte actif.<br>Les nouveaux comptes apparaissent automatiquement dès leur création.</div>';
+      '<div class="hint" style="text-align:center;padding:12px;">Aucun chef trouvé.<br>Ajoutez des équipes dans Paramètres ou attendez que les chefs créent leur compte.</div>';
     return;
   }
 
   document.getElementById('multiChefList').innerHTML = _multiChefCandidates.map((c, i) => {
     const isChecked = assigned.some(a =>
+      (c.phone && a.phone === c.phone) ||
       (c.authId && a.authId === c.authId) ||
-      (c.phone && a.phone === c.phone)
+      a.name === c.name
     );
-    // Label format : "Prénom Nom (authId)" pour traçabilité
-    const displayLabel = c.teamName
-      ? `${escapeHtml(c.teamName)} — ${escapeHtml(c.name)}`
-      : escapeHtml(c.name);
-    const idLabel = c.authId ? `<span style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(c.authId)}</span>` : '';
     return `
       <label style="display:flex; align-items:center; gap:12px; padding:10px 12px;
         background:var(--card); border:1.5px solid ${isChecked ? 'var(--wood)' : 'var(--line)'};
@@ -26676,11 +26636,9 @@ async function openMultiChefSelector(siteId){
           style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"
           onchange="document.getElementById('multiChefRow_${i}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
         <div style="flex:1; min-width:0;">
-          <div style="font-weight:700;font-size:14px;">${displayLabel}</div>
-          <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-            ${idLabel}
-            <span style="font-size:10px;color:var(--green);font-weight:600;">✓ Compte actif</span>
-          </div>
+          <div style="font-weight:700;font-size:14px;">${escapeHtml(c.name)}</div>
+          ${c.subLabel ? `<div style="font-size:11px;color:var(--ink-soft);">${escapeHtml(c.subLabel)}</div>` : ''}
+          ${c.fromRegistry ? '<div style="font-size:10px;color:var(--green);font-weight:600;">✓ Compte actif</div>' : ''}
         </div>
       </label>`;
   }).join('');
