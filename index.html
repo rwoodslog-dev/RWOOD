@@ -15102,15 +15102,17 @@ function _refreshOpenComptableWorker(key, alsoUpdateHeaderTotal){
 }
 
 /* Impression PDF de la semaine affichee, toute equipe confondue */
-/* ── Sélecteur d'ouvriers pour le PDF mensuel comptable ── */
-let _pdfWorkerCandidates = []; // [{key, name}]
+/* ── Sélecteur PDF mensuel comptable (2 étapes : ouvriers → période) ── */
+let _pdfWorkerCandidates = [];
+let _pdfMonthOffset = 0; // 0 = mois courant, -1 = mois précédent...
+const _pdfMonthNames = ['Janvier','Février','Mars','Avril','Mai','Juin',
+                        'Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 
 function openPDFWorkerSelector(){
   if(!_comptableLiveData || !_comptableLiveData.length){
     showToast('Aucune donnée disponible — actualisez d\'abord');
     return;
   }
-
   _pdfWorkerCandidates = [];
   (_comptableLiveData||[]).forEach(device=>{
     (device.workers||[]).forEach(w=>{
@@ -15118,62 +15120,168 @@ function openPDFWorkerSelector(){
     });
   });
   _pdfWorkerCandidates.sort((a,b)=> a.name.localeCompare(b.name,'fr'));
+  if(!_pdfWorkerCandidates.length){ showToast('Aucun ouvrier synchronisé'); return; }
 
-  if(!_pdfWorkerCandidates.length){
-    showToast('Aucun ouvrier synchronisé');
-    return;
-  }
+  _pdfMonthOffset = 0;
+  renderPDFWorkerList();
+  showPDFStep(1);
+  openModal('pdfWorkerSelector');
+}
 
+function showPDFStep(n){
+  document.getElementById('pdfStep1').style.display = n===1 ? '' : 'none';
+  document.getElementById('pdfStep2').style.display = n===2 ? '' : 'none';
+  document.getElementById('pdfSelectorTitle').textContent = n===1
+    ? '🖨 PDF — Étape 1/2 : Ouvriers'
+    : '🖨 PDF — Étape 2/2 : Période';
+}
+
+function renderPDFWorkerList(){
   const list = document.getElementById('pdfWorkerSelectorList');
   list.innerHTML = _pdfWorkerCandidates.map((w,i) => `
     <label style="display:flex; align-items:center; gap:12px; padding:10px 12px;
       background:var(--card); border:1px solid var(--line); border-radius:10px; cursor:pointer;">
-      <input type="checkbox" id="pdfCheck_${i}" checked style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;">
+      <input type="checkbox" id="pdfCheck_${i}" checked
+        style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;">
       <span style="font-weight:600;">${escapeHtml(w.name)}</span>
     </label>
   `).join('');
-
-  openModal('pdfWorkerSelector');
 }
 
 function toggleAllPDFWorkers(state){
   _pdfWorkerCandidates.forEach((_,i)=>{
-    const cb = document.getElementById('pdfCheck_' + i);
+    const cb = document.getElementById('pdfCheck_'+i);
     if(cb) cb.checked = state;
   });
 }
 
-async function generatePDFFromSelection(){
+function goPDFStep2(){
   const selected = _pdfWorkerCandidates.filter((_,i)=>{
-    const cb = document.getElementById('pdfCheck_' + i);
+    const cb = document.getElementById('pdfCheck_'+i);
     return cb && cb.checked;
   });
+  if(!selected.length){ showToast('Sélectionnez au moins un ouvrier'); return; }
+  showPDFStep(2);
+  renderPDFMonthLabel();
+  renderPDFWeeksList();
+}
 
-  if(!selected.length){
-    showToast('Sélectionnez au moins un ouvrier');
-    return;
+function shiftPDFMonth(dir){
+  _pdfMonthOffset += dir;
+  // Bloquer dans le futur
+  if(_pdfMonthOffset > 0) _pdfMonthOffset = 0;
+  renderPDFMonthLabel();
+  renderPDFWeeksList();
+  // Réinitialiser les dates manuelles
+  document.getElementById('pdfDateFrom').value = '';
+  document.getElementById('pdfDateTo').value = '';
+}
+
+function _getPDFMonthTarget(){
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth() + _pdfMonthOffset, 1);
+}
+
+function renderPDFMonthLabel(){
+  const t = _getPDFMonthTarget();
+  document.getElementById('pdfMonthLabel').textContent =
+    _pdfMonthNames[t.getMonth()] + ' ' + t.getFullYear();
+}
+
+/* Calcule les semaines ISO du mois sélectionné */
+function _getPDFMonthWeeks(){
+  const t = _getPDFMonthTarget();
+  const year = t.getFullYear(), month = t.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const lastDay  = new Date(year, month+1, 0);
+
+  const mondaysSet = new Set();
+  let cur = new Date(firstDay);
+  while(cur <= lastDay){
+    const mon = getMondayOfWeek(cur, 0);
+    mondaysSet.add(mon.toISOString().slice(0,10));
+    cur.setDate(cur.getDate()+7);
   }
+  mondaysSet.add(getMondayOfWeek(lastDay,0).toISOString().slice(0,10));
+
+  return [...mondaysSet].sort().map(s => {
+    const mon = new Date(s+'T00:00:00');
+    const sun = new Date(mon); sun.setDate(sun.getDate()+6);
+    const wn  = getISOWeekNumber(mon);
+    const fmt = d => String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0');
+    return { monday:mon, sunday:sun, weekNum:wn,
+             label:`S${wn} — ${fmt(mon)} au ${fmt(sun)}`,
+             isoFrom: mon.toISOString().slice(0,10),
+             isoTo:   sun.toISOString().slice(0,10) };
+  });
+}
+
+function renderPDFWeeksList(){
+  const weeks = _getPDFMonthWeeks();
+  const list  = document.getElementById('pdfWeeksList');
+  list.innerHTML = weeks.map((w,i) => `
+    <label style="display:flex; align-items:center; gap:12px; padding:9px 12px;
+      background:var(--card); border:1px solid var(--line); border-radius:10px; cursor:pointer;">
+      <input type="checkbox" id="pdfWeekCheck_${i}" checked
+        style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;">
+      <span style="font-size:13px; font-weight:600;">${escapeHtml(w.label)}</span>
+    </label>
+  `).join('');
+}
+
+function toggleAllPDFWeeks(state){
+  document.querySelectorAll('[id^="pdfWeekCheck_"]').forEach(cb => cb.checked = state);
+}
+
+/* Quand l'utilisateur saisit des dates manuelles : on coche les semaines correspondantes */
+function syncPDFWeeksFromDates(){
+  const from = document.getElementById('pdfDateFrom').value;
+  const to   = document.getElementById('pdfDateTo').value;
+  if(!from && !to) return;
+  const weeks = _getPDFMonthWeeks();
+  weeks.forEach((w,i)=>{
+    const cb = document.getElementById('pdfWeekCheck_'+i);
+    if(!cb) return;
+    // Cocher si la semaine chevauche la plage saisie
+    const inRange = (!from || w.isoTo >= from) && (!to || w.isoFrom <= to);
+    cb.checked = inRange;
+  });
+}
+
+async function generatePDFFromSelection(){
+  // Ouvriers sélectionnés
+  const selectedWorkers = _pdfWorkerCandidates.filter((_,i)=>{
+    const cb = document.getElementById('pdfCheck_'+i);
+    return cb && cb.checked;
+  });
+  if(!selectedWorkers.length){ showToast('Aucun ouvrier sélectionné'); return; }
+
+  // Semaines sélectionnées
+  const allWeeks = _getPDFMonthWeeks();
+  const selectedWeeks = allWeeks.filter((_,i)=>{
+    const cb = document.getElementById('pdfWeekCheck_'+i);
+    return cb && cb.checked;
+  });
+  if(!selectedWeeks.length){ showToast('Sélectionnez au moins une semaine'); return; }
+
+  // Plage effective = du premier lundi au dernier dimanche des semaines cochées
+  const dateFrom = selectedWeeks[0].monday;
+  const dateTo   = selectedWeeks[selectedWeeks.length-1].sunday;
 
   closeModal('pdfWorkerSelector');
-
-  // Générer avec les clés sélectionnées : réutilise printComptableMonthPDF
-  // en passant null pour "tous" ou en filtrant manuellement
-  const origData = _comptableLiveData;
-  const selectedKeys = new Set(selected.map(s => s.key));
-
-  // Filtrage temporaire : on masque les workers non sélectionnés le temps du PDF
-  const filtered = origData.map(device => ({
+  const selectedKeys = new Set(selectedWorkers.map(s=>s.key));
+  const filteredData = (_comptableLiveData||[]).map(device=>({
     ...device,
-    workers: (device.workers||[]).filter(w => selectedKeys.has(_workerKey(device.deviceId, w.id)))
+    workers:(device.workers||[]).filter(w=>selectedKeys.has(_workerKey(device.deviceId,w.id)))
   }));
 
   const _backup = _comptableLiveData;
-  _comptableLiveData = filtered;
-  await printComptableMonthPDF(null); // null = tous les ouvriers du dataset courant
+  _comptableLiveData = filteredData;
+  await printComptableMonthPDF(null, dateFrom, dateTo, selectedWeeks);
   _comptableLiveData = _backup;
 }
 
-async function printComptableMonthPDF(workerKey){
+async function printComptableMonthPDF(workerKey, dateFrom, dateTo, selectedWeeks){
   // Résoudre l'ouvrier cible (ou null = tous les ouvriers du mois)
   const allWorkers = [];
   (_comptableLiveData||[]).forEach(device=>{
@@ -15189,6 +15297,32 @@ async function printComptableMonthPDF(workerKey){
 
   if(!targets.length){ showToast('Aucun ouvrier à imprimer'); return; }
 
+  // Plage effective
+  const effectiveDateFrom = dateFrom || _getPDFMonthTarget();
+  const effectiveDateTo   = dateTo   || new Date(_getPDFMonthTarget().getFullYear(), _getPDFMonthTarget().getMonth()+1, 0);
+
+  // Semaines à inclure (lundis triés)
+  let mondays;
+  if(selectedWeeks && selectedWeeks.length){
+    mondays = selectedWeeks.map(w => w.monday);
+  } else {
+    // Recalculer toutes les semaines de la plage
+    const mondaysSet = new Set();
+    let cur = new Date(effectiveDateFrom);
+    while(cur <= effectiveDateTo){
+      const mon = getMondayOfWeek(cur,0);
+      mondaysSet.add(mon.toISOString().slice(0,10));
+      cur.setDate(cur.getDate()+7);
+    }
+    mondaysSet.add(getMondayOfWeek(effectiveDateTo,0).toISOString().slice(0,10));
+    mondays = [...mondaysSet].sort().map(s => new Date(s+'T00:00:00'));
+  }
+
+  // Label de période pour le nom de fichier et l'en-tête
+  const fmtDate = d => String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+  const periodLabel = fmtDate(effectiveDateFrom) + ' — ' + fmtDate(effectiveDateTo);
+  const periodSlug = effectiveDateFrom.toISOString().slice(0,7);
+
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -15202,141 +15336,108 @@ async function printComptableMonthPDF(workerKey){
     const aw = targets[wi];
     if(wi > 0) doc.addPage();
 
-    const offset = _getWorkerMonthOffset(aw.key);
-    const { monthLabel, monthTotal, weeks } = _computeWorkerMonthData(aw, offset);
+    // Calculer le total sur la plage sélectionnée uniquement
+    let periodTotal = 0;
+    mondays.forEach(monday => {
+      for(let i=0;i<7;i++){
+        const d = new Date(monday); d.setDate(d.getDate()+i);
+        if(d < effectiveDateFrom || d > effectiveDateTo) continue;
+        const ed = aw.device.attendance[dateKeyOf(d)];
+        const entry = ed && ed.workers && ed.workers[aw.workerId];
+        if(entry) periodTotal += parseFloat(entry.hours||0)||0;
+      }
+    });
 
-    // ── EN-TÊTE ──
     let y = margin;
     const teamName = data.settings.teamName || '';
     doc.setFont('helvetica','bold'); doc.setFontSize(14);
-    doc.text('Fiche mensuelle — ' + aw.name, margin, y + 6); y += 10;
+    doc.text('Fiche d\'heures — ' + aw.name, margin, y+6); y += 10;
     doc.setFont('helvetica','normal'); doc.setFontSize(10);
-    if(teamName) { doc.text('Équipe : ' + teamName, margin, y); y += 5; }
-    doc.text(monthLabel, margin, y);
+    if(teamName){ doc.text('Équipe : ' + teamName, margin, y); y += 5; }
+    doc.text('Période : ' + periodLabel, margin, y);
     doc.setFont('helvetica','bold');
-    doc.text('Total : ' + monthTotal + 'h', pageW - margin, y, { align:'right' });
+    doc.text('Total : ' + periodTotal + 'h', pageW-margin, y, {align:'right'});
     doc.setFont('helvetica','normal'); y += 8;
     doc.setDrawColor(200,190,175); doc.line(margin, y, pageW-margin, y); y += 5;
 
-    // ── TABLEAUX SEMAINE (une par semaine du mois) ──
-    // On recalcule chaque semaine individuellement pour avoir le détail jour/chantier/tâche
-    const base = new Date();
-    const target = new Date(base.getFullYear(), base.getMonth() + offset, 1);
-    const monthYear = target.getFullYear();
-    const monthIdx  = target.getMonth();
-    const firstDay  = new Date(monthYear, monthIdx, 1);
-    const lastDay   = new Date(monthYear, monthIdx+1, 0);
-
-    // Calculer les lundis des semaines ISO qui touchent le mois
-    const mondaysSet = new Set();
-    let cur = new Date(firstDay);
-    while(cur <= lastDay){
-      const mon = getMondayOfWeek(cur, 0);
-      mondaysSet.add(mon.toISOString().slice(0,10));
-      cur.setDate(cur.getDate() + 7);
-    }
-    // Ajouter le lundi de la dernière semaine si dernier jour pas encore inclus
-    const monLastDay = getMondayOfWeek(lastDay, 0);
-    mondaysSet.add(monLastDay.toISOString().slice(0,10));
-
-    const mondays = [...mondaysSet].sort().map(s => new Date(s + 'T00:00:00'));
-
-    // Hauteur en-tête tableau + lignes
+    // Tableaux par semaine sélectionnée
     const rowH = 7, hdrH = 7;
+    const cols = [margin, margin+22, margin+22+60, margin+22+60+25, colW-30+margin];
+    const cws  = [22, 60, 25, colW-22-60-25-30, 30];
 
     mondays.forEach(monday => {
       const weekNum = getISOWeekNumber(monday);
       const days = [];
       for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(d.getDate()+i); days.push(d); }
 
-      // Ne garder que les jours du mois qui ont des heures
       const rows = days.map((d,i)=>{
-        if(d.getMonth() !== monthIdx) return null; // hors mois
+        if(d < effectiveDateFrom || d > effectiveDateTo) return null;
         const ed = aw.device.attendance[dateKeyOf(d)];
         const entry = ed && ed.workers && ed.workers[aw.workerId];
-        const h = entry ? parseFloat(entry.hours||0) : 0;
+        const h = entry ? parseFloat(entry.hours||0)||0 : 0;
         const site = (ed && ed.siteId) ? (aw.device.sites||[]).find(s=>s.id===ed.siteId) : null;
         return { d, label:dayLabels[i], h, task:entry?(entry.task||''):'', siteName:site?site.name:'' };
-      }).filter(r => r !== null);
+      }).filter(r=>r!==null);
 
-      const weekTotal = rows.reduce((s,r)=>s+r.h, 0);
-      if(weekTotal === 0) return; // semaine sans heures, on saute
+      const weekTotal = rows.reduce((s,r)=>s+r.h,0);
+      if(weekTotal===0) return;
 
-      // Vérifier si assez de place, sinon nouvelle page
       const neededH = hdrH + rows.length * rowH + 8;
-      if(y + neededH > pageH - 30){ doc.addPage(); y = margin; }
+      if(y + neededH > pageH-30){ doc.addPage(); y = margin; }
 
-      // En-tête semaine
       doc.setFont('helvetica','bold'); doc.setFontSize(9);
       doc.setFillColor(230,224,211);
-      const cols = [margin, margin+22, margin+22+60, margin+22+60+25, colW-30+margin];
-      const cws  = [22, 60, 25, colW-22-60-25-30, 30];
-      // Header row
       ['Jour','Chantier','Zone','Tâche','Heures'].forEach((h,i)=>{
-        doc.rect(cols[i], y, cws[i], hdrH, 'FD');
+        doc.rect(cols[i],y,cws[i],hdrH,'FD');
         doc.text(h, cols[i]+2, y+hdrH-1.5);
       });
       y += hdrH;
 
-      // Lignes jours
       doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
       rows.forEach(r=>{
-        const vals = [
-          _fmt(r.d)+' '+r.label,
-          r.siteName, '', r.task,
-          r.h > 0 ? r.h+'h' : '—'
-        ];
+        const vals = [_fmt(r.d)+' '+r.label, r.siteName, '', r.task, r.h>0?r.h+'h':'—'];
         vals.forEach((v,i)=>{
-          doc.rect(cols[i], y, cws[i], rowH);
+          doc.rect(cols[i],y,cws[i],rowH);
           doc.text(String(v).substring(0,28), cols[i]+2, y+rowH-1.5);
         });
         y += rowH;
       });
 
-      // Ligne total semaine
       doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
       doc.setFillColor(245,240,232);
-      doc.rect(margin, y, colW, rowH, 'FD');
-      doc.text('Semaine ' + weekNum + '  —  Total', margin+2, y+rowH-1.5);
-      doc.text(weekTotal + 'h', pageW-margin-2, y+rowH-1.5, { align:'right' });
+      doc.rect(margin,y,colW,rowH,'FD');
+      doc.text('Semaine '+weekNum+' — Total', margin+2, y+rowH-1.5);
+      doc.text(weekTotal+'h', pageW-margin-2, y+rowH-1.5, {align:'right'});
       doc.setFont('helvetica','normal');
-      y += rowH + 5;
+      y += rowH+5;
     });
 
-    // ── SIGNATURE ──
-    const signatureY = Math.max(y + 10, pageH - 45);
+    // Signature
+    const signatureY = Math.max(y+10, pageH-45);
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Signature de l\'ouvrier :', margin, signatureY);
-
-    // Chercher la signature de cet ouvrier dans les workers locaux
-    const localWorker = (data.workers||[]).find(w => w.id === aw.workerId || w.name === aw.name);
+    const localWorker = (data.workers||[]).find(w=>w.id===aw.workerId||w.name===aw.name);
     const sigDataUrl = localWorker && localWorker.signature ? localWorker.signature : null;
-
     if(sigDataUrl && sigDataUrl.startsWith('data:image')){
-      try{
-        doc.addImage(sigDataUrl, 'PNG', pageW-margin-55, signatureY-6, 55, 22);
-      } catch(e){ /* image corrompue : on laisse le cadre vide */ }
+      try{ doc.addImage(sigDataUrl,'PNG',pageW-margin-55,signatureY-6,55,22); }catch(e){}
     }
-    // Cadre signature (toujours visible, vide si pas de sig)
     doc.setDrawColor(180,170,155);
     doc.rect(pageW-margin-55, signatureY-8, 55, 24);
     doc.setFontSize(7.5); doc.setTextColor(160,150,140);
     doc.text(aw.name, pageW-margin-55+2, signatureY-8+26);
     doc.setTextColor(0,0,0);
     doc.setFontSize(9);
-    doc.text('Mérignac, le ____/____/________', margin, signatureY + 16);
+    doc.text('Mérignac, le ____/____/________', margin, signatureY+16);
   }
 
-  const firstAw = targets[0];
-  const offset0 = _getWorkerMonthOffset(firstAw.key);
-  const { monthLabel:ml } = _computeWorkerMonthData(firstAw, offset0);
-  const label = targets.length === 1
-    ? firstAw.name.replace(/[^a-z0-9]+/gi,'-')
-    : 'tous-ouvriers';
-  const fname = 'fiches-heures-' + label + '-' + ml.replace(/\s+/g,'-') + '.pdf';
+  const label = targets.length===1
+    ? targets[0].name.replace(/[^a-z0-9]+/gi,'-')
+    : 'equipe';
+  const fname = 'fiches-heures-'+label+'-'+periodSlug+'.pdf';
   const blob = doc.output('blob');
   await saveBlobToDevice(blob, fname, 'application/pdf', ['.pdf']);
 }
+
 
 async function printComptableWeekPDF(){
   if(!_comptableLiveData || !_comptableLiveData.length){ showToast('Aucune donnée à imprimer'); return; }
@@ -19629,7 +19730,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.2';
+const APP_VERSION = '2.13.3';
 
 const CHANGELOG = [
   {
@@ -26249,20 +26350,59 @@ async function checkDeviceRevocation(){
 
 <!-- MODAL : Sélection ouvriers pour PDF fiches d'heures -->
 <div class="modal-overlay" id="modal-pdfWorkerSelector">
-  <div class="modal">
+  <div class="modal" style="max-height:90vh;">
     <div class="modal-header">
-      <h2>🖨 Générer PDF fiches du mois</h2>
+      <h2 id="pdfSelectorTitle">🖨 PDF — Étape 1/2</h2>
       <button class="modal-close" onclick="closeModal('pdfWorkerSelector')">×</button>
     </div>
-    <div class="hint" style="margin-bottom:12px;">Sélectionnez les ouvriers à inclure dans le PDF mensuel.</div>
-    <div style="display:flex; gap:8px; margin-bottom:12px;">
-      <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(true)">✅ Tous</button>
-      <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(false)">☐ Aucun</button>
+
+    <!-- ÉTAPE 1 : Ouvriers -->
+    <div id="pdfStep1">
+      <div class="hint" style="margin-bottom:12px;">Sélectionnez les ouvriers à inclure dans le PDF.</div>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(true)">✅ Tous</button>
+        <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(false)">☐ Aucun</button>
+      </div>
+      <div id="pdfWorkerSelectorList" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
+      <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="goPDFStep2()">
+        Suivant → Choisir la période
+      </button>
     </div>
-    <div id="pdfWorkerSelectorList" style="max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
-    <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="generatePDFFromSelection()">
-      Générer le PDF
-    </button>
+
+    <!-- ÉTAPE 2 : Période -->
+    <div id="pdfStep2" style="display:none;">
+      <button class="btn btn-outline btn-block" style="margin-bottom:12px;" onclick="showPDFStep(1)">← Retour aux ouvriers</button>
+      <div class="hint" style="margin-bottom:10px;">Choisissez la période à inclure dans le PDF.</div>
+
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+        <button class="install-btn" onclick="shiftPDFMonth(-1)">◀</button>
+        <div style="flex:1; text-align:center; font-weight:700; font-size:14px;" id="pdfMonthLabel"></div>
+        <button class="install-btn" onclick="shiftPDFMonth(1)">▶</button>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px; font-weight:600;">Plage de dates précise (optionnel)</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div class="field" style="flex:1; margin-bottom:0;"><label style="font-size:11px;">Du</label>
+            <input type="date" id="pdfDateFrom" style="width:100%;" onchange="syncPDFWeeksFromDates()">
+          </div>
+          <div class="field" style="flex:1; margin-bottom:0;"><label style="font-size:11px;">Au</label>
+            <input type="date" id="pdfDateTo" style="width:100%;" onchange="syncPDFWeeksFromDates()">
+          </div>
+        </div>
+      </div>
+
+      <div class="hint" style="margin-bottom:8px;">Semaines du mois (tap pour cocher/décocher) :</div>
+      <div style="display:flex; gap:8px; margin-bottom:8px;">
+        <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWeeks(true)">✅ Toutes</button>
+        <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWeeks(false)">☐ Aucune</button>
+      </div>
+      <div id="pdfWeeksList" style="max-height:24vh; overflow-y:auto; display:flex; flex-direction:column; gap:5px;"></div>
+
+      <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="generatePDFFromSelection()">
+        🖨 Générer le PDF
+      </button>
+    </div>
   </div>
 </div>
 
