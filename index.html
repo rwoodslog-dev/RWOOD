@@ -3419,8 +3419,16 @@
       <div id="stockList"></div>
     </section>
 
-    <!-- VUE PARAMÈTRES -->
-    <section class="view" id="view-parametres">
+    <!-- VUE PARAMÈTRES -->\n    <section class="view" id="view-parametres">
+
+      <!-- Bannière compte actif -->
+      <div id="activeAccountBanner" style="margin-bottom:14px; padding:10px 14px; background:var(--card); border-radius:12px; border-left:3px solid var(--wood); display:flex; align-items:center; gap:10px;">
+        <span style="font-size:18px;">👤</span>
+        <div>
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--ink-soft); font-weight:700;">Compte actif</div>
+          <div id="activeAccountId" style="font-size:15px; font-weight:800; color:var(--wood); font-family:monospace; letter-spacing:0.5px;">—</div>
+        </div>
+      </div>
 
       <!-- ACCORDÉON : MODE -->
       <!-- ─── Historique Dépôt (conducteur/chef only) ─── -->
@@ -3445,7 +3453,7 @@
         </div>
         <div class="accordion-body">
           <div class="card">
-            <div class="hint">En tant qu'ouvrier, tu ne vois que ta propre fiche d'heures. En tant que chef d'équipe, ta fiche apparaît en premier et tu peux gérer/ajouter celles de ton équipe. En tant que comptable, tu accèdes aux fiches reçues de toute l'équipe. En tant que conducteur de travaux, tu prépares les chantiers en amont (infos, stock, plans) avant de les partager à l'équipe.</div>
+            <div class="hint">En tant qu'ouvrier, tu ne vois que ta propre fiche d'heures. En tant que chef d'équipe, ta fiche apparaît en premier et tu peux gérer/ajouter celles de ton équipe. En tant que comptable, tu accèdes aux fiches reçues de toute l'équipe. En tant que conducteur de travaux, tu prépares les chantiers en amont.</div>
             <div class="field" style="margin-top:10px; margin-bottom:0;">
               <div class="chip-row" id="myProfileRoleChips">
                 <div class="chip" data-role="chef" onclick="setMyProfileRole(this,'chef')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 16a8 8 0 0 1 16 0z"/><path d="M2.5 16h19"/><path d="M3 19h18"/><path d="M12 8.5V6"/></svg> Chef d'équipe</div>
@@ -3455,7 +3463,16 @@
                 <div class="chip" data-role="patron" onclick="setMyProfileRole(this,'patron')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M3 8l4 3 5-6 5 6 4-3-2 11H5z"/></svg> Patron</div>
               </div>
             </div>
-            <div class="hint" id="myProfileRoleLockHint" style="display:none; margin-top:8px; color:var(--wood);">🔒 Rôle verrouillé après le premier choix — seul le mode développeur peut le débloquer.</div>
+            <!-- Bandeau verrouillage visible quand rôle défini -->
+            <div id="myProfileRoleLockHint" style="display:none; margin-top:12px; padding:10px 12px; background:rgba(232,172,61,0.12); border:1.5px solid var(--wood); border-radius:10px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:18px;">🔒</span>
+                <div>
+                  <div style="font-size:13px; font-weight:700; color:var(--wood);">Mode verrouillé</div>
+                  <div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">Ce rôle est définitif. Seul le développeur peut le modifier (logo → code secret).</div>
+                </div>
+              </div>
+            </div>
             <div class="hint" style="margin-top:8px;" id="myProfileExplain"></div>
             <div class="field" style="margin-top:10px; margin-bottom:0;">
               <label>Numéro de la comptable</label>
@@ -6191,6 +6208,7 @@ async function initRwoodStorage(){
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
   setTimeout(()=> pushMyUserRegistration(), 5000);
+  setTimeout(()=> _restoreAccountDataIfNeeded(), 5200); // restaurer compte si update a effacé les données
   setTimeout(()=> pushMyTodoList(), 5500);
   setTimeout(()=> checkForConductorAlerts(), 6000);
   setTimeout(()=> pullAgendaEventsFromConducteur(), 6500); // chef : events agenda depuis conducteur
@@ -8949,6 +8967,8 @@ async function deleteSite(siteId){
     if(updated.length !== shared.length){
       await _saveSharedSites(updated);
     }
+    // Tombstone : marquer l'ID comme définitivement supprimé — bloque toute future synchro
+    await _addDeletedSiteId(siteId);
   } catch(e){ /* silencieux — la suppression locale est déjà faite */ }
 
   goTo('chantiers');
@@ -16167,6 +16187,10 @@ function applyOpenParametresSections(){
 }
 
 function renderParametres(){
+  // Afficher l'ID du compte actif en haut des Paramètres
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  const idEl = document.getElementById('activeAccountId');
+  if(idEl) idEl.textContent = authId ? 'ID : ' + authId : 'Non connecté';
   // État du mode simple
   setTimeout(function(){
     const lbl = document.getElementById('simpleModeStateLabel');
@@ -17019,6 +17043,7 @@ function updateMyAccount(){
   saveData();
   renderMyAccount();
   showToast('Mon compte mis à jour');
+  _pushAccountData(); // sauvegarder sur Supabase pour persistance anti-update
 
   if(tourActive && TOUR_STEPS[tourStepIndex] && TOUR_STEPS[tourStepIndex].waitForSave){
     setTimeout(()=>tourNext(), 400);
@@ -19795,7 +19820,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.17.2';
+const APP_VERSION = '2.17.5';
 
 const CHANGELOG = [
   {
@@ -25931,7 +25956,35 @@ function openSendNoteToChef(siteId){
 }
 
 
-const SHARED_SITES_KEY = 'company_shared_sites'; // cle Supabase fixe partagee, separee du reste
+const SHARED_SITES_KEY   = 'company_shared_sites';
+const DELETED_SITES_KEY  = 'company_deleted_sites'; // tombstone — IDs définitivement supprimés
+
+async function _fetchDeletedSiteIds(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DELETED_SITES_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.ids) || [];
+  } catch(e){ return []; }
+}
+
+async function _addDeletedSiteId(siteId){
+  try{
+    const ids = await _fetchDeletedSiteIds();
+    if(!ids.includes(siteId)) ids.push(siteId);
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DELETED_SITES_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ ids })
+      })
+    });
+  } catch(e){ /* silencieux */ }
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    CODE CREATOR — generation de Code Entreprise (Mode Developpeur)
@@ -25992,6 +26045,84 @@ async function pushMyUserRegistration(){
     const idx = users.findIndex(u => u.authId === entry.authId);
     if(idx === -1) users.push(entry); else users[idx] = entry;
     await _saveUsersRegistry(users);
+
+    // Sauvegarder aussi les données compte dans une clé dédiée (persistance anti-update)
+    await _pushAccountData();
+  } catch(e){ /* silencieux */ }
+}
+
+/* Clé Supabase dédiée aux données compte de l'utilisateur */
+function _accountDataKey(){
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  return authId ? 'account_data_' + authId : null;
+}
+
+/* Push les données compte vers Supabase — appelé à chaque modification */
+async function _pushAccountData(){
+  const key = _accountDataKey();
+  if(!key) return;
+  const auth = data.settings.auth || {};
+  const profile = data.settings.myProfile || {};
+  const moi = (data.contacts||[]).find(c=>c.role==='Moi') || {};
+  const accountData = {
+    firstName: profile.firstName || '',
+    lastName:  profile.lastName  || '',
+    phone:     moi.phone         || '',
+    email:     moi.email         || '',
+    signature: moi.signature     || '',
+    authPwd:   auth.authPwd      || '',   // déjà hashé/opaque
+    teamName:  data.settings.teamName || '',
+    savedAt:   new Date().toISOString()
+  };
+  try{
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: key,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify(accountData)
+      })
+    });
+  } catch(e){ /* silencieux */ }
+}
+
+/* Restaure les données compte depuis Supabase si absentes en local */
+async function _restoreAccountDataIfNeeded(){
+  const key = _accountDataKey();
+  if(!key) return;
+  const profile = data.settings.myProfile || {};
+  // Vérifier si les données semblent manquantes
+  const moi = (data.contacts||[]).find(c=>c.role==='Moi') || {};
+  const hasLocalData = profile.firstName || moi.phone || moi.email || moi.signature;
+  if(hasLocalData) return; // données locales OK, pas besoin de restaurer
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    if(!d) return;
+    // Restaurer dans data
+    if(!data.settings.myProfile) data.settings.myProfile = {};
+    if(d.firstName) data.settings.myProfile.firstName = d.firstName;
+    if(d.lastName)  data.settings.myProfile.lastName  = d.lastName;
+    if(d.teamName)  data.settings.teamName = d.teamName;
+    if(d.authPwd && !data.settings.auth.authPwd) data.settings.auth.authPwd = d.authPwd;
+    // Restaurer dans le contact "Moi"
+    if(d.phone || d.email || d.signature){
+      let moiContact = (data.contacts||[]).find(c=>c.role==='Moi');
+      if(!moiContact){
+        moiContact = { id: uid(), role:'Moi', name: ((d.firstName||'')+' '+(d.lastName||'')).trim() };
+        if(!data.contacts) data.contacts = [];
+        data.contacts.push(moiContact);
+      }
+      if(d.phone)     moiContact.phone     = d.phone;
+      if(d.email)     moiContact.email     = d.email;
+      if(d.signature) moiContact.signature = d.signature;
+    }
+    saveData();
+    showToast('✅ Données compte restaurées');
   } catch(e){ /* silencieux */ }
 }
 
@@ -26602,6 +26733,9 @@ async function _saveSharedSites(sites){
    Le site garde son id local — c'est la cle de fusion entre appareils. */
 async function pushSharedSite(site){
   try{
+    // Vérifier si ce chantier a été supprimé définitivement (tombstone)
+    const deletedIds = await _fetchDeletedSiteIds();
+    if(deletedIds.includes(site.id)) return; // suppression définitive — on ne repousse pas
     const shared = await _fetchSharedSites();
     const snapshot = {
       id:                  site.id,
@@ -26645,12 +26779,24 @@ async function pullSharedSites(){
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
     if(role !== 'conducteur' && role !== 'chef') return;
 
+    // Récupérer la liste des IDs définitivement supprimés (tombstone)
+    const deletedIds = await _fetchDeletedSiteIds();
+
+    // Nettoyer localement les chantiers tombstoned encore présents
+    if(deletedIds.length){
+      const before = data.sites.length;
+      data.sites = data.sites.filter(s => !deletedIds.includes(s.id));
+      if(data.sites.length !== before){ saveData(); renderSites(); }
+    }
+
     const shared = await _fetchSharedSites();
-    if(!shared.length) return;
+    // Exclure les tombstoned du pull
+    const filteredShared = shared.filter(s => !deletedIds.includes(s.id));
+    if(!filteredShared.length) return;
 
     let relevant = [];
     if(role === 'conducteur'){
-      relevant = shared;
+      relevant = filteredShared;
     } else {
       // Identifiants du chef pour matcher les chantiers qui lui sont assignés
       const myPhone  = getMyOwnPhone();
@@ -26659,7 +26805,7 @@ async function pullSharedSites(){
                        ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
       const myNameTrim = myName.trim().toLowerCase();
 
-      relevant = shared.filter(s => {
+      relevant = filteredShared.filter(s => {
         // 1. Nouveau format : assignedChefs[] avec phone, authId ou nom
         if(Array.isArray(s.assignedChefs) && s.assignedChefs.length){
           if(s.assignedChefs.some(c =>
