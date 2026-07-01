@@ -6183,8 +6183,9 @@ async function initRwoodStorage(){
   setTimeout(()=> pullSharedSites(), 4500);
   setTimeout(()=> pushMyUserRegistration(), 5000);
   setTimeout(()=> pushMyTodoList(), 5500);
-  setTimeout(()=> checkForConductorAlerts(), 6000); // alertes conducteur → chef
-  // Mettre en cache le registre pour les lookups authId
+  setTimeout(()=> checkForConductorAlerts(), 6000);
+  setTimeout(()=> pullAgendaEventsFromConducteur(), 6500); // chef : events agenda depuis conducteur
+  setTimeout(()=> pullSitesFromChefs(), 6500);             // conducteur : chantiers depuis chefs
   _fetchUsersRegistry().then(users => { window._usersRegistryCache = users; });
   // Démarrer le polling sync : pour les conducteurs qui ont des chantiers syncLive,
   // ET pour les chefs qui doivent recevoir de nouveaux chantiers
@@ -7091,7 +7092,8 @@ function updateSynchroTab(site){
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
   const tab = document.getElementById('tabSynchroEquipe');
   if(!tab) return;
-  tab.style.display = (myRole === 'conducteur' && !!site) ? '' : 'none';
+  // Visible pour le conducteur (gestion complète) ET pour le chef (push bidirectionnel)
+  tab.style.display = ((myRole === 'conducteur' || myRole === 'chef') && !!site) ? '' : 'none';
 }
 
 /* ============ MODALS ============ */
@@ -19752,7 +19754,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.15.6';
+const APP_VERSION = '2.15.7';
 
 const CHANGELOG = [
   {
@@ -26014,6 +26016,34 @@ function renderSynchroEquipe(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site){ el.innerHTML = ''; return; }
 
+  const myRole = data.settings.myProfile && data.settings.myProfile.role;
+
+  // ── VUE CHEF (synchro bidirectionnelle) ──
+  if(myRole === 'chef'){
+    const isPushed = !!site.sharedBidirectional;
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:12px; border:2px solid ${isPushed ? 'var(--green)' : 'var(--wood)'};">
+        <div style="font-weight:700; font-size:14px; margin-bottom:4px; color:${isPushed ? 'var(--green)' : 'var(--wood)'};">
+          ${isPushed ? '✅ Chantier envoyé au conducteur' : '🔄 Partager avec le conducteur'}
+        </div>
+        <div class="hint">${isPushed
+          ? 'Ce chantier est visible sur l\'app du conducteur. Les mises à jour sont synchronisées à chaque modification.'
+          : 'Envoyez ce chantier au conducteur de travaux pour qu\'il apparaisse sur son tableau de bord.'
+        }</div>
+        ${isPushed && site.lastSyncAt ? `<div class="hint" style="margin-top:4px;">Dernière synchro : ${new Date(site.lastSyncAt).toLocaleString('fr-FR')}</div>` : ''}
+      </div>
+
+      <button class="btn btn-primary btn-block" onclick="chefSyncSiteNow('${siteId}')">
+        ${isPushed ? '🔄 Re-synchroniser maintenant' : '🚀 Envoyer au conducteur'}
+      </button>
+      <div class="hint" style="margin-top:6px; text-align:center;">Le conducteur verra ce chantier dans son tableau de bord.</div>
+
+      <div class="section-title" style="margin-top:16px;">Événements de ce chantier</div>
+      <div id="customEventsList_${siteId}">${_renderCustomEventsList(site, false)}</div>
+    `;
+    return;
+  }
+
   const synced = site.shared && site.syncLive;
   const chefs = site.assignedChefs || [];
 
@@ -26174,27 +26204,113 @@ async function updateSiteFieldAndPush(siteId, field, value){
 }
 
 /* ── Événements personnalisés sur un chantier (conducteur → chefs en temps réel) ── */
-function addCustomEvent(siteId){
+async function addCustomEvent(siteId){
   const input = document.getElementById('newEventInput_' + siteId);
   const dateInput = document.getElementById('newEventDate_' + siteId);
   if(!input || !input.value.trim()){ showToast('Décris l\'événement'); return; }
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
   if(!site.customEvents) site.customEvents = [];
-  site.customEvents.push({
+  const ev = {
     id: uid(),
     label: input.value.trim(),
     date: dateInput ? dateInput.value : '',
     createdAt: new Date().toISOString()
-  });
+  };
+  site.customEvents.push(ev);
   input.value = ''; if(dateInput) dateInput.value = '';
   site.lastSyncAt = new Date().toISOString();
   saveData();
   renderSynchroEquipe(siteId);
+
   if(site.syncLive){
-    pushSharedSite(site);
+    await pushSharedSite(site);
     showToast('Événement ajouté et synchro mise à jour');
+
+    // Notifier les chefs assignés + payload événement pour injection dans leur agenda
+    const chefIds = _getChefAuthIdsForSite(site);
+    const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+                          ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+    const dateLabel = ev.date ? new Date(ev.date+'T00:00:00').toLocaleDateString('fr-FR') : '';
+    const alertText = 'Le conducteur ' + conductorName.trim() +
+      ' a ajouté' + (dateLabel ? ' la date ' + dateLabel : ' un événement') +
+      ' pour le chantier ' + site.name + ' : "' + ev.label + '"';
+
+    chefIds.forEach(chefAuthId => {
+      // 1. Alerte popup persistante
+      sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+      // 2. Injection directe dans l'agenda du chef via une clé dédiée
+      _pushAgendaEventToChef(chefAuthId, {
+        id: ev.id,
+        date: ev.date,
+        siteId: site.id,
+        siteName: site.name,
+        siteColor: site.color || '',
+        text: ev.label
+      });
+    });
   }
+}
+
+/* Pousse un événement dans l'agenda d'un chef (clé Supabase dédiée par chef) */
+const AGENDA_SYNC_PREFIX = 'agenda_events_chef_';
+
+async function _pushAgendaEventToChef(chefAuthId, event){
+  try{
+    const key = AGENDA_SYNC_PREFIX + chefAuthId;
+    // Lire les events existants
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    let events = [];
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        events = (d && d.events) || [];
+      }
+    }
+    // Ajouter ou mettre à jour l'event
+    const idx = events.findIndex(e => e.id === event.id);
+    if(idx === -1) events.push(event); else events[idx] = event;
+    await supaFetch('/rest/v1/rwood_sync', {
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ events }) })
+    });
+  } catch(e){ /* silencieux */ }
+}
+
+/* Chef : pull ses événements agenda synchronisés depuis les conducteurs */
+async function pullAgendaEventsFromConducteur(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'chef') return;
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!myAuthId) return;
+  try{
+    const key = AGENDA_SYNC_PREFIX + myAuthId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const remoteEvents = (d && d.events) || [];
+    if(!remoteEvents.length) return;
+
+    let changed = false;
+    if(!data.tasks) data.tasks = [];
+    remoteEvents.forEach(ev => {
+      // Trouver le site local correspondant (ou le créer à partir du nom)
+      const siteId = ev.siteId || null;
+      const existing = data.tasks.find(t => t.id === ev.id);
+      if(!existing){
+        data.tasks.push({ id: ev.id, date: ev.date, siteId, text: ev.text, fromConducteur: true });
+        changed = true;
+      }
+    });
+    if(changed){
+      saveData();
+      if(typeof renderAgenda === 'function') renderAgenda();
+    }
+  } catch(e){ /* silencieux */ }
 }
 
 function removeCustomEvent(siteId, eventId){
@@ -26207,8 +26323,88 @@ function removeCustomEvent(siteId, eventId){
   if(site.syncLive) pushSharedSite(site);
 }
 
-/* Polling toutes les 90s quand au moins un chantier syncLive est actif
-   (conducteur qui attend les changements des chefs, et chefs qui reçoivent du conducteur) */
+async function chefSyncSiteNow(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  site.lastSyncAt = new Date().toISOString();
+  saveData();
+  await pushSiteFromChefToConducteur(siteId);
+  renderSynchroEquipe(siteId);
+}
+
+
+const CHEF_PUSH_KEY = 'chef_pushed_sites_v1';
+
+async function pushSiteFromChefToConducteur(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site){ showToast('Chantier introuvable'); return; }
+  const myProfile = data.settings.myProfile;
+  const myName = ((myProfile.firstName||'') + ' ' + (myProfile.lastName||'')).trim();
+  try{
+    // Lire les sites existants dans la clé partagée chef→conducteur
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
+    let sites = [];
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        sites = (d && d.sites) || [];
+      }
+    }
+    const snapshot = {
+      id: site.id, name: site.name, address: site.address,
+      status: site.status, progress: site.progress, color: site.color,
+      keyboxCode: site.keyboxCode||'', dueDate: site.dueDate||null,
+      startDate: site.startDate||null, customEvents: site.customEvents||[],
+      fromChef: myName, fromChefAuthId: data.settings.auth && data.settings.auth.authId,
+      syncLive: true, lastSyncAt: new Date().toISOString()
+    };
+    const idx = sites.findIndex(s => s.id === site.id);
+    if(idx === -1) sites.push(snapshot); else sites[idx] = snapshot;
+    await supaFetch('/rest/v1/rwood_sync', {
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body: JSON.stringify({ user_id: CHEF_PUSH_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ sites }) })
+    });
+    site.sharedBidirectional = true;
+    saveData();
+    showToast('✅ Chantier envoyé au conducteur');
+    renderSites();
+  } catch(e){ showToast('Erreur de synchronisation'); }
+}
+
+/* Conducteur : pull les chantiers envoyés par les chefs */
+async function pullSitesFromChefs(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'conducteur') return;
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const remoteSites = (d && d.sites) || [];
+    if(!remoteSites.length) return;
+    let changed = false;
+    remoteSites.forEach(remote => {
+      const idx = data.sites.findIndex(s => s.id === remote.id);
+      if(idx === -1){
+        data.sites.push({ ...remote, shared: true, fromChef: remote.fromChef, stockNeeds:{}, stockTaken:{} });
+        changed = true;
+        showToast('🏗 Nouveau chantier reçu de ' + (remote.fromChef||'un chef'));
+      } else {
+        // Mettre à jour les champs du chef
+        const local = data.sites[idx];
+        ['name','address','status','progress','color','keyboxCode','dueDate','startDate','customEvents'].forEach(k=>{
+          if(remote[k] !== undefined) local[k] = remote[k];
+        });
+        changed = true;
+      }
+    });
+    if(changed){ saveData(); renderSites(); }
+  } catch(e){ /* silencieux */ }
+}
+
 let _syncLivePollingInterval = null;
 function startSyncLivePolling(){
   if(_syncLivePollingInterval) return;
@@ -26765,6 +26961,8 @@ document.addEventListener('visibilitychange', function(){
     checkForNewAlerts();
     pullSharedSites();
     checkForConductorAlerts();
+    pullAgendaEventsFromConducteur();
+    pullSitesFromChefs();
   }
 });
 
