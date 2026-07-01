@@ -6186,8 +6186,10 @@ async function initRwoodStorage(){
   setTimeout(()=> checkForConductorAlerts(), 6000); // alertes conducteur → chef
   // Mettre en cache le registre pour les lookups authId
   _fetchUsersRegistry().then(users => { window._usersRegistryCache = users; });
-  // Démarrer le polling temps réel si des chantiers syncLive sont déjà présents localement
-  if((data.sites||[]).some(s => s.syncLive)) startSyncLivePolling();
+  // Démarrer le polling sync : pour les conducteurs qui ont des chantiers syncLive,
+  // ET pour les chefs qui doivent recevoir de nouveaux chantiers
+  const isChefRole = data.settings.myProfile && data.settings.myProfile.role === 'chef';
+  if((data.sites||[]).some(s => s.syncLive) || isChefRole) startSyncLivePolling();
 }
 
 async function getStorageUsageInfo(){
@@ -19750,7 +19752,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.15.5';
+const APP_VERSION = '2.15.6';
 
 const CHANGELOG = [
   {
@@ -26211,14 +26213,15 @@ let _syncLivePollingInterval = null;
 function startSyncLivePolling(){
   if(_syncLivePollingInterval) return;
   _syncLivePollingInterval = setInterval(async ()=>{
-    const hasSyncLive = (data.sites||[]).some(s => s.syncLive);
+    const hasSyncLive = (data.sites||[]).some(s => s.syncLive) ||
+      (data.settings.myProfile && data.settings.myProfile.role === 'chef');
     if(!hasSyncLive){
       clearInterval(_syncLivePollingInterval);
       _syncLivePollingInterval = null;
       return;
     }
     await pullSharedSites();
-  }, 90000);
+  }, 60000); // 60s pour les chefs (au lieu de 90s)
 }
 
 
@@ -26360,23 +26363,29 @@ async function pushSharedSite(site){
   try{
     const shared = await _fetchSharedSites();
     const snapshot = {
-      id: site.id,
-      name: site.name,
-      address: site.address,
-      status: site.status,
-      progress: site.progress,
-      color: site.color,
-      trajetZone: site.trajetZone,
-      keyboxCode: site.keyboxCode || '',
-      dueDate: site.dueDate || null,
-      deliveryDates: site.deliveryDates || [],
-      customEvents: site.customEvents || [],
-      ownerDeviceId: site.ownerDeviceId || getDeviceSyncId(),
-      assignedTeamName: site.assignedTeamName || '',
+      id:                  site.id,
+      name:                site.name,
+      address:             site.address,
+      status:              site.status,
+      progress:            site.progress,
+      color:               site.color,
+      trajetZone:          site.trajetZone,
+      keyboxCode:          site.keyboxCode        || '',
+      startDate:           site.startDate         || null,
+      dueDate:             site.dueDate           || null,
+      deliveryDates:       site.deliveryDates     || [],
+      customEvents:        site.customEvents      || [],
+      ownerDeviceId:       site.ownerDeviceId     || getDeviceSyncId(),
+      syncLive:            !!site.syncLive,
+      lastSyncAt:          site.lastSyncAt        || new Date().toISOString(),
+      assignedTeamName:    site.assignedTeamName  || '',
+      assignedChefs:       Array.isArray(site.assignedChefs) ? site.assignedChefs : [],
       assignedChefContactId: site.assignedChefContactId || null,
-      assignedChefPhone: site.assignedChefPhone || '',
-      assignedChefName: site.assignedChefName || '',
-      assignedAt: site.assignedAt || null
+      assignedChefPhone:   site.assignedChefPhone  || '',
+      assignedChefName:    site.assignedChefName   || '',
+      assignedChefAuthId:  site.assignedChefAuthId || '',
+      assignedAt:          site.assignedAt         || null,
+      teamName:            site.teamName           || ''
     };
     const idx = shared.findIndex(s => s.id === site.id);
     if(idx === -1) shared.push(snapshot); else shared[idx] = snapshot;
@@ -26410,41 +26419,45 @@ async function pullSharedSites(){
       const myNameTrim = myName.trim().toLowerCase();
 
       relevant = shared.filter(s => {
-        // Nouveau format : assignedChefs[] avec phone ou authId
-        if(Array.isArray(s.assignedChefs)){
+        // 1. Nouveau format : assignedChefs[] avec phone, authId ou nom
+        if(Array.isArray(s.assignedChefs) && s.assignedChefs.length){
           if(s.assignedChefs.some(c =>
-            (myPhone && normalizePhone(c.phone) === myPhone) ||
-            (myAuthId && c.authId === myAuthId) ||
-            (myNameTrim && (c.name||'').toLowerCase() === myNameTrim)
+            (myPhone   && normalizePhone(c.phone) === myPhone) ||
+            (myAuthId  && c.authId === myAuthId) ||
+            (myNameTrim && (c.name||'').trim().toLowerCase() === myNameTrim)
           )) return true;
         }
-        // Ancien format : champs plats
-        if(myPhone && normalizePhone(s.assignedChefPhone) === myPhone) return true;
-        if(myAuthId && s.assignedChefAuthId === myAuthId) return true;
-        if(myNameTrim && (s.assignedChefName||'').toLowerCase() === myNameTrim) return true;
+        // 2. Champs plats (ancien format + nouveau assignedChefAuthId)
+        if(myPhone   && normalizePhone(s.assignedChefPhone)  === myPhone)   return true;
+        if(myAuthId  && s.assignedChefAuthId                 === myAuthId)  return true;
+        if(myNameTrim && (s.assignedChefName||'').trim().toLowerCase() === myNameTrim) return true;
         return false;
       });
     }
 
     let changed = false;
+    const conducteurFields = ['name','address','status','progress','color','keyboxCode',
+      'startDate','dueDate','deliveryDates','customEvents','assignedChefs','assignedChefs',
+      'assignedChefPhone','assignedChefName','assignedChefAuthId','trajetZone',
+      'syncLive','lastSyncAt','ownerDeviceId','teamName'];
+
     relevant.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
       if(idx === -1){
-        // Premier arrivage : copie locale, marquée syncLive si le conducteur a la synchro active
+        // Premier arrivage : créer la copie locale
         data.sites.push({ ...remote, shared:true, stockNeeds:{}, stockTaken:{} });
         changed = true;
       } else if(remote.syncLive){
-        // Synchro temps réel active côté conducteur : on écrase toutes les clés gérées par
-        // le conducteur (infos chantier, chefs, events) sans toucher aux données locales du chef
-        // (son propre stock, ses photos, ses pointages restent intacts)
+        // Synchro temps réel : mettre à jour les champs conducteur sans toucher aux données chef
         const local = data.sites[idx];
-        const conducteurFields = ['name','address','status','progress','color','keyboxCode',
-          'startDate','dueDate','deliveryDates','customEvents','assignedChefs',
-          'assignedChefPhone','assignedChefName','trajetZone','syncLive','lastSyncAt','ownerDeviceId'];
         conducteurFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+        local.shared = true;
+        changed = true;
+      } else if(!data.sites[idx].shared){
+        // Chantier reçu mais pas encore marqué shared : corriger
+        data.sites[idx].shared = true;
         changed = true;
       }
-      // syncLive=false et déjà reçu : copie indépendante, on ne touche plus rien
     });
 
     if(changed){
