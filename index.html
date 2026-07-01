@@ -14798,8 +14798,8 @@ function renderComptableFiches(){
       <button class="btn btn-primary" style="flex:1;" onclick="refreshComptableLiveFiches(true)" id="comptableRefreshBtn">🔄 Actualiser maintenant</button>
       <span id="comptableLastSync" style="font-size:11px;color:var(--ink-soft);"></span>
     </div>
-    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="printComptableWeekPDF()">🖨 Imprimer (PDF)</button>
-    <div class="hint" style="margin-top:6px;text-align:center;">Un ouvrier ouvert → sa fiche seule. Sinon → toute l'équipe de la semaine.</div>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openPDFWorkerSelector()">🖨 Générer PDF fiches du mois…</button>
+    <div class="hint" style="margin-top:6px;text-align:center;">Choisissez les ouvriers à inclure dans le PDF.</div>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAlertComposer()">📢 Envoyer une alerte</button>
   `;
 
@@ -15102,6 +15102,77 @@ function _refreshOpenComptableWorker(key, alsoUpdateHeaderTotal){
 }
 
 /* Impression PDF de la semaine affichee, toute equipe confondue */
+/* ── Sélecteur d'ouvriers pour le PDF mensuel comptable ── */
+let _pdfWorkerCandidates = []; // [{key, name}]
+
+function openPDFWorkerSelector(){
+  if(!_comptableLiveData || !_comptableLiveData.length){
+    showToast('Aucune donnée disponible — actualisez d\'abord');
+    return;
+  }
+
+  _pdfWorkerCandidates = [];
+  (_comptableLiveData||[]).forEach(device=>{
+    (device.workers||[]).forEach(w=>{
+      _pdfWorkerCandidates.push({ key: _workerKey(device.deviceId, w.id), name: w.name });
+    });
+  });
+  _pdfWorkerCandidates.sort((a,b)=> a.name.localeCompare(b.name,'fr'));
+
+  if(!_pdfWorkerCandidates.length){
+    showToast('Aucun ouvrier synchronisé');
+    return;
+  }
+
+  const list = document.getElementById('pdfWorkerSelectorList');
+  list.innerHTML = _pdfWorkerCandidates.map((w,i) => `
+    <label style="display:flex; align-items:center; gap:12px; padding:10px 12px;
+      background:var(--card); border:1px solid var(--line); border-radius:10px; cursor:pointer;">
+      <input type="checkbox" id="pdfCheck_${i}" checked style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;">
+      <span style="font-weight:600;">${escapeHtml(w.name)}</span>
+    </label>
+  `).join('');
+
+  openModal('pdfWorkerSelector');
+}
+
+function toggleAllPDFWorkers(state){
+  _pdfWorkerCandidates.forEach((_,i)=>{
+    const cb = document.getElementById('pdfCheck_' + i);
+    if(cb) cb.checked = state;
+  });
+}
+
+async function generatePDFFromSelection(){
+  const selected = _pdfWorkerCandidates.filter((_,i)=>{
+    const cb = document.getElementById('pdfCheck_' + i);
+    return cb && cb.checked;
+  });
+
+  if(!selected.length){
+    showToast('Sélectionnez au moins un ouvrier');
+    return;
+  }
+
+  closeModal('pdfWorkerSelector');
+
+  // Générer avec les clés sélectionnées : réutilise printComptableMonthPDF
+  // en passant null pour "tous" ou en filtrant manuellement
+  const origData = _comptableLiveData;
+  const selectedKeys = new Set(selected.map(s => s.key));
+
+  // Filtrage temporaire : on masque les workers non sélectionnés le temps du PDF
+  const filtered = origData.map(device => ({
+    ...device,
+    workers: (device.workers||[]).filter(w => selectedKeys.has(_workerKey(device.deviceId, w.id)))
+  }));
+
+  const _backup = _comptableLiveData;
+  _comptableLiveData = filtered;
+  await printComptableMonthPDF(null); // null = tous les ouvriers du dataset courant
+  _comptableLiveData = _backup;
+}
+
 async function printComptableMonthPDF(workerKey){
   // Résoudre l'ouvrier cible (ou null = tous les ouvriers du mois)
   const allWorkers = [];
@@ -19558,7 +19629,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.1';
+const APP_VERSION = '2.13.2';
 
 const CHANGELOG = [
   {
@@ -26173,6 +26244,25 @@ async function checkDeviceRevocation(){
       onkeydown="if(event.key==='Enter') submitDevCode()">
     <div id="devCodeError" style="display:none;color:var(--red);font-size:13px;text-align:center;margin-top:8px;">Code incorrect</div>
     <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="submitDevCode()">Valider</button>
+  </div>
+</div>
+
+<!-- MODAL : Sélection ouvriers pour PDF fiches d'heures -->
+<div class="modal-overlay" id="modal-pdfWorkerSelector">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>🖨 Générer PDF fiches du mois</h2>
+      <button class="modal-close" onclick="closeModal('pdfWorkerSelector')">×</button>
+    </div>
+    <div class="hint" style="margin-bottom:12px;">Sélectionnez les ouvriers à inclure dans le PDF mensuel.</div>
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(true)">✅ Tous</button>
+      <button class="btn btn-outline" style="flex:1;" onclick="toggleAllPDFWorkers(false)">☐ Aucun</button>
+    </div>
+    <div id="pdfWorkerSelectorList" style="max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
+    <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="generatePDFFromSelection()">
+      Générer le PDF
+    </button>
   </div>
 </div>
 
