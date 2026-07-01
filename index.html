@@ -7387,7 +7387,7 @@ function openAddChefToNewSite(){
   fetchChefsForMyCompany().then(registryChefs => {
     const all = [...registryChefs
       .filter(u => normalizePhone(u.phone))
-      .map(u => ({name:u.name||u.authId, phone:normalizePhone(u.phone)}))];
+      .map(u => ({name:u.name||u.authId, phone:normalizePhone(u.phone), teamName:u.teamName||''}))];
     localChefs.forEach(lc => { if(!all.some(a => a.phone===lc.phone)) all.push(lc); });
 
     if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
@@ -7395,7 +7395,9 @@ function openAddChefToNewSite(){
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef d\'équipe';
     const list = document.getElementById('contactActionsList');
     list.innerHTML = all.map((c,idx) => `
-      <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToNewSite(${idx})">${escapeHtml(c.name)}</button>
+      <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToNewSite(${idx})">
+        ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
+      </button>
     `).join('');
     openModal('contactActions');
   });
@@ -17338,6 +17340,12 @@ function finishAuthCreation(){
   if(newAccentColor) data.settings.accentColor = newAccentColor;
   if(newCompanyCode) data.settings.companyCode = newCompanyCode;
 
+  // Auto-créer le nom d'équipe pour les chefs d'équipe
+  if(newProfile.role === 'chef' && newProfile.firstName){
+    const autoTeam = 'Équipe de ' + newProfile.firstName;
+    data.settings.teamName = autoTeam;
+  }
+
   // Sauvegarder et afficher
   saveData();
   document.getElementById('authScreen').style.display = 'none';
@@ -17750,6 +17758,13 @@ function submitRoleMigration(){
   data.settings.auth.pwdCustomized = true;
   data.settings.auth.roleLocked = true;
   data.settings.auth.migratedToRoleLock = true;
+
+  // Auto-créer le nom d'équipe si chef sans équipe nommée
+  if(_roleMigrationSelected === 'chef' && !data.settings.teamName){
+    const firstName = data.settings.myProfile.firstName || '';
+    if(firstName) data.settings.teamName = 'Équipe de ' + firstName;
+  }
+
   saveData();
 
   closeModal('roleMigration');
@@ -19853,7 +19868,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.7';
+const APP_VERSION = '2.13.8';
 
 const CHANGELOG = [
   {
@@ -25423,6 +25438,7 @@ async function pushMyUserRegistration(){
       role: profile.role,
       companyCode: (data.settings.companyCode || '').toUpperCase(),
       phone: normalizePhone((data.contacts||[]).find(c=>c.role==='Moi')?.phone || ''),
+      teamName: data.settings.teamName || '',
       updatedAt: new Date().toISOString()
     };
 
@@ -25703,15 +25719,17 @@ function openAddChefToExistingSite(siteId){
   if(!site) return;
 
   fetchChefsForMyCompany().then(registryChefs => {
-    const all = [...registryChefs.filter(u=>normalizePhone(u.phone)).map(u=>({name:u.name||u.authId, phone:normalizePhone(u.phone)}))];
+    const all = [...registryChefs.filter(u=>normalizePhone(u.phone)).map(u=>({name:u.name||u.authId, phone:normalizePhone(u.phone), teamName:u.teamName||''}))];
     (data.contacts||[]).filter(c=>(c.role||'').toLowerCase().includes('chef')&&normalizePhone(c.phone))
-      .forEach(c=>{ if(!all.some(a=>a.phone===normalizePhone(c.phone))) all.push({name:c.name, phone:normalizePhone(c.phone)}); });
+      .forEach(c=>{ if(!all.some(a=>a.phone===normalizePhone(c.phone))) all.push({name:c.name, phone:normalizePhone(c.phone), teamName:''}); });
 
     if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
     _assignChefCandidates = all;
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef au chantier';
     document.getElementById('contactActionsList').innerHTML = all.map((c,i)=>`
-      <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToExistingSite('${siteId}', ${i})">${escapeHtml(c.name)}</button>
+      <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToExistingSite('${siteId}', ${i})">
+        ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
+      </button>
     `).join('');
     openModal('contactActions');
   });
@@ -25929,12 +25947,12 @@ async function assignChefToSite(siteId){
   const registryChefs = await fetchChefsForMyCompany();
   let candidates = registryChefs
     .filter(u => normalizePhone(u.phone))
-    .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone) }));
+    .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone), teamName: u.teamName||'' }));
 
   // Compléter avec les contacts locaux "chef"
   const localChefs = (data.contacts || [])
     .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
-    .map(c => ({ name: c.name, phone: normalizePhone(c.phone) }));
+    .map(c => ({ name: c.name, phone: normalizePhone(c.phone), teamName: '' }));
   localChefs.forEach(lc => {
     if(!candidates.some(c => c.phone === lc.phone)) candidates.push(lc);
   });
@@ -25948,7 +25966,9 @@ async function assignChefToSite(siteId){
   document.getElementById('contactActionsTitle').textContent = 'Assigner un chef d\'équipe';
   const list = document.getElementById('contactActionsList');
   list.innerHTML = candidates.map((c, idx) => `
-    <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', ${idx})">${escapeHtml(c.name)}</button>
+    <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', ${idx})">
+      ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
+    </button>
   `).join('');
   openModal('contactActions');
 }
