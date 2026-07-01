@@ -8674,7 +8674,7 @@ function renderItineraries(){
   `).join('');
 }
 
-/* Vue "Zone Chantier" (mode comptable) : carte Leaflet + liste des chantiers actifs */
+/* Vue "Zone Chantier" (mode comptable) : carte Leaflet avec cercles de zones + liste */
 let _zoneMap = null;
 let _zoneMapMarkers = [];
 
@@ -8686,11 +8686,12 @@ async function renderZoneChantier(){
   const sites = (data.sites || []).filter(s => s.status !== 'termine' && s.status !== 'brouillon');
   const depot = data.settings.depotCoords;
   const depotAddress = data.settings.depotAddress || 'Dépôt';
+  const bareme = data.settings.trajetBareme || [];
 
-  // Initialiser ou recycler la carte
+  // ── CARTE ──
   if(!_zoneMap){
     const center = depot ? [depot.lat, depot.lng] : [44.837, -0.579];
-    _zoneMap = L.map('zoneChantierMap', { zoomControl:true }).setView(center, 11);
+    _zoneMap = L.map('zoneChantierMap', { zoomControl:true }).setView(center, 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution:'© OpenStreetMap', maxZoom:18
     }).addTo(_zoneMap);
@@ -8701,11 +8702,28 @@ async function renderZoneChantier(){
 
   const bounds = [];
 
-  // Marqueur dépôt (étoile blanche)
+  // Cercles de zone concentriques autour du dépôt
+  if(depot && bareme.length){
+    const zoneColors = ['#6FA37E','#7B9FD1','#A084CA','#E8AC3D','#E07A63','#5FB4B8'];
+    [...bareme].reverse().forEach((z, i) => {
+      const radiusM = z.maxKm * 1000;
+      const color = zoneColors[i % zoneColors.length];
+      const circle = L.circle([depot.lat, depot.lng], {
+        radius: radiusM,
+        color: color, weight: 1.5, opacity: 0.7,
+        fillColor: color, fillOpacity: 0.04
+      }).bindTooltip('Zone ' + z.zone + ' — jusqu\'à ' + z.maxKm + ' km', { sticky:true })
+        .addTo(_zoneMap);
+      _zoneMapMarkers.push(circle);
+    });
+    bounds.push([depot.lat + 0.45, depot.lng], [depot.lat - 0.45, depot.lng]);
+  }
+
+  // Marqueur dépôt
   if(depot){
     const depotIcon = L.divIcon({
-      html:`<div style="background:#E8AC3D;width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;font-size:11px;">🏭</div>`,
-      iconSize:[22,22], iconAnchor:[11,11], className:''
+      html:`<div style="background:#E8AC3D;width:24px;height:24px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;font-size:13px;">🏭</div>`,
+      iconSize:[24,24], iconAnchor:[12,12], className:''
     });
     const m = L.marker([depot.lat, depot.lng], {icon:depotIcon})
       .bindPopup(`<strong>Dépôt</strong><br>${escapeHtml(depotAddress)}`)
@@ -8714,44 +8732,36 @@ async function renderZoneChantier(){
     bounds.push([depot.lat, depot.lng]);
   }
 
-  // Un pin par chantier (couleur du chantier)
-  const geocodePromises = sites.map(async site => {
-    // Utiliser les coords déjà calculées si dispo, sinon géocoder
+  // Pins chantiers
+  const resolved = await Promise.all(sites.map(async site => {
     let geo = site._geo || null;
-    if(!geo && site.address){
-      geo = await geocodeAddress(site.address);
-      if(geo){ site._geo = geo; } // cache pour la prochaine fois
-    }
+    if(!geo && site.address){ geo = await geocodeAddress(site.address); if(geo) site._geo = geo; }
     return { site, geo };
-  });
-
-  const resolved = await Promise.all(geocodePromises);
-  saveData(); // persister les _geo nouvellement calculés
+  }));
+  saveData();
 
   resolved.forEach(({ site, geo }) => {
     if(!geo) return;
     const color = site.color || '#E8AC3D';
-    const pinIcon = L.divIcon({
-      html:`<div style="background:${color};width:18px;height:18px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.45);"></div>`,
-      iconSize:[18,18], iconAnchor:[9,9], className:''
+    const pin = L.divIcon({
+      html:`<div style="background:${color};width:16px;height:16px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.45);"></div>`,
+      iconSize:[16,16], iconAnchor:[8,8], className:''
     });
+    const rates = bareme.find(b => b.zone === site.trajetZone);
+    const tarifStr = rates ? rates.trajet.toFixed(2) + '€/j' : '—';
     const popup = `<strong>${escapeHtml(site.name)}</strong><br>
-      <span style="color:#888;">Zone ${escapeHtml(site.trajetZone||'—')}</span><br>
-      ${escapeHtml(site.address||'')}`;
-    const m = L.marker([geo.lat, geo.lng], {icon:pinIcon})
-      .bindPopup(popup)
-      .addTo(_zoneMap);
+      Zone ${escapeHtml(site.trajetZone||'—')} · ${tarifStr}<br>
+      <span style="color:#888;font-size:11px;">${escapeHtml(site.address||'')}</span>`;
+    const m = L.marker([geo.lat, geo.lng], {icon:pin}).bindPopup(popup).addTo(_zoneMap);
     _zoneMapMarkers.push(m);
     bounds.push([geo.lat, geo.lng]);
   });
 
-  if(bounds.length > 1) _zoneMap.fitBounds(bounds, { padding:[30,30] });
+  if(bounds.length > 1) _zoneMap.fitBounds(bounds, { padding:[24,24] });
   else if(bounds.length === 1) _zoneMap.setView(bounds[0], 12);
+  setTimeout(() => _zoneMap.invalidateSize(), 120);
 
-  // Invalider la taille (la div était peut-être cachée au premier rendu)
-  setTimeout(() => _zoneMap.invalidateSize(), 100);
-
-  // Liste en dessous de la carte groupée par zone
+  // ── LISTE : groupée par zone, sans bouton itinéraire ──
   if(!sites.length){
     listEl.innerHTML = `<div class="empty"><h3>Aucun chantier actif</h3><p>Les chantiers en cours apparaîtront ici.</p></div>`;
     return;
@@ -8759,7 +8769,7 @@ async function renderZoneChantier(){
 
   const grouped = {};
   sites.forEach(s => {
-    const z = s.trajetZone || 'Non calculée';
+    const z = s.trajetZone || '—';
     if(!grouped[z]) grouped[z] = [];
     grouped[z].push(s);
   });
@@ -8769,23 +8779,32 @@ async function renderZoneChantier(){
     return av - bv;
   });
 
-  listEl.innerHTML = zoneOrder.map(zone => `
-    <div class="section-title">Zone ${escapeHtml(zone)}</div>
-    ${grouped[zone].map(site => `
-      <div class="card" style="${site.color?`background:${cardTintBackground(site.color)};`:''}">
-        <div class="card-row">
-          <div>
-            <h3>${escapeHtml(site.name)}</h3>
-            <div class="meta">${escapeHtml(site.address||'Adresse non renseignée')}</div>
-          </div>
-          <span class="badge ${site.status}">${statusLabels[site.status]||site.status}</span>
-        </div>
-        <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openZoneChantierMap('${site.id}')">
-          📍 Itinéraire depuis le dépôt
-        </button>
+  listEl.innerHTML = zoneOrder.map(zone => {
+    const rates = bareme.find(b => b.zone === zone);
+    const tarifLabel = rates ? `${rates.trajet.toFixed(2)} €/j · ${rates.minKm}–${rates.maxKm} km` : '';
+    return `
+      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>Zone ${escapeHtml(zone)}</span>
+        ${tarifLabel ? `<span style="font-size:11px;color:var(--ink-soft);font-weight:400;">${tarifLabel}</span>` : ''}
       </div>
-    `).join('')}
-  `).join('');
+      ${grouped[zone].map(site => `
+        <div class="card" style="${site.color?`background:${cardTintBackground(site.color)};`:''}">
+          <div class="card-row">
+            <div>
+              <h3>${escapeHtml(site.name)}</h3>
+              <div class="meta">${escapeHtml(site.address||'Adresse non renseignée')}</div>
+            </div>
+            <span class="badge ${site.status}">${statusLabels[site.status]||site.status}</span>
+          </div>
+          <div class="hint" style="margin-top:6px;">
+            Zone ${escapeHtml(site.trajetZone||'—')}
+            ${rates ? ` · <strong>${rates.trajet.toFixed(2)} €/jour de trajet</strong>` : ''}
+            ${site.trajetDistanceKm != null ? ` · ${site.trajetDistanceKm} km du dépôt` : ''}
+          </div>
+        </div>
+      `).join('')}
+    `;
+  }).join('');
 }
 
 /* Ouvre Google Maps : dépôt (référence) → adresse du chantier sélectionné */
@@ -19450,13 +19469,18 @@ function applyNavHidden(){
   ensureNavHidden();
   const hidden = data.settings.navHidden;
   const isComptable = !!(data.settings.myProfile && data.settings.myProfile.role === 'comptable');
+  const comptableOnly = new Set(['contacts','heures','zone-chantier','calcul']);
+
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn => {
     const view = btn.dataset.view;
-    let show = !hidden.includes(view);
-    // Mode comptable : Itinéraires masqué, Zone Chantier visible (et inversement pour les autres rôles)
-    if(view === 'itineraires' && isComptable) show = false;
-    if(view === 'zone-chantier') show = isComptable;
-    btn.style.display = show ? '' : 'none';
+    if(isComptable){
+      btn.style.display = comptableOnly.has(view) ? '' : 'none';
+    } else {
+      // Mode normal : appliquer navHidden standard + Zone Chantier masquée
+      let show = !hidden.includes(view);
+      if(view === 'zone-chantier') show = false;
+      btn.style.display = show ? '' : 'none';
+    }
   });
 }
 
@@ -19534,7 +19558,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.0';
+const APP_VERSION = '2.13.1';
 
 const CHANGELOG = [
   {
