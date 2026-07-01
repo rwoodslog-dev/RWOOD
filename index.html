@@ -6694,12 +6694,44 @@ async function syncPush(){
   if(!userId) return; // pas encore de profil créé
   try{
     showSyncStatus('syncing');
+
+    // RÈGLE STRICTE : chaque device n'envoie QUE son propre ouvrier + sa propre attendance.
+    // Aucune donnée d'un autre ouvrier ne transite vers Supabase via ce device,
+    // quelle que soit la liste data.workers locale.
+    const myWorkerId = data.settings.myProfile && data.settings.myProfile.workerId;
+    const stripped = stripBlobsForSync(data);
+
+    if(myWorkerId){
+      // Garder uniquement MON ouvrier dans workers[]
+      stripped.workers = (stripped.workers || []).filter(w => w.id === myWorkerId);
+      // Garder uniquement les pointages où MON ouvrier est présent
+      if(stripped.attendance && typeof stripped.attendance === 'object' && !Array.isArray(stripped.attendance)){
+        const filteredAttendance = {};
+        Object.entries(stripped.attendance).forEach(([dateKey, dayData]) => {
+          if(!dayData || !dayData.workers) return;
+          if(!dayData.workers[myWorkerId]) return; // ce jour je n'ai pas pointé
+          filteredAttendance[dateKey] = {
+            ...dayData,
+            workers: { [myWorkerId]: dayData.workers[myWorkerId] }
+          };
+        });
+        stripped.attendance = filteredAttendance;
+      } else if(Array.isArray(stripped.attendance)){
+        // Format legacy tableau : filtrer les entrées qui me concernent
+        stripped.attendance = (stripped.attendance || []).filter(e => e.workerId === myWorkerId);
+      }
+    } else {
+      // Pas encore de workerId lié : on n'envoie rien de sensible
+      stripped.workers = [];
+      stripped.attendance = {};
+    }
+
     const res = await supaFetch('/rest/v1/rwood_sync', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
         user_id: userId,
-        data: stripBlobsForSync(data)
+        data: stripped
       })
     });
     if(res.ok){ showSyncStatus('ok'); }
@@ -19730,7 +19762,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.3';
+const APP_VERSION = '2.13.4';
 
 const CHANGELOG = [
   {
@@ -21793,8 +21825,9 @@ function updateHeuresEquipeSection(){
   const profile = (data.settings && data.settings.myProfile) || {};
   const isChef  = profile.role === 'chef' || profile.role === 'conducteur';
   const section = document.getElementById('heuresEquipeSection');
-  if(section) section.style.display = isChef ? 'block' : 'none';
-  if(isChef) renderScannedFiches();
+  // Le scan QR équipe est désactivé : chaque ouvrier gère uniquement sa propre fiche.
+  // La consolidation se fait côté comptable via pullAllPointagesForComptable().
+  if(section) section.style.display = 'none';
 }
 
 /* ── QR Fiche semaine — côté ouvrier ────────────────────────────── */
