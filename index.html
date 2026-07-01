@@ -70,11 +70,14 @@
     max-width: 480px;
     margin: 0 auto;
     min-height: 100vh;
+    min-height: 100dvh; /* iOS : exclut la barre d'adresse Safari */
     display: flex;
     flex-direction: column;
     background: var(--bg);
     overflow-x: hidden;
     position: relative;
+    /* Safe area iOS en haut (Dynamic Island / encoche) */
+    padding-top: env(safe-area-inset-top, 0px);
   }
 
   /* HEADER — épuré via CSS uniquement */
@@ -414,7 +417,12 @@
     padding: 16px 16px 90px;
   }
   .view{ display:none; }
-  .view.active{ display:block; animation: fadeIn 0.18s ease; }
+  .view.active{
+    display:block;
+    animation: fadeIn 0.18s ease;
+    /* Espace sous le contenu pour la nav fixe + safe area iPhone (encoche/home bar) */
+    padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 16px) + 8px);
+  }
   @keyframes fadeIn{ from{ opacity:0; transform: translateY(6px);} to{opacity:1; transform: translateY(0);} }
 
 
@@ -633,7 +641,8 @@
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     z-index: 10;
-    padding-bottom: env(safe-area-inset-bottom, 0);
+    /* Safe area iPhone home bar */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
     scrollbar-width: none;
   }
   nav.bottom::-webkit-scrollbar{ display:none; }
@@ -3439,7 +3448,7 @@
             <div class="hint">En tant qu'ouvrier, tu ne vois que ta propre fiche d'heures. En tant que chef d'équipe, ta fiche apparaît en premier et tu peux gérer/ajouter celles de ton équipe. En tant que comptable, tu accèdes aux fiches reçues de toute l'équipe. En tant que conducteur de travaux, tu prépares les chantiers en amont (infos, stock, plans) avant de les partager à l'équipe.</div>
             <div class="field" style="margin-top:10px; margin-bottom:0;">
               <div class="chip-row" id="myProfileRoleChips">
-                <div class="chip selected" data-role="chef" onclick="setMyProfileRole(this,'chef')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 16a8 8 0 0 1 16 0z"/><path d="M2.5 16h19"/><path d="M3 19h18"/><path d="M12 8.5V6"/></svg> Chef d'équipe</div>
+                <div class="chip" data-role="chef" onclick="setMyProfileRole(this,'chef')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 16a8 8 0 0 1 16 0z"/><path d="M2.5 16h19"/><path d="M3 19h18"/><path d="M12 8.5V6"/></svg> Chef d'équipe</div>
                 <div class="chip" data-role="ouvrier" onclick="setMyProfileRole(this,'ouvrier')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14 7l5 5-2 2-5-5z"/><path d="M3 21l8-8"/><path d="M9 9l3 3"/></svg> Ouvrier</div>
                 <div class="chip" data-role="comptable" onclick="setMyProfileRole(this,'comptable')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg> Comptable</div>
                 <div class="chip" data-role="conducteur" onclick="setMyProfileRole(this,'conducteur')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6M9 18h4"/></svg> Conducteur de travaux</div>
@@ -16967,7 +16976,7 @@ function renderMyAccount(){
   }
 
   document.querySelectorAll('#myProfileRoleChips .chip').forEach(c=>{
-    c.classList.toggle('selected', c.dataset.role === (profile.role || 'chef'));
+    c.classList.toggle('selected', c.dataset.role === (profile.role || ''));
   });
 
   updateMyProfileExplain();
@@ -17600,11 +17609,18 @@ function setMyProfileRole(el, role){
 
 /* Affiche/masque le verrou visuel sur les chips de rôle */
 function applyRoleLockUI(){
-  const chips = document.getElementById('myProfileRoleChips');
+  const chips    = document.getElementById('myProfileRoleChips');
   const lockHint = document.getElementById('myProfileRoleLockHint');
   if(!chips) return;
-  const isRoleLocked = !!(data.settings.auth && data.settings.auth.roleLocked) && !window._devRoleUnlocked;
-  chips.style.opacity = isRoleLocked ? '0.5' : '1';
+
+  const auth    = data.settings && data.settings.auth;
+  const profile = data.settings && data.settings.myProfile;
+
+  // Verrouillé si : roleLocked explicite OU rôle valide déjà assigné
+  const hasRole      = !!(profile && profile.role);
+  const isRoleLocked = (!!(auth && auth.roleLocked) || hasRole) && !window._devRoleUnlocked;
+
+  chips.style.opacity      = isRoleLocked ? '0.5' : '1';
   chips.style.pointerEvents = isRoleLocked ? 'none' : '';
   if(lockHint) lockHint.style.display = isRoleLocked ? 'block' : 'none';
 }
@@ -19779,7 +19795,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.16.9';
+const APP_VERSION = '2.17.1';
 
 const CHANGELOG = [
   {
