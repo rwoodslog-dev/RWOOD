@@ -146,6 +146,14 @@
   }
 
   .nav-section-label{ display:none; }
+  /* Carte Zone Chantier comptable */
+  #zoneChantierMap{
+    width:100%; height:340px; border-radius:14px;
+    overflow:hidden; border:1px solid var(--line); margin-bottom:14px;
+  }
+  .leaflet-popup-content-wrapper{ border-radius:10px !important; }
+  .leaflet-popup-content{ margin:10px 14px !important; font-size:13px; }
+
   @media (min-width: 860px){
     .nav-section-label{
       display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.8px;
@@ -2783,6 +2791,8 @@
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
@@ -4078,7 +4088,8 @@
 
     <!-- VUE ZONE CHANTIER (mode comptable) -->
     <section class="view" id="view-zone-chantier">
-      <div class="view-heading">Chantiers en cours</div>
+      <div class="view-heading">Zone Chantier</div>
+      <div id="zoneChantierMap"></div>
       <div id="zoneChantierList"></div>
     </section>
 
@@ -8663,29 +8674,117 @@ function renderItineraries(){
   `).join('');
 }
 
-/* Vue "Zone Chantier" (mode comptable) : liste des chantiers en cours + itinéraire dépôt → chantier */
-function renderZoneChantier(){
-  const container = document.getElementById('zoneChantierList');
-  if(!container) return;
-  const sites = (data.sites || []).filter(s => s.status !== 'termine');
-  if(sites.length === 0){
-    container.innerHTML = `<div class="empty"><h3>Aucun chantier en cours</h3><p>Les chantiers actifs apparaîtront ici.</p></div>`;
+/* Vue "Zone Chantier" (mode comptable) : carte Leaflet + liste des chantiers actifs */
+let _zoneMap = null;
+let _zoneMapMarkers = [];
+
+async function renderZoneChantier(){
+  const listEl = document.getElementById('zoneChantierList');
+  const mapEl  = document.getElementById('zoneChantierMap');
+  if(!listEl || !mapEl) return;
+
+  const sites = (data.sites || []).filter(s => s.status !== 'termine' && s.status !== 'brouillon');
+  const depot = data.settings.depotCoords;
+  const depotAddress = data.settings.depotAddress || 'Dépôt';
+
+  // Initialiser ou recycler la carte
+  if(!_zoneMap){
+    const center = depot ? [depot.lat, depot.lng] : [44.837, -0.579];
+    _zoneMap = L.map('zoneChantierMap', { zoomControl:true }).setView(center, 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution:'© OpenStreetMap', maxZoom:18
+    }).addTo(_zoneMap);
+  } else {
+    _zoneMapMarkers.forEach(m => m.remove());
+    _zoneMapMarkers = [];
+  }
+
+  const bounds = [];
+
+  // Marqueur dépôt (étoile blanche)
+  if(depot){
+    const depotIcon = L.divIcon({
+      html:`<div style="background:#E8AC3D;width:22px;height:22px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;font-size:11px;">🏭</div>`,
+      iconSize:[22,22], iconAnchor:[11,11], className:''
+    });
+    const m = L.marker([depot.lat, depot.lng], {icon:depotIcon})
+      .bindPopup(`<strong>Dépôt</strong><br>${escapeHtml(depotAddress)}`)
+      .addTo(_zoneMap);
+    _zoneMapMarkers.push(m);
+    bounds.push([depot.lat, depot.lng]);
+  }
+
+  // Un pin par chantier (couleur du chantier)
+  const geocodePromises = sites.map(async site => {
+    // Utiliser les coords déjà calculées si dispo, sinon géocoder
+    let geo = site._geo || null;
+    if(!geo && site.address){
+      geo = await geocodeAddress(site.address);
+      if(geo){ site._geo = geo; } // cache pour la prochaine fois
+    }
+    return { site, geo };
+  });
+
+  const resolved = await Promise.all(geocodePromises);
+  saveData(); // persister les _geo nouvellement calculés
+
+  resolved.forEach(({ site, geo }) => {
+    if(!geo) return;
+    const color = site.color || '#E8AC3D';
+    const pinIcon = L.divIcon({
+      html:`<div style="background:${color};width:18px;height:18px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.45);"></div>`,
+      iconSize:[18,18], iconAnchor:[9,9], className:''
+    });
+    const popup = `<strong>${escapeHtml(site.name)}</strong><br>
+      <span style="color:#888;">Zone ${escapeHtml(site.trajetZone||'—')}</span><br>
+      ${escapeHtml(site.address||'')}`;
+    const m = L.marker([geo.lat, geo.lng], {icon:pinIcon})
+      .bindPopup(popup)
+      .addTo(_zoneMap);
+    _zoneMapMarkers.push(m);
+    bounds.push([geo.lat, geo.lng]);
+  });
+
+  if(bounds.length > 1) _zoneMap.fitBounds(bounds, { padding:[30,30] });
+  else if(bounds.length === 1) _zoneMap.setView(bounds[0], 12);
+
+  // Invalider la taille (la div était peut-être cachée au premier rendu)
+  setTimeout(() => _zoneMap.invalidateSize(), 100);
+
+  // Liste en dessous de la carte groupée par zone
+  if(!sites.length){
+    listEl.innerHTML = `<div class="empty"><h3>Aucun chantier actif</h3><p>Les chantiers en cours apparaîtront ici.</p></div>`;
     return;
   }
-  const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
-  const sorted = [...sites].sort((a,b)=>(order[a.status]??9)-(order[b.status]??9));
-  container.innerHTML = sorted.map(site => `
-    <div class="card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}">
-      <div class="card-row">
-        <div>
-          <h3>${escapeHtml(site.name)}</h3>
-          <div class="meta">${escapeHtml(site.address || 'Adresse non renseignée')}</div>
+
+  const grouped = {};
+  sites.forEach(s => {
+    const z = s.trajetZone || 'Non calculée';
+    if(!grouped[z]) grouped[z] = [];
+    grouped[z].push(s);
+  });
+
+  const zoneOrder = Object.keys(grouped).sort((a,b) => {
+    const av = parseFloat(a) || 99, bv = parseFloat(b) || 99;
+    return av - bv;
+  });
+
+  listEl.innerHTML = zoneOrder.map(zone => `
+    <div class="section-title">Zone ${escapeHtml(zone)}</div>
+    ${grouped[zone].map(site => `
+      <div class="card" style="${site.color?`background:${cardTintBackground(site.color)};`:''}">
+        <div class="card-row">
+          <div>
+            <h3>${escapeHtml(site.name)}</h3>
+            <div class="meta">${escapeHtml(site.address||'Adresse non renseignée')}</div>
+          </div>
+          <span class="badge ${site.status}">${statusLabels[site.status]||site.status}</span>
         </div>
-        <span class="badge ${site.status}">${statusLabels[site.status] || site.status}</span>
+        <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openZoneChantierMap('${site.id}')">
+          📍 Itinéraire depuis le dépôt
+        </button>
       </div>
-      <div class="meta" style="margin-top:6px;">Zone : ${escapeHtml(site.trajetZone || '—')}</div>
-      <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="openZoneChantierMap('${site.id}')">📍 Itinéraire depuis le dépôt</button>
-    </div>
+    `).join('')}
   `).join('');
 }
 
@@ -14985,56 +15084,167 @@ function _refreshOpenComptableWorker(key, alsoUpdateHeaderTotal){
 
 /* Impression PDF de la semaine affichee, toute equipe confondue */
 async function printComptableMonthPDF(workerKey){
-  let aw = null;
+  // Résoudre l'ouvrier cible (ou null = tous les ouvriers du mois)
+  const allWorkers = [];
   (_comptableLiveData||[]).forEach(device=>{
     (device.workers||[]).forEach(w=>{
-      if(_workerKey(device.deviceId, w.id) === workerKey) aw = { key:workerKey, workerId:w.id, name:w.name, device };
+      allWorkers.push({ key:_workerKey(device.deviceId, w.id), workerId:w.id, name:w.name, device });
     });
   });
-  if(!aw){ showToast('Ouvrier introuvable'); return; }
+  allWorkers.sort((a,b)=> a.name.localeCompare(b.name,'fr'));
+
+  const targets = workerKey
+    ? allWorkers.filter(aw => aw.key === workerKey)
+    : allWorkers;
+
+  if(!targets.length){ showToast('Aucun ouvrier à imprimer'); return; }
 
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  const margin = 14;
+  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const colW = pageW - margin * 2;
+  const dayLabels = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  const _fmt = d => String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
 
-  const offset = _getWorkerMonthOffset(workerKey);
-  const { monthLabel, monthTotal, weeks } = _computeWorkerMonthData(aw, offset);
+  for(let wi = 0; wi < targets.length; wi++){
+    const aw = targets[wi];
+    if(wi > 0) doc.addPage();
 
-  doc.setFont('helvetica','bold'); doc.setFontSize(16);
-  doc.text('Recap mensuel - ' + aw.name, margin, 16);
-  doc.setFontSize(11); doc.setFont('helvetica','normal');
-  doc.text(monthLabel, margin, 24);
+    const offset = _getWorkerMonthOffset(aw.key);
+    const { monthLabel, monthTotal, weeks } = _computeWorkerMonthData(aw, offset);
 
-  doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  doc.text('Total du mois : ' + monthTotal + 'h', margin, 36);
+    // ── EN-TÊTE ──
+    let y = margin;
+    const teamName = data.settings.teamName || '';
+    doc.setFont('helvetica','bold'); doc.setFontSize(14);
+    doc.text('Fiche mensuelle — ' + aw.name, margin, y + 6); y += 10;
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    if(teamName) { doc.text('Équipe : ' + teamName, margin, y); y += 5; }
+    doc.text(monthLabel, margin, y);
+    doc.setFont('helvetica','bold');
+    doc.text('Total : ' + monthTotal + 'h', pageW - margin, y, { align:'right' });
+    doc.setFont('helvetica','normal'); y += 8;
+    doc.setDrawColor(200,190,175); doc.line(margin, y, pageW-margin, y); y += 5;
 
-  let y = 48;
-  doc.setFontSize(9);
-  doc.setFillColor(230,224,211);
-  doc.rect(margin, y, pageW-margin*2-40, 8, 'F'); doc.rect(margin, y, pageW-margin*2-40, 8);
-  doc.text('Semaine', margin+3, y+5.5);
-  doc.rect(pageW-margin-40, y, 40, 8, 'F'); doc.rect(pageW-margin-40, y, 40, 8);
-  doc.text('Heures', pageW-margin-20, y+5.5, {align:'center'});
-  y += 8;
+    // ── TABLEAUX SEMAINE (une par semaine du mois) ──
+    // On recalcule chaque semaine individuellement pour avoir le détail jour/chantier/tâche
+    const base = new Date();
+    const target = new Date(base.getFullYear(), base.getMonth() + offset, 1);
+    const monthYear = target.getFullYear();
+    const monthIdx  = target.getMonth();
+    const firstDay  = new Date(monthYear, monthIdx, 1);
+    const lastDay   = new Date(monthYear, monthIdx+1, 0);
 
-  doc.setFont('helvetica','normal');
-  if(!weeks.length){
-    doc.text('Aucune heure ce mois-ci.', margin+3, y+6);
-  } else {
-    weeks.forEach(w=>{
-      doc.rect(margin, y, pageW-margin*2-40, 8);
-      doc.text('Semaine ' + w.weekNum + ' (' + w.year + ')', margin+3, y+5.5);
-      doc.rect(pageW-margin-40, y, 40, 8);
-      doc.setFont('helvetica','bold');
-      doc.text(w.total + 'h', pageW-margin-20, y+5.5, {align:'center'});
+    // Calculer les lundis des semaines ISO qui touchent le mois
+    const mondaysSet = new Set();
+    let cur = new Date(firstDay);
+    while(cur <= lastDay){
+      const mon = getMondayOfWeek(cur, 0);
+      mondaysSet.add(mon.toISOString().slice(0,10));
+      cur.setDate(cur.getDate() + 7);
+    }
+    // Ajouter le lundi de la dernière semaine si dernier jour pas encore inclus
+    const monLastDay = getMondayOfWeek(lastDay, 0);
+    mondaysSet.add(monLastDay.toISOString().slice(0,10));
+
+    const mondays = [...mondaysSet].sort().map(s => new Date(s + 'T00:00:00'));
+
+    // Hauteur en-tête tableau + lignes
+    const rowH = 7, hdrH = 7;
+
+    mondays.forEach(monday => {
+      const weekNum = getISOWeekNumber(monday);
+      const days = [];
+      for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(d.getDate()+i); days.push(d); }
+
+      // Ne garder que les jours du mois qui ont des heures
+      const rows = days.map((d,i)=>{
+        if(d.getMonth() !== monthIdx) return null; // hors mois
+        const ed = aw.device.attendance[dateKeyOf(d)];
+        const entry = ed && ed.workers && ed.workers[aw.workerId];
+        const h = entry ? parseFloat(entry.hours||0) : 0;
+        const site = (ed && ed.siteId) ? (aw.device.sites||[]).find(s=>s.id===ed.siteId) : null;
+        return { d, label:dayLabels[i], h, task:entry?(entry.task||''):'', siteName:site?site.name:'' };
+      }).filter(r => r !== null);
+
+      const weekTotal = rows.reduce((s,r)=>s+r.h, 0);
+      if(weekTotal === 0) return; // semaine sans heures, on saute
+
+      // Vérifier si assez de place, sinon nouvelle page
+      const neededH = hdrH + rows.length * rowH + 8;
+      if(y + neededH > pageH - 30){ doc.addPage(); y = margin; }
+
+      // En-tête semaine
+      doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.setFillColor(230,224,211);
+      const cols = [margin, margin+22, margin+22+60, margin+22+60+25, colW-30+margin];
+      const cws  = [22, 60, 25, colW-22-60-25-30, 30];
+      // Header row
+      ['Jour','Chantier','Zone','Tâche','Heures'].forEach((h,i)=>{
+        doc.rect(cols[i], y, cws[i], hdrH, 'FD');
+        doc.text(h, cols[i]+2, y+hdrH-1.5);
+      });
+      y += hdrH;
+
+      // Lignes jours
+      doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+      rows.forEach(r=>{
+        const vals = [
+          _fmt(r.d)+' '+r.label,
+          r.siteName, '', r.task,
+          r.h > 0 ? r.h+'h' : '—'
+        ];
+        vals.forEach((v,i)=>{
+          doc.rect(cols[i], y, cws[i], rowH);
+          doc.text(String(v).substring(0,28), cols[i]+2, y+rowH-1.5);
+        });
+        y += rowH;
+      });
+
+      // Ligne total semaine
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+      doc.setFillColor(245,240,232);
+      doc.rect(margin, y, colW, rowH, 'FD');
+      doc.text('Semaine ' + weekNum + '  —  Total', margin+2, y+rowH-1.5);
+      doc.text(weekTotal + 'h', pageW-margin-2, y+rowH-1.5, { align:'right' });
       doc.setFont('helvetica','normal');
-      y += 8;
+      y += rowH + 5;
     });
+
+    // ── SIGNATURE ──
+    const signatureY = Math.max(y + 10, pageH - 45);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Signature de l\'ouvrier :', margin, signatureY);
+
+    // Chercher la signature de cet ouvrier dans les workers locaux
+    const localWorker = (data.workers||[]).find(w => w.id === aw.workerId || w.name === aw.name);
+    const sigDataUrl = localWorker && localWorker.signature ? localWorker.signature : null;
+
+    if(sigDataUrl && sigDataUrl.startsWith('data:image')){
+      try{
+        doc.addImage(sigDataUrl, 'PNG', pageW-margin-55, signatureY-6, 55, 22);
+      } catch(e){ /* image corrompue : on laisse le cadre vide */ }
+    }
+    // Cadre signature (toujours visible, vide si pas de sig)
+    doc.setDrawColor(180,170,155);
+    doc.rect(pageW-margin-55, signatureY-8, 55, 24);
+    doc.setFontSize(7.5); doc.setTextColor(160,150,140);
+    doc.text(aw.name, pageW-margin-55+2, signatureY-8+26);
+    doc.setTextColor(0,0,0);
+    doc.setFontSize(9);
+    doc.text('Mérignac, le ____/____/________', margin, signatureY + 16);
   }
 
+  const firstAw = targets[0];
+  const offset0 = _getWorkerMonthOffset(firstAw.key);
+  const { monthLabel:ml } = _computeWorkerMonthData(firstAw, offset0);
+  const label = targets.length === 1
+    ? firstAw.name.replace(/[^a-z0-9]+/gi,'-')
+    : 'tous-ouvriers';
+  const fname = 'fiches-heures-' + label + '-' + ml.replace(/\s+/g,'-') + '.pdf';
   const blob = doc.output('blob');
-  const fname = 'recap-mensuel-' + aw.name.replace(/[^a-z0-9]+/gi,'-') + '-' + monthLabel.replace(/\s+/g,'-') + '.pdf';
   await saveBlobToDevice(blob, fname, 'application/pdf', ['.pdf']);
 }
 
@@ -19324,7 +19534,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.12.0';
+const APP_VERSION = '2.13.0';
 
 const CHANGELOG = [
   {
