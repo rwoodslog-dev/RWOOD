@@ -2896,8 +2896,10 @@
       <input type="text" id="authCompany" placeholder="Ex : RWOOD Charpente">
     </div>
     <div class="field">
-      <label>Code Entreprise <span style="color:var(--ink-soft); font-weight:400;">(optionnel)</span></label>
-      <input type="text" id="authCompanyCode" placeholder="Donné par ton patron, si tu en as un" style="text-transform:uppercase;">
+      <div class="field" style="display:none;">
+        <label>Code Entreprise <span style="color:var(--ink-soft); font-weight:400;">(optionnel)</span></label>
+        <input type="text" id="authCompanyCode" placeholder="Donné par ton patron, si tu en as un" style="text-transform:uppercase;">
+      </div>
     </div>
     <div class="field" style="margin-bottom:0;">
       <label>Rôle</label>
@@ -3464,7 +3466,7 @@
               <label>Numéro de la comptable</label>
               <input type="tel" id="settingsAccountantPhone" placeholder="Ex : 06 12 34 56 78" onchange="updateAccountantPhone(this.value)">
             </div>
-            <div class="field" style="margin-top:10px; margin-bottom:0;">
+            <div class="field" style="margin-top:10px; margin-bottom:0; display:none;">
               <label>Code Entreprise</label>
               <input type="text" id="settingsCompanyCode" placeholder="Ex : RWOOD2026" style="text-transform:uppercase;" onchange="updateCompanyCode(this.value)">
             </div>
@@ -7376,12 +7378,7 @@ function renderConducteurDashboard(){
 let _newSiteChefs = []; // [{name, phone, authId}]
 
 function openAddChefToNewSite(){
-  const myCode = (data.settings.companyCode || '').toUpperCase();
-  if(!myCode){
-    showToast('Renseigne ton Code Entreprise dans Paramètres → Mode');
-    return;
-  }
-  // Utilise le même mécanisme que assignChefToSite mais pour le formulaire de création
+  // Pas de filtre par code entreprise — RWOOD est mono-entreprise
   _assignChefCandidates = [];
   const localChefs = (data.contacts||[])
     .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
@@ -7393,7 +7390,7 @@ function openAddChefToNewSite(){
       .map(u => ({name:u.name||u.authId, phone:normalizePhone(u.phone)}))];
     localChefs.forEach(lc => { if(!all.some(a => a.phone===lc.phone)) all.push(lc); });
 
-    if(!all.length){ showToast('Aucun chef trouvé avec le code ' + myCode); return; }
+    if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
     _assignChefCandidates = all;
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef d\'équipe';
     const list = document.getElementById('contactActionsList');
@@ -19856,7 +19853,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.13.6';
+const APP_VERSION = '2.13.7';
 
 const CHANGELOG = [
   {
@@ -25436,12 +25433,11 @@ async function pushMyUserRegistration(){
   } catch(e){ /* silencieux */ }
 }
 
-/* Recupere les chefs d'equipe enregistres avec le MEME Code Entreprise que moi */
+/* Récupère tous les chefs d'équipe du registre — pas de filtre par code entreprise
+   car RWOOD est mono-entreprise (le Code Entreprise est réservé à RWOOD Log SaaS) */
 async function fetchChefsForMyCompany(){
-  const myCode = (data.settings.companyCode || '').toUpperCase();
-  if(!myCode) return [];
   const users = await _fetchUsersRegistry();
-  return users.filter(u => u.role === 'chef' && (u.companyCode||'').toUpperCase() === myCode);
+  return users.filter(u => u.role === 'chef');
 }
 
 async function _fetchCompaniesRegistry(){
@@ -25705,15 +25701,13 @@ function startSyncLivePolling(){
 function openAddChefToExistingSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
-  const myCode = (data.settings.companyCode || '').toUpperCase();
-  if(!myCode){ showToast('Renseigne ton Code Entreprise dans Paramètres → Mode'); return; }
 
   fetchChefsForMyCompany().then(registryChefs => {
     const all = [...registryChefs.filter(u=>normalizePhone(u.phone)).map(u=>({name:u.name||u.authId, phone:normalizePhone(u.phone)}))];
     (data.contacts||[]).filter(c=>(c.role||'').toLowerCase().includes('chef')&&normalizePhone(c.phone))
       .forEach(c=>{ if(!all.some(a=>a.phone===normalizePhone(c.phone))) all.push({name:c.name, phone:normalizePhone(c.phone)}); });
 
-    if(!all.length){ showToast('Aucun chef trouvé'); return; }
+    if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
     _assignChefCandidates = all;
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef au chantier';
     document.getElementById('contactActionsList').innerHTML = all.map((c,i)=>`
@@ -25931,17 +25925,13 @@ async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
 
-  const myCode = (data.settings.companyCode || '').toUpperCase();
-  let candidates = [];
+  // Tous les chefs du registre (mono-entreprise, pas de filtre par code)
+  const registryChefs = await fetchChefsForMyCompany();
+  let candidates = registryChefs
+    .filter(u => normalizePhone(u.phone))
+    .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone) }));
 
-  if(myCode){
-    const registryChefs = await fetchChefsForMyCompany();
-    candidates = registryChefs
-      .filter(u => normalizePhone(u.phone))
-      .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone) }));
-  }
-
-  // Complète avec les contacts locaux "chef" non déjà présents (par téléphone), en secours
+  // Compléter avec les contacts locaux "chef"
   const localChefs = (data.contacts || [])
     .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
     .map(c => ({ name: c.name, phone: normalizePhone(c.phone) }));
@@ -25950,9 +25940,7 @@ async function assignChefToSite(siteId){
   });
 
   if(candidates.length === 0){
-    showToast(myCode
-      ? 'Aucun chef d\'équipe trouvé avec le code ' + myCode
-      : 'Renseigne d\'abord ton Code Entreprise dans Paramètres → Mode');
+    showToast('Aucun chef d\'équipe trouvé');
     return;
   }
 
