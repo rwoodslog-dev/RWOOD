@@ -3616,6 +3616,15 @@
             </div>
           </div>
 
+          <!-- Abonnés (chef uniquement) -->
+          <div id="chefSubscribersSection" style="display:none; margin-top:12px;">
+            <div class="section-title" style="margin-top:0;">Ouvriers abonnés à ta liste</div>
+            <div class="card">
+              <div class="hint" style="margin-bottom:8px;">Ces ouvriers voient ta liste dans leur bulle "Liste partagée".</div>
+              <div id="chefSubscribersList"></div>
+            </div>
+          </div>
+
           <!-- Icône de la bulle -->
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);margin-bottom:8px;margin-top:4px;">ICÔNE DE LA BULLE</div>
           <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;" id="pinnedEmojiPicker">
@@ -19771,7 +19780,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.14.6';
+const APP_VERSION = '2.14.7';
 
 const CHANGELOG = [
   {
@@ -24264,18 +24273,33 @@ function togglePinnedNotePopup(e){
   const popup = document.getElementById('pinnedNotePopup');
   if(popup.classList.contains('open')){ closePinnedNotePopup(); return; }
 
-  // Remplir "Ma liste" (toujours visible, pour tous les rôles)
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+
+  // Réinitialiser l'onglet
+  _currentTodoTab = 'ma';
+
+  if(role === 'chef'){
+    // Chef : une seule liste — masquer le toggle et la section partagée
+    const toggle = document.getElementById('todoTabRow');
+    const parSect = document.getElementById('todoSectionPartage');
+    const maSect  = document.getElementById('todoSectionMaListe');
+    if(toggle)  toggle.style.display  = 'none';
+    if(parSect) parSect.style.display = 'none';
+    if(maSect)  maSect.style.display  = '';
+  } else {
+    // Ouvrier/autres : toggle visible, démarrer sur "Ma liste"
+    const toggle = document.getElementById('todoTabRow');
+    if(toggle) toggle.style.display = '';
+    switchTodoTab('ma');
+  }
+
   _renderPinnedTasksInPopup();
   const inp = document.getElementById('pinnedPopupAddInput');
   if(inp) inp.value = '';
 
-  // Positionner et ouvrir
   _positionPinnedPopup(popup);
   popup.classList.add('open');
   setTimeout(()=> document.addEventListener('click', _closePinnedOnOutside, {once:true}), 10);
-
-  // Charger la liste partagée en arrière-plan
-  refreshSharedTodoInPopup();
 }
 
 let _currentTodoTab = 'ma'; // 'ma' | 'partage'
@@ -24456,6 +24480,7 @@ async function renderOuvrierTodoPopup(){
 
 async function onChefTodoSelectorChange(authId){
   _setFollowedChefId(authId || null);
+  pushMyUserRegistration(); // mettre à jour le registre avec le nouveau followedChefTodoId
   await refreshChefTodoInParams();
 }
 
@@ -24493,34 +24518,58 @@ function _updateChefTodoParamsLabel(){
 /* Initialise la section chef-todo dans paramètres selon le rôle */
 async function initChefTodoParamsSection(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
   const ouvrierSection = document.getElementById('chefTodoSelectorSection');
   const chefAddSection = document.getElementById('chefAddTaskSection');
   const chefSyncBtn    = document.getElementById('chefTodoSyncBtnSection');
 
   if(role === 'ouvrier'){
+    // Ouvrier : sélecteur chef + aperçu de la liste partagée
     if(ouvrierSection) ouvrierSection.style.display = '';
     if(chefAddSection) chefAddSection.style.display = 'none';
-    // Remplir le select avec les chefs
+    if(chefSyncBtn)    chefSyncBtn.style.display    = 'none';
+
     const sel = document.getElementById('chefTodoSelectorParams');
     if(sel){
       const chefs = await fetchChefsForMyCompany();
-      const myAuthId   = data.settings && data.settings.auth && data.settings.auth.authId;
       const followedId = _getFollowedChefId();
-      // Exclure soi-même de la liste
       const filteredChefs = chefs.filter(c => c.authId !== myAuthId);
       sel.innerHTML = '<option value="">— Choisir un chef —</option>' +
         filteredChefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name||c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('');
     }
     const followedId = _getFollowedChefId();
     if(followedId) await refreshChefTodoInParams();
+
   } else if(role === 'chef'){
+    // Chef : sa liste de tâches + liste de ses abonnés (ouvriers qui le suivent)
     if(ouvrierSection) ouvrierSection.style.display = 'none';
     if(chefAddSection) chefAddSection.style.display = '';
-    if(chefSyncBtn) chefSyncBtn.style.display = '';
+    if(chefSyncBtn)    chefSyncBtn.style.display    = '';
+
+    // Charger les abonnés depuis le registre
+    const subscribersSection = document.getElementById('chefSubscribersSection');
+    if(subscribersSection){
+      subscribersSection.style.display = '';
+      const subList = document.getElementById('chefSubscribersList');
+      if(subList) subList.innerHTML = '<span style="font-size:12px;opacity:0.6;">⏳ Chargement…</span>';
+      const users = await _fetchUsersRegistry();
+      const subscribers = users.filter(u => u.followedChefTodoId === myAuthId);
+      if(subList){
+        subList.innerHTML = subscribers.length
+          ? subscribers.map(u => `
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line-soft);">
+                <span style="font-size:18px;">👷</span>
+                <span style="font-size:13px;font-weight:600;">${escapeHtml(u.name||u.authId)}</span>
+              </div>`).join('')
+          : '<span style="font-size:12px;opacity:0.6;">Aucun ouvrier abonné pour le moment.</span>';
+      }
+    }
+
   } else {
+    // Conducteur/Patron/autres : juste la liste de tâches, pas de sélecteur ni abonnés
     if(ouvrierSection) ouvrierSection.style.display = 'none';
     if(chefAddSection) chefAddSection.style.display = '';
-    if(chefSyncBtn) chefSyncBtn.style.display = 'none';
+    if(chefSyncBtn)    chefSyncBtn.style.display    = 'none';
   }
 }
 
@@ -25720,6 +25769,7 @@ async function pushMyUserRegistration(){
       companyCode: (data.settings.companyCode || '').toUpperCase(),
       phone: normalizePhone((data.contacts||[]).find(c=>c.role==='Moi')?.phone || ''),
       teamName: data.settings.teamName || '',
+      followedChefTodoId: data.settings.followedChefTodoId || '',
       updatedAt: new Date().toISOString()
     };
 
@@ -26762,8 +26812,8 @@ async function checkDeviceRevocation(){
     <button onclick="closePinnedNotePopup()">×</button>
   </h4>
 
-  <!-- Toggle Ma liste / Liste partagée -->
-  <div style="display:flex; gap:4px; margin-bottom:10px; background:var(--bg); border-radius:10px; padding:3px;">
+  <!-- Toggle Ma liste / Liste partagée (masqué pour les chefs) -->
+  <div id="todoTabRow" style="display:flex; gap:4px; margin-bottom:10px; background:var(--bg); border-radius:10px; padding:3px;">
     <button id="todoTabMaListe" onclick="switchTodoTab('ma')"
       style="flex:1; padding:6px 8px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; background:var(--wood); color:#1a0f00;">
       Ma liste
