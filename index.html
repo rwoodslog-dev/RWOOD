@@ -7265,28 +7265,20 @@ function renderConducteurDashboard(){
 let _newSiteChefs = []; // [{name, phone, authId}]
 
 function openAddChefToNewSite(){
-  // Pas de filtre par code entreprise — RWOOD est mono-entreprise
   _assignChefCandidates = [];
-  const localChefs = (data.contacts||[])
-    .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
-    .map(c => ({name:c.name, phone:normalizePhone(c.phone)}));
-
   fetchChefsForMyCompany().then(registryChefs => {
-    const all = [...registryChefs
-      .filter(u => normalizePhone(u.phone)||u.authId)
-      .map(u => ({name:u.name||u.authId, phone:normalizePhone(u.phone), teamName:u.teamName||'', authId:u.authId||''}))];
-    localChefs.forEach(lc => { if(!all.some(a => a.phone===lc.phone)) all.push(lc); });
-    // Ajouter les noms d'équipes locaux sans compte
-    getTeamNames().forEach(t=>{ if(!all.some(a=>a.teamName===t||a.name===t)) all.push({name:t, phone:'', teamName:'', authId:'', isTeamNameOnly:true}); });
+    const all = registryChefs
+      .filter(u => u.authId && u.name)
+      .map(u => ({ name: u.name, authId: u.authId, phone: normalizePhone(u.phone||''), teamName: u.teamName||'' }));
 
-    if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
+    if(!all.length){ showToast('Aucun chef d\'équipe enregistré'); return; }
     _assignChefCandidates = all;
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef d\'équipe';
     const list = document.getElementById('contactActionsList');
     list.innerHTML = all.map((c,idx) => `
       <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToNewSite(${idx})">
-        ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
-        ${c.isTeamNameOnly ? ' <span style="font-size:10px;opacity:0.6;">(sans compte)</span>' : ''}
+        ${escapeHtml(c.teamName || c.name)}
+        <span style="font-size:11px;color:var(--ink-soft);"> (${escapeHtml(c.authId)})</span>
       </button>
     `).join('');
     openModal('contactActions');
@@ -19757,7 +19749,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.16.6';
+const APP_VERSION = '2.16.7';
 
 const CHANGELOG = [
   {
@@ -25957,10 +25949,11 @@ async function pushMyUserRegistration(){
   } catch(e){ /* silencieux */ }
 }
 
-/* Récupère tous les chefs d'équipe du registre — pas de filtre par code entreprise
-   car RWOOD est mono-entreprise (le Code Entreprise est réservé à RWOOD Log SaaS) */
+/* Récupère tous les chefs d'équipe du registre — toujours frais depuis Supabase */
 async function fetchChefsForMyCompany(){
+  window._usersRegistryCache = null; // invalider le cache à chaque appel
   const users = await _fetchUsersRegistry();
+  window._usersRegistryCache = users; // mettre à jour après fetch
   return users.filter(u => u.role === 'chef');
 }
 
@@ -26430,19 +26423,19 @@ function openAddChefToExistingSite(siteId){
   if(!site) return;
 
   fetchChefsForMyCompany().then(registryChefs => {
-    const all = [...registryChefs.filter(u=>normalizePhone(u.phone)||u.authId).map(u=>({name:u.name||u.authId, phone:normalizePhone(u.phone), teamName:u.teamName||'', authId:u.authId||''}))];
-    (data.contacts||[]).filter(c=>(c.role||'').toLowerCase().includes('chef')&&normalizePhone(c.phone))
-      .forEach(c=>{ if(!all.some(a=>a.phone===normalizePhone(c.phone))) all.push({name:c.name, phone:normalizePhone(c.phone), teamName:'', authId:''}); });
-    // Ajouter les noms d'équipes locaux sans compte
-    getTeamNames().forEach(t=>{ if(!all.some(a=>a.teamName===t||a.name===t)) all.push({name:t, phone:'', teamName:'', authId:'', isTeamNameOnly:true}); });
+    // UNIQUEMENT les chefs avec compte actif dans le registre Supabase
+    // Les teamNames locaux (source des fantômes BCM) sont exclus
+    const all = registryChefs
+      .filter(u => u.authId && u.name)
+      .map(u => ({ name: u.name, authId: u.authId, phone: normalizePhone(u.phone||''), teamName: u.teamName||'' }));
 
-    if(!all.length){ showToast('Aucun chef d\'équipe trouvé'); return; }
+    if(!all.length){ showToast('Aucun chef d\'équipe enregistré'); return; }
     _assignChefCandidates = all;
     document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef au chantier';
-    document.getElementById('contactActionsList').innerHTML = all.map((c,i)=>`
+    document.getElementById('contactActionsList').innerHTML = all.map((c,i) => `
       <button class="action-sheet-item" onclick="closeModal('contactActions'); addChefToExistingSite('${siteId}', ${i})">
-        ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
-        ${c.isTeamNameOnly ? ' <span style="font-size:10px;opacity:0.6;">(sans compte)</span>' : ''}
+        ${escapeHtml(c.teamName || c.name)}
+        <span style="font-size:11px;color:var(--ink-soft);"> (${escapeHtml(c.authId)})</span>
       </button>
     `).join('');
     openModal('contactActions');
@@ -26682,41 +26675,24 @@ async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
 
-  // 1. Chefs depuis le registre Supabase (ont un compte dans l'app)
+  // UNIQUEMENT les chefs avec compte actif dans le registre Supabase
   const registryChefs = await fetchChefsForMyCompany();
-  let candidates = registryChefs
-    .filter(u => normalizePhone(u.phone) || u.authId)
-    .map(u => ({ name: u.name || u.authId, phone: normalizePhone(u.phone), teamName: u.teamName||'', authId: u.authId||'' }));
+  const candidates = registryChefs
+    .filter(u => u.authId && u.name)
+    .map(u => ({ name: u.name, authId: u.authId, phone: normalizePhone(u.phone||''), teamName: u.teamName||'' }));
 
-  // 2. Contacts locaux avec rôle "chef" (carnet d'adresses)
-  const localChefs = (data.contacts || [])
-    .filter(c => (c.role||'').toLowerCase().includes('chef') && normalizePhone(c.phone))
-    .map(c => ({ name: c.name, phone: normalizePhone(c.phone), teamName: '', authId: '' }));
-  localChefs.forEach(lc => {
-    if(!candidates.some(c => c.phone === lc.phone)) candidates.push(lc);
-  });
-
-  // 3. Noms d'équipes manuels (Paramètres → Équipes) — y compris les chefs sans compte app
-  const localTeamNames = getTeamNames();
-  localTeamNames.forEach(teamName => {
-    // Éviter les doublons : si un chef du registre a déjà ce teamName, on ne le rajoute pas
-    if(!candidates.some(c => c.teamName === teamName || c.name === teamName)){
-      candidates.push({ name: teamName, phone: '', teamName: '', authId: '', isTeamNameOnly: true });
-    }
-  });
-
-  if(candidates.length === 0){
-    showToast('Aucun chef d\'équipe trouvé');
+  if(!candidates.length){
+    showToast('Aucun chef d\'équipe enregistré');
     return;
   }
 
   _assignChefCandidates = candidates;
-  document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef au chantier';
+  document.getElementById('contactActionsTitle').textContent = 'Assigner un chef d\'équipe';
   const list = document.getElementById('contactActionsList');
   list.innerHTML = candidates.map((c, idx) => `
     <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', ${idx})">
-      ${escapeHtml(c.name)}${c.teamName ? ` <span style="font-size:11px;color:var(--ink-soft);">— ${escapeHtml(c.teamName)}</span>` : ''}
-      ${c.isTeamNameOnly ? ' <span style="font-size:10px;color:var(--ink-soft);opacity:0.7;">(sans compte)</span>' : ''}
+      ${escapeHtml(c.teamName || c.name)}
+      <span style="font-size:11px;color:var(--ink-soft);"> (${escapeHtml(c.authId)})</span>
     </button>
   `).join('');
   openModal('contactActions');
