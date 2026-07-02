@@ -9618,6 +9618,13 @@ function renderSharedMediaList(siteId){
     const openHref = m.type === 'pdf'
       ? `https://docs.google.com/viewer?url=${encodeURIComponent(m.url)}&embedded=true`
       : m.url;
+
+    // Bouton Ouvrir : PDF → share natif (Adobe, Drive…) | Photo → lien direct
+    const openBtn = m.type === 'pdf'
+      ? `<button class="btn btn-sm" style="flex:1;padding:7px;font-size:12px;"
+           onclick="openPdfNative('${m.id}','${siteId}')">👁 Ouvrir</button>`
+      : `<a href="${m.url}" target="_blank" rel="noopener"
+           class="btn btn-sm" style="flex:1;padding:7px;font-size:12px;text-align:center;text-decoration:none;">👁 Ouvrir</a>`;
     return `
       <div class="card" style="padding:10px 12px;margin-bottom:8px;">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -9630,8 +9637,7 @@ function renderSharedMediaList(siteId){
             style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:4px;flex-shrink:0;">×</button>
         </div>
         <div style="display:flex;gap:6px;margin-top:8px;">
-          <a href="${openHref}" target="_blank" rel="noopener"
-            class="btn btn-sm" style="flex:1;padding:7px;font-size:12px;text-align:center;text-decoration:none;">👁 Ouvrir</a>
+          ${openBtn}
           <button class="btn btn-sm btn-outline" style="flex:1;padding:7px;font-size:12px;"
             onclick="shareMediaFile('${m.id}','${siteId}')">📤 Partager</button>
         </div>
@@ -9648,6 +9654,39 @@ function deleteSharedMedia(siteId, mediaId){
   saveData();
   renderSharedMediaList(siteId);
   if(site.syncLive) pushSharedSite(site);
+}
+
+/* Ouvre un PDF avec l'app native du téléphone (Adobe Reader, Drive, etc.) */
+async function openPdfNative(mediaId, siteId){
+  const site  = data.sites.find(s => s.id === siteId);
+  const media = site && site.sharedMedia && site.sharedMedia.find(m => m.id === mediaId);
+  if(!media){ showToast('Fichier introuvable'); return; }
+
+  showToast('⏳ Chargement du PDF…');
+  try{
+    const res  = await fetch(media.url);
+    if(!res.ok) throw new Error('Erreur réseau ' + res.status);
+    const blob = await res.blob();
+    const file = new File([blob], media.name || 'document.pdf', { type: 'application/pdf' });
+
+    // Web Share → ouvre "Ouvrir avec" sur Android (Adobe Reader, Drive, etc.)
+    if(navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: media.name });
+    } else {
+      // Fallback : téléchargement direct
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
+      a.href     = url;
+      a.download = media.name || 'document.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast('PDF téléchargé');
+    }
+  } catch(e){
+    if(e.name !== 'AbortError') showToast('Erreur : ' + (e.message || 'impossible d\'ouvrir le PDF'));
+  }
 }
 
 /* Partage un fichier individuel via le menu natif Android (Dropbox, Drive, email...) */
@@ -20359,7 +20398,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.18.5';
+const APP_VERSION = '2.18.6';
 
 const CHANGELOG = [
   {
