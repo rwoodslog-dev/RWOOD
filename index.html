@@ -3281,8 +3281,17 @@
           <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="exportAllSharedMedia(currentDetailSite)">
             📦 Tout exporter / Dropbox
           </button>
+          <button class="btn btn-outline btn-block" style="margin-top:8px;" id="btnSendToWorker" onclick="openSendMediaToWorker(currentDetailSite)">
+            👷 Envoyer un document à un ouvrier
+          </button>
         </div>
         <div id="sharedMediaList"></div>
+
+        <!-- Documents reçus du chef (visible ouvriers) -->
+        <div id="workerReceivedMediaSection" style="display:none;">
+          <div class="section-title" style="margin-top:16px;">📥 Documents reçus du chef</div>
+          <div id="workerReceivedMediaList"></div>
+        </div>
       </div>
 
       <!-- Sous-onglet Stock -->
@@ -6255,7 +6264,7 @@ async function initRwoodStorage(){
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
-  setTimeout(()=> pushMyUserRegistration(), 5000);
+  setTimeout(()=> pullWorkerMedia(), 5800); // ouvrier : documents reçus du chef
   setTimeout(()=> _restoreAccountDataIfNeeded(), 5200);
 
   // Restaurer les données compte depuis rwood-account (clé permanente)
@@ -7210,7 +7219,7 @@ function setDetailTab(tab){
     if(tab === 'stock') renderSiteStock(currentDetailSite);
     if(tab === 'photos' || tab === 'journal') renderDetail(currentDetailSite);
     if(tab === 'documents'){ renderSiteDocuments(currentDetailSite); renderMaterialOrdersList(currentDetailSite); }
-    if(tab === 'medias')   { renderSharedMediaList(currentDetailSite); }
+    if(tab === 'medias')   { renderSharedMediaList(currentDetailSite); renderWorkerReceivedMedia(currentDetailSite); }
     if(tab === 'zinc') renderSiteZincList(currentDetailSite);
     if(tab === 'synchro') renderSynchroEquipe(currentDetailSite);
   }
@@ -9748,7 +9757,251 @@ async function _ensurePdfJs(){
   });
 }
 
-/* Ouvre le PDF avec le visionneur natif Android/iOS */
+/* ═══════════════════════════════════════════════════════════════════
+   SYNCHRO MÉDIAS CHEF → OUVRIER
+   Clé Supabase : worker_media_[authId]
+   Même pattern que conductor_alert_ / conductor_alert_
+   ═══════════════════════════════════════════════════════════════════ */
+const WORKER_MEDIA_PREFIX = 'worker_media_';
+
+/* Chef : envoyer un document à un ouvrier */
+async function openSendMediaToWorker(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site){ showToast('Chantier introuvable'); return; }
+
+  const media = (site.sharedMedia || []);
+  if(!media.length){ showToast('Aucun document sur ce chantier — ajoutes-en d\'abord'); return; }
+
+  // Récupérer les ouvriers depuis le registre Supabase
+  showToast('⏳ Chargement des ouvriers…');
+  window._usersRegistryCache = null;
+  const allUsers = await _fetchUsersRegistry();
+  const ouvriers = allUsers.filter(u =>
+    u.authId && u.name &&
+    u.role === 'ouvrier' &&
+    !u.authId.toLowerCase().endsWith('.test') &&
+    !u.authId.toLowerCase().endsWith('.dupont')
+  );
+
+  if(!ouvriers.length){ showToast('Aucun ouvrier enregistré avec un compte'); return; }
+
+  // Créer le modal
+  const ex = document.getElementById('modal-sendToWorker');
+  if(ex) ex.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-sendToWorker';
+  div.innerHTML = `
+    <div class="modal" style="max-height:90vh;">
+      <div class="modal-header">
+        <h2>👷 Envoyer à un ouvrier</h2>
+        <button class="modal-close" id="sendWorkerClose">×</button>
+      </div>
+
+      <div class="section-title">Choisir l'ouvrier</div>
+      <div id="sendWorkerList" style="max-height:30vh;overflow-y:auto;margin-bottom:12px;display:flex;flex-direction:column;gap:6px;"></div>
+
+      <div class="section-title">Choisir le document</div>
+      <div id="sendWorkerMediaList" style="max-height:30vh;overflow-y:auto;margin-bottom:14px;display:flex;flex-direction:column;gap:6px;"></div>
+
+      <button class="btn btn-primary btn-block" id="sendWorkerConfirm" disabled style="opacity:0.5;">
+        🚀 Envoyer
+      </button>
+    </div>`;
+  document.body.appendChild(div);
+  document.getElementById('sendWorkerClose').addEventListener('click', () => div.remove());
+
+  let selectedWorker = null;
+  let selectedMedia  = null;
+
+  function refreshConfirm(){
+    const btn = document.getElementById('sendWorkerConfirm');
+    const ok  = selectedWorker && selectedMedia;
+    btn.disabled = !ok;
+    btn.style.opacity = ok ? '1' : '0.5';
+  }
+
+  // Liste ouvriers
+  const wList = document.getElementById('sendWorkerList');
+  ouvriers.forEach(u => {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border:1.5px solid var(--line);border-radius:10px;cursor:pointer;';
+    row.innerHTML = `
+      <input type="radio" name="sendWorkerRadio" style="width:18px;height:18px;accent-color:var(--wood);">
+      <div>
+        <div style="font-weight:700;font-size:14px;">${escapeHtml(u.name)}</div>
+        <div style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(u.authId)}</div>
+      </div>`;
+    row.querySelector('input').addEventListener('change', () => {
+      selectedWorker = u;
+      wList.querySelectorAll('label').forEach(l => l.style.borderColor = 'var(--line)');
+      row.style.borderColor = 'var(--wood)';
+      refreshConfirm();
+    });
+    wList.appendChild(row);
+  });
+
+  // Liste documents
+  const mList = document.getElementById('sendWorkerMediaList');
+  media.forEach(m => {
+    const icon = m.type === 'pdf' ? '📄' : '🖼️';
+    const row  = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border:1.5px solid var(--line);border-radius:10px;cursor:pointer;';
+    row.innerHTML = `
+      <input type="radio" name="sendMediaRadio" style="width:18px;height:18px;accent-color:var(--wood);">
+      <span style="font-size:20px;">${icon}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</div>
+        <div style="font-size:11px;color:var(--ink-soft);">Par ${escapeHtml(m.uploadedBy||'')}</div>
+      </div>`;
+    row.querySelector('input').addEventListener('change', () => {
+      selectedMedia = m;
+      mList.querySelectorAll('label').forEach(l => l.style.borderColor = 'var(--line)');
+      row.style.borderColor = 'var(--wood)';
+      refreshConfirm();
+    });
+    mList.appendChild(row);
+  });
+
+  // Confirmer l'envoi
+  document.getElementById('sendWorkerConfirm').addEventListener('click', async () => {
+    if(!selectedWorker || !selectedMedia) return;
+    div.remove();
+    await _pushMediaToWorker(selectedWorker.authId, selectedWorker.name, selectedMedia, site.name);
+  });
+}
+
+/* Push un média dans la clé Supabase de l'ouvrier */
+async function _pushMediaToWorker(workerAuthId, workerName, mediaItem, siteName){
+  try{
+    const key = WORKER_MEDIA_PREFIX + workerAuthId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    let items = [];
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        items = (d && d.media) || [];
+      }
+    }
+    // Eviter les doublons
+    if(!items.some(i => i.id === mediaItem.id)){
+      const chefName = (function(){
+        const p = data.settings && data.settings.myProfile;
+        return (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim() || 'Chef';
+      })();
+      items.push({
+        ...mediaItem,
+        sentBy: chefName,
+        sentAt: new Date().toISOString(),
+        siteName
+      });
+    }
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ media: items }) })
+    });
+    showToast('✅ Document envoyé à ' + workerName);
+
+    // Envoyer aussi une alerte (même système que conductor_alert_)
+    const alertText = 'Le chef vous a envoyé un document : "' + mediaItem.name + '" (chantier ' + siteName + ')';
+    const alertKey  = CONDUCTOR_ALERT_PREFIX + workerAuthId;
+    const resA = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(alertKey) + '&select=data', { headers:{'Prefer':''} });
+    let alerts = [];
+    if(resA.ok){ const rows = await resA.json(); if(rows&&rows.length){ const d = typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data; alerts=(d&&d.alerts)||[]; } }
+    alerts.push({ id: uid(), text: alertText, createdAt: new Date().toISOString(), read: false, dismissed: false });
+    await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{'Prefer':'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify({ user_id: alertKey, updated_at: new Date().toISOString(), data: JSON.stringify({ alerts }) }) });
+
+  } catch(e){ showToast('Erreur envoi : ' + (e.message||'')); }
+}
+
+/* Ouvrier : récupère ses documents au démarrage */
+async function pullWorkerMedia(){
+  const role    = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'ouvrier') return;
+  const authId  = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!authId) return;
+  try{
+    const key = WORKER_MEDIA_PREFIX + authId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return;
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    window._workerReceivedMedia = (d && d.media) || [];
+  } catch(e){ window._workerReceivedMedia = []; }
+}
+
+/* Afficher les documents reçus dans l'onglet Médias */
+async function renderWorkerReceivedMedia(siteId){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const section = document.getElementById('workerReceivedMediaSection');
+  const list    = document.getElementById('workerReceivedMediaList');
+  const addBtn  = document.getElementById('btnAddSharedMedia');
+  const expBtn  = document.querySelector('[onclick*="exportAllSharedMedia"]');
+  const sndBtn  = document.getElementById('btnSendToWorker');
+
+  if(role === 'ouvrier'){
+    // Ouvrier : cacher les boutons d'ajout/partage, montrer les documents reçus
+    if(addBtn) addBtn.style.display = 'none';
+    if(expBtn) expBtn.style.display = 'none';
+    if(sndBtn) sndBtn.style.display = 'none';
+    await pullWorkerMedia();
+    const received = (window._workerReceivedMedia || []).filter(m => m.siteName === (data.sites.find(s=>s.id===siteId)||{}).name || m.siteId === siteId);
+    if(!section || !list) return;
+    if(!received.length){
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    list.innerHTML = received.map(m => {
+      const icon = m.type==='pdf' ? '📄' : '🖼️';
+      const date = new Date(m.sentAt||m.uploadedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+      return `
+        <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+          <span style="font-size:24px;flex-shrink:0;">${icon}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</div>
+            <div style="font-size:11px;color:var(--ink-soft);">De ${escapeHtml(m.sentBy||'Chef')} · ${date}</div>
+          </div>
+          <button class="btn btn-sm" onclick="openPdfNativeByUrl('${m.url}','${m.name}','${m.type}')"
+            style="padding:6px 10px;font-size:12px;">Ouvrir</button>
+        </div>`;
+    }).join('');
+  } else {
+    // Chef/Conducteur : tout visible
+    if(addBtn) addBtn.style.display = '';
+    if(sndBtn) sndBtn.style.display = role === 'chef' ? '' : 'none';
+    if(section) section.style.display = 'none';
+  }
+}
+
+/* Ouvrir un fichier par URL (photos direct, PDFs natif) */
+async function openPdfNativeByUrl(url, name, type){
+  if(type !== 'pdf'){
+    window.open(url, '_blank');
+    return;
+  }
+  showToast('⏳ Ouverture…');
+  try{
+    const res  = await fetch(url);
+    const blob = await res.blob();
+    const file = new File([blob], name||'document.pdf', { type:'application/pdf' });
+    if(navigator.canShare && navigator.canShare({ files:[file] })){
+      await navigator.share({ files:[file], title:name });
+    } else {
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = u; a.download = name||'document.pdf'; a.target='_blank';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(()=>URL.revokeObjectURL(u), 30000);
+    }
+  } catch(e){ if(e.name!=='AbortError') window.open(url,'_blank'); }
+}
+
+
 async function openPdfNative(mediaId, siteId){
   const site  = data.sites.find(s => s.id === siteId);
   const media = site && site.sharedMedia && site.sharedMedia.find(m => m.id === mediaId);
@@ -21075,7 +21328,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.19.3';
+const APP_VERSION = '2.19.4';
 
 const CHANGELOG = [
   {
