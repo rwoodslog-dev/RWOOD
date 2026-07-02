@@ -6211,37 +6211,44 @@ async function initRwoodStorage(){
   setTimeout(()=> pushMyUserRegistration(), 5000);
   setTimeout(()=> _restoreAccountDataIfNeeded(), 5200);
 
-  // Restaurer les données compte depuis rwood-account si data est vide
-  // Fait immédiatement pour que les pointages utilisent le bon nom
+  // Restaurer les données compte depuis rwood-account (clé permanente)
+  // TOUJOURS appliqué — rwood-account est la source de vérité pour les données compte
   try{
     const rawAccount = localStorage.getItem('rwood-account');
     if(rawAccount){
       const acc = JSON.parse(rawAccount);
       if(acc.name){
+        if(!data.settings.myProfile) data.settings.myProfile = {};
         const profile = data.settings.myProfile;
-        let worker = profile && profile.workerId
+
+        // Trouver ou créer le worker
+        let worker = profile.workerId
           ? data.workers.find(w => w.id === profile.workerId)
           : null;
-        if(!worker || !worker.name){
-          // Worker absent ou sans nom — restaurer depuis rwood-account
-          if(!worker){
-            worker = { id: acc.workerId || uid(), name: acc.name, active: true };
-            data.workers.push(worker);
-            if(!data.settings.myProfile) data.settings.myProfile = {};
-            data.settings.myProfile.workerId = worker.id;
-          }
-          worker.name = acc.name;
-          worker.phone = acc.phone || '';
-          if(acc.signature) worker.signature = acc.signature;
-          let contact = data.contacts.find(c => c.linkedWorkerId === worker.id);
-          if(!contact){
-            contact = { id: uid(), name: worker.name, role: 'Moi', phone: acc.phone||'', email: acc.email||'', linkedWorkerId: worker.id };
-            data.contacts.push(contact);
-          } else {
-            contact.email = acc.email || contact.email;
-          }
-          saveData();
+        if(!worker){
+          worker = { id: acc.workerId || uid(), active: true };
+          data.workers.push(worker);
+          profile.workerId = worker.id;
         }
+
+        // Toujours écraser avec les données rwood-account (source de vérité)
+        worker.name  = acc.name;
+        worker.phone = acc.phone || '';
+        if(acc.signature) worker.signature = acc.signature;
+
+        // Trouver ou créer le contact "Moi"
+        let contact = data.contacts.find(c => c.linkedWorkerId === worker.id)
+                   || data.contacts.find(c => c.role === 'Moi');
+        if(!contact){
+          contact = { id: uid(), role: 'Moi', color: '#C17A3D', linkedWorkerId: worker.id };
+          data.contacts.push(contact);
+        }
+        contact.name  = acc.name;
+        contact.phone = acc.phone || '';
+        contact.email = acc.email || '';
+        contact.linkedWorkerId = worker.id;
+
+        saveData();
       }
     }
   } catch(e){}
@@ -12449,6 +12456,16 @@ function saveSignature(){
   const canvas = document.getElementById('signatureCanvas');
   w.signature = canvas.toDataURL('image/png');
   saveData();
+
+  // Mettre à jour rwood-account avec la nouvelle signature
+  try{
+    const rawAccount = localStorage.getItem('rwood-account');
+    const acc = rawAccount ? JSON.parse(rawAccount) : {};
+    acc.signature = w.signature;
+    acc.savedAt = new Date().toISOString();
+    localStorage.setItem('rwood-account', JSON.stringify(acc));
+  } catch(e){}
+
   closeModal('signature');
   renderPointage();
   if(document.getElementById('view-parametres').classList.contains('active')) renderMyAccount();
@@ -19891,7 +19908,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.17.8';
+const APP_VERSION = '2.17.9';
 
 const CHANGELOG = [
   {
