@@ -3088,7 +3088,15 @@
       <button class="nav-btn" data-view="depot" onclick="goTo('depot')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8h14M5 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M9 12h6M9 16h4"/></svg></span><span class="lbl">Dépôt</span>
       </button>
-      
+
+      <button class="nav-btn" data-view="alertes-conducteur" id="navBtnAlertesConducteur" style="display:none;" onclick="goTo('alertes-conducteur')">
+        <span class="ico" style="position:relative;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span id="alertesConducteurBadge" style="display:none; position:absolute; top:-4px; right:-6px; background:#E05555; color:#fff; font-size:9px; font-weight:800; border-radius:99px; padding:1px 4px; min-width:14px; text-align:center;"></span>
+        </span>
+        <span class="lbl">Alertes</span>
+      </button>
+
     </nav>
 
     <div id="navReorderControls" style="display:none;">
@@ -4526,6 +4534,28 @@
 
 
     <!-- ═══ VUE DÉPÔT ═══ -->
+    <!-- VUE ALERTES CONDUCTEUR -->
+    <section class="view" id="view-alertes-conducteur">
+      <div class="view-heading">🔔 Envoyer une alerte</div>
+
+      <!-- Barre de recherche -->
+      <div style="margin-bottom:12px;">
+        <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
+          oninput="renderAlertesConducteurList()"
+          style="width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; color:var(--ink); font-size:14px;">
+      </div>
+
+      <!-- Filtres rapides -->
+      <div class="chip-row" style="margin-bottom:14px;">
+        <div class="chip selected" id="alerteFilterAll"   onclick="setAlerteFilter('all')">Tous</div>
+        <div class="chip"          id="alerteFilterChef"  onclick="setAlerteFilter('chef')">Chefs</div>
+        <div class="chip"          id="alerteFilterOuvrier" onclick="setAlerteFilter('ouvrier')">Ouvriers</div>
+      </div>
+
+      <!-- Liste des membres -->
+      <div id="alertesMemberList"></div>
+    </section>
+
     <section class="view" id="view-depot">
       <div class="page-title">
         <div>
@@ -7128,6 +7158,7 @@ function goTo(viewName, siteId){
   if(viewName === 'zone-chantier') renderZoneChantier();
 
   if(viewName === 'depot') renderDepot();
+  if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
 
   // Recharger les photos après chaque changement de vue
   // (le MutationObserver gère les nouvelles images, hydrateMediaElements couvre les existantes)
@@ -7209,6 +7240,10 @@ function renderSites(){
   // Bouton sync visible uniquement pour les chefs (qui reçoivent des chantiers)
   const syncBtn = document.getElementById('chefSyncBtn');
   if(syncBtn) syncBtn.style.display = isChefRole ? '' : 'none';
+
+  // Onglet Alertes visible uniquement pour les conducteurs
+  const navAlertes = document.getElementById('navBtnAlertesConducteur');
+  if(navAlertes) navAlertes.style.display = isConducteur ? '' : 'none';
 
   dashboard.style.display = isConducteur ? 'block' : 'none';
   container.style.display = isConducteur ? 'none' : 'block';
@@ -8668,6 +8703,107 @@ function copyKeyboxCode(){
   }).catch(()=>{
     showToast('Impossible de copier');
   });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ALERTES CONDUCTEUR — Envoi de messages à n'importe quel membre
+   ═══════════════════════════════════════════════════════════════════ */
+
+let _alerteFilter = 'all';
+
+function setAlerteFilter(filter){
+  _alerteFilter = filter;
+  ['All','Chef','Ouvrier'].forEach(f => {
+    const el = document.getElementById('alerteFilter' + f);
+    if(el) el.classList.toggle('selected', f.toLowerCase() === filter);
+  });
+  renderAlertesConducteurList();
+}
+
+async function renderAlertesConducteurList(){
+  const el = document.getElementById('alertesMemberList');
+  if(!el) return;
+  el.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">⏳ Chargement…</div>';
+  window._usersRegistryCache = null;
+  const users = await _fetchUsersRegistry();
+  const q = ((document.getElementById('alertesSearchInput')||{}).value||'').trim().toLowerCase();
+  const roleLabel = { chef:"Chef d'equipe", ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron' };
+  const roleColor = { chef:'var(--wood)', ouvrier:'var(--green)', conducteur:'#7B61FF', comptable:'#5BA4CF', patron:'#E05555' };
+  const roleEmoji = { chef:'👷', ouvrier:'🔧', conducteur:'🏗️', comptable:'📊', patron:'👑' };
+
+  const members = users
+    .filter(u => u.authId && u.name)
+    .filter(u => {
+      const id = (u.authId||'').toLowerCase();
+      if(id.endsWith('.test')||id.endsWith('.dupont')) return false;
+      if(_alerteFilter==='chef'    && u.role!=='chef')    return false;
+      if(_alerteFilter==='ouvrier' && u.role!=='ouvrier') return false;
+      if(q && !(u.name.toLowerCase().includes(q)||u.authId.toLowerCase().includes(q))) return false;
+      return true;
+    })
+    .sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+
+  if(!members.length){
+    el.innerHTML='<div class="hint" style="text-align:center;padding:24px;">Aucun membre trouvé.</div>';
+    return;
+  }
+  el.innerHTML = members.map(u=>`
+    <div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;"
+      onclick="openAlerteCompose('${u.authId.replace(/'/g,"\\'")}','${u.name.replace(/'/g,"\\'")}')">
+      <div style="width:38px;height:38px;border-radius:50%;background:${roleColor[u.role]||'var(--line)'};display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">${roleEmoji[u.role]||'👤'}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:14px;">${escapeHtml(u.name)}</div>
+        <div style="font-size:11px;color:${roleColor[u.role]||'var(--ink-soft)'};font-weight:600;">${roleLabel[u.role]||u.role||''}</div>
+        <div style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(u.authId)}</div>
+      </div>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--ink-soft)" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+    </div>`).join('');
+}
+
+function openAlerteCompose(authId, name){
+  const ex = document.getElementById('modal-alerteCompose');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className='modal-overlay open';
+  div.id='modal-alerteCompose';
+  const templates=['🕐 Réunion demain matin','⚠️ Changement de planning','📦 Livraison en cours','🔑 Récupérer les clés','📋 Pointage à compléter','🚨 Urgence sur le chantier'];
+  div.innerHTML=`
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🔔 Alerte pour ${escapeHtml(name)}</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-alerteCompose').remove()">×</button>
+      </div>
+      <div class="hint" style="margin-bottom:12px;">Apparaîtra en popup sur l'app de <strong>${escapeHtml(name)}</strong> à sa prochaine ouverture.</div>
+      <div class="section-title">Modèles rapides</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">
+        ${templates.map(t=>`<button class="chip" style="font-size:12px;" onclick="document.getElementById('alerteComposeText').value=${JSON.stringify(t)}">${t}</button>`).join('')}
+      </div>
+      <div class="section-title">Message</div>
+      <textarea id="alerteComposeText" placeholder="Ex : Réunion demain à 8h au dépôt…"
+        style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-size:14px;resize:vertical;min-height:90px;font-family:inherit;margin-bottom:14px;"></textarea>
+      <button class="btn btn-primary btn-block" onclick="sendAlerteToMember(${JSON.stringify(authId)},${JSON.stringify(name)})">🚀 Envoyer l'alerte</button>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+async function sendAlerteToMember(recipientAuthId, recipientName){
+  const textEl=document.getElementById('alerteComposeText');
+  const text=textEl?textEl.value.trim():'';
+  if(!text){showToast('Écris un message');return;}
+  const p=data.settings&&data.settings.myProfile;
+  const conductorName=((p&&p.firstName||'')+(p&&p.lastName?' '+p.lastName:'')).trim()||(data.settings&&data.settings.teamName)||'Le conducteur';
+  const alertText=conductorName+' : '+text;
+  try{
+    const key=CONDUCTOR_ALERT_PREFIX+recipientAuthId;
+    const res=await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(key)+'&select=data',{headers:{'Prefer':''}});
+    let alerts=[];
+    if(res.ok){const rows=await res.json();if(rows&&rows.length){const d=typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data;alerts=(d&&d.alerts)||[];}}
+    alerts.push({id:uid(),text:alertText,createdAt:new Date().toISOString(),read:false,dismissed:false});
+    await supaFetch('/rest/v1/rwood_sync',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:key,updated_at:new Date().toISOString(),data:JSON.stringify({alerts})})});
+    document.getElementById('modal-alerteCompose').remove();
+    showToast('✅ Alerte envoyée à '+recipientName);
+    _playAlertSound&&_playAlertSound();
+  }catch(e){showToast('Erreur lors de l\'envoi');}
 }
 
 /* ============ ITINÉRAIRES ============ */
@@ -19908,7 +20044,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.17.9';
+const APP_VERSION = '2.18.0';
 
 const CHANGELOG = [
   {
