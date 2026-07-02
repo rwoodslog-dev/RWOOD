@@ -14925,10 +14925,16 @@ function renderComptableFichesContent(rows){
     return;
   }
 
-  // Construire la liste de tous les ouvriers synchronisés (toutes equipes/appareils confondus)
+  // Construire la liste dédoublonnée — un seul slot par ouvrier (nom normalisé)
   const allWorkers = [];
+  const workerSeenNames = new Map(); // nom normalisé → déjà ajouté
+
   rows.forEach(device => {
     (device.workers||[]).forEach(w => {
+      const workerNorm = (w.name||'').trim().toLowerCase().replace(/\s+/g, ' ');
+      if(!workerNorm) return;
+      if(workerSeenNames.has(workerNorm)) return; // doublon — déjà le plus récent (rows triés)
+      workerSeenNames.set(workerNorm, true);
       allWorkers.push({ key: _workerKey(device.deviceId, w.id), workerId: w.id, name: w.name, device });
     });
   });
@@ -19820,7 +19826,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.17.5';
+const APP_VERSION = '2.17.6';
 
 const CHANGELOG = [
   {
@@ -25450,21 +25456,48 @@ async function pullAllPointagesForComptable(){
     const rows = await res.json();
     if(!rows) return [];
 
-    return rows.map(row => {
-      const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-      return {
-        // Retirer le prefixe COMPANY_SYNC_KEY pour obtenir le deviceId brut
-        // (meme format que getDeviceSyncId() — necessaire pour que la suppression
-        // et la revocation fonctionnent correctement, sinon double-prefixage)
-        deviceId: row.user_id.replace(COMPANY_SYNC_KEY + '_', ''),
-        updatedAt: row.updated_at,
-        ownerName: d.ownerName || 'Inconnu',
-        ownerRole: d.ownerRole || 'chef',
-        workers: d.workers || [],
-        attendance: d.attendance || {},
-        sites: d.sites || []
-      };
-    }).sort((a,b)=> new Date(b.updatedAt) - new Date(a.updatedAt));
+    // Suffixes des comptes test à exclure
+    const EXCLUDED_SUFFIXES = ['.dupont', '.test'];
+
+    // Parser + filtrer les comptes test + trier du plus récent au plus ancien
+    const parsed = rows
+      .map(row => {
+        const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+        return {
+          deviceId:   row.user_id.replace(COMPANY_SYNC_KEY + '_', ''),
+          updatedAt:  row.updated_at,
+          ownerName:  d.ownerName  || 'Inconnu',
+          ownerRole:  d.ownerRole  || 'chef',
+          ownerAuthId: d.ownerAuthId || '',
+          workers:    d.workers    || [],
+          attendance: d.attendance || {},
+          sites:      d.sites      || []
+        };
+      })
+      .filter(device => {
+        // Exclure comptes test par authId ou deviceId
+        const comptableId = (device.ownerAuthId || device.deviceId || '').toLowerCase();
+        return !EXCLUDED_SUFFIXES.some(suffix => comptableId.endsWith(suffix));
+      })
+      // Plus récent en premier — garantit que le dédoublon garde la version la plus à jour
+      .sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+    // Dédoublonner : garder une seule entrée par utilisateur (authId prioritaire, sinon nom normalisé)
+    const seenUserKeys = new Map();
+    const deduplicated = [];
+    for(const device of parsed){
+      const comptableAuthId = device.ownerAuthId.trim();
+      const comptableNorm   = device.ownerName.trim().toLowerCase().replace(/\s+/g, ' ');
+      const userKey = comptableAuthId || comptableNorm;
+      if(!userKey) continue;
+      if(!seenUserKeys.has(userKey)){
+        seenUserKeys.set(userKey, true);
+        deduplicated.push(device);
+      }
+      // doublon ignoré — le premier (plus récent) est déjà gardé
+    }
+
+    return deduplicated;
   } catch(e){
     console.warn('[Sync pointages] pull echoue', e);
     return null;
