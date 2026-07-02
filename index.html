@@ -9615,11 +9615,8 @@ function renderSharedMediaList(siteId){
     const preview = m.type === 'photo'
       ? `<img src="${m.url}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="this.style.display='none'">`
       : `<span style="font-size:28px;flex-shrink:0;">${icon}</span>`;
-    const openHref = m.type === 'pdf'
-      ? `https://docs.google.com/viewer?url=${encodeURIComponent(m.url)}&embedded=true`
-      : m.url;
-
-    // Bouton Ouvrir : PDF → share natif (Adobe, Drive…) | Photo → lien direct
+    // PDFs → ouverture native (visionneur Android/iOS)
+    // Photos → lien direct
     const openBtn = m.type === 'pdf'
       ? `<button class="btn btn-sm" style="flex:1;padding:7px;font-size:12px;"
            onclick="openPdfNative('${m.id}','${siteId}')">👁 Ouvrir</button>`
@@ -9751,7 +9748,44 @@ async function _ensurePdfJs(){
   });
 }
 
-let _pdfZoomScale    = 1.0;
+/* Ouvre le PDF avec le visionneur natif Android/iOS */
+async function openPdfNative(mediaId, siteId){
+  const site  = data.sites.find(s => s.id === siteId);
+  const media = site && site.sharedMedia && site.sharedMedia.find(m => m.id === mediaId);
+  if(!media){ showToast('Fichier introuvable'); return; }
+
+  showToast('⏳ Ouverture…');
+  try{
+    // Télécharger le PDF en blob
+    const res  = await fetch(media.url);
+    if(!res.ok) throw new Error('Erreur réseau ' + res.status);
+    const blob = await res.blob();
+    const file = new File([blob], media.name || 'document.pdf', { type: 'application/pdf' });
+
+    // Méthode 1 : Web Share → ouvre "Ouvrir avec" → Adobe, Samsung PDF, etc.
+    if(navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: media.name });
+      return;
+    }
+
+    // Méthode 2 : blob URL → navigateur ouvre avec visionneur natif
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href     = blobUrl;
+    a.target   = '_blank';
+    a.download = media.name || 'document.pdf';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+
+  } catch(e){
+    if(e.name !== 'AbortError'){
+      // Méthode 3 : fallback direct URL (dernier recours)
+      window.open(media.url, '_blank');
+    }
+  }
+}
 let _pdfTx           = 0;
 let _pdfTy           = 0;
 let _pdfZoomInstalled = false;
@@ -21041,7 +21075,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.19.2';
+const APP_VERSION = '2.19.3';
 
 const CHANGELOG = [
   {
