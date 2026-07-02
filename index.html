@@ -9757,11 +9757,125 @@ async function _ensurePdfJs(){
   });
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   SYNCHRO MÉDIAS CHEF → OUVRIER
-   Clé Supabase : worker_media_[authId]
-   Même pattern que conductor_alert_ / conductor_alert_
-   ═══════════════════════════════════════════════════════════════════ */
+/* ── Rendu des ouvriers assignés (même style que chefsHtml) ──────── */
+function _renderAssignedWorkers(site){
+  const workers = site.assignedWorkers || [];
+  if(!workers.length) return '<div class="hint" style="text-align:center;padding:8px;">Aucun ouvrier assigné.</div>';
+  return workers.map(w => `
+    <div class="card" style="padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:20px;">🔧</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:14px;">${escapeHtml(w.name)}</div>
+        <div style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(w.authId||'')}</div>
+      </div>
+      <button onclick="removeWorkerFromSite(${JSON.stringify(site.id)},${JSON.stringify(w.authId)})"
+        style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:18px;padding:4px;">×</button>
+    </div>`).join('');
+}
+
+/* ── Sélecteur multi-ouvriers (calqué sur openMultiChefSelector) ─── */
+let _multiWorkerSiteId   = null;
+let _multiWorkerCandidates = [];
+
+async function openMultiWorkerSelector(siteId){
+  _multiWorkerSiteId = siteId;
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+
+  // Créer le modal
+  const ex = document.getElementById('modal-multiWorkerSelector');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-multiWorkerSelector';
+  div.innerHTML = `
+    <div class="modal" style="max-height:90vh;">
+      <div class="modal-header">
+        <h2>👷 Ouvriers assignés</h2>
+        <button class="modal-close" id="mwClose">×</button>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Coche les ouvriers à assigner sur ce chantier.</div>
+      <div id="mwLoading" style="text-align:center;padding:16px;color:var(--ink-soft);">⏳ Chargement du registre…</div>
+      <div id="mwList" style="max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;"></div>
+      <button class="btn btn-primary btn-block" style="margin-top:14px;" id="mwConfirm">✅ Valider</button>
+    </div>`;
+  document.body.appendChild(div);
+  document.getElementById('mwClose').addEventListener('click', () => div.remove());
+
+  // Pull frais registre
+  window._usersRegistryCache = null;
+  const users = await _fetchUsersRegistry();
+  const candidates = users
+    .filter(u => u.authId && u.name && u.role === 'ouvrier' &&
+      !u.authId.toLowerCase().endsWith('.test') &&
+      !u.authId.toLowerCase().endsWith('.dupont'))
+    .sort((a,b) => a.name.localeCompare(b.name,'fr'));
+
+  _multiWorkerCandidates = candidates;
+  document.getElementById('mwLoading').style.display = 'none';
+
+  const assigned = site.assignedWorkers || [];
+  const listEl   = document.getElementById('mwList');
+
+  if(!candidates.length){
+    listEl.innerHTML = '<div class="hint" style="text-align:center;padding:12px;">Aucun ouvrier avec compte actif.<br>Les ouvriers apparaissent dès qu\'ils créent leur compte.</div>';
+    return;
+  }
+
+  listEl.innerHTML = candidates.map((u, i) => {
+    const checked = assigned.some(a => a.authId === u.authId);
+    return `
+      <label style="display:flex;align-items:center;gap:12px;padding:10px 12px;
+        background:var(--card);border:1.5px solid ${checked?'var(--wood)':'var(--line)'};
+        border-radius:10px;cursor:pointer;" id="mwRow_${i}">
+        <input type="checkbox" id="mwCb_${i}" ${checked?'checked':''}
+          style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"
+          onchange="document.getElementById('mwRow_${i}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:14px;">🔧 ${escapeHtml(u.name)}</div>
+          <div style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(u.authId)}</div>
+        </div>
+      </label>`;
+  }).join('');
+
+  document.getElementById('mwConfirm').addEventListener('click', async () => {
+    const selected = _multiWorkerCandidates.filter((_,i) => {
+      const cb = document.getElementById('mwCb_' + i);
+      return cb && cb.checked;
+    });
+    site.assignedWorkers = selected.map(u => ({ name: u.name, authId: u.authId, phone: u.phone||'' }));
+    saveData();
+    div.remove();
+    renderSynchroEquipe(siteId);
+    if(site.syncLive) await pushSharedSite(site);
+    showToast(selected.length + ' ouvrier' + (selected.length>1?'s':'') + ' assigné' + (selected.length>1?'s':''));
+
+    // Notifier chaque ouvrier assigné
+    const chefName = (function(){
+      const p = data.settings && data.settings.myProfile;
+      return (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim() || 'Le conducteur';
+    })();
+    selected.filter(u=>u.authId).forEach(u => {
+      const alertKey = CONDUCTOR_ALERT_PREFIX + u.authId;
+      supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(alertKey)+'&select=data',{headers:{'Prefer':''}})
+        .then(r=>r.json()).then(rows=>{
+          const d = rows&&rows.length ? (typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data) : {};
+          const alerts = (d&&d.alerts)||[];
+          alerts.push({id:uid(),text:chefName+' vous a assigné au chantier '+site.name,createdAt:new Date().toISOString(),read:false,dismissed:false});
+          supaFetch('/rest/v1/rwood_sync',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:alertKey,updated_at:new Date().toISOString(),data:JSON.stringify({alerts})})});
+        }).catch(()=>{});
+    });
+  });
+}
+
+function removeWorkerFromSite(siteId, authId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  site.assignedWorkers = (site.assignedWorkers||[]).filter(w => w.authId !== authId);
+  saveData();
+  renderSynchroEquipe(siteId);
+  if(site.syncLive) pushSharedSite(site);
+}
 const WORKER_MEDIA_PREFIX = 'worker_media_';
 
 /* Chef : envoyer un document à un ouvrier */
@@ -21328,7 +21442,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.19.4';
+const APP_VERSION = '2.19.5';
 
 const CHANGELOG = [
   {
@@ -27775,7 +27889,9 @@ function renderSynchroEquipe(siteId){
       ${chefsHtml}
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAddChefToExistingSite('${siteId}')">+ Ajouter un chef</button>
 
-      <div class="section-title" style="margin-top:16px;">Infos chantier</div>
+      <div class="section-title" style="margin-top:16px;">Ouvriers assignés</div>
+      ${_renderAssignedWorkers(site)}
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openMultiWorkerSelector('${siteId}')">👷 Gérer les ouvriers</button>
       <div class="card">
         <div class="field"><label>Code boîte à clés</label>
           <input type="text" id="editSiteKeybox" value="${escapeHtml(site.keyboxCode||'')}" placeholder="Ex : A4521" oninput="updateSiteFieldLocal('${siteId}','keyboxCode',this.value)">
@@ -27821,7 +27937,9 @@ function renderSynchroEquipe(siteId){
       ${chefsHtml}
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openAddChefToExistingSite('${siteId}')">+ Ajouter un chef</button>
 
-      <div class="section-title" style="margin-top:16px;">Infos chantier (→ temps réel)</div>
+      <div class="section-title" style="margin-top:16px;">Ouvriers assignés</div>
+      ${_renderAssignedWorkers(site)}
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openMultiWorkerSelector('${siteId}')">👷 Gérer les ouvriers</button>
       <div class="card">
         <div class="field"><label>Code boîte à clés</label>
           <input type="text" value="${escapeHtml(site.keyboxCode||'')}" placeholder="Ex : A4521" onchange="updateSiteFieldAndPush('${siteId}','keyboxCode',this.value)">
@@ -28296,7 +28414,8 @@ async function pushSharedSite(site){
       assignedChefAuthId:  site.assignedChefAuthId || '',
       assignedAt:          site.assignedAt         || null,
       teamName:            site.teamName           || '',
-      sharedMedia:         Array.isArray(site.sharedMedia) ? site.sharedMedia : []
+      sharedMedia:         Array.isArray(site.sharedMedia) ? site.sharedMedia : [],
+      assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : []
     };
     const idx = shared.findIndex(s => s.id === site.id);
     if(idx === -1) shared.push(snapshot); else shared[idx] = snapshot;
