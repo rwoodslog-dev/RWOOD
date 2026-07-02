@@ -3161,6 +3161,7 @@
       <div class="chip-row" id="detailTabs" style="margin: 16px 0 12px;">
         <div class="chip" data-tab="photos" onclick="setDetailTab('photos')">Photos</div>
         <div class="chip" data-tab="documents" onclick="setDetailTab('documents')">Documents</div>
+        <div class="chip" data-tab="medias" onclick="setDetailTab('medias')">📎 Médias</div>
         <div class="chip" data-tab="zinc" onclick="setDetailTab('zinc')">Zinc</div>
         <div class="chip" data-tab="synchro" id="tabSynchroEquipe" style="display:none;" onclick="setDetailTab('synchro')">🔄 Synchro Équipe</div>
       </div>
@@ -3266,6 +3267,19 @@
           </div>
         </div>
         <div id="siteDocumentsList"></div>
+      </div>
+
+      <!-- Sous-onglet Médias partagés (Photos + PDFs synchro Cloud) -->
+      <div class="detail-tab" id="detailTab-medias">
+        <div class="card" style="margin-bottom:12px;">
+          <div style="font-size:13px;color:var(--ink-soft);margin-bottom:10px;">
+            Photos et PDFs stockés dans le Cloud. Accessibles par le conducteur <strong>et</strong> le chef d'équipe assigné.
+          </div>
+          <button class="btn btn-primary btn-block" id="btnAddSharedMedia" onclick="triggerSharedMediaUpload(currentDetailSite)">
+            ⬆️ Ajouter une photo ou un PDF
+          </button>
+        </div>
+        <div id="sharedMediaList"></div>
       </div>
 
       <!-- Sous-onglet Stock -->
@@ -7193,6 +7207,7 @@ function setDetailTab(tab){
     if(tab === 'stock') renderSiteStock(currentDetailSite);
     if(tab === 'photos' || tab === 'journal') renderDetail(currentDetailSite);
     if(tab === 'documents'){ renderSiteDocuments(currentDetailSite); renderMaterialOrdersList(currentDetailSite); }
+    if(tab === 'medias')   { renderSharedMediaList(currentDetailSite); }
     if(tab === 'zinc') renderSiteZincList(currentDetailSite);
     if(tab === 'synchro') renderSynchroEquipe(currentDetailSite);
   }
@@ -9485,7 +9500,137 @@ function deleteSiteDocument(siteId, docId){
   renderSiteDocuments(siteId);
 }
 
-/* ============ COUVERTURE : catalogue de tuiles ============ */
+/* ═══════════════════════════════════════════════════════════════════
+   SYNCHRO MÉDIA — Photos et PDFs via Supabase Storage
+   Bucket : rwood-shared (public)
+   Chemin  : sites/{siteId}/{uid}.{ext}
+   Les URLs sont stockées dans site.sharedMedia[] et incluses dans pushSharedSite
+   ═══════════════════════════════════════════════════════════════════ */
+
+const SUPA_BUCKET = 'rwood-shared';
+
+/* Upload un fichier (File ou Blob) vers Supabase Storage — retourne l'URL publique */
+async function uploadFileToSupabase(file, siteId){
+  const ext  = file.name ? file.name.split('.').pop().toLowerCase() : 'bin';
+  const path = `sites/${siteId}/${uid()}.${ext}`;
+  const res  = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPA_KEY,
+      'Authorization': 'Bearer ' + SUPA_KEY,
+      'Content-Type': file.type || 'application/octet-stream',
+      'x-upsert': 'true'
+    },
+    body: file
+  });
+  if(!res.ok){
+    const err = await res.text();
+    throw new Error('Upload échoué : ' + err);
+  }
+  return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
+}
+
+/* Ajoute un fichier au chantier et le pousse en synchro */
+async function addSharedMediaToSite(siteId, file){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+
+  showToast('⬆️ Upload en cours…');
+  try{
+    const url     = await uploadFileToSupabase(file, siteId);
+    const isPdf   = file.type === 'application/pdf' || file.name.endsWith('.pdf');
+    const isImage = file.type.startsWith('image/');
+    const profile = data.settings.myProfile || {};
+    const uploader = ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim()
+                  || data.settings.teamName || 'Conducteur';
+
+    if(!site.sharedMedia) site.sharedMedia = [];
+    site.sharedMedia.push({
+      id:          uid(),
+      name:        file.name,
+      url,
+      type:        isPdf ? 'pdf' : isImage ? 'photo' : 'file',
+      mimeType:    file.type,
+      uploadedBy:  uploader,
+      uploadedAt:  new Date().toISOString(),
+      siteId
+    });
+
+    saveData();
+    renderSharedMediaList(siteId);
+    showToast('✅ ' + file.name + ' ajouté');
+
+    // Pousser immédiatement si synchro active
+    if(site.syncLive) await pushSharedSite(site);
+
+  } catch(e){
+    showToast('Erreur upload : ' + (e.message||''));
+  }
+}
+
+/* Rend la liste des médias partagés dans l'onglet du chantier */
+function renderSharedMediaList(siteId){
+  const el = document.getElementById('sharedMediaList');
+  if(!el) return;
+  const site = data.sites.find(s => s.id === siteId);
+  const media = (site && site.sharedMedia) || [];
+
+  if(!media.length){
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">Aucun fichier partagé pour ce chantier.</div>';
+    return;
+  }
+
+  el.innerHTML = media.slice().reverse().map(m => {
+    const icon = m.type==='pdf' ? '📄' : m.type==='photo' ? '🖼️' : '📎';
+    const date = new Date(m.uploadedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+    return `
+      <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;flex-shrink:0;">${icon}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(m.name)}</div>
+          <div style="font-size:11px;color:var(--ink-soft);">Par ${escapeHtml(m.uploadedBy)} · ${date}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button class="btn btn-sm" style="padding:6px 10px;font-size:12px;"
+            onclick="window.open('${m.url}','_blank')">Ouvrir</button>
+          <button onclick="deleteSharedMedia('${siteId}','${m.id}')"
+            style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:4px;">×</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* Supprime un média partagé (local uniquement — le fichier reste sur Storage) */
+function deleteSharedMedia(siteId, mediaId){
+  if(!confirm('Retirer ce fichier de la synchro ?')) return;
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site || !site.sharedMedia) return;
+  site.sharedMedia = site.sharedMedia.filter(m => m.id !== mediaId);
+  saveData();
+  renderSharedMediaList(siteId);
+  if(site.syncLive) pushSharedSite(site);
+}
+
+/* Déclencheur upload — input file caché */
+function triggerSharedMediaUpload(siteId){
+  let input = document.getElementById('sharedMediaInput');
+  if(!input){
+    input = document.createElement('input');
+    input.type = 'file';
+    input.id = 'sharedMediaInput';
+    input.accept = 'image/*,.pdf';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+  }
+  input.value = '';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if(file) await addSharedMediaToSite(siteId, file);
+  };
+  input.click();
+}
+
+
 let editingTileId = null;
 let newTilePhotoData = null;
 let newTileDocData = null;
@@ -20105,7 +20250,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.18.1';
+const APP_VERSION = '2.18.2';
 
 const CHANGELOG = [
   {
@@ -27072,7 +27217,8 @@ async function pushSharedSite(site){
       assignedChefName:    site.assignedChefName   || '',
       assignedChefAuthId:  site.assignedChefAuthId || '',
       assignedAt:          site.assignedAt         || null,
-      teamName:            site.teamName           || ''
+      teamName:            site.teamName           || '',
+      sharedMedia:         Array.isArray(site.sharedMedia) ? site.sharedMedia : []
     };
     const idx = shared.findIndex(s => s.id === site.id);
     if(idx === -1) shared.push(snapshot); else shared[idx] = snapshot;
@@ -27138,7 +27284,7 @@ async function pullSharedSites(){
     const conducteurFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','assignedChefs','assignedChefs',
       'assignedChefPhone','assignedChefName','assignedChefAuthId','trajetZone',
-      'syncLive','lastSyncAt','ownerDeviceId','teamName'];
+      'syncLive','lastSyncAt','ownerDeviceId','teamName','sharedMedia'];
 
     relevant.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
