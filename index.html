@@ -3327,23 +3327,7 @@
 
         <div class="section-title">Chantier du jour</div>
         <div class="site-select-wrap">
-          <!-- Multi-chantiers : remplace le select unique -->
-          <div id="pointageSiteMulti" style="margin-bottom:10px;">
-            <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Chantier(s) du jour</div>
-            <div id="pointageSiteChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
-            <div style="display:flex;gap:6px;">
-              <select id="pointageSiteAdd" style="flex:1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;color:var(--ink);font-size:13px;">
-                <option value="">+ Ajouter un chantier…</option>
-              </select>
-              <button onclick="addChantierToDay()" style="background:var(--wood);border:none;border-radius:10px;padding:8px 14px;font-weight:700;color:#1a0f00;cursor:pointer;font-size:14px;">+</button>
-            </div>
-            <!-- Ajout d'un chantier libre (non dans la liste) -->
-            <div style="display:flex;gap:6px;margin-top:6px;">
-              <input type="text" id="pointageSiteLibre" placeholder="Ou saisir un nom libre…"
-                style="flex:1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;color:var(--ink);font-size:13px;">
-              <button onclick="addChantierLibreToDay()" style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 14px;color:var(--ink);cursor:pointer;font-size:14px;">+</button>
-            </div>
-          </div>
+          <select id="pointageSite" class="card" style="border:1.5px solid var(--line); width:100%; padding:12px; font-size:15px;"></select>
         </div>
 
         <div class="section-title">Transport</div>
@@ -13729,30 +13713,15 @@ function renderPointage(){
   document.getElementById('pointageDateInput').value = currentPointageDate;
 
   const dateKey = currentPointageDate;
-  if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: null, siteIds: [], siteLabels: [], workers: {} };
+  if(!data.attendance[dateKey]) data.attendance[dateKey] = {siteId: data.sites[0]?.id || null, workers: {}};
   const today = data.attendance[dateKey];
 
-  // Migration : si siteId seul (ancien format) → convertir en siteIds[]
-  if(today.siteId && (!today.siteIds || !today.siteIds.length)){
-    today.siteIds   = [today.siteId];
-    today.siteLabels = [data.sites.find(s=>s.id===today.siteId)?.name || today.siteId];
-    today.siteId    = null;
-  }
-  if(!today.siteIds)    today.siteIds    = [];
-  if(!today.siteLabels) today.siteLabels = [];
-
-  // Remplir le select d'ajout avec les chantiers pas encore ajoutés
-  const addSel = document.getElementById('pointageSiteAdd');
-  if(addSel){
-    addSel.innerHTML = '<option value="">+ Ajouter un chantier…</option>' +
-      data.sites
-        .filter(s => !today.siteIds.includes(s.id))
-        .map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
-        .join('');
-  }
-
-  // Afficher les chips des chantiers sélectionnés
-  _renderPointageSiteChips(today, dateKey);
+  const siteSelect = document.getElementById('pointageSite');
+  siteSelect.innerHTML = data.sites.map(s=>`<option value="${s.id}" ${s.id===today.siteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+  siteSelect.onchange = ()=>{
+    today.siteId = siteSelect.value;
+    saveData();
+  };
 
   // Initialiser le toggle voiture perso
   renderVoiturePersoToggle(today.voiturePerso || false);
@@ -13825,22 +13794,7 @@ function renderPointage(){
           </div>
           <div class="task-row" style="grid-column:1/-1;">
             <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--ink-soft);font-weight:700;margin-bottom:6px;">Tâche effectuée</div>
-            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px;">
-              ${TACHE_OPTIONS.map(opt=>`
-                <button type="button"
-                  style="padding:4px 10px;border-radius:20px;border:1.5px solid ${entry.task===opt?'var(--wood)':'var(--line)'};background:${entry.task===opt?'var(--wood)':'var(--card)'};color:${entry.task===opt?'#1a0f00':'var(--ink)'};font-size:11px;font-weight:700;cursor:pointer;"
-                  onclick="updateAttendance('${dateKey}','${w.id}','task','${opt}');renderPointage();">${opt}</button>
-              `).join('')}
-              <button type="button"
-                style="padding:4px 10px;border-radius:20px;border:1.5px dashed var(--line);background:var(--card);color:var(--ink-soft);font-size:11px;font-weight:700;cursor:pointer;"
-                onclick="promptAddCustomTache(document.querySelector('[data-wid=\'${w.id}\']')?.value||'')">+ Créer une tâche</button>
-            </div>
-            <input type="text" placeholder="Ou tape une tâche libre…"
-              value="${escapeHtml(entry.task)}"
-              data-wid="${w.id}"
-              style="width:100%;box-sizing:border-box;"
-              oninput="updateAttendance('${dateKey}','${w.id}','task', this.value)"
-              onchange="updateAttendance('${dateKey}','${w.id}','task', this.value)">
+            ${renderTacheSelector(dateKey, w.id, entry)}
           </div>
         </div>
         <div class="worker-phone-row">
@@ -21473,7 +21427,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.19.6';
+const APP_VERSION = '2.19.7';
 
 const CHANGELOG = [
   {
@@ -26641,17 +26595,98 @@ function sendQuincaillerieList(contactId){
 
 
 /* ── Types de tâches charpente (Heures) ──────────────────────────────── */
-const TACHE_OPTIONS_DEFAULT = [
-  'Charpente','Couverture','Zinguerie','Bardages',
-  'Menuiserie','Terrasse','Ossature bois','Mise en place'
+/* ── Structure officielle des tranches / sous-tranches ─────────────── */
+const TRANCHES = [
+  { label: 'Mise en place',   sub: [] },
+  { label: 'Démolition',      sub: [] },
+  { label: 'Ossature bois',   sub: [] },
+  { label: 'Plancher',        sub: [] },
+  { label: 'Charpente',       sub: [] },
+  { label: 'Couverture',      sub: ['Tuile','Bac','Étanchéité','Zinguerie','Velux'] },
+  { label: 'Bardage',         sub: [] },
+  { label: 'Menuiserie',      sub: [] },
+  { label: 'Terrasse bois',   sub: [] },
+  { label: 'Agencement',      sub: [] },
 ];
-// TACHE_OPTIONS est maintenant une fonction qui combine les tâches par défaut + custom
-function getTacheOptions(){
-  const custom = (data.settings && data.settings.customTacheOptions) || [];
-  return [...TACHE_OPTIONS_DEFAULT, ...custom.filter(t=>!TACHE_OPTIONS_DEFAULT.includes(t))];
+
+/* Construit la valeur stockée : "Couverture / Tuile" ou "Charpente" */
+function buildTacheValue(tranche, sousTranche){
+  if(sousTranche) return tranche + ' / ' + sousTranche;
+  return tranche;
 }
-// Compat : garder TACHE_OPTIONS comme tableau live (pour les renders inline)
-Object.defineProperty(window, 'TACHE_OPTIONS', { get: getTacheOptions, configurable: true });
+
+/* Décompose la valeur stockée */
+function parseTacheValue(val){
+  if(!val) return { tranche: '', sousTranche: '' };
+  const sep = val.indexOf(' / ');
+  if(sep !== -1) return { tranche: val.slice(0, sep), sousTranche: val.slice(sep + 3) };
+  return { tranche: val, sousTranche: '' };
+}
+
+/* Génère le HTML du sélecteur tranche + sous-tranche pour un ouvrier */
+function renderTacheSelector(dateKey, workerId, entry){
+  const { tranche, sousTranche } = parseTacheValue(entry.task || '');
+  const hasSub = tranche === 'Couverture';
+
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px;" id="trancheChips_${workerId}">
+      ${TRANCHES.map(t => `
+        <button type="button" data-tranche="${t.label}"
+          style="padding:4px 10px;border-radius:20px;border:1.5px solid ${tranche===t.label?'var(--wood)':'var(--line)'};
+            background:${tranche===t.label?'var(--wood)':'var(--card)'};
+            color:${tranche===t.label?'#1a0f00':'var(--ink)'};
+            font-size:11px;font-weight:700;cursor:pointer;"
+          onclick="selectTranche('${dateKey}','${workerId}','${t.label}')">
+          ${t.label}${t.sub.length?'  ▾':''}
+        </button>`).join('')}
+    </div>
+
+    <div id="sousTranche_${workerId}" style="display:${hasSub?'flex':'none'};flex-wrap:wrap;gap:5px;margin-bottom:7px;">
+      <span style="font-size:11px;font-weight:700;color:var(--ink-soft);align-self:center;margin-right:4px;">Sous-tranche :</span>
+      ${TRANCHES.find(t=>t.label==='Couverture').sub.map(s => `
+        <button type="button"
+          style="padding:4px 10px;border-radius:20px;border:1.5px solid ${sousTranche===s?'var(--wood)':'var(--line)'};
+            background:${sousTranche===s?'var(--wood)':'var(--card)'};
+            color:${sousTranche===s?'#1a0f00':'var(--ink)'};
+            font-size:11px;font-weight:600;cursor:pointer;"
+          onclick="selectSousTranche('${dateKey}','${workerId}','${s}')">
+          ${s}
+        </button>`).join('')}
+    </div>`;
+}
+
+/* Sélection d'une tranche principale */
+function selectTranche(dateKey, workerId, tranche){
+  const entry = (data.attendance[dateKey] && data.attendance[dateKey].workers[workerId]) || {};
+  const { sousTranche } = parseTacheValue(entry.task || '');
+  // Reset sous-tranche si on change de tranche
+  const newSousTranche = (tranche === 'Couverture' && sousTranche) ? sousTranche : '';
+  updateAttendance(dateKey, workerId, 'task', buildTacheValue(tranche, newSousTranche));
+  // Mise à jour visuelle rapide sans re-render complet
+  const chips = document.getElementById('trancheChips_' + workerId);
+  const subDiv = document.getElementById('sousTranche_' + workerId);
+  if(chips) chips.querySelectorAll('button').forEach(b => {
+    const isSelected = b.dataset.tranche === tranche;
+    b.style.borderColor  = isSelected ? 'var(--wood)' : 'var(--line)';
+    b.style.background   = isSelected ? 'var(--wood)' : 'var(--card)';
+    b.style.color        = isSelected ? '#1a0f00'     : 'var(--ink)';
+  });
+  if(subDiv) subDiv.style.display = (tranche === 'Couverture') ? 'flex' : 'none';
+}
+
+/* Sélection d'une sous-tranche Couverture */
+function selectSousTranche(dateKey, workerId, sousTranche){
+  updateAttendance(dateKey, workerId, 'task', buildTacheValue('Couverture', sousTranche));
+  const subDiv = document.getElementById('sousTranche_' + workerId);
+  if(subDiv) subDiv.querySelectorAll('button').forEach(b => {
+    const isSelected = b.textContent.trim() === sousTranche;
+    b.style.borderColor = isSelected ? 'var(--wood)' : 'var(--line)';
+    b.style.background  = isSelected ? 'var(--wood)' : 'var(--card)';
+    b.style.color       = isSelected ? '#1a0f00'     : 'var(--ink)';
+  });
+}
+
+
 
 function addCustomTacheOption(name){
   if(!name || !name.trim()) return;
