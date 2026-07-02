@@ -9752,6 +9752,8 @@ async function _ensurePdfJs(){
 }
 
 let _pdfZoomScale    = 1.0;
+let _pdfTx           = 0;
+let _pdfTy           = 0;
 let _pdfZoomInstalled = false;
 
 async function _pdfRenderPage(pageNum){
@@ -9760,25 +9762,36 @@ async function _pdfRenderPage(pageNum){
   _pdfCurrentPage = pageNum;
 
   const page      = await _pdfInstance.getPage(pageNum);
-  const dpr       = window.devicePixelRatio || 1;
   const viewport0 = page.getViewport({ scale: 1 });
+
+  /* Rendu à 3× la résolution écran — lisible jusqu'à ×3 de zoom sans flou */
+  const QUALITY   = 3;
   const maxW      = Math.min(window.innerWidth, 480) - 20;
   const baseScale = maxW / viewport0.width;
-  const scale     = baseScale * dpr;
+  const renderScale = baseScale * QUALITY;
+  const viewport  = page.getViewport({ scale: renderScale });
 
-  const viewport = page.getViewport({ scale });
-  const canvas   = document.getElementById('pdfCanvas');
+  const canvas = document.getElementById('pdfCanvas');
   if(!canvas) return;
 
-  canvas.width        = viewport.width;
-  canvas.height       = viewport.height;
-  canvas.style.width  = (viewport.width  / dpr) + 'px';
-  canvas.style.height = (viewport.height / dpr) + 'px';
+  /* Canvas physique = haute résolution */
+  canvas.width  = viewport.width;
+  canvas.height = viewport.height;
+  /* Taille CSS = taille affichée normale (1 doigt = pas de zoom) */
+  canvas.style.width  = (viewport.width  / QUALITY) + 'px';
+  canvas.style.height = (viewport.height / QUALITY) + 'px';
+  canvas.style.transformOrigin = '0 0';
 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport }).promise;
 
+  /* Remettre position + zoom à zéro */
+  _pdfZoomScale = 1.0;
+  _pdfTx = 0; _pdfTy = 0;
+  canvas.style.transform = 'translate(0px,0px) scale(1)';
+
+  /* Pagination */
   const label = document.getElementById('pdfPageLabel');
   if(label) label.textContent = pageNum + ' / ' + _pdfTotalPages;
   const prev = document.getElementById('pdfPrev');
@@ -9786,23 +9799,103 @@ async function _pdfRenderPage(pageNum){
   if(prev) prev.style.opacity = pageNum <= 1 ? '0.3' : '1';
   if(next) next.style.opacity = pageNum >= _pdfTotalPages ? '0.3' : '1';
 
-  // Reset position + installer les gestes
-  _pdfZoomScale = 1.0;
-  _pdfResetTransform(canvas);
   _pdfSetupGestures(canvas);
 }
 
-/* Réinitialise la transformation CSS */
-function _pdfResetTransform(canvas){
-  if(!canvas) canvas = document.getElementById('pdfCanvas');
-  if(canvas){
-    canvas.style.transformOrigin = '0 0';
-    canvas.style.transform       = 'translate(0px, 0px) scale(1)';
+function _pdfSetupGestures(canvas){
+  if(_pdfZoomInstalled) return;
+  _pdfZoomInstalled = true;
+
+  const area = document.getElementById('pdfScrollArea');
+  if(!area) return;
+
+  let t0 = null, initScale = 1, initTx = 0, initTy = 0;
+  let initDist = 0, initMidX = 0, initMidY = 0;
+  let mode = null; // 'pan' | 'pinch'
+  let lastTap = 0;
+
+  function apply(){
+    canvas.style.transform = `translate(${_pdfTx}px,${_pdfTy}px) scale(${_pdfZoomScale})`;
   }
-  _pdfTx = 0; _pdfTy = 0; _pdfZoomScale = 1.0;
+
+  area.addEventListener('touchstart', e => {
+    if(e.touches.length === 1){
+      mode  = 'pan';
+      t0    = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      initTx = _pdfTx; initTy = _pdfTy;
+    } else if(e.touches.length === 2){
+      mode       = 'pinch';
+      initScale  = _pdfZoomScale;
+      initTx     = _pdfTx; initTy = _pdfTy;
+      initDist   = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      initMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      initMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    }
+  }, { passive: true });
+
+  area.addEventListener('touchmove', e => {
+    if(mode === 'pan' && e.touches.length === 1 && t0){
+      /* Pan libre — aucun clamping, suit le doigt */
+      _pdfTx = initTx + e.touches[0].clientX - t0.x;
+      _pdfTy = initTy + e.touches[0].clientY - t0.y;
+      apply();
+
+    } else if(mode === 'pinch' && e.touches.length === 2){
+      /* Pinch centré sur le point médian des doigts */
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const newScale = Math.min(6, Math.max(0.4, initScale * dist / initDist));
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+      /* Garder le point central fixe à l'écran */
+      const ratio = newScale / initScale;
+      _pdfTx = midX - ratio * (initMidX - initTx);
+      _pdfTy = midY - ratio * (initMidY - initTy);
+      _pdfZoomScale = newScale;
+      apply();
+    }
+  }, { passive: true });
+
+  area.addEventListener('touchend', e => {
+    if(e.touches.length === 1 && mode === 'pinch'){
+      /* Retour à 1 doigt après pinch → continuer en pan */
+      mode  = 'pan';
+      t0    = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      initTx = _pdfTx; initTy = _pdfTy;
+    } else if(e.touches.length === 0){
+      mode = null; t0 = null;
+    }
+
+    /* Double-tap : ×1 ↔ ×2.5 */
+    const now = Date.now();
+    if(now - lastTap < 280 && e.changedTouches.length === 1){
+      if(_pdfZoomScale > 1.2){
+        _pdfZoomScale = 1; _pdfTx = 0; _pdfTy = 0;
+      } else {
+        const cx = e.changedTouches[0].clientX;
+        const cy = e.changedTouches[0].clientY;
+        _pdfZoomScale = 2.5;
+        _pdfTx = area.clientWidth  / 2 - cx * 2.5;
+        _pdfTy = area.clientHeight / 2 - cy * 2.5;
+      }
+      apply();
+    }
+    lastTap = now;
+  }, { passive: true });
 }
 
-let _pdfTx = 0, _pdfTy = 0; // position de translation courante
+function _pdfGoToPage(n){
+  if(!_pdfInstance) return;
+  _pdfZoomInstalled = false; /* réinstaller les gestes sur le nouveau canvas */
+  _pdfRenderPage(n);
+}
+
 
 function _pdfSetupGestures(canvas){
   if(_pdfZoomInstalled) return;
@@ -20644,7 +20737,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.18.9';
+const APP_VERSION = '2.19.0';
 
 const CHANGELOG = [
   {
