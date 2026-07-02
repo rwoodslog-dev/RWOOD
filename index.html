@@ -9656,37 +9656,132 @@ function deleteSharedMedia(siteId, mediaId){
   if(site.syncLive) pushSharedSite(site);
 }
 
-/* Ouvre un PDF avec l'app native du téléphone (Adobe Reader, Drive, etc.) */
+/* ── Visionneur PDF inline (PDF.js) ──────────────────────────────── */
+let _pdfInstance = null;
+let _pdfCurrentPage = 1;
+let _pdfTotalPages  = 1;
+
 async function openPdfNative(mediaId, siteId){
   const site  = data.sites.find(s => s.id === siteId);
   const media = site && site.sharedMedia && site.sharedMedia.find(m => m.id === mediaId);
   if(!media){ showToast('Fichier introuvable'); return; }
 
+  // Créer le modal visionneur
+  const existing = document.getElementById('modal-pdfViewer');
+  if(existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-pdfViewer';
+  modal.style.cssText = `position:fixed;inset:0;z-index:2000;background:#1a1007;display:flex;flex-direction:column;`;
+  modal.innerHTML = `
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:#0d0905;border-bottom:1px solid #333;flex-shrink:0;">
+      <button id="pdfClose" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:4px;">✕</button>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(media.name)}</div>
+        <div id="pdfPageInfo" style="font-size:11px;color:#888;">Chargement…</div>
+      </div>
+      <button id="pdfShareBtn" style="background:var(--wood);border:none;color:#1a0f00;font-size:12px;font-weight:700;border-radius:8px;padding:6px 12px;cursor:pointer;">📤 Exporter</button>
+    </div>
+
+    <!-- Zone de scroll + canvas -->
+    <div id="pdfScrollArea" style="flex:1;overflow-y:auto;overflow-x:auto;display:flex;justify-content:center;padding:10px;-webkit-overflow-scrolling:touch;">
+      <canvas id="pdfCanvas" style="max-width:100%;display:block;box-shadow:0 2px 16px rgba(0,0,0,0.6);"></canvas>
+    </div>
+
+    <!-- Navigation bas -->
+    <div style="display:flex;align-items:center;justify-content:center;gap:16px;padding:10px 14px;background:#0d0905;border-top:1px solid #333;flex-shrink:0;">
+      <button id="pdfPrev" style="background:#2a1f14;border:none;color:#fff;font-size:20px;border-radius:8px;padding:8px 16px;cursor:pointer;">‹</button>
+      <span id="pdfPageLabel" style="color:#ccc;font-size:14px;font-weight:600;">1 / 1</span>
+      <button id="pdfNext" style="background:#2a1f14;border:none;color:#fff;font-size:20px;border-radius:8px;padding:8px 16px;cursor:pointer;">›</button>
+    </div>`;
+  document.body.appendChild(modal);
+
+  // Fermer
+  document.getElementById('pdfClose').addEventListener('click', () => {
+    modal.remove();
+    _pdfInstance = null;
+  });
+
+  // Exporter
+  document.getElementById('pdfShareBtn').addEventListener('click', () => shareMediaFile(mediaId, siteId));
+
+  // Navigation
+  document.getElementById('pdfPrev').addEventListener('click', () => _pdfGoToPage(_pdfCurrentPage - 1));
+  document.getElementById('pdfNext').addEventListener('click', () => _pdfGoToPage(_pdfCurrentPage + 1));
+
+  // Charger PDF.js dynamiquement
   showToast('⏳ Chargement du PDF…');
   try{
+    await _ensurePdfJs();
+
     const res  = await fetch(media.url);
     if(!res.ok) throw new Error('Erreur réseau ' + res.status);
-    const blob = await res.blob();
-    const file = new File([blob], media.name || 'document.pdf', { type: 'application/pdf' });
+    const buf  = await res.arrayBuffer();
 
-    // Web Share → ouvre "Ouvrir avec" sur Android (Adobe Reader, Drive, etc.)
-    if(navigator.canShare && navigator.canShare({ files: [file] })){
-      await navigator.share({ files: [file], title: media.name });
-    } else {
-      // Fallback : téléchargement direct
-      const url = URL.createObjectURL(blob);
-      const a   = document.createElement('a');
-      a.href     = url;
-      a.download = media.name || 'document.pdf';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      showToast('PDF téléchargé');
-    }
+    const loadingTask = pdfjsLib.getDocument({ data: buf });
+    _pdfInstance = await loadingTask.promise;
+    _pdfTotalPages  = _pdfInstance.numPages;
+    _pdfCurrentPage = 1;
+
+    document.getElementById('pdfPageInfo').textContent = _pdfTotalPages + ' page(s)';
+    await _pdfRenderPage(1);
   } catch(e){
-    if(e.name !== 'AbortError') showToast('Erreur : ' + (e.message || 'impossible d\'ouvrir le PDF'));
+    if(e.name !== 'AbortError'){
+      showToast('Erreur lecture PDF : ' + (e.message||''));
+      modal.remove();
+    }
   }
+}
+
+async function _ensurePdfJs(){
+  if(window.pdfjsLib) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = () => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      resolve();
+    };
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function _pdfRenderPage(pageNum){
+  if(!_pdfInstance) return;
+  pageNum = Math.max(1, Math.min(pageNum, _pdfTotalPages));
+  _pdfCurrentPage = pageNum;
+
+  const page     = await _pdfInstance.getPage(pageNum);
+  const canvas   = document.getElementById('pdfCanvas');
+  if(!canvas) return;
+
+  // Adapter à la largeur de l'écran
+  const viewport0 = page.getViewport({ scale: 1 });
+  const maxW      = Math.min(window.innerWidth - 20, 800);
+  const scale     = maxW / viewport0.width;
+  const viewport  = page.getViewport({ scale });
+
+  canvas.width  = viewport.width;
+  canvas.height = viewport.height;
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  // Mettre à jour la pagination
+  const label = document.getElementById('pdfPageLabel');
+  if(label) label.textContent = pageNum + ' / ' + _pdfTotalPages;
+
+  const prev = document.getElementById('pdfPrev');
+  const next = document.getElementById('pdfNext');
+  if(prev) prev.style.opacity = pageNum <= 1 ? '0.3' : '1';
+  if(next) next.style.opacity = pageNum >= _pdfTotalPages ? '0.3' : '1';
+}
+
+function _pdfGoToPage(n){
+  if(!_pdfInstance) return;
+  _pdfRenderPage(n);
 }
 
 /* Partage un fichier individuel via le menu natif Android (Dropbox, Drive, email...) */
@@ -20398,7 +20493,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.18.6';
+const APP_VERSION = '2.18.7';
 
 const CHANGELOG = [
   {
