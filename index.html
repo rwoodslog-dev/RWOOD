@@ -6209,7 +6209,42 @@ async function initRwoodStorage(){
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
   setTimeout(()=> pushMyUserRegistration(), 5000);
-  setTimeout(()=> _restoreAccountDataIfNeeded(), 5200); // restaurer compte si update a effacé les données
+  setTimeout(()=> _restoreAccountDataIfNeeded(), 5200);
+
+  // Restaurer les données compte depuis rwood-account si data est vide
+  // Fait immédiatement pour que les pointages utilisent le bon nom
+  try{
+    const rawAccount = localStorage.getItem('rwood-account');
+    if(rawAccount){
+      const acc = JSON.parse(rawAccount);
+      if(acc.name){
+        const profile = data.settings.myProfile;
+        let worker = profile && profile.workerId
+          ? data.workers.find(w => w.id === profile.workerId)
+          : null;
+        if(!worker || !worker.name){
+          // Worker absent ou sans nom — restaurer depuis rwood-account
+          if(!worker){
+            worker = { id: acc.workerId || uid(), name: acc.name, active: true };
+            data.workers.push(worker);
+            if(!data.settings.myProfile) data.settings.myProfile = {};
+            data.settings.myProfile.workerId = worker.id;
+          }
+          worker.name = acc.name;
+          worker.phone = acc.phone || '';
+          if(acc.signature) worker.signature = acc.signature;
+          let contact = data.contacts.find(c => c.linkedWorkerId === worker.id);
+          if(!contact){
+            contact = { id: uid(), name: worker.name, role: 'Moi', phone: acc.phone||'', email: acc.email||'', linkedWorkerId: worker.id };
+            data.contacts.push(contact);
+          } else {
+            contact.email = acc.email || contact.email;
+          }
+          saveData();
+        }
+      }
+    }
+  } catch(e){}
   setTimeout(()=> pushMyTodoList(), 5500);
   setTimeout(()=> checkForConductorAlerts(), 6000);
   setTimeout(()=> pullAgendaEventsFromConducteur(), 6500); // chef : events agenda depuis conducteur
@@ -16993,14 +17028,21 @@ function renderMyAccount(){
   const worker = data.workers.find(w=>w.id===profile.workerId);
   const linkedContact = data.contacts.find(c=>c.linkedWorkerId===profile.workerId);
 
-  document.getElementById('myAccountName').value = (worker && worker.name) || '';
-  document.getElementById('myAccountPhone').value = (worker && worker.phone) || '';
-  document.getElementById('myAccountEmail').value = (linkedContact && linkedContact.email) || '';
-  // champ myAccountTeamName supprimé
+  // Lire depuis rwood-account (clé permanente) en priorité
+  let savedAccount = null;
+  try{
+    const raw = localStorage.getItem('rwood-account');
+    if(raw) savedAccount = JSON.parse(raw);
+  } catch(e){}
+
+  document.getElementById('myAccountName').value  = (savedAccount && savedAccount.name)  || (worker && worker.name)  || '';
+  document.getElementById('myAccountPhone').value = (savedAccount && savedAccount.phone) || (worker && worker.phone) || '';
+  document.getElementById('myAccountEmail').value = (savedAccount && savedAccount.email) || (linkedContact && linkedContact.email) || '';
 
   const sigPreview = document.getElementById('myAccountSignaturePreview');
-  if(worker && worker.signature){
-    sigPreview.innerHTML = `<img class="signature-preview" src="${worker.signature}" alt="Ma signature">`;
+  const sig = (savedAccount && savedAccount.signature) || (worker && worker.signature);
+  if(sig){
+    sigPreview.innerHTML = `<img class="signature-preview" src="${sig}" alt="Ma signature">`;
   } else {
     sigPreview.innerHTML = `<div class="signature-preview empty">Pas de signature</div>`;
   }
@@ -17058,9 +17100,21 @@ function updateMyAccount(){
   }
 
   saveData();
+
+  // Sauvegarde PERMANENTE dans une clé dédiée — indépendante de data, jamais écrasée
+  const accountSnapshot = {
+    name: worker.name,
+    phone: worker.phone,
+    email: contact.email || '',
+    signature: worker.signature || '',
+    workerId: worker.id,
+    savedAt: new Date().toISOString()
+  };
+  localStorage.setItem('rwood-account', JSON.stringify(accountSnapshot));
+
   renderMyAccount();
-  showToast('Mon compte mis à jour');
-  _pushAccountData(); // sauvegarder sur Supabase pour persistance anti-update
+  showToast('✅ Compte enregistré définitivement');
+  _pushAccountData(); // backup Supabase en plus
 
   if(tourActive && TOUR_STEPS[tourStepIndex] && TOUR_STEPS[tourStepIndex].waitForSave){
     setTimeout(()=>tourNext(), 400);
@@ -19837,7 +19891,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.17.7';
+const APP_VERSION = '2.17.8';
 
 const CHANGELOG = [
   {
