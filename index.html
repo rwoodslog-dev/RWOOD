@@ -8710,6 +8710,7 @@ function copyKeyboxCode(){
    ═══════════════════════════════════════════════════════════════════ */
 
 let _alerteFilter = 'all';
+let _alerteMembersCache = []; // registre en mémoire pour éviter les onclick inline
 
 function setAlerteFilter(filter){
   _alerteFilter = filter;
@@ -8727,11 +8728,11 @@ async function renderAlertesConducteurList(){
   window._usersRegistryCache = null;
   const users = await _fetchUsersRegistry();
   const q = ((document.getElementById('alertesSearchInput')||{}).value||'').trim().toLowerCase();
-  const roleLabel = { chef:"Chef d'equipe", ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron' };
+  const roleLabel = { chef:"Chef d'équipe", ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron' };
   const roleColor = { chef:'var(--wood)', ouvrier:'var(--green)', conducteur:'#7B61FF', comptable:'#5BA4CF', patron:'#E05555' };
   const roleEmoji = { chef:'👷', ouvrier:'🔧', conducteur:'🏗️', comptable:'📊', patron:'👑' };
 
-  const members = users
+  _alerteMembersCache = users
     .filter(u => u.authId && u.name)
     .filter(u => {
       const id = (u.authId||'').toLowerCase();
@@ -8741,15 +8742,16 @@ async function renderAlertesConducteurList(){
       if(q && !(u.name.toLowerCase().includes(q)||u.authId.toLowerCase().includes(q))) return false;
       return true;
     })
-    .sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+    .sort((a,b) => a.name.localeCompare(b.name,'fr'));
 
-  if(!members.length){
-    el.innerHTML='<div class="hint" style="text-align:center;padding:24px;">Aucun membre trouvé.</div>';
+  if(!_alerteMembersCache.length){
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:24px;">Aucun membre trouvé.</div>';
     return;
   }
-  el.innerHTML = members.map(u=>`
-    <div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;"
-      onclick="openAlerteCompose('${u.authId.replace(/'/g,"\\'")}','${u.name.replace(/'/g,"\\'")}')">
+
+  el.innerHTML = _alerteMembersCache.map((u, idx) => `
+    <div class="card" data-alerte-idx="${idx}"
+      style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;">
       <div style="width:38px;height:38px;border-radius:50%;background:${roleColor[u.role]||'var(--line)'};display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">${roleEmoji[u.role]||'👤'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;font-size:14px;">${escapeHtml(u.name)}</div>
@@ -8758,52 +8760,111 @@ async function renderAlertesConducteurList(){
       </div>
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--ink-soft)" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
     </div>`).join('');
+
+  // Délégation d'événements — pas d'onclick inline
+  el.querySelectorAll('[data-alerte-idx]').forEach(card => {
+    card.addEventListener('click', () => {
+      const idx = parseInt(card.dataset.alerteIdx);
+      const member = _alerteMembersCache[idx];
+      if(member) openAlerteCompose(member.authId, member.name);
+    });
+  });
+}
+
+const _ALERTE_TEMPLATES = [
+  '🕐 Réunion demain matin',
+  '⚠️ Changement de planning',
+  '📦 Livraison en cours',
+  '🔑 Récupérer les clés',
+  '📋 Pointage à compléter',
+  '🚨 Urgence sur le chantier'
+];
+
+function _applyAlerteTemplate(text){
+  const ta = document.getElementById('alerteComposeText');
+  if(ta) ta.value = text;
 }
 
 function openAlerteCompose(authId, name){
   const ex = document.getElementById('modal-alerteCompose');
   if(ex) ex.remove();
+
   const div = document.createElement('div');
-  div.className='modal-overlay open';
-  div.id='modal-alerteCompose';
-  const templates=['🕐 Réunion demain matin','⚠️ Changement de planning','📦 Livraison en cours','🔑 Récupérer les clés','📋 Pointage à compléter','🚨 Urgence sur le chantier'];
-  div.innerHTML=`
+  div.className = 'modal-overlay open';
+  div.id = 'modal-alerteCompose';
+  div.innerHTML = `
     <div class="modal">
       <div class="modal-header">
         <h2>🔔 Alerte pour ${escapeHtml(name)}</h2>
-        <button class="modal-close" onclick="document.getElementById('modal-alerteCompose').remove()">×</button>
+        <button class="modal-close" id="alerteComposeClose">×</button>
       </div>
-      <div class="hint" style="margin-bottom:12px;">Apparaîtra en popup sur l'app de <strong>${escapeHtml(name)}</strong> à sa prochaine ouverture.</div>
+      <div class="hint" style="margin-bottom:12px;">
+        Apparaîtra en popup sur l'app de <strong>${escapeHtml(name)}</strong> à sa prochaine ouverture.
+      </div>
       <div class="section-title">Modèles rapides</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">
-        ${templates.map(t=>`<button class="chip" style="font-size:12px;" onclick="document.getElementById('alerteComposeText').value=${JSON.stringify(t)}">${t}</button>`).join('')}
-      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;" id="alerteTemplateChips"></div>
       <div class="section-title">Message</div>
-      <textarea id="alerteComposeText" placeholder="Ex : Réunion demain à 8h au dépôt…"
+      <textarea id="alerteComposeText"
+        placeholder="Ex : Réunion demain à 8h au dépôt…"
         style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-size:14px;resize:vertical;min-height:90px;font-family:inherit;margin-bottom:14px;"></textarea>
-      <button class="btn btn-primary btn-block" onclick="sendAlerteToMember(${JSON.stringify(authId)},${JSON.stringify(name)})">🚀 Envoyer l'alerte</button>
+      <button class="btn btn-primary btn-block" id="alerteComposeSend">🚀 Envoyer l'alerte</button>
     </div>`;
   document.body.appendChild(div);
+
+  // Bouton fermer
+  document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
+
+  // Chips modèles — addEventListener propre
+  const chipsContainer = document.getElementById('alerteTemplateChips');
+  _ALERTE_TEMPLATES.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'chip';
+    btn.style.fontSize = '12px';
+    btn.textContent = t;
+    btn.addEventListener('click', () => _applyAlerteTemplate(t));
+    chipsContainer.appendChild(btn);
+  });
+
+  // Bouton envoyer
+  document.getElementById('alerteComposeSend').addEventListener('click', () => {
+    sendAlerteToMember(authId, name);
+  });
 }
 
 async function sendAlerteToMember(recipientAuthId, recipientName){
-  const textEl=document.getElementById('alerteComposeText');
-  const text=textEl?textEl.value.trim():'';
-  if(!text){showToast('Écris un message');return;}
-  const p=data.settings&&data.settings.myProfile;
-  const conductorName=((p&&p.firstName||'')+(p&&p.lastName?' '+p.lastName:'')).trim()||(data.settings&&data.settings.teamName)||'Le conducteur';
-  const alertText=conductorName+' : '+text;
+  const textEl = document.getElementById('alerteComposeText');
+  const text = textEl ? textEl.value.trim() : '';
+  if(!text){ showToast('Écris un message'); return; }
+
+  const p = data.settings && data.settings.myProfile;
+  const conductorName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'Le conducteur';
+  const alertText = conductorName + ' : ' + text;
+
   try{
-    const key=CONDUCTOR_ALERT_PREFIX+recipientAuthId;
-    const res=await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(key)+'&select=data',{headers:{'Prefer':''}});
-    let alerts=[];
-    if(res.ok){const rows=await res.json();if(rows&&rows.length){const d=typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data;alerts=(d&&d.alerts)||[];}}
-    alerts.push({id:uid(),text:alertText,createdAt:new Date().toISOString(),read:false,dismissed:false});
-    await supaFetch('/rest/v1/rwood_sync',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:key,updated_at:new Date().toISOString(),data:JSON.stringify({alerts})})});
-    document.getElementById('modal-alerteCompose').remove();
-    showToast('✅ Alerte envoyée à '+recipientName);
-    _playAlertSound&&_playAlertSound();
-  }catch(e){showToast('Erreur lors de l\'envoi');}
+    const key = CONDUCTOR_ALERT_PREFIX + recipientAuthId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    let alerts = [];
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        alerts = (d && d.alerts) || [];
+      }
+    }
+    alerts.push({ id: uid(), text: alertText, createdAt: new Date().toISOString(), read: false, dismissed: false });
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ alerts }) })
+    });
+    const modal = document.getElementById('modal-alerteCompose');
+    if(modal) modal.remove();
+    showToast('✅ Alerte envoyée à ' + recipientName);
+    if(typeof _playAlertSound === 'function') _playAlertSound();
+  } catch(e){
+    showToast('Erreur lors de l\'envoi');
+  }
 }
 
 /* ============ ITINÉRAIRES ============ */
@@ -20044,7 +20105,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.18.0';
+const APP_VERSION = '2.18.1';
 
 const CHANGELOG = [
   {
