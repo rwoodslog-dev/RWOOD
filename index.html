@@ -7138,8 +7138,11 @@ function seedData(){
 function goTo(viewName, siteId){
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){
-    // Le pull Supabase est déclenché APRÈS activation de la vue (via views map)
-    setTimeout(() => pullDepotFromSupabase().then(ok => { if(ok) renderDepot(); }), 50);
+    // Afficher immédiatement les données locales, puis rafraîchir depuis Supabase
+    renderDepot();
+    if(navigator.onLine){
+      setTimeout(() => pullDepotFromSupabase().then(ok => { if(ok) renderDepot(); }), 200);
+    }
   }
   // Maintenir la bannière canicule visible même en changeant de vue
   restoreCaniculeBanner();
@@ -7218,6 +7221,16 @@ function goTo(viewName, siteId){
     document.getElementById('fabBtn').textContent = '+';
     document.getElementById('fabBtn').dataset.label = 'Nouveau chantier';
   }
+  if(viewName === 'depot'){
+    // Configurer le FAB dépôt AVANT renderDepot pour éviter l'écrasement
+    const _depotFab = document.getElementById('fabBtn');
+    if(_depotFab){
+      _depotFab.title = 'Ajouter';
+      _depotFab.textContent = '+';
+      _depotFab.dataset.label = 'Ajouter';
+      _depotFab.onclick = _openDepotAddSheet;
+    }
+  }
 
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
@@ -7234,7 +7247,6 @@ function goTo(viewName, siteId){
 
   if(viewName === 'depot') renderDepot();
   if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
-  if(viewName === 'recap-patron') renderRecapPatron();
   if(viewName === 'recap-patron') renderRecapPatron();
 
   // Recharger les photos après chaque changement de vue
@@ -21555,7 +21567,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.18';
+const APP_VERSION = '2.20.19';
 
 const CHANGELOG = [
   {
@@ -24523,36 +24535,50 @@ function toggleDepotAccordion(name){
 
 function _renderDepotMachinesArrow(){ /* accordéon Machines ouvert par défaut */ }
 
+/* ── Menu [+] du Dépôt : Machine ou Camion ───────────────────────── */
+function _openDepotAddSheet(){
+  const ex = document.getElementById('depotFabSheet');
+  if(ex) ex.remove();
+
+  const sheet = document.createElement('div');
+  sheet.id = 'depotFabSheet';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  sheet.innerHTML = `
+    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter au Dépôt</div>
+      <button class="action-sheet-item" id="_depotAddMachine">
+        <span class="ico">🔧</span> Ajouter une Machine
+      </button>
+      <button class="action-sheet-item" id="_depotAddCamion">
+        <span class="ico">🚐</span> Ajouter / Gérer un Camion
+      </button>
+      <button class="action-sheet-item" id="_depotScanQR">
+        <span class="ico">
+          <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;flex-shrink:0;"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+        </span>
+        Scanner QR
+      </button>
+      <button class="action-sheet-item" id="_depotCancel" style="color:var(--ink-soft);margin-top:6px;">Annuler</button>
+    </div>`;
+  document.body.appendChild(sheet);
+
+  // Utiliser addEventListener — jamais d'onclick inline (apostrophes)
+  document.getElementById('_depotAddMachine').addEventListener('click', () => { sheet.remove(); openAddDepotMachine(); });
+  document.getElementById('_depotAddCamion').addEventListener('click', () => { sheet.remove(); goTo('stock'); });
+  document.getElementById('_depotScanQR').addEventListener('click', () => { sheet.remove(); openQRScanner(); });
+  document.getElementById('_depotCancel').addEventListener('click', () => sheet.remove());
+  sheet.addEventListener('click', e => { if(e.target === sheet) sheet.remove(); });
+}
+
 function _setupDepotFAB(){
+  // Fonction conservée pour compatibilité — le FAB est maintenant configuré dans goTo
   const fab = document.getElementById('fabBtn');
   if(!fab) return;
-  fab.style.display = 'block';
-  fab.textContent   = '+';
-  fab.title         = 'Dépôt';
-  fab.dataset.label = 'Dépôt';
-  fab.onclick = () => {
-    // Mini menu : ajouter machine (chef) ou scanner QR machine
-    const sheet = document.createElement('div');
-    sheet.id = 'depotFabSheet';
-    sheet.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
-    const inner = `
-      <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
-        <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Dépôt</div>
-        ${isChef() ? `<button class="action-sheet-item" onclick="document.getElementById('depotFabSheet').remove(); openAddDepotMachine()">
-          <span class="ico">📦</span> Ajouter une machine au dépôt
-        </button>` : ''}
-        <button class="action-sheet-item" onclick="document.getElementById('depotFabSheet').remove(); openQRScanner()">
-          <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;flex-shrink:0;"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg></span>
-          Scanner QR porte ou QR machine
-        </button>
-        <button class="action-sheet-item" onclick="document.getElementById('depotFabSheet').remove()" style="color:var(--ink-soft);margin-top:6px;">
-          Annuler
-        </button>
-      </div>`;
-    sheet.innerHTML = inner;
-    sheet.onclick = e => { if(e.target===sheet) sheet.remove(); };
-    document.body.appendChild(sheet);
-  };
+  fab.style.display   = 'block';
+  fab.textContent     = '+';
+  fab.title           = 'Ajouter';
+  fab.dataset.label   = 'Ajouter';
+  fab.onclick         = _openDepotAddSheet;
 }
 
 async function forceRefreshSharedSites(){
