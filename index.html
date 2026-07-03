@@ -7138,10 +7138,13 @@ function seedData(){
 function goTo(viewName, siteId){
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){
-    // Afficher immédiatement les données locales, puis rafraîchir depuis Supabase
+    // 1. Afficher immédiatement les données locales (aucun chargement infini)
     renderDepot();
+    // 2. Tenter une synchro Supabase en arrière-plan si en ligne
     if(navigator.onLine){
-      setTimeout(() => pullDepotFromSupabase().then(ok => { if(ok) renderDepot(); }), 200);
+      pullDepotFromSupabase().then(ok => {
+        if(ok) renderDepot(); // rafraîchir seulement si nouvelles données
+      }).catch(() => {});
     }
   }
   // Maintenir la bannière canicule visible même en changeant de vue
@@ -19020,6 +19023,7 @@ function finishAuthCreation(){
   const newProfile = data.settings && data.settings.myProfile ? {...data.settings.myProfile} : {};
   const newAccentColor = data.settings && data.settings.accentColor;
   const newCompanyCode = data.settings && data.settings.companyCode;
+  const newDepotId     = data.settings && data.settings.depotId;  // ← préserver
 
   // Réinitialiser toutes les données utilisateur vers la base vierge
   seedData();
@@ -19030,6 +19034,8 @@ function finishAuthCreation(){
   data.settings.myProfile = newProfile;
   if(newAccentColor) data.settings.accentColor = newAccentColor;
   if(newCompanyCode) data.settings.companyCode = newCompanyCode;
+  // Toujours remettre le depotId correct pour ne pas perdre la liaison dépôt
+  data.settings.depotId = newDepotId || DEPOT_DEFAULT_ID;
 
   // Auto-créer le nom d'équipe pour les chefs d'équipe
   if(newProfile.role === 'chef' && newProfile.firstName){
@@ -21567,7 +21573,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.19';
+const APP_VERSION = '2.20.21';
 
 const CHANGELOG = [
   {
@@ -24304,16 +24310,18 @@ async function generateToolQRSheet(){
 let _depotPendingAction = null; // { machine, action: 'borrow'|'return' }
 
 /* ── Init données dépôt ─────────────────────────────────────────── */
-const DEPOT_DEFAULT_ID = 'RWOOD-ENTERPRISE'; // clé fixe mono-entreprise
+const DEPOT_DEFAULT_ID = 'BCM-MERIGNAC-2014'; // clé dépôt BCM
 
 function ensureDepot(){
   if(!data) return;
   if(!data.settings) data.settings = {};
   if(!data.depotMachines) data.depotMachines = [];
-  // Auto-configurer le dépôt avec la clé fixe si pas encore fait
-  if(!data.settings.depotId || data.settings.depotId.startsWith('depot_')){
+  // Migrer l'ancien ID RWOOD-ENTERPRISE vers BCM-MERIGNAC-2014
+  if(!data.settings.depotId
+     || data.settings.depotId === 'RWOOD-ENTERPRISE'
+     || data.settings.depotId.startsWith('depot_')){
     data.settings.depotId = DEPOT_DEFAULT_ID;
-    if(!data.settings.depotName) data.settings.depotName = 'Dépôt';
+    data.settings.depotName = 'BCM-MERIGNAC-2014';
   }
 }
 
@@ -25064,35 +25072,46 @@ async function pushDepotToSupabase(){
 /* ── Pull (fetch simple) ─────────────────────────────────────────── */
 async function pullDepotFromSupabase(depotId){
   if(!navigator.onLine) return false;
-  const resolvedId = depotId || (data.settings && data.settings.depotId);
-  if(!resolvedId) return false;
+  ensureDepot();
+  const resolvedId = depotId || (data.settings && data.settings.depotId) || DEPOT_DEFAULT_ID;
   const depotKey = 'depot_' + resolvedId;
   try{
-    const res  = await supaFetch(
+    const res = await supaFetch(
       '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(depotKey) + '&select=data,updated_at',
       { headers: { 'Prefer': '' } }
     );
     if(!res.ok) return false;
     const rows = await res.json();
-    if(!rows || !rows.length) return false;
+
+    // Pas de données Supabase → garder les données locales, ne pas bloquer
+    if(!rows || !rows.length){
+      return false;
+    }
 
     const remoteTs = new Date(rows[0].updated_at).getTime();
     const remote   = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-    if(!remote || !remote.machines) return false;
 
-    data.settings.depotId   = depotId || data.settings.depotId;
-    data.settings.depotName = remote.name || 'Dépôt';
+    // Accepter même si machines est absent (dépôt vide mais existant)
+    if(!remote) return false;
+
+    data.settings.depotId   = resolvedId;
+    data.settings.depotName = remote.name || 'Dépôt BCM';
+
     // Fusionner : conserver les photos locales (non syncées)
-    const localMachinesMap = {};
-    (data.depotMachines||[]).forEach(m => { if(m.photo) localMachinesMap[m.id] = m.photo; });
+    const localPhotos = {};
+    (data.depotMachines||[]).forEach(m => { if(m.photo) localPhotos[m.id] = m.photo; });
+
     data.depotMachines = (remote.machines||[]).map(m => ({
       ...m,
-      photo: localMachinesMap[m.id] || m.photo || null // photo locale prioritaire
+      photo: localPhotos[m.id] || m.photo || null
     }));
+
     saveData();
     _depotLastRemoteTs = remoteTs;
     return true;
-  } catch(e){ return false; }
+  } catch(e){
+    return false;
+  }
 }
 
 /* ── Polling dédié dépôt — 5s quand vue dépôt active ────────────── */
