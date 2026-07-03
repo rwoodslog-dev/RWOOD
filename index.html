@@ -21573,7 +21573,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.22';
+const APP_VERSION = '2.20.23';
 
 const CHANGELOG = [
   {
@@ -24309,762 +24309,309 @@ const DEPOT_DEFAULT_ID = 'BCM-MERIGNAC-2014'; // clé dépôt BCM
 
 function ensureDepot(){
   if(!data) return;
-  if(!data.settings) data.settings = {};
+  if(!data.settings)     data.settings = {};
   if(!data.depotMachines) data.depotMachines = [];
-  // Migrer l'ancien ID RWOOD-ENTERPRISE vers BCM-MERIGNAC-2014
-  if(!data.settings.depotId
-     || data.settings.depotId === 'RWOOD-ENTERPRISE'
-     || data.settings.depotId.startsWith('depot_')){
-    data.settings.depotId = DEPOT_DEFAULT_ID;
+  // Toujours forcer l'ID fixe BCM-MERIGNAC-2014 (mono-entreprise)
+  if(data.settings.depotId !== DEPOT_DEFAULT_ID){
+    data.settings.depotId   = DEPOT_DEFAULT_ID;
     data.settings.depotName = 'BCM-MERIGNAC-2014';
   }
 }
 
-/* Toujours configuré en mono-entreprise */
-function depotIsConfigured(){
-  return true;
+/* ─── Droits d'écriture ──────────────────────────────────────── */
+function _canEditDepot(){
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'chef' || r === 'conducteur' || r === 'patron';
 }
 
-/* Patron : accès total, aucune restriction */
-function isPatron(){
-  return !!(data.settings && data.settings.myProfile && data.settings.myProfile.role === 'patron');
-}
-
-/* ── Cloud Media — rendu splitté PDF / Photo ─────────────────────── */
-
-
-
-
-/* ── Render vue Dépôt ───────────────────────────────────────────── */
-/* ── CUMUL HEURES PAR TÂCHE — vue Patron ─────────────────────────── */
-function _renderPointageSiteChips(today, dateKey){
-  const el = document.getElementById('pointageSiteChips');
-  if(!el) return;
-  if(!today.siteIds || !today.siteIds.length){
-    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Aucun chantier — ajoutes-en un ci-dessous.</span>';
-    return;
-  }
-  el.innerHTML = today.siteIds.map((sid, i) => {
-    const site  = data.sites.find(s => s.id === sid);
-    const label = today.siteLabels[i] || (site && site.name) || sid;
-    const color = (site && site.color) || 'var(--line)';
-    return `<div style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;
-      background:${color};border-radius:99px;color:#fff;font-size:12px;font-weight:700;
-      text-shadow:0 1px 2px rgba(0,0,0,0.4);">
-      ${escapeHtml(label)}
-      <button onclick="removeChantierFromDay(${i},'${dateKey}')"
-        style="background:none;border:none;color:#fff;cursor:pointer;font-size:14px;padding:0 0 0 2px;line-height:1;">×</button>
-    </div>`;
-  }).join('');
-}
-
-function addChantierToDay(){
-  const sel     = document.getElementById('pointageSiteAdd');
-  const siteId  = sel && sel.value;
-  if(!siteId) return;
-  const dateKey = currentPointageDate;
-  const today   = data.attendance[dateKey];
-  if(!today || today.siteIds.includes(siteId)) return;
-  const site = data.sites.find(s => s.id === siteId);
-  today.siteIds.push(siteId);
-  today.siteLabels.push(site ? site.name : siteId);
-  saveData();
-  renderPointage();
-}
-
-function addChantierLibreToDay(){
-  const input = document.getElementById('pointageSiteLibre');
-  const name  = input && input.value.trim();
-  if(!name) return;
-  const dateKey = currentPointageDate;
-  const today   = data.attendance[dateKey];
-  if(!today) return;
-  const match  = data.sites.find(s => s.name.toLowerCase() === name.toLowerCase());
-  const siteId = match ? match.id : ('libre_' + uid());
-  if(today.siteIds.includes(siteId)) return;
-  today.siteIds.push(siteId);
-  today.siteLabels.push(name);
-  if(input) input.value = '';
-  saveData();
-  renderPointage();
-}
-
-function removeChantierFromDay(idx, dateKey){
-  const today = data.attendance[dateKey];
-  if(!today) return;
-  today.siteIds.splice(idx, 1);
-  today.siteLabels.splice(idx, 1);
-  saveData();
-  renderPointage();
-}
-
+/* ─── Rendu principal ────────────────────────────────────────── */
 function renderDepot(){
-  try{
   ensureDepot();
+  try{
+    // Toujours ouvrir l'accordéon machines
+    const machBody  = document.getElementById('depotMachinesBody');
+    const machArrow = document.getElementById('depotMachinesArrow');
+    if(machBody)  machBody.style.display  = '';
+    if(machArrow) machArrow.textContent   = '▾';
+    document.getElementById('depotBorrowList').style.display = '';
+    document.getElementById('depotAvailList').style.display  = '';
+    document.getElementById('depotSyncStatus').style.display = 'none';
 
-  // ── Dépôt toujours configuré (mono-entreprise)
-  document.getElementById('depotBorrowList').style.display = '';
-  document.getElementById('depotAvailList').style.display  = '';
-  document.getElementById('depotSyncStatus').style.display = 'none';
+    const machines = data.depotMachines || [];
+    const canEdit  = _canEditDepot();
 
-  // S'assurer que le corps de l'accordéon Machines est visible
-  const _machBody  = document.getElementById('depotMachinesBody');
-  const _machArrow = document.getElementById('depotMachinesArrow');
-  if(_machBody)  _machBody.style.display  = '';
-  if(_machArrow) _machArrow.textContent   = '▾';
+    // Bouton Gérer visible seulement chef/conducteur/patron
+    const manageBtn = document.getElementById('depotManageBtn');
+    if(manageBtn) manageBtn.style.display = canEdit ? '' : 'none';
+    const notifBtn = document.getElementById('depotNotifBtn');
+    if(notifBtn) notifBtn.style.display = canEdit ? '' : 'none';
 
-  // Titre
-  document.getElementById('depotTitle').textContent = data.settings.depotName || 'Dépôt';
+    if(!machines.length){
+      document.getElementById('depotBorrowList').innerHTML  = '';
+      document.getElementById('depotAvailList').innerHTML   =
+        `<div class="hint" style="text-align:center;padding:20px;">
+          Aucune machine.${canEdit ? ' Appuie sur <strong>+</strong> pour en ajouter.' : ''}
+        </div>`;
+      document.getElementById('depotEmpty').style.display = 'none';
+      renderDispoCamion();
+      return;
+    }
 
-  // Bouton gérer (chef seulement)
-  const manageBtn = document.getElementById('depotManageBtn');
-  if(manageBtn) manageBtn.style.display = isChef() ? 'inline-flex' : 'none';
-  _updateDepotNotifBadge();
+    const borrowed  = machines.filter(m => m.borrow);
+    const available = machines.filter(m => !m.borrow);
 
-  const machines = data.depotMachines || [];
+    const machCard = (m) => {
+      const warn = m.maintenance && m.maintenance.warning
+        ? `<div style="font-size:11px;color:#E07A63;margin-top:3px;">⚠️ ${escapeHtml(m.maintenance.warning)}</div>` : '';
+      const inRepair = m.maintenance && m.maintenance.inRepair;
+      return `
+        <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:center;${inRepair?'opacity:0.6;':''}">
+          ${m.photo ? `<img src="${m.photo}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;flex-shrink:0;">` :
+            `<div style="width:44px;height:44px;background:var(--bg-elev);border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:20px;">🔧</div>`}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;font-size:14px;">${escapeHtml(m.name)}${inRepair?' 🛠':''}
+              ${m.brand?`<span style="font-size:11px;font-weight:400;color:var(--ink-soft);"> — ${escapeHtml(m.brand)}</span>`:''}
+            </div>
+            ${m.borrow ? `<div style="font-size:12px;color:var(--wood);font-weight:600;">📤 ${escapeHtml(m.borrow.borrowerName)} · ${escapeHtml(m.borrow.truckName||'?')}</div>` : ''}
+            ${warn}
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;">
+            ${m.borrow
+              ? `<button class="btn btn-sm" style="background:var(--wood);color:#1a0f00;" onclick="promptDepotReturn('${m.id}')">↩ Retour</button>`
+              : `<button class="btn btn-sm btn-outline" onclick="promptDepotBorrow('${m.id}')">📤 Emprunter</button>`
+            }
+            ${canEdit ? `<button onclick="confirmDeleteDepotMachine('${m.id}')"
+              style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:18px;padding:4px;">×</button>` : ''}
+          </div>
+        </div>`;
+    };
 
-  if(!machines.length){
-    document.getElementById('depotEmpty').style.display = 'block';
-    document.getElementById('depotAvailList').innerHTML  = '';
-    document.getElementById('depotBorrowList').innerHTML = '';
-    _setupDepotFAB();
-    return;
-  }
-
-  document.getElementById('depotEmpty').style.display = 'none';
-
-  const avail    = machines.filter(m => !m.borrow);
-  const borrowed = machines.filter(m =>  m.borrow);
-  const myId     = data.settings.myProfile && data.settings.myProfile.id;
-  const myName   = data.settings.myProfile && data.settings.myProfile.name;
-
-
-
-  const svgQR = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="5" y="5" width="3" height="3" fill="currentColor"/><rect x="16" y="5" width="3" height="3" fill="currentColor"/><rect x="16" y="16" width="3" height="3" fill="currentColor"/><rect x="5" y="16" width="3" height="3" fill="currentColor"/></svg>';
-
-  function machineCard(m){
-    const isBorrowed = !!m.borrow;
-    const borrowedAt = m.borrow && m.borrow.borrowedAt
-      ? new Date(m.borrow.borrowedAt).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})
+    document.getElementById('depotBorrowList').innerHTML = borrowed.length
+      ? `<div class="section-title" style="margin-top:0;">📤 Empruntées (${borrowed.length})</div>${borrowed.map(machCard).join('')}`
+      : '';
+    document.getElementById('depotAvailList').innerHTML  = available.length
+      ? `<div class="section-title">✅ Disponibles (${available.length})</div>${available.map(machCard).join('')}`
       : '';
 
-    const inRepair    = !!(m.maintenance && m.maintenance.inRepair);
-    const hasWarning  = !!(m.maintenance && m.maintenance.warning && m.maintenance.warning.trim());
-    const statusBg    = inRepair ? '#2A1A2A' : isBorrowed ? '#3A1A1A' : '#1A2E1A';
-    const statusDot   = inRepair ? '#9B59B6' : isBorrowed ? '#E05555' : '#4CAF79';
-    const statusLabel = inRepair ? '🔧 En réparation' : isBorrowed ? 'Emprunté' : 'Disponible';
-
-    const photoHtml = m.photo
-      ? `<img src="${m.photo}" style="width:56px;height:56px;object-fit:cover;border-radius:10px;flex-shrink:0;">`
-      : `<div style="width:56px;height:56px;border-radius:10px;background:var(--card);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;">🔧</div>`;
-
-    const borrowDetails = isBorrowed ? `
-      <div style="margin-top:5px;padding:6px 8px;background:rgba(224,85,85,0.1);border-radius:8px;border-left:2px solid #E05555;">
-        <div style="font-size:12px;font-weight:700;color:#E05555;">👤 ${escapeHtml(m.borrow.borrowerName||'')}</div>
-        ${m.borrow.truckName ? `<div style="font-size:11px;color:var(--ink-soft);">🚛 ${escapeHtml(m.borrow.truckName)}</div>` : ''}
-        ${borrowedAt ? `<div style="font-size:11px;color:var(--ink-soft);">📅 ${borrowedAt}</div>` : ''}
-      </div>` : '';
-
-    const actionBtn = inRepair
-      ? `<div style="font-size:12px;color:#9B59B6;font-weight:700;padding:6px 0;">🔧 Indisponible — en réparation</div>`
-      : isBorrowed
-      ? `<button class="btn btn-sm" onclick="promptDepotReturn('${m.id}')"
-           style="background:#4CAF79;border:none;color:#fff;font-weight:700;padding:8px 14px;border-radius:10px;">
-           ↩ Je dépose
-         </button>`
-      : `<button class="btn btn-primary btn-sm" onclick="promptDepotBorrowWithWarning('${m.id}')"
-           style="padding:8px 14px;font-weight:700;">
-           + J'emprunte
-         </button>`;
-
-    return `
-      <div class="card" style="padding:12px;margin-bottom:8px;">
-        <div style="display:flex;gap:10px;align-items:flex-start;">
-          ${photoHtml}
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-              <div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div>
-              <div style="font-size:14px;font-weight:700;">${escapeHtml(m.name)}</div>
-            </div>
-            <div style="font-size:12px;color:var(--ink-soft);">${[m.brand,m.ref].filter(Boolean).join(' · ')}</div>
-            <div style="display:inline-block;margin-top:4px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:${statusBg};color:${statusDot};">${statusLabel}</div>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">
-            <button onclick="shareViaQR('depot_machine','${m.id}')" style="background:transparent;border:none;cursor:pointer;color:var(--ink-soft);padding:4px;">${svgQR}</button>
-            <button onclick="openDepotAnnotation('${m.id}')" title="Annotation / Réparation"
-              style="background:transparent;border:none;cursor:pointer;padding:4px;font-size:16px;opacity:${(hasWarning||inRepair)?'1':'0.35'};">
-              ${inRepair ? '🔧' : '⚠️'}
-            </button>
-            <button onclick="editDepotMachine('${m.id}')" style="background:transparent;border:none;cursor:pointer;color:var(--ink-soft);padding:4px;font-size:14px;">✏️</button>
-            <button onclick="confirmDeleteDepotMachine('${m.id}')" style="background:transparent;border:none;cursor:pointer;color:var(--red);padding:4px;font-size:14px;">🗑</button>
-          </div>
-        </div>
-        ${borrowDetails}
-        ${hasWarning && !inRepair ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(232,172,61,0.12);border-left:3px solid var(--wood);border-radius:6px;font-size:12px;color:var(--wood);">⚠️ ${escapeHtml(m.maintenance.warning)}</div>` : ''}
-        <div style="margin-top:10px;">${actionBtn}</div>
-      </div>`;
-  }
-
-  // Emprunté en haut avec titre, disponible en bas
-  const borrowedHtml = borrowed.length
-    ? `<div class="section-title" style="color:#E05555;">🔴 Empruntées (${borrowed.length})</div>` + borrowed.map(machineCard).join('')
-    : '';
-  const availHtml = avail.length
-    ? `<div class="section-title" style="color:#4CAF79;margin-top:${borrowed.length?'16px':'4px'};">🟢 Disponibles (${avail.length})</div>` + avail.map(machineCard).join('')
-    : '';
-
-  document.getElementById('depotBorrowList').innerHTML = borrowedHtml;
-  document.getElementById('depotAvailList').innerHTML  = availHtml;
-
-  // Montrer le hint QR porte seulement si des machines existent
-  const hintEl = document.getElementById('depotDoorHint');
-  if(hintEl) hintEl.style.display = machines.length ? 'block' : 'none';
-  _setupDepotFAB();
+    renderDispoCamion();
+    _updateDepotNotifBadge();
   } catch(e){ console.error('[renderDepot]', e); }
 }
 
 function toggleDepotAccordion(name){
-  const body  = document.getElementById('depotAccordion' + name + 'Body' in document ? 'depot'+name+'Body' : 'depot' + name.charAt(0).toUpperCase() + name.slice(1) + 'Body');
-  // Utiliser les ids corrects selon le nom
   const bodyEl  = name === 'Machines' ? document.getElementById('depotMachinesBody') : document.getElementById('depotCamionBody');
   const arrowEl = name === 'Machines' ? document.getElementById('depotMachinesArrow') : document.getElementById('depotCamionArrow');
   if(!bodyEl) return;
   const isOpen = bodyEl.style.display !== 'none';
   bodyEl.style.display = isOpen ? 'none' : '';
   if(arrowEl) arrowEl.textContent = isOpen ? '▸' : '▾';
-  // Charger la liste camion au premier clic
-  if(!isOpen && name === 'Camion') renderDispoCamion();
 }
 
-function _renderDepotMachinesArrow(){ /* accordéon Machines ouvert par défaut */ }
-
-/* ── Menu [+] du Dépôt : Machine ou Camion ───────────────────────── */
-function _openDepotAddSheet(){
-  const ex = document.getElementById('depotFabSheet');
-  if(ex) ex.remove();
-
-  const sheet = document.createElement('div');
-  sheet.id = 'depotFabSheet';
-  sheet.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
-  sheet.innerHTML = `
-    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
-      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter au Dépôt</div>
-      <button class="action-sheet-item" id="_depotAddMachine">
-        <span class="ico">🔧</span> Ajouter une Machine
-      </button>
-      <button class="action-sheet-item" id="_depotAddCamion">
-        <span class="ico">🚐</span> Ajouter / Gérer un Camion
-      </button>
-      <button class="action-sheet-item" id="_depotScanQR">
-        <span class="ico">
-          <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;flex-shrink:0;"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
-        </span>
-        Scanner QR
-      </button>
-      <button class="action-sheet-item" id="_depotCancel" style="color:var(--ink-soft);margin-top:6px;">Annuler</button>
-    </div>`;
-  document.body.appendChild(sheet);
-
-  // Utiliser addEventListener — jamais d'onclick inline (apostrophes)
-  document.getElementById('_depotAddMachine').addEventListener('click', () => { sheet.remove(); openAddDepotMachine(); });
-  document.getElementById('_depotAddCamion').addEventListener('click', () => { sheet.remove(); goTo('stock'); });
-  document.getElementById('_depotScanQR').addEventListener('click', () => { sheet.remove(); openQRScanner(); });
-  document.getElementById('_depotCancel').addEventListener('click', () => sheet.remove());
-  sheet.addEventListener('click', e => { if(e.target === sheet) sheet.remove(); });
-}
-
-function _setupDepotFAB(){
-  // Fonction conservée pour compatibilité — le FAB est maintenant configuré dans goTo
-  const fab = document.getElementById('fabBtn');
-  if(!fab) return;
-  fab.style.display   = 'block';
-  fab.textContent     = '+';
-  fab.title           = 'Ajouter';
-  fab.dataset.label   = 'Ajouter';
-  fab.onclick         = _openDepotAddSheet;
-}
-
-async function forceRefreshSharedSites(){
-  const btn = document.getElementById('chefSyncBtn');
-  if(btn){ btn.textContent = '⏳ Synchro…'; btn.disabled = true; }
-  await pullSharedSites();
-  if(btn){ btn.textContent = '🔄 Sync chantiers'; btn.disabled = false; }
-  showToast('Chantiers synchronisés');
-}
-
-
-function openDepotDoorQR(){
-  ensureDepot();
-  const payload = JSON.stringify({ rwood:1, type:'depot_door', id: data.settings.depotId });
-  _showQRModal(`QR Porte — ${data.settings.depotName}`, payload);
-}
-
-/* ── Emprunter ───────────────────────────────────────────────────── */
+/* ─── Modal borrow / return ─────────────────────────────────── */
 function promptDepotBorrow(machineId){
   ensureDepot();
-  const m = data.depotMachines.find(x => x.id === machineId);
-  if(!m) return;
-  _depotPendingAction = { machineId, action:'borrow' };
-
-  // Pré-remplir nom depuis le profil
-  const myProfile  = data.settings.myProfile || {};
-  const myName     = myProfile.name || myProfile.firstName || '';
-  const myTruck    = myProfile.truckName || data.settings.camionName || '';
-  document.getElementById('depotBorrowName').value  = myName;
-  document.getElementById('depotBorrowTruck').value = myTruck;
-  document.getElementById('depotBorrowTitle').textContent = `Emprunter : ${m.name}`;
-  document.getElementById('depotBorrowInfo').textContent  = [m.brand,m.ref].filter(Boolean).join(' · ');
-
-  // Suggestions de camion depuis les autres emprunts en cours
-  const truckNames = [...new Set(
-    (data.depotMachines||[]).filter(x=>x.borrow&&x.borrow.truckName).map(x=>x.borrow.truckName)
-  )];
+  const m = (data.depotMachines||[]).find(x => x.id === machineId);
+  if(!m){ showToast('Machine introuvable'); return; }
+  document.getElementById('depotBorrowTitle').textContent = m.name;
+  document.getElementById('depotBorrowInfo').textContent  = m.brand ? m.brand : '';
+  const nameEl = document.getElementById('depotBorrowName');
+  const p = data.settings.myProfile;
+  if(nameEl) nameEl.value = p ? ((p.firstName||'')+' '+(p.lastName||'')).trim() : '';
+  const truckEl = document.getElementById('depotBorrowTruck');
+  if(truckEl) truckEl.value = data.settings.truckName || '';
   const sugg = document.getElementById('depotTruckSuggestions');
-  sugg.innerHTML = truckNames.map(t =>
-    `<button class="chip" onclick="document.getElementById('depotBorrowTruck').value='${escapeHtml(t)}'">${escapeHtml(t)}</button>`
-  ).join('');
-
+  if(sugg){
+    const names = [...new Set((data.depotMachines||[]).filter(x=>x.borrow&&x.borrow.truckName).map(x=>x.borrow.truckName))];
+    if(data.settings.truckName) names.unshift(data.settings.truckName);
+    sugg.innerHTML = [...new Set(names)].slice(0,5).map(n =>
+      `<button class="chip" onclick="document.getElementById('depotBorrowTruck').value='${escapeHtml(n)}'">${escapeHtml(n)}</button>`
+    ).join('');
+  }
+  _currentBorrowMachineId = machineId;
   openModal('depotBorrow');
 }
 
-/* ── Confirmer emprunt ───────────────────────────────────────────── */
-async function confirmDepotAction(){
-  closeModal('depotBorrow');
-  if(!_depotPendingAction) return;
-  const { machineId } = _depotPendingAction;
-  _depotPendingAction = null;
+let _currentBorrowMachineId = null;
 
-  const borrowerName = document.getElementById('depotBorrowName').value.trim() || 'Anonyme';
+function confirmDepotAction(){
+  const m = (data.depotMachines||[]).find(x => x.id === _currentBorrowMachineId);
+  if(!m){ closeModal('depotBorrow'); return; }
+  const borrowerName = document.getElementById('depotBorrowName').value.trim();
   const truckName    = document.getElementById('depotBorrowTruck').value.trim();
-
-  ensureDepot();
-  const m = data.depotMachines.find(x => x.id === machineId);
-  if(!m) return;
-
-  const borrowEntry = {
-    id:           uid(),
-    borrowerName,
-    truckName:    truckName || '',
-    borrowerId:   (data.settings.myProfile && data.settings.myProfile.id) || uid(),
-    borrowedAt:   Date.now(),
-    returnedAt:   null
-  };
-
-  m.borrow = borrowEntry;
-  // Ajouter à l'historique de la machine
+  if(!borrowerName){ showToast('Entre ton nom'); return; }
+  m.borrow = { borrowerName, truckName, borrowedAt: Date.now(),
+    borrowerId: data.settings.myProfile && data.settings.myProfile.id || '' };
   if(!m.history) m.history = [];
-  m.history.unshift({ ...borrowEntry }); // unshift = plus récent en premier
-
-  // Créer la notification pour le chef
-  _addDepotNotif('borrow', m, { borrowerName, truckName });
-  saveData(); renderDepot(); _updateDepotNotifBadge();
-  showToast(`✓ ${m.name} emprunté par ${borrowerName}`);
-  debouncedDepotPush();
+  m.history.unshift({ id:uid(), borrowerName, truckName, borrowedAt: m.borrow.borrowedAt, returnedAt: null });
+  saveData();
+  closeModal('depotBorrow');
+  renderDepot();
+  _depotSyncAndRefresh();
+  showToast('📤 Emprunté — synchronisé');
 }
 
-/* ── Déposer ─────────────────────────────────────────────────────── */
 function promptDepotReturn(machineId){
   ensureDepot();
-  const m = data.depotMachines.find(x => x.id === machineId);
-  if(!m || !m.borrow) return;
-  _depotPendingAction = { machineId, action:'return' };
-
-  const b = m.borrow;
-  const since = b.borrowedAt ? new Date(b.borrowedAt).toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'}) : '';
-  document.getElementById('depotReturnTitle').textContent = `Déposer : ${m.name}`;
-  document.getElementById('depotReturnInfo').innerHTML =
-    `<strong>${escapeHtml(b.borrowerName)}</strong> l'a depuis le ${since}`
-    + (b.truckName ? `<br>🚛 Rangé dans : ${escapeHtml(b.truckName)}` : '');
-
-  openModal('depotReturn');
-}
-
-/* ── Confirmer dépôt ─────────────────────────────────────────────── */
-async function confirmDepotReturn(){
-  closeModal('depotReturn');
-  if(!_depotPendingAction) return;
-  const { machineId } = _depotPendingAction;
-  _depotPendingAction = null;
-
-  ensureDepot();
-  const m = data.depotMachines.find(x => x.id === machineId);
-  if(!m) return;
-
-  const returnerName = m.borrow ? m.borrow.borrowerName : '';
-  // Marquer le retour dans l'historique (dernier emprunt sans returnedAt)
-  if(m.history){
-    const last = m.history.find(h => !h.returnedAt && h.borrowerName === returnerName);
-    if(last) last.returnedAt = Date.now();
-  }
+  const m = (data.depotMachines||[]).find(x => x.id === machineId);
+  if(!m || !m.borrow){ showToast('Machine déjà disponible'); return; }
+  if(!confirm(`Remettre "${m.name}" en stock dépôt ?`)) return;
+  if(m.history && m.history.length && !m.history[0].returnedAt)
+    m.history[0].returnedAt = Date.now();
   m.borrow = null;
-  _addDepotNotif('return', m, { borrowerName: returnerName });
-  saveData(); renderDepot(); _updateDepotNotifBadge();
-  showToast(`✓ ${m.name} déposée au dépôt`);
-  debouncedDepotPush();
+  saveData();
+  renderDepot();
+  _depotSyncAndRefresh();
+  showToast('↩ Machine retournée');
 }
 
-/* ── Gestion des machines (chef) ─────────────────────────────────── */
+/* ─── Gestion (chef+) ───────────────────────────────────────── */
 function openDepotManage(){
-  ensureDepot();
-  // Actualiser l'historique si conducteur
-  if(isChef()) renderDepotHistory();
-  // depotCodeInManage supprimé (mono-entreprise)
-  document.getElementById('depotNameInput').value = data.settings.depotName || '';
+  if(!_canEditDepot()){ showToast('Accès réservé au chef / conducteur / patron'); return; }
   renderDepotMachineEditList();
   openModal('depotManage');
 }
 
-function saveDepotName(val){
-  data.settings.depotName = val;
-  document.getElementById('depotTitle').textContent = val || 'Dépôt';
-  saveData();
+function renderDepotMachineEditList(){
+  const el = document.getElementById('depotMachineEditList');
+  if(!el) return;
+  const machines = data.depotMachines || [];
+  if(!machines.length){ el.innerHTML = '<div class="hint">Aucune machine.</div>'; return; }
+  el.innerHTML = machines.map(m => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div style="flex:1;">
+        <strong>${escapeHtml(m.name)}</strong>
+        ${m.brand ? `<span style="color:var(--ink-soft);font-size:12px;"> — ${escapeHtml(m.brand)}</span>` : ''}
+      </div>
+      <button class="btn btn-sm btn-outline" onclick="openEditDepotMachine('${m.id}')">✏️</button>
+      <button onclick="deleteDepotMachine('${m.id}')"
+        style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:18px;">×</button>
+    </div>`).join('');
 }
 
 let _editingDepotMachineId = null;
-
-let _depotSelectedIds = new Set();
-
-function renderDepotMachineEditList(){
-  ensureDepot();
-  const list = document.getElementById('depotMachineEditList');
-  if(!(data.depotMachines && data.depotMachines.length)){
-    list.innerHTML = '<div style="color:var(--ink-soft);font-size:13px;padding:6px 0;">Aucune machine — ajoute-en via le bouton ci-dessous.</div>';
-    _updateDepotQRSelBtn();
-    return;
-  }
-  list.innerHTML = data.depotMachines.map(m => {
-    const checked = _depotSelectedIds.has(m.id) ? 'checked' : '';
-    return `
-    <div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);">
-      <input type="checkbox" ${checked} onchange="toggleDepotSelect('${m.id}', this.checked)"
-        style="width:18px;height:18px;flex-shrink:0;accent-color:var(--wood);cursor:pointer;">
-      <div style="flex:1;font-size:13px;min-width:0;">
-        <div style="font-weight:600;">${escapeHtml(m.name)}</div>
-        <div style="font-size:11px;color:var(--ink-soft);">${[m.brand,m.ref].filter(Boolean).join(' · ')}</div>
-      </div>
-      <button onclick="editDepotMachine('${m.id}')" style="background:transparent;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;">✏️</button>
-      <button onclick="deleteDepotMachine('${m.id}')" style="background:transparent;border:none;color:var(--red);cursor:pointer;font-size:16px;">×</button>
-    </div>`;
-  }).join('');
-  _updateDepotQRSelBtn();
-}
-
-function toggleDepotSelect(id, checked){
-  checked ? _depotSelectedIds.add(id) : _depotSelectedIds.delete(id);
-  _updateDepotQRSelBtn();
-}
+let _dmPhotoData = null;
+const _depotSelectedIds = new Set();
 
 function _updateDepotQRSelBtn(){
   const btn = document.getElementById('depotQRSelectedBtn');
-  if(!btn) return;
-  const n = _depotSelectedIds.size;
-  btn.disabled = n === 0;
-  btn.textContent = n > 0 ? `🏷️ QR sélectionnées (${n})` : '🏷️ QR sélectionnées';
+  if(btn){ btn.disabled = _depotSelectedIds.size === 0; }
 }
 
-let _dmPhotoData = null; // base64 de la photo machine dépôt
-
 function openAddDepotMachine(){
+  if(!_canEditDepot()){ showToast('Accès réservé au chef / conducteur / patron'); return; }
   _editingDepotMachineId = null;
   _dmPhotoData = null;
   document.getElementById('addDepotMachineTitle').textContent = 'Ajouter une machine';
-  ['dmName','dmBrand','dmRef'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('dmQty').value = '1';
-  document.getElementById('dmPhotoPreview').innerHTML = '';
-  document.getElementById('dmPhotoRemoveBtn').style.display = 'none';
+  ['dmName','dmBrand','dmRef'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  const qtyEl = document.getElementById('dmQty'); if(qtyEl) qtyEl.value = '1';
+  const prev  = document.getElementById('dmPhotoPreview'); if(prev) prev.innerHTML = '';
+  const remBtn = document.getElementById('dmPhotoRemoveBtn'); if(remBtn) remBtn.style.display = 'none';
   openModal('addDepotMachine');
 }
 
-function handleDmPhoto(input){
-  const file = input.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    _dmPhotoData = e.target.result;
-    document.getElementById('dmPhotoPreview').innerHTML =
-      `<img src="${_dmPhotoData}" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;display:block;">`;
-    document.getElementById('dmPhotoRemoveBtn').style.display = 'inline-flex';
-  };
-  reader.readAsDataURL(file);
-  input.value = '';
-}
-
-function removeDmPhoto(){
-  _dmPhotoData = null;
-  document.getElementById('dmPhotoPreview').innerHTML = '';
-  document.getElementById('dmPhotoRemoveBtn').style.display = 'none';
-}
-
-function editDepotMachine(id){
-  const m = data.depotMachines.find(x => x.id === id);
+function openEditDepotMachine(id){
+  if(!_canEditDepot()) return;
+  const m = (data.depotMachines||[]).find(x => x.id === id);
   if(!m) return;
   _editingDepotMachineId = id;
   _dmPhotoData = m.photo || null;
-  // Fermer la modal gérer si ouverte
-  const manageModal = document.getElementById('modal-depotManage');
-  if(manageModal && manageModal.classList.contains('open')) closeModal('depotManage');
   document.getElementById('addDepotMachineTitle').textContent = 'Modifier la machine';
   document.getElementById('dmName').value  = m.name  || '';
   document.getElementById('dmBrand').value = m.brand || '';
   document.getElementById('dmRef').value   = m.ref   || '';
   document.getElementById('dmQty').value   = m.qty   || 1;
   const prev = document.getElementById('dmPhotoPreview');
-  if(m.photo){
-    prev.innerHTML = `<img src="${m.photo}" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;display:block;">`;
-    document.getElementById('dmPhotoRemoveBtn').style.display = 'inline-flex';
-  } else {
-    prev.innerHTML = '';
-    document.getElementById('dmPhotoRemoveBtn').style.display = 'none';
-  }
+  if(prev) prev.innerHTML = m.photo ? `<img src="${m.photo}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;">` : '';
+  const remBtn = document.getElementById('dmPhotoRemoveBtn');
+  if(remBtn) remBtn.style.display = m.photo ? '' : 'none';
   openModal('addDepotMachine');
 }
 
+function handleDmPhoto(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    _dmPhotoData = e.target.result;
+    const prev = document.getElementById('dmPhotoPreview');
+    if(prev) prev.innerHTML = `<img src="${_dmPhotoData}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;">`;
+    const remBtn = document.getElementById('dmPhotoRemoveBtn');
+    if(remBtn) remBtn.style.display = '';
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeDmPhoto(){
+  _dmPhotoData = null;
+  const prev = document.getElementById('dmPhotoPreview'); if(prev) prev.innerHTML = '';
+  const remBtn = document.getElementById('dmPhotoRemoveBtn'); if(remBtn) remBtn.style.display = 'none';
+}
+
 function saveDepotMachine(){
+  if(!_canEditDepot()){ showToast('Accès non autorisé'); return; }
   const name = document.getElementById('dmName').value.trim();
   if(!name){ showToast('Renseigne un nom'); return; }
   ensureDepot();
-
   const brand = document.getElementById('dmBrand').value.trim();
   const ref   = document.getElementById('dmRef').value.trim();
   const qty   = parseInt(document.getElementById('dmQty').value) || 1;
 
   if(_editingDepotMachineId){
     const m = data.depotMachines.find(x => x.id === _editingDepotMachineId);
-    if(m){ m.name = name; m.brand = brand; m.ref = ref; m.qty = qty;
+    if(m){ m.name=name; m.brand=brand; m.ref=ref; m.qty=qty;
       if(_dmPhotoData !== null) m.photo = _dmPhotoData; }
   } else {
     data.depotMachines.push({
-      id: uid(), name, brand, ref, qty,
-      photo:   _dmPhotoData || null,
-      borrow:  null,
-      addedAt: Date.now()
+      id:uid(), name, brand, ref, qty,
+      photo: _dmPhotoData||null, borrow:null,
+      addedAt: Date.now(), maintenance:null, history:[]
     });
   }
 
   saveData();
   closeModal('addDepotMachine');
-  renderDepotMachineEditList();
+  closeModal('depotManage');
+  // Rafraîchir immédiatement + push + re-render après confirmation Supabase
   renderDepot();
-  // Sync automatique sur tous les appareils
-  pushDepotToSupabase().catch(()=>{});
   showToast(_editingDepotMachineId ? 'Machine modifiée ✓' : 'Machine ajoutée ✓');
-
-  if(!_editingDepotMachineId){
-    const newM = (data.depotMachines||[])[((data.depotMachines||[]).length||1)-1];
-    if(newM){ _depotSelectedIds.add(newM.id); _updateDepotQRSelBtn(); }
-    showToast('Machine ajoutée ✓ — synchronisée sur tous les appareils');
-  }
+  _depotSyncAndRefresh();
 }
 
 function deleteDepotMachine(id){
+  if(!_canEditDepot()){ showToast('Accès non autorisé'); return; }
   if(!confirm('Supprimer cette machine du dépôt ?')) return;
   ensureDepot();
   data.depotMachines = data.depotMachines.filter(m => m.id !== id);
   saveData();
   renderDepotMachineEditList();
   renderDepot();
+  _depotSyncAndRefresh();
 }
 
-/* Supprimer depuis la carte (sans passer par la modal gérer) */
 async function confirmDeleteDepotMachine(id){
+  if(!_canEditDepot()){ showToast('Accès non autorisé'); return; }
   ensureDepot();
-  const m = data.depotMachines.find(x => x.id === id);
+  const m = (data.depotMachines||[]).find(x => x.id === id);
   if(!m) return;
   if(!confirm(`Supprimer "${m.name}" du dépôt ?`)) return;
   data.depotMachines = data.depotMachines.filter(x => x.id !== id);
   saveData();
   renderDepot();
-  debouncedDepotPush();
-  showToast(`"${m.name}" supprimée`);
+  _depotSyncAndRefresh();
+  showToast('Machine supprimée');
 }
 
-/* ── QR par machine dépôt (pour l'étiquette) ─────────────────────── */
-// Géré via shareViaQR('depot_machine', id)
-// Import via _parseQRResult type:'depot_door' et 'depot_machine'
-
-
-/* ════════════════════════════════════════════════════════════════════
-   PLANCHE QR DÉPÔT — PDF imprimable pour étiquettes machines dépôt
-   machineIds = null → toutes les machines
-   machineIds = 'selected' → sélection courante
-   machineIds = ['id1','id2'] → liste explicite
-   ════════════════════════════════════════════════════════════════════ */
-async function generateDepotQRSheet(machineIds){
-  ensureDepot();
-
-  let machines = data.depotMachines || [];
-  if(machineIds === 'selected'){
-    if(!_depotSelectedIds.size){ showToast('Sélectionne au moins une machine'); return; }
-    machines = machines.filter(m => _depotSelectedIds.has(m.id));
-  } else if(Array.isArray(machineIds)){
-    machines = machines.filter(m => machineIds.includes(m.id));
-  }
-
-  if(!machines.length){ showToast('Aucune machine à exporter'); return; }
-
-  const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-  if(!jsPDFLib){
-    await new Promise((res,rej)=>{
-      const s=document.createElement('script');
-      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-      s.onload=res; s.onerror=rej; document.head.appendChild(s);
-    }).catch(()=>{ showToast('Erreur chargement PDF'); return; });
-  }
-
-  showToast(`Génération de ${machines.length} QR code(s)…`);
-
-  const depotName = data.settings.depotName || 'Dépôt';
-  const depotId   = data.settings.depotId;
-
-  // Générer les QR via api.qrserver
-  const qrImages = await Promise.all(machines.map(async m => {
-    const payload = JSON.stringify({
-      rwood:1, type:'depot_machine',
-      machineId: m.id, depotId,
-      n: m.name, b: m.brand||'', r: m.ref||''
-    });
-    const url = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&ecc=M&data=${encodeURIComponent(payload)}`;
-    return new Promise(resolve => {
-      const img = new Image(); img.crossOrigin='anonymous';
-      img.onload = () => {
-        const c = document.createElement('canvas');
-        c.width = img.width; c.height = img.height;
-        c.getContext('2d').drawImage(img,0,0);
-        resolve({ dataUrl: c.toDataURL('image/png'), m });
-      };
-      img.onerror = () => resolve({ dataUrl: null, m });
-      img.src = url;
-    });
-  }));
-
-  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
-  const cols = 3, rows = 3;
-  const perPage = cols * rows;
-  const pageW = 210, pageH = 297;
-  const mX = 8, mY = 14;
-  const cellW = (pageW - mX*2) / cols;
-  const cellH = (pageH - mY*2 - 10) / rows;
-  const qrBig   = Math.min(cellW, cellH) * 0.44;
-  const qrSmall = 10; // 1cm sticker
-
-  function drawHeader(p){
-    doc.setFillColor(20,14,8);
-    doc.rect(0,0,pageW,10,'F');
-    doc.setTextColor(232,172,61); doc.setFontSize(9); doc.setFont('helvetica','bold');
-    doc.text(`RWOOD — ${depotName} — Étiquettes machines`, mX, 7);
-    doc.setTextColor(150,140,130); doc.setFont('helvetica','normal');
-    doc.text(`Page ${p}`, pageW-mX, 7, {align:'right'});
-    doc.setTextColor(0,0,0);
-  }
-
-  let page = 1;
-  drawHeader(page);
-
-  for(let i=0; i<qrImages.length; i++){
-    if(i>0 && i%perPage===0){ doc.addPage(); page++; drawHeader(page); }
-
-    const idx = i % perPage;
-    const col = idx % cols;
-    const row = Math.floor(idx/cols);
-    const x   = mX + col*cellW;
-    const y   = mY + 10 + row*cellH;
-    const { dataUrl, m } = qrImages[i];
-
-    // Cadre
-    doc.setDrawColor(210,205,200); doc.setLineWidth(0.25);
-    doc.rect(x, y, cellW-2, cellH-2);
-
-    // Nom dépôt en haut
-    doc.setFont('helvetica','italic'); doc.setFontSize(5.5); doc.setTextColor(160,150,140);
-    doc.text(depotName, x+(cellW-2)/2, y+4, {align:'center'});
-
-    // Grand QR
-    const qrX = x + (cellW-2-qrBig)/2;
-    const qrY = y + 6;
-    if(dataUrl){ try{ doc.addImage(dataUrl,'PNG',qrX,qrY,qrBig,qrBig); }catch(e){} }
-
-    // Nom machine
-    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(20,14,8);
-    const nameLines = doc.splitTextToSize(m.name, cellW-6);
-    const nameY = qrY + qrBig + 3;
-    doc.text(nameLines.slice(0,2), x+(cellW-2)/2, nameY, {align:'center'});
-
-    // Marque + réf
-    doc.setFont('helvetica','normal'); doc.setFontSize(6); doc.setTextColor(90,80,70);
-    const brandRef = [m.brand, m.ref].filter(Boolean).join(' · ');
-    let nextY = nameY + nameLines.slice(0,2).length*3.5;
-    if(brandRef){ doc.text(brandRef, x+(cellW-2)/2, nextY, {align:'center'}); nextY+=3.5; }
-
-    // Petit QR sticker 1cm × 1cm avec trait de découpe
-    const sX = x + (cellW-2-qrSmall)/2;
-    const sY = y + cellH - qrSmall - 6;
-    doc.setFont('helvetica','italic'); doc.setFontSize(4.5); doc.setTextColor(150,140,130);
-    doc.text('✂  sticker  ✂', x+(cellW-2)/2, sY-1.5, {align:'center'});
-    doc.setDrawColor(160,150,140); doc.setLineWidth(0.15);
-    if(doc.setLineDash) doc.setLineDash([0.8,0.7]);
-    doc.rect(sX-1.5, sY-1.5, qrSmall+3, qrSmall+3);
-    if(doc.setLineDash) doc.setLineDash([]);
-    if(dataUrl){ try{ doc.addImage(dataUrl,'PNG',sX,sY,qrSmall,qrSmall); }catch(e){} }
-    doc.setFont('helvetica','bold'); doc.setFontSize(4.5); doc.setTextColor(20,14,8);
-    const sName = m.name.length>20 ? m.name.slice(0,18)+'…' : m.name;
-    doc.text(sName, x+(cellW-2)/2, sY+qrSmall+2.5, {align:'center'});
-  }
-
-  const fn = `depot-qr-${depotName.replace(/\s+/g,'_')}-${new Date().toISOString().slice(0,10)}.pdf`;
-  await shareOrDownloadPDF(doc.output('blob'), fn, `Étiquettes ${depotName}`);
-}
-
-
-/* ════════════════════════════════════════════════════════════════════
-   SYNC DÉPÔT — Quasi-instantanée sur tous les appareils
-   • Push  : upsert en 1 seule requête (Prefer: resolution=merge-duplicates)
-   • Pull  : fetch simple
-   • Poll  : toutes les 5s quand la vue dépôt est active
-   Clé Supabase partagée : user_id = 'depot_<depotId>'
-   ════════════════════════════════════════════════════════════════════ */
-
-let _depotPollTimer = null;
-let _depotLastRemoteTs = 0;
-
-/* ── Push (upsert 1 requête) ─────────────────────────────────────── */
-let _depotPushTimer = null;
-function debouncedDepotPush(){ clearTimeout(_depotPushTimer); _depotPushTimer = setTimeout(()=>pushDepotToSupabase(), 500); }
-
-async function pushDepotToSupabase(){
-  ensureDepot();
-  if(!navigator.onLine){ showSyncStatus('offline'); return; }
-
-  const depotKey = 'depot_' + data.settings.depotId;
-  const payload  = {
-    user_id: depotKey,
-    updated_at: new Date().toISOString(),
-    data: JSON.stringify({
-      name:     data.settings.depotName || 'Dépôt',
-      machines: (data.depotMachines||[]).map(m => ({
-        id: m.id, name: m.name, brand: m.brand||'', ref: m.ref||'',
-        qty: m.qty||1, borrow: m.borrow||null, addedAt: m.addedAt||0,
-        maintenance: m.maintenance||null,
-        history: (m.history||[]).slice(0,100),
-        hasPhoto: !!m.photo  // photos exclues du sync (volumineuses), flag only
-      }))
-    })
-  };
-
+/* ─── Sync centralisée : push puis re-render ────────────────── */
+async function _depotSyncAndRefresh(){
   try{
-    showSyncStatus('syncing');
-    const res = await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(payload)
-    });
-    if(res.ok){ showSyncStatus('ok'); _depotLastRemoteTs = Date.now(); }
-    else       { showSyncStatus('error'); }
-  } catch(e){
-    showSyncStatus('offline');
-  }
+    await pushDepotToSupabase();
+    // Pull pour confirmer que Supabase a bien reçu + rafraîchir la liste
+    const ok = await pullDepotFromSupabase(DEPOT_DEFAULT_ID);
+    if(ok) renderDepot();
+  } catch(e){}
 }
 
-/* ── Pull (fetch simple) ─────────────────────────────────────────── */
+
 async function pullDepotFromSupabase(depotId){
   if(!navigator.onLine) return false;
   ensureDepot();
