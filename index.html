@@ -8796,9 +8796,77 @@ function copyKeyboxCode(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   VUE RÉCAP PATRON — Cumul heures par chantier, salarié et tâche
+   VUE RÉCAP PATRON — Liste chantiers cliquables, cumul tout temps
    ═══════════════════════════════════════════════════════════════════ */
-async function renderRecapPatron(){
+
+let _recapAllRows = null;  // cache des fiches Supabase
+/* Détail d'un chantier — heures par tâche (tout le temps) */
+function renderRecapSiteDetail(siteId, siteName, color){
+  const el = document.getElementById('recapPatronContent');
+  if(!el) return;
+
+  const fmt = h => { const hh=Math.floor(h),mm=Math.round((h-hh)*60); return hh+'h'+(mm?String(mm).padStart(2,'0'):''); };
+  const PAL = ['#C17A3D','#7B9FD1','#6FA37E','#A084CA','#E07A63','#5FB4B8','#D4B85A'];
+
+  const rows = _recapAllRows;
+  if(!rows) return;
+
+  // Agréger par tâche — toutes dates, toutes équipes (chef + ouvriers)
+  const byTache = {};
+  let total = 0;
+
+  rows.forEach(device => {
+    Object.entries(device.attendance || {}).forEach(([, dayData]) => {
+      if(dayData.siteId !== siteId) return;
+      Object.values(dayData.workers || {}).forEach(entry => {
+        const h = parseFloat(entry.hours) || 0;
+        if(!h) return;
+        const tache = entry.task || 'Non renseignée';
+        byTache[tache] = (byTache[tache] || 0) + h;
+        total += h;
+      });
+    });
+  });
+
+  const taches = Object.entries(byTache).sort((a,b) => b[1]-a[1]);
+
+  el.innerHTML = `
+    <!-- Retour -->
+    <button class="btn btn-outline btn-sm" onclick="renderRecapPatron()"
+      style="margin-bottom:14px;">← Retour aux chantiers</button>
+
+    <!-- En-tête -->
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center;
+      margin-bottom:14px;border-left:4px solid ${color};padding-left:14px;">
+      <div>
+        <div style="font-weight:900;font-size:18px;">${escapeHtml(siteName)}</div>
+        <div style="font-size:12px;color:var(--ink-soft);">Cumul toutes équipes · toute la durée</div>
+      </div>
+      <div style="font-size:26px;font-weight:900;color:${color};">${fmt(total)}</div>
+    </div>
+
+    <!-- Heures par tâche -->
+    <div class="section-title">⚒ Heures par tâche</div>
+    <div class="card">
+      ${taches.length ? taches.map(([t,h],i) => {
+        const pct = total ? Math.round(h/total*100) : 0;
+        return `
+          <div style="margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+              <span style="font-weight:700;font-size:14px;">${escapeHtml(t)}</span>
+              <span style="font-weight:900;color:${color};font-size:14px;">${fmt(h)}
+                <span style="font-size:11px;color:var(--ink-soft);font-weight:400;">${pct}%</span>
+              </span>
+            </div>
+            <div style="height:6px;background:var(--line);border-radius:99px;overflow:hidden;">
+              <div style="height:100%;width:${pct}%;background:${PAL[i%PAL.length]};border-radius:99px;"></div>
+            </div>
+          </div>`;
+      }).join('') : '<div class="hint">Aucune tâche renseignée.</div>'}
+    </div>`;
+}
+
+
   const el = document.getElementById('recapPatronContent');
   if(!el) return;
 
@@ -8815,73 +8883,6 @@ async function renderRecapPatron(){
   }
 
   el.innerHTML='<div class="hint" style="text-align:center;padding:24px;">⏳ Chargement…</div>';
-
-  const mois = sel ? sel.value : `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
-  const [year,month] = mois.split('-').map(Number);
-
-  const rows = await pullAllPointagesForComptable();
-  if(!rows){ el.innerHTML='<div class="hint" style="text-align:center;padding:24px;">⚠️ Hors ligne.</div>'; return; }
-
-  // Agréger sans filtre d'assignation
-  const bySite={};
-  rows.forEach(device=>{
-    Object.entries(device.attendance||{}).forEach(([dateKey,dayData])=>{
-      const d=new Date(dateKey+'T00:00:00');
-      if(d.getFullYear()!==year||(d.getMonth()+1)!==month) return;
-      const siteId=dayData.siteId||'__sans__';
-      const site=data.sites.find(s=>s.id===siteId);
-      const nm=site?site.name:(siteId==='__sans__'?'Sans chantier':siteId);
-      if(!bySite[siteId]) bySite[siteId]={name:nm,color:site&&site.color,bySalarie:{},byTache:{},total:0};
-      const S=bySite[siteId];
-      Object.entries(dayData.workers||{}).forEach(([wid,entry])=>{
-        const h=parseFloat(entry.hours)||0; if(!h) return;
-        const nom=((device.workers||[]).find(w=>w.id===wid)||{}).name||(device.ownerName||wid);
-        const tache=entry.task||'Non renseignée';
-        S.bySalarie[nom]=(S.bySalarie[nom]||0)+h;
-        S.byTache[tache]=(S.byTache[tache]||0)+h;
-        S.total+=h;
-      });
-    });
-  });
-
-  const sites=Object.entries(bySite).filter(([,s])=>s.total>0).sort((a,b)=>b[1].total-a[1].total);
-
-  if(!sites.length){
-    const mFR=['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-    el.innerHTML=`<div class="hint" style="text-align:center;padding:32px;">📭 Aucune heure en ${mFR[month-1]} ${year}.</div>`;
-    return;
-  }
-
-  const fmt=h=>{const hh=Math.floor(h),mm=Math.round((h-hh)*60);return hh+'h'+(mm?String(mm).padStart(2,'0'):'');};
-  const PAL=['#C17A3D','#7B9FD1','#6FA37E','#A084CA','#E07A63','#5FB4B8','#D4B85A'];
-
-  el.innerHTML=sites.map(([,S],si)=>{
-    const col=S.color||PAL[si%PAL.length];
-    const sal=Object.entries(S.bySalarie).sort((a,b)=>b[1]-a[1]);
-    const tch=Object.entries(S.byTache).sort((a,b)=>b[1]-a[1]);
-    const bar=(p,c)=>`<div style="height:4px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:2px;"><div style="height:100%;width:${p}%;background:${c};border-radius:99px;"></div></div>`;
-    const row=(lbl,h,tot,c)=>{const p=tot?Math.round(h/tot*100):0;return `<div style="margin-bottom:7px;"><div style="display:flex;justify-content:space-between;font-size:13px;"><span style="font-weight:600;">${escapeHtml(lbl)}</span><span style="font-weight:800;color:${c};">${fmt(h)} <span style="font-size:10px;color:var(--ink-soft);font-weight:400;">${p}%</span></span></div>${bar(p,c)}</div>`;};
-    return `
-    <div class="card" style="margin-bottom:14px;border-left:4px solid ${col};padding-left:14px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <div><div style="font-weight:900;font-size:16px;">${escapeHtml(S.name)}</div>
-        <div style="font-size:11px;color:var(--ink-soft);">${sal.length} salarié${sal.length>1?'s':''} · ${tch.length} tâche${tch.length>1?'s':''}</div></div>
-        <div style="font-size:22px;font-weight:900;color:${col};">${fmt(S.total)}</div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-        <div>
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--ink-soft);margin-bottom:6px;">👷 Par salarié</div>
-          ${sal.map(([n,h],i)=>row(n,h,S.total,PAL[i%PAL.length])).join('')}
-        </div>
-        <div>
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--ink-soft);margin-bottom:6px;">⚒ Par tâche</div>
-          ${tch.map(([t,h],i)=>row(t,h,S.total,PAL[(i+3)%PAL.length])).join('')}
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
 /* ═══════════════════════════════════════════════════════════════════
    ALERTES CONDUCTEUR — Envoi de messages à n'importe quel membre
    ═══════════════════════════════════════════════════════════════════ */
@@ -21426,7 +21427,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.14';
+const APP_VERSION = '2.20.15';
 
 const CHANGELOG = [
   {
