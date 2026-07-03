@@ -6295,7 +6295,8 @@ async function initRwoodStorage(){
   setTimeout(()=> checkDeviceRevocation(), 3500);
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
-  setTimeout(()=> pullSharedSites(), 4500);
+  // Pull des chantiers partagés au démarrage pour tous les rôles
+  setTimeout(()=> pullSharedSites().then(()=>renderSites()).catch(()=>{}), 1500);
   setTimeout(()=> pullWorkerMedia(), 5800); // ouvrier : documents reçus du chef
   setTimeout(()=> _restoreAccountDataIfNeeded(), 5200);
 
@@ -21565,7 +21566,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.25';
+const APP_VERSION = '2.20.26';
 
 const CHANGELOG = [
   {
@@ -28242,7 +28243,8 @@ async function pushSharedSite(site){
 async function pullSharedSites(){
   try{
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    if(role !== 'conducteur' && role !== 'chef' && role !== 'patron') return;
+    // Tous les rôles peuvent voir les chantiers (ouvrier inclus)
+    // Seuls les ouvriers n'ont pas accès à la création/modification
 
     // Récupérer la liste des IDs définitivement supprimés (tombstone)
     const deletedIds = await _fetchDeletedSiteIds();
@@ -28262,16 +28264,18 @@ async function pullSharedSites(){
     let relevant = [];
     if(role === 'conducteur' || role === 'patron'){
       relevant = filteredShared; // tout sans filtre
+    } else if(role === 'ouvrier'){
+      // Ouvrier : tous les chantiers actifs (pas de filtre par chef assigné)
+      relevant = filteredShared.filter(s => s.status !== 'termine');
     } else {
-      // Identifiants du chef pour matcher les chantiers qui lui sont assignés
-      const myPhone  = getMyOwnPhone();
-      const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
-      const myName   = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
-                       ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+      // Chef d'équipe et autres : chantiers assignés
+      const myPhone    = getMyOwnPhone();
+      const myAuthId   = data.settings && data.settings.auth && data.settings.auth.authId;
+      const myName     = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+                         ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
       const myNameTrim = myName.trim().toLowerCase();
 
       relevant = filteredShared.filter(s => {
-        // 1. Nouveau format : assignedChefs[] avec phone, authId ou nom
         if(Array.isArray(s.assignedChefs) && s.assignedChefs.length){
           if(s.assignedChefs.some(c =>
             (myPhone   && normalizePhone(c.phone) === myPhone) ||
@@ -28279,7 +28283,6 @@ async function pullSharedSites(){
             (myNameTrim && (c.name||'').trim().toLowerCase() === myNameTrim)
           )) return true;
         }
-        // 2. Champs plats (ancien format + nouveau assignedChefAuthId)
         if(myPhone   && normalizePhone(s.assignedChefPhone)  === myPhone)   return true;
         if(myAuthId  && s.assignedChefAuthId                 === myAuthId)  return true;
         if(myNameTrim && (s.assignedChefName||'').trim().toLowerCase() === myNameTrim) return true;
