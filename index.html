@@ -21573,7 +21573,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.21';
+const APP_VERSION = '2.20.22';
 
 const CHANGELOG = [
   {
@@ -22807,26 +22807,21 @@ function _parseQRResult(raw){
   // ── Scan QR Porte dépôt ─────────────────────────────────────────
   if(payload.type === 'depot_door'){
     closeModal('qrScanner');
-    // Forcer sync Supabase puis afficher le dépôt
     const syncStatus = document.getElementById('depotSyncStatus');
-    if(syncStatus){ syncStatus.style.display = 'block'; syncStatus.textContent = '🔄 Synchro en cours…'; }
+    if(syncStatus){ syncStatus.style.display = 'block'; syncStatus.textContent = '🔄 Synchro dépôt…'; }
     goTo('depot');
-    const doSync = async () => {
-      try{
-        // Pull depuis le dépôt partagé Supabase → sync automatique liste machines
-        const ok = await pullDepotFromSupabase(payload.id);
-        if(ok){
-          if(syncStatus){ syncStatus.textContent = '✓ Liste du dépôt mise à jour !'; }
-        } else {
-          if(syncStatus){ syncStatus.textContent = 'Données locales (hors ligne ou nouveau dépôt)'; }
-        }
-        setTimeout(()=>{ if(syncStatus) syncStatus.style.display='none'; }, 3000);
-      } catch(e){
-        if(syncStatus){ syncStatus.textContent = 'Hors ligne — données locales'; }
+    // Toujours synchroniser depuis BCM-MERIGNAC-2014 (mono-entreprise)
+    // Ignorer payload.id qui peut être un ancien code aléatoire
+    pullDepotFromSupabase(DEPOT_DEFAULT_ID).then(ok => {
+      if(syncStatus){
+        syncStatus.textContent = ok ? '✓ Dépôt mis à jour' : 'Données locales (hors ligne)';
+        setTimeout(()=>{ syncStatus.style.display='none'; }, 3000);
       }
       renderDepot();
-    };
-    doSync();
+    }).catch(() => {
+      if(syncStatus){ syncStatus.style.display='none'; }
+      renderDepot();
+    });
     return;
   }
 
@@ -25147,7 +25142,9 @@ function startDepotPolling(){
 }
 
 /* Démarrer le polling dès que l'app est prête */
-document.addEventListener('DOMContentLoaded', () => setTimeout(startDepotPolling, 2000));
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => { autoInitDepot(); startDepotPolling(); }, 2000);
+});
 
 
 /* ── QR Porte dans Paramètres ─────────────────────────────────────── */
@@ -25189,76 +25186,61 @@ async function shareDepotDoorQR(){
 
 
 /* ════════════════════════════════════════════════════════════════════
-   SETUP DÉPÔT — ID Entreprise partagé
-   Première ouverture : créer ou rejoindre un dépôt via un code court
-   Toutes les modifications sont visibles par tout le monde en temps réel
+   SETUP DÉPÔT — Mono-entreprise BCM (ID fixe, plus de code aléatoire)
    ════════════════════════════════════════════════════════════════════ */
 
 function depotHasId(){
-  return !!(data.settings.depotId && data.settings.depotId.startsWith('depot_') === false
-    ? data.settings.depotId
-    : data.settings.depotId && data.settings.depotId.length > 6);
+  // Toujours vrai en mono-entreprise
+  return true;
 }
 
-/* Créer un nouveau dépôt d'entreprise */
-async function createDepot(){
-  const name = (document.getElementById('depotCompanyNameInput').value || '').trim();
-  if(!name){ showToast('Entre le nom de ton entreprise'); return; }
-
-  // Générer un code court lisible : NOM-XXXX
-  const slug = name.toUpperCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g,'')  // enlever accents
-    .replace(/[^A-Z0-9]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'')
-    .slice(0,10);
-  const rand = Math.random().toString(36).slice(2,6).toUpperCase();
-  const code = slug + '-' + rand;
-
-  // depotId = code brut (ex: BCM-K7X2), la clé Supabase sera 'depot_BCM-K7X2'
-  data.settings.depotId   = code;
-  data.settings.depotName = name;
-  data.depotMachines      = data.depotMachines || [];
-  saveData();
-
-  // Push le dépôt vide sur Supabase pour réserver le code
-  await pushDepotToSupabase();
-
-  showToast(`Dépôt créé !`);
-
-  // Afficher le code à partager de manière claire
-  setTimeout(()=>{
-    _showDepotCodeModal(code, name);
-  }, 300);
-}
-
-/* Rejoindre un dépôt existant via le code */
-async function joinDepot(){
-  // Nettoyer le code (supprimer le préfixe 'depot_' si collé par erreur)
-  const rawCode = (document.getElementById('depotCompanyCodeInput').value || '').trim().toUpperCase();
-  const code = rawCode.replace(/^DEPOT_/i, '').trim();
-  if(code.length < 3){ showToast("Entre l'identifiant de ton entreprise"); return; }
-
-  showToast('Connexion en cours…');
-
-  const ok = await pullDepotFromSupabase(code);
-  if(ok){
-    data.settings.depotId = code;
+/* Auto-initialisation au démarrage — force l'ID correct */
+function autoInitDepot(){
+  ensureDepot();
+  // Si l'ancien ID ne pointe pas vers BCM-MERIGNAC-2014 → migrer silencieusement
+  if(!data.settings.depotId || data.settings.depotId !== DEPOT_DEFAULT_ID){
+    const oldId = data.settings.depotId;
+    data.settings.depotId   = DEPOT_DEFAULT_ID;
+    data.settings.depotName = 'BCM-MERIGNAC-2014';
     saveData();
-    startDepotPolling();
-    renderDepot();
-    showToast('✓ Connecté — ' + (data.settings.depotName||code));
-  } else {
-    showToast("Identifiant introuvable — vérifie le code et ta connexion");
+    if(oldId && oldId !== DEPOT_DEFAULT_ID && navigator.onLine){
+      // Pull depuis la bonne clé maintenant
+      pullDepotFromSupabase(DEPOT_DEFAULT_ID).then(ok => { if(ok) renderDepot(); });
+    }
   }
 }
 
-/* Quitter le dépôt (changer d'entreprise) */
-function leaveDepot(){
-  if(!confirm('Quitter ce dépôt ? Tu pourras rejoindre un autre en entrant un nouvel identifiant.')) return;
-  data.settings.depotId   = null;
-  data.settings.depotName = null;
-  data.depotMachines      = [];
+/* Créer un nouveau dépôt — désactivé en mono-entreprise, utilise l'ID fixe */
+async function createDepot(){
+  data.settings.depotId   = DEPOT_DEFAULT_ID;
+  data.settings.depotName = 'BCM-MERIGNAC-2014';
+  data.depotMachines      = data.depotMachines || [];
   saveData();
+  await pushDepotToSupabase();
+  showToast('Dépôt BCM initialisé !');
   renderDepot();
+}
+
+/* Rejoindre un dépôt — toujours BCM-MERIGNAC-2014 en mono-entreprise */
+async function joinDepot(){
+  showToast('Connexion au dépôt BCM…');
+  data.settings.depotId   = DEPOT_DEFAULT_ID;
+  data.settings.depotName = 'BCM-MERIGNAC-2014';
+  saveData();
+  const ok = await pullDepotFromSupabase(DEPOT_DEFAULT_ID);
+  if(ok){
+    startDepotPolling();
+    renderDepot();
+    showToast('✓ Connecté au dépôt BCM');
+  } else {
+    renderDepot();
+    showToast('Dépôt BCM chargé (local)');
+  }
+}
+
+/* Quitter le dépôt — désactivé en mono-entreprise */
+function leaveDepot(){
+  showToast('Fonctionnalité non disponible');
 }
 
 
