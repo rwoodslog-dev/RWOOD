@@ -5426,6 +5426,7 @@
     </div>
     <div class="field">
       <label>Chantier</label>
+      <span id="editFicheSiteBadge" style="display:none;padding:3px 10px;border-radius:99px;color:#fff;font-size:12px;font-weight:700;margin-bottom:6px;"></span>
       <select id="editFicheSite"></select>
     </div>
     <div class="field">
@@ -15996,21 +15997,69 @@ function openFichesEdit(workerId, dateKey){
   const dateLabel = d.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
   document.getElementById('editFicheTitle').textContent = `${worker.name} — ${dateLabel}`;
 
+  // ── Sélecteur chantier ──────────────────────────────────────────
   const siteSelect = document.getElementById('editFicheSite');
-  const currentSiteId = dayData.siteId || data.sites[0]?.id || '';
+  const currentSiteId = dayData.siteId || (data.sites[0] && data.sites[0].id) || '';
   siteSelect.innerHTML = data.sites.map(s=>`<option value="${s.id}" ${s.id===currentSiteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
 
-  document.getElementById('editFicheHours').value = entry.hours || '';
+  // Mettre à jour la couleur du badge chantier en temps réel
+  function updateSiteBadge(){
+    const selSiteId = siteSelect.value;
+    const selSite   = data.sites.find(s=>s.id===selSiteId);
+    const badge     = document.getElementById('editFicheSiteBadge');
+    if(badge && selSite){
+      badge.textContent   = selSite.name;
+      badge.style.background = selSite.color || 'var(--wood)';
+      badge.style.display = 'inline-block';
+    } else if(badge){
+      badge.style.display = 'none';
+    }
+  }
+  siteSelect.onchange = updateSiteBadge;
+  setTimeout(updateSiteBadge, 0);
+
+  // ── Heures / panier / tâche ─────────────────────────────────────
+  document.getElementById('editFicheHours').value    = entry.hours  || '';
   document.getElementById('editFichePanier').checked = !!entry.panier;
-  document.getElementById('editFicheTask').value = entry.task || '';
-  // Remplir les chips de tâche prédéfinies
+  document.getElementById('editFicheTask').value     = entry.task   || '';
+
+  // ── Chips de tâche — utilise TRANCHES (nouveau système) ────────
   const chips = document.getElementById('editFicheTaskChips');
   if(chips){
-    chips.innerHTML = TACHE_OPTIONS.map(opt=>`
-      <button type="button"
-        style="padding:4px 10px;border-radius:20px;border:1.5px solid ${(entry.task||'')===opt?'var(--wood)':'var(--line)'};background:${(entry.task||'')===opt?'var(--wood)':'var(--card)'};color:${(entry.task||'')===opt?'#1a0f00':'var(--ink)'};font-size:11px;font-weight:700;cursor:pointer;"
-        onclick="document.getElementById('editFicheTask').value='${opt}'; document.querySelectorAll('#editFicheTaskChips button').forEach(b=>{ b.style.background='var(--card)'; b.style.color='var(--ink)'; b.style.borderColor='var(--line)'; }); this.style.background='var(--wood)'; this.style.color='#1a0f00'; this.style.borderColor='var(--wood)';">${opt}</button>
-    `).join('');
+    const currentTask = entry.task || '';
+    chips.innerHTML = '';
+
+    if(typeof TRANCHES !== 'undefined'){
+      // Nouveau système tranches
+      TRANCHES.forEach(t => {
+        const isSelected = currentTask === t.label || currentTask.startsWith(t.label + ' /');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = t.label + (t.sub && t.sub.length ? ' ▾' : '');
+        btn.style.cssText = `padding:4px 10px;border-radius:20px;border:1.5px solid ${isSelected?'var(--wood)':'var(--line)'};background:${isSelected?'var(--wood)':'var(--card)'};color:${isSelected?'#1a0f00':'var(--ink)'};font-size:11px;font-weight:700;cursor:pointer;margin:2px;`;
+        btn.addEventListener('click', function(){
+          document.getElementById('editFicheTask').value = t.label;
+          chips.querySelectorAll('button').forEach(b=>{ b.style.background='var(--card)'; b.style.color='var(--ink)'; b.style.borderColor='var(--line)'; });
+          this.style.background='var(--wood)'; this.style.color='#1a0f00'; this.style.borderColor='var(--wood)';
+        });
+        chips.appendChild(btn);
+      });
+    } else if(typeof getTacheOptions === 'function'){
+      // Ancien système fallback
+      getTacheOptions().forEach(opt => {
+        const isSelected = currentTask === opt;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = opt;
+        btn.style.cssText = `padding:4px 10px;border-radius:20px;border:1.5px solid ${isSelected?'var(--wood)':'var(--line)'};background:${isSelected?'var(--wood)':'var(--card)'};color:${isSelected?'#1a0f00':'var(--ink)'};font-size:11px;font-weight:700;cursor:pointer;margin:2px;`;
+        btn.addEventListener('click', function(){
+          document.getElementById('editFicheTask').value = opt;
+          chips.querySelectorAll('button').forEach(b=>{ b.style.background='var(--card)'; b.style.color='var(--ink)'; b.style.borderColor='var(--line)'; });
+          this.style.background='var(--wood)'; this.style.color='#1a0f00'; this.style.borderColor='var(--wood)';
+        });
+        chips.appendChild(btn);
+      });
+    }
   }
 
   openModal('editFiche');
@@ -21506,7 +21555,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.20.16';
+const APP_VERSION = '2.20.17';
 
 const CHANGELOG = [
   {
