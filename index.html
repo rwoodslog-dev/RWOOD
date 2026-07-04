@@ -4890,6 +4890,15 @@
         </div>
       </div>
     </section>
+    <!-- MODAL SuiviHeures : recatégorisation d'une fiche (patron) -->
+    <div class="modal-overlay" id="modal-suiviRecat">
+      <div class="modal">
+        <button class="modal-close" onclick="closeModal('suiviRecat')">×</button>
+        <h2>Choisir une catégorie</h2>
+        <p id="suiviRecatSub" style="color:var(--ink-soft);font-size:13px;margin:-4px 0 12px;"></p>
+        <div id="suiviRecatBody"><!-- options injectées --></div>
+      </div>
+    </div>
     <!-- MODULE — SuiviHeures (fin DOM) -->
 
 
@@ -22663,7 +22672,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.28.0';
+const APP_VERSION = '2.28.1';
 
 const CHANGELOG = [
   {
@@ -31119,6 +31128,8 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(notesApplyTabVisi
 let _suiviCache = null;          // résultat d'agrégation mémorisé
 let _suiviCacheStamp = 0;        // date du dernier calcul
 let _suiviOpen = {};             // état déplié/replié par chantier
+let _suiviUncatOpen = {};        // [recat] sous-liste "non catégorisé" dépliée
+let _suiviRecatCtx = null;       // [recat] fiche en cours de recatégorisation
 
 /* Catégories connues → libellé propre + icône. Les tâches hors liste
    sont conservées telles quelles (aucune perte de donnée). */
@@ -31165,6 +31176,19 @@ const SUIVI_TASK_MAP = [
   + '#view-suivi .suivi-task-hours{font-weight:700;font-size:14px;color:var(--ink,#f0e6d2);}'
   + '#view-suivi .suivi-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);margin-top:4px;overflow:hidden;}'
   + '#view-suivi .suivi-bar > i{display:block;height:100%;background:var(--wood,#C8862B);border-radius:3px;}'
+  + '#view-suivi .suivi-clickable{cursor:pointer;}'
+  + '#view-suivi .suivi-clickable:active{opacity:.7;}'
+  + '#view-suivi .suivi-uncat-count{color:var(--ink-soft);font-weight:600;font-size:12px;}'
+  + '#view-suivi .suivi-uncat-chev{color:var(--ink-soft);transition:transform .2s;flex-shrink:0;}'
+  + '#view-suivi .suivi-uncat-chev.open{transform:rotate(90deg);}'
+  + '#view-suivi .suivi-uncat-list{margin:2px 0 8px 8px;padding-left:10px;border-left:2px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:6px;}'
+  + '#view-suivi .suivi-uncat-item{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.03);border-radius:9px;padding:8px 10px;}'
+  + '#view-suivi .suivi-uncat-worker{font-size:13px;font-weight:700;color:var(--ink,#f0e6d2);}'
+  + '#view-suivi .suivi-uncat-meta{font-size:11px;color:var(--ink-soft);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+  + '#view-suivi .suivi-recat-btn{flex-shrink:0;background:none;border:1px solid var(--wood,#C8862B);color:var(--wood,#C8862B);border-radius:8px;padding:6px 8px;cursor:pointer;}'
+  + '#modal-suiviRecat .suivi-recat-opt{display:flex;align-items:center;gap:10px;width:100%;padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#0d0a06;color:var(--ink,#f0e6d2);font-size:15px;font-weight:600;cursor:pointer;margin-bottom:8px;}'
+  + '#modal-suiviRecat .suivi-recat-opt:active{background:rgba(255,255,255,.05);}'
+  + '#modal-suiviRecat .suivi-recat-reset{border-style:dashed;color:var(--ink-soft);font-weight:500;}'
   + '@media (min-width:860px){ #view-suivi .suivi-wrap{max-width:760px;margin:0 auto;} }';
   document.head.appendChild(st);
 })();
@@ -31202,12 +31226,30 @@ function _suiviTaskCategory(rawTask){
   return { label, icon:'📋' };
 }
 
+/* ── EXTENSION Recatégorisation : overrides locaux (Option A) ──────
+   Stockés dans data.settings.suiviTaskOverrides = { "dateKey|workerId": "Label" }.
+   N'écrit JAMAIS entry.task : la fiche brute de l'ouvrier reste intacte.
+   Pour désactiver l'extension : supprimer ce commentaire jusqu'à la
+   balise FIN EXTENSION + retirer les 2 usages marqués `[recat]`. */
+function _suiviOverrides(){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.suiviTaskOverrides) data.settings.suiviTaskOverrides = {};
+  return data.settings.suiviTaskOverrides;
+}
+function _suiviOvKey(dateKey, wId){ return dateKey + '|' + wId; }
+/* Catégories valides proposées dans le sélecteur de recatégorisation. */
+function _suiviValidCategories(){
+  return SUIVI_TASK_MAP.map(c => ({ label:c.label, icon:c.icon }));
+}
+/* FIN EXTENSION (déclarations) */
+
 /* ── Agrégation LECTURE SEULE de data.attendance ─────────────────── */
 function _suiviAggregate(){
   const sitesById = {};
   (data.sites||[]).forEach(s => { sitesById[s.id] = s; });
 
-  const bySite = {}; // siteId -> { total, tasks:{ label:{icon,hours} } }
+  const overrides = _suiviOverrides(); // [recat]
+  const bySite = {}; // siteId -> { total, tasks:{ label:{icon,hours} }, uncat:[ fiches ] }
   const attendance = data.attendance || {};
 
   Object.keys(attendance).forEach(dateKey => {
@@ -31223,31 +31265,60 @@ function _suiviAggregate(){
       const h = parseFloat(String(entry.hours).replace(',','.'));
       if(!isFinite(h) || h <= 0) return;
 
-      if(!bySite[siteId]) bySite[siteId] = { total:0, tasks:{} };
+      if(!bySite[siteId]) bySite[siteId] = { total:0, tasks:{}, uncat:[] };
       bySite[siteId].total += h;
 
-      const cat = _suiviTaskCategory(entry.task);
+      // [recat] override local prioritaire sur la catégorie déduite
+      let cat;
+      const ov = overrides[_suiviOvKey(dateKey, wId)];
+      if(ov){
+        const known = SUIVI_TASK_MAP.find(c => c.label === ov);
+        cat = { label: ov, icon: known ? known.icon : '📋' };
+      } else {
+        cat = _suiviTaskCategory(entry.task);
+      }
+
       if(!bySite[siteId].tasks[cat.label]) bySite[siteId].tasks[cat.label] = { icon:cat.icon, hours:0 };
       bySite[siteId].tasks[cat.label].hours += h;
+
+      // [recat] tracer les fiches réellement non catégorisées (sans override)
+      if(!ov && cat.label === 'Non catégorisé'){
+        const wName = _suiviWorkerName(wId);
+        bySite[siteId].uncat.push({ dateKey, wId, wName, hours:h, raw:(entry.task||'') });
+      }
     });
   });
 
-  // Mise en forme triée (chantiers par total décroissant, tâches idem)
   const result = Object.keys(bySite).map(siteId => {
     const s = sitesById[siteId];
     const tasks = Object.keys(bySite[siteId].tasks).map(label => ({
       label, icon: bySite[siteId].tasks[label].icon, hours: bySite[siteId].tasks[label].hours
     })).sort((a,b) => b.hours - a.hours);
+    // tri des fiches non catégorisées par date décroissante (perf : tri léger)
+    const uncat = bySite[siteId].uncat.sort((a,b) => (a.dateKey < b.dateKey ? 1 : -1));
     return {
       siteId,
       name: (s && s.name) || 'Chantier',
       status: (s && s.status) || '',
       total: bySite[siteId].total,
-      tasks
+      tasks,
+      uncat
     };
   }).sort((a,b) => b.total - a.total);
 
   return result;
+}
+
+/* Résout un nom lisible depuis un workerId (fiche ou registre local). */
+function _suiviWorkerName(wId){
+  const w = (data.workers||[]).find(x => x.id === wId);
+  if(w && w.name) return w.name;
+  const p = data.settings && data.settings.myProfile;
+  if(p && p.workerId === wId){
+    const n = ((p.firstName||'') + ' ' + (p.lastName||'')).trim();
+    if(n) return n;
+  }
+  return 'Ouvrier';
 }
 
 /* ── Format heures (arrondi 1 décimale, sans .0 inutile) ─────────── */
@@ -31291,16 +31362,42 @@ function suiviRender(){
 
     const tasksHtml = site.tasks.map(t => {
       const pct = maxTask > 0 ? Math.round((t.hours / maxTask) * 100) : 0;
-      return '<div class="suivi-task-row">'
+      const isUncat = (t.label === 'Non catégorisé'); // [recat]
+      const uncatOpen = isUncat && !!_suiviUncatOpen[site.siteId];
+      const clickable = isUncat && site.uncat && site.uncat.length;
+
+      let row = '<div class="suivi-task-row'+(clickable?' suivi-clickable':'')+'"'
+        + (clickable ? ' onclick="suiviToggleUncat(\''+site.siteId+'\')"' : '') + '>'
         + '<div style="flex:1;min-width:0;">'
         +   '<div style="display:flex;align-items:center;gap:8px;">'
         +     '<span>'+t.icon+'</span>'
-        +     '<span class="suivi-task-name">'+escapeHtml(t.label)+'</span>'
+        +     '<span class="suivi-task-name">'+escapeHtml(t.label)
+        +       (clickable ? ' <span class="suivi-uncat-count">('+site.uncat.length+')</span>' : '')
+        +     '</span>'
+        +     (clickable ? '<svg class="suivi-uncat-chev'+(uncatOpen?' open':'')+'" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>' : '')
         +     '<span class="suivi-task-hours">'+_suiviFmt(t.hours)+'</span>'
         +   '</div>'
         +   '<div class="suivi-bar"><i style="width:'+pct+'%;"></i></div>'
         + '</div>'
         + '</div>';
+
+      // [recat] sous-liste des fiches non catégorisées + sélecteur
+      if(uncatOpen){
+        row += '<div class="suivi-uncat-list">' + site.uncat.map(f => {
+          const dLabel = _suiviDateLabel(f.dateKey);
+          const rawTxt = f.raw ? escapeHtml(f.raw) : '<i style="opacity:.6;">aucun intitulé</i>';
+          return '<div class="suivi-uncat-item">'
+            + '<div style="flex:1;min-width:0;">'
+            +   '<div class="suivi-uncat-worker">'+escapeHtml(f.wName)+' · '+_suiviFmt(f.hours)+'</div>'
+            +   '<div class="suivi-uncat-meta">'+dLabel+' — '+rawTxt+'</div>'
+            + '</div>'
+            + '<button class="suivi-recat-btn" title="Modifier la catégorie" onclick="event.stopPropagation();suiviOpenRecat(\''+site.siteId+'\',\''+f.dateKey+'\',\''+f.wId+'\')">'
+            +   '<svg style="pointer-events:none;" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>'
+            + '</button>'
+            + '</div>';
+        }).join('') + '</div>';
+      }
+      return row;
     }).join('');
 
     return '<div class="suivi-site'+(open?' open':'')+'" id="suivi-site-'+site.siteId+'">'
@@ -31322,6 +31419,53 @@ function suiviToggle(siteId){
   const el = document.getElementById('suivi-site-' + siteId);
   if(el) el.classList.toggle('open', !!_suiviOpen[siteId]);
 }
+
+/* ── EXTENSION Recatégorisation : UI (sous-liste + sélecteur) ─────── */
+function suiviToggleUncat(siteId){
+  _suiviUncatOpen[siteId] = !_suiviUncatOpen[siteId];
+  suiviRender(); // re-render local (cache inchangé, pas de recalcul lourd)
+  const el = document.getElementById('suivi-site-' + siteId);
+  if(el) el.classList.add('open');
+}
+
+function _suiviDateLabel(dateKey){
+  try{
+    const d = new Date(dateKey + 'T00:00:00');
+    return d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
+  } catch(e){ return dateKey; }
+}
+
+/* Ouvre le sélecteur de catégorie pour une fiche donnée. */
+function suiviOpenRecat(siteId, dateKey, wId){
+  const cats = _suiviValidCategories();
+  const body = document.getElementById('suiviRecatBody');
+  if(!body) return;
+  _suiviRecatCtx = { siteId, dateKey, wId };
+  const wName = _suiviWorkerName(wId);
+  document.getElementById('suiviRecatSub').textContent = wName + ' · ' + _suiviDateLabel(dateKey);
+  body.innerHTML = cats.map(c =>
+    '<button class="suivi-recat-opt" onclick="suiviApplyRecat(\''+c.label.replace(/'/g,"\\'")+'\')">'
+    + '<span>'+c.icon+'</span><span>'+escapeHtml(c.label)+'</span></button>'
+  ).join('')
+  + '<button class="suivi-recat-opt suivi-recat-reset" onclick="suiviApplyRecat(\'\')">'
+  + '<span>↩️</span><span>Laisser non catégorisé</span></button>';
+  openModal('suiviRecat');
+}
+
+/* Applique l'override local + recalcul temps réel des totaux. */
+function suiviApplyRecat(label){
+  if(!_suiviRecatCtx) return;
+  const { dateKey, wId } = _suiviRecatCtx;
+  const ov = _suiviOverrides();
+  const key = _suiviOvKey(dateKey, wId);
+  if(label) ov[key] = label;
+  else delete ov[key];
+  saveData(); // persistance locale de l'override (pas la fiche brute)
+  closeModal('suiviRecat');
+  _suiviRecatCtx = null;
+  suiviRefresh(true); // recalcul complet + re-render (totaux à jour)
+}
+/* FIN EXTENSION (UI) */
 
 /* Applique la visibilité de l'onglet au démarrage. */
 document.addEventListener('DOMContentLoaded', () => setTimeout(suiviApplyNavVisibility, 900));
