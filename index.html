@@ -3157,6 +3157,10 @@
       <button class="nav-btn" data-view="magasin" onclick="goTo('magasin')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5z"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M9 20v-6h6v6"/></svg></span><span class="lbl">Magasin</span>
       </button>
+      <!-- MODULE — Notes : bouton nav (masquable via toggle réglages) -->
+      <button class="nav-btn" data-view="notes" id="notesNavBtn" onclick="goTo('notes')">
+        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13l3 3v13a0 0 0 0 1 0 0H4z"/><path d="M8 3v5h8"/><path d="M8 13h8M8 17h5"/></svg></span><span class="lbl">Notes</span>
+      </button>
 
       <button class="nav-btn" data-view="alertes-conducteur" id="navBtnAlertesConducteur" style="display:none;" onclick="goTo('alertes-conducteur')">
         <span class="ico" style="position:relative;">
@@ -3684,6 +3688,23 @@
         <div class="accordion-body">
           <div style="font-size:13px;color:var(--ink-soft);margin-bottom:14px;line-height:1.6;">
             Une bulle flottante avec badge de comptage. Un clic → ta liste de tâches. Coche quand c'est fait, rouvre si besoin de le revoir.
+          </div>
+
+          <!-- MODULE — Notes : réglages (toggles + clé Whisper). Retrait = supprimer ce bloc. -->
+          <div class="card" style="margin-bottom:14px;">
+            <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+              <span>Bulle flottante « Liste à faire »</span>
+              <input type="checkbox" id="notesToggleBubble" style="width:22px;height:22px;accent-color:var(--wood);" onchange="notesSetBubbleEnabled(this.checked)">
+            </label>
+            <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;margin-top:12px;">
+              <span>Onglet « Notes » dans la barre</span>
+              <input type="checkbox" id="notesToggleTab" style="width:22px;height:22px;accent-color:var(--wood);" onchange="notesSetTabEnabled(this.checked)">
+            </label>
+            <div class="field" style="margin-top:14px;margin-bottom:0;">
+              <label>Clé API OpenAI (dictée vocale)</label>
+              <input type="password" id="notesOpenaiKey" placeholder="sk-..." autocomplete="off" onchange="notesSaveOpenaiKey(this.value)">
+              <div class="hint" style="margin-top:4px;">Stockée uniquement sur cet appareil. Nécessaire pour la transcription vocale.</div>
+            </div>
           </div>
 
           <!-- Sélecteur chef (ouvrier uniquement) -->
@@ -4778,11 +4799,11 @@
       </div>
     </div>
 
-    <!-- MODAL Magasin : ajout machine (mode developpeur / admin) -->
+    <!-- MODAL Magasin : ajout / modification machine -->
     <div class="modal-overlay" id="modal-magasinAdd">
       <div class="modal">
         <button class="modal-close" onclick="closeModal('magasinAdd')">×</button>
-        <h2>Ajouter une machine</h2>
+        <h2 id="magasinAddTitle">Ajouter une machine</h2>
         <div class="field">
           <label>Nom</label>
           <input type="text" id="magasinAddName" placeholder="Ex : Perforateur Hilti">
@@ -4794,11 +4815,65 @@
         <div class="field">
           <label>Photo</label>
           <input type="file" id="magasinAddPhoto" accept="image/*">
+          <div class="hint" id="magasinAddPhotoHint" style="display:none;margin-top:4px;">Laisser vide pour conserver la photo actuelle.</div>
         </div>
         <button class="btn btn-primary" id="magasinAddSubmit" style="width:100%;margin-top:12px;" onclick="magasinSubmitAdd()">Enregistrer</button>
       </div>
     </div>
     <!-- MODULE — Magasin (fin DOM) -->
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         MODULE — Notes (début)  ·  onglet 100% isolé
+         Accroches base (a retirer pour desinstaller proprement) :
+           1. bouton nav  data-view="notes" #notesNavBtn   (barre nav)
+           2. goTo()      cas 'notes' + titre               (routeur vues)
+           3. cette section #view-notes + modal enregistrement (DOM)
+           4. bloc reglages #notesToggleBubble/Tab/Key       (parametres)
+           5. bloc JS balise MODULE — Notes (JS)              (script)
+           6. garde bulle dans _renderPinnedBubble (1 ligne)  (base)
+         STORE PARTAGE : la liste = _getPinnedNote().tasks (meme objet
+         que la bulle existante). Pas de store separe. Synchro via
+         pushMyTodoList() (canal todo_chef_ existant).
+         ═══════════════════════════════════════════════════════════════ -->
+    <section class="view" id="view-notes">
+      <div class="notes-wrap">
+        <div class="notes-rec-zone">
+          <button class="notes-rec-btn" id="notesRecBtn" onclick="notesToggleRecord()">
+            <span id="notesRecIcon">🎤</span>
+            <span id="notesRecLabel">Enregistrer un vocal</span>
+          </button>
+          <div class="notes-rec-status" id="notesRecStatus"></div>
+        </div>
+
+        <div class="notes-add-row">
+          <input type="text" id="notesAddInput" placeholder="Ajouter une tâche…" onkeydown="if(event.key==='Enter') notesAddManual()">
+          <button class="btn btn-primary" style="padding:0 14px;" onclick="notesAddManual()">+</button>
+        </div>
+
+        <div class="notes-list-head">
+          <span id="notesCount">—</span>
+          <button class="notes-clear-done" id="notesClearDone" onclick="notesClearDone()" style="display:none;">Effacer les faites</button>
+        </div>
+        <div id="notesList" class="notes-list"></div>
+        <div id="notesEmpty" class="empty" style="display:none;">
+          <div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4h13l3 3v13H4z"/><path d="M8 3v5h8"/></svg></div>
+          <h3>Aucune note</h3>
+          <p>Dicte un vocal ou ajoute une tâche à la main.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- MODAL Notes : transcription en cours -->
+    <div class="modal-overlay" id="modal-notesProcessing">
+      <div class="modal" style="text-align:center;">
+        <div style="font-size:40px;margin:6px 0 10px;">🎙️</div>
+        <h2 id="notesProcTitle">Transcription en cours…</h2>
+        <p style="color:var(--ink-soft);font-size:13px;" id="notesProcMsg">Analyse du vocal, un instant.</p>
+        <div class="notes-spinner"></div>
+      </div>
+    </div>
+    <!-- MODULE — Notes (fin DOM) -->
+
 
 
     <!-- MODAL : Gérer le dépôt (chef) -->
@@ -7347,6 +7422,7 @@ function goTo(viewName, siteId){
 
     depot:       ['Dépôt', 'Inventaire machines partagé'],
     magasin:     ['Magasin', 'Machines partagées — emprunt par camion'],
+    notes:       ['Notes', 'Liste à faire — dictée vocale'],
     detail:      [null, null]
   };
 
@@ -7412,6 +7488,7 @@ function goTo(viewName, siteId){
 
   if(viewName === 'depot') renderDepot();
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
+  if(viewName === 'notes') notesRender(); // MODULE — Notes
   if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
   if(viewName === 'recap-patron') renderRecapPatron();
 
@@ -22561,7 +22638,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.26.0';
+const APP_VERSION = '2.27.0';
 
 const CHANGELOG = [
   {
@@ -26934,6 +27011,8 @@ function _getPinnedNote(){
 function _renderPinnedBubble(pn){
   const bubble = document.getElementById('pinnedNoteBubble');
   if(!bubble) return;
+  // MODULE — Notes : respect du toggle "bulle flottante" (défaut activé)
+  if(data.settings && data.settings.notesBubbleEnabled === false){ bubble.style.display='none'; return; }
   const tasks = (pn && pn.tasks) || [];
   if(!tasks.length){ bubble.style.display='none'; return; }
 
@@ -27403,6 +27482,7 @@ function _updateChefTodoParamsLabel(){
 
 /* Initialise la section chef-todo dans paramètres selon le rôle */
 async function initChefTodoParamsSection(){
+  if(typeof notesSyncSettingsControls === 'function') notesSyncSettingsControls(); // MODULE — Notes
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
   const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
   const ouvrierSection = document.getElementById('chefTodoSelectorSection');
@@ -30180,10 +30260,12 @@ async function checkDeviceRevocation(){
    Clé Supabase dédiée : MAGASIN_SYNC_KEY (rwood_sync, canal isolé).
    ═══════════════════════════════════════════════════════════════════ */
 const MAGASIN_SYNC_KEY = 'company_magasin_machines';
+const MAGASIN_BACKUP_KEY = 'company_magasin_backup'; // snapshot séparé du canal live
 let _magasinLastRemoteTs = 0;
 let _magasinPushTimer = null;
 let _magasinPollTimer = null;
 let _magasinPendingBorrowId = null;
+let _magasinEditId = null;
 
 /* CSS injecté une seule fois (mobile-first ; desktop wrappé @media 860). */
 (function _magasinInjectCSS(){
@@ -30222,6 +30304,12 @@ let _magasinPendingBorrowId = null;
 /* ── État local ──────────────────────────────────────────────────── */
 function _magasinEnsure(){ if(!Array.isArray(data.magasinMachines)) data.magasinMachines = []; }
 function _magasinIsAdmin(){ return !!window._devRoleUnlocked; }
+/* Rôles autorisés à modifier une machine : chef, conducteur, patron (+ dev). */
+function _magasinCanEdit(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'chef' || r === 'conducteur' || r === 'patron';
+}
 
 /* ── Rendu liste ─────────────────────────────────────────────────── */
 function magasinRender(){
@@ -30295,12 +30383,17 @@ function magasinOpenDetail(machineId){
     actionHtml = '<button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="magasinPromptBorrow(\''+m.id+'\')">J\'emprunte</button>';
   }
 
+  const editHtml = _magasinCanEdit()
+    ? '<button class="btn btn-outline btn-sm" style="width:100%;margin-top:8px;" onclick="magasinOpenEdit(\''+m.id+'\')">✏️ Modifier</button>'
+    : '';
+
   body.innerHTML =
     photo
     + '<h2 style="margin:0 0 2px;">'+escapeHtml(m.name||'Sans nom')+'</h2>'
     + '<p style="color:var(--ink-soft);font-size:13px;margin:0 0 4px;">Réf : '+escapeHtml(m.ref||'—')+'</p>'
     + statusHtml
-    + actionHtml;
+    + actionHtml
+    + editHtml;
 
   openModal('magasinDetail');
 }
@@ -30383,9 +30476,30 @@ function magasinReturn(machineId){
 
 /* ── Ajout machine (ouvert à tous) ───────────────────────────────── */
 function magasinOpenAdd(){
+  _magasinEditId = null; // mode ajout
+  const t = document.getElementById('magasinAddTitle'); if(t) t.textContent = 'Ajouter une machine';
+  const sub = document.getElementById('magasinAddSubmit'); if(sub) sub.textContent = 'Enregistrer';
+  const hint = document.getElementById('magasinAddPhotoHint'); if(hint) hint.style.display = 'none';
   document.getElementById('magasinAddName').value  = '';
   document.getElementById('magasinAddRef').value   = '';
   const ph = document.getElementById('magasinAddPhoto'); if(ph) ph.value = '';
+  openModal('magasinAdd');
+}
+
+/* ── Modification machine (chef / conducteur / patron / dev) ──────── */
+function magasinOpenEdit(machineId){
+  if(!_magasinCanEdit()){ showToast('Modification non autorisée'); return; }
+  _magasinEnsure();
+  const m = (data.magasinMachines||[]).find(x => x.id === machineId);
+  if(!m) return;
+  _magasinEditId = machineId; // mode édition
+  const t = document.getElementById('magasinAddTitle'); if(t) t.textContent = 'Modifier la machine';
+  const sub = document.getElementById('magasinAddSubmit'); if(sub) sub.textContent = 'Enregistrer les modifications';
+  const hint = document.getElementById('magasinAddPhotoHint'); if(hint) hint.style.display = 'block';
+  document.getElementById('magasinAddName').value = m.name || '';
+  document.getElementById('magasinAddRef').value  = m.ref  || '';
+  const ph = document.getElementById('magasinAddPhoto'); if(ph) ph.value = '';
+  closeModal('magasinDetail');
   openModal('magasinAdd');
 }
 
@@ -30397,8 +30511,32 @@ async function magasinSubmitAdd(){
   if(!name){ showToast('Nom requis'); return; }
 
   const btn = document.getElementById('magasinAddSubmit');
+  const btnLabel = btn ? btn.textContent : '';
   if(btn){ btn.disabled = true; btn.textContent = 'Enregistrement…'; }
 
+  // ── Mode ÉDITION ──
+  if(_magasinEditId){
+    _magasinEnsure();
+    const m = (data.magasinMachines||[]).find(x => x.id === _magasinEditId);
+    if(!m){ if(btn){ btn.disabled=false; btn.textContent=btnLabel; } closeModal('magasinAdd'); return; }
+    let newPhoto = m.photo || null;
+    try{
+      if(file){ newPhoto = await uploadFileToSupabase(file, 'magasin'); }
+    } catch(e){ showToast('⚠️ Upload photo échoué — ancienne photo conservée'); }
+    m.name  = name;
+    m.ref   = ref;
+    m.photo = newPhoto;
+    saveData();
+    if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
+    _magasinEditId = null;
+    closeModal('magasinAdd');
+    magasinRender();
+    showToast('✓ ' + name + ' modifiée');
+    magasinPush();
+    return;
+  }
+
+  // ── Mode AJOUT ──
   let photoUrl = null;
   try{
     if(file){
@@ -30420,25 +30558,42 @@ async function magasinSubmitAdd(){
   });
   saveData();
 
-  if(btn){ btn.disabled = false; btn.textContent = 'Enregistrer'; }
+  if(btn){ btn.disabled = false; btn.textContent = btnLabel; }
   closeModal('magasinAdd');
   magasinRender();
   showToast('✓ ' + name + ' ajoutée');
   magasinPush();
 }
 
-/* ── Liste des machines dans le panneau développeur (suppression) ──
+/* ── Liste des machines dans le panneau développeur (backup + suppression) ──
    Rendu dans #devPanelList via switchDevTab('machines'). Pull frais
-   depuis Supabase pour refléter l'état global avant suppression. */
+   depuis Supabase pour refléter l'état global avant affichage. */
 async function magasinRenderDevList(container){
   _magasinEnsure();
   await magasinPull();           // état global à jour
   const machines = data.magasinMachines || [];
+
+  // Barre de sauvegarde / restauration (toujours présente)
+  const backupBar =
+    '<div style="background:var(--card,#211a12);border:1.5px solid var(--wood);border-radius:12px;padding:12px;margin-bottom:14px;">'
+    + '<div style="font-weight:700;margin-bottom:8px;">💾 Sauvegarde de la liste ('+machines.length+' machine'+(machines.length>1?'s':'')+')</div>'
+    + '<div class="hint" style="margin-bottom:10px;">Photos incluses (URLs). En cas de bug, restaure sans tout ressaisir.</div>'
+    + '<div style="display:flex;gap:6px;margin-bottom:6px;">'
+    +   '<button class="btn btn-outline btn-sm" style="flex:1;" onclick="magasinExportFile()">⬇️ Exporter fichier</button>'
+    +   '<button class="btn btn-outline btn-sm" style="flex:1;" onclick="document.getElementById(\'magasinImportFile\').click()">⬆️ Importer fichier</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;">'
+    +   '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="magasinBackupToSupabase()">☁️ Sauver (cloud)</button>'
+    +   '<button class="btn btn-outline btn-sm" style="flex:1;" onclick="magasinRestoreFromSupabase()">♻️ Restaurer (cloud)</button>'
+    + '</div>'
+    + '<input type="file" id="magasinImportFile" accept="application/json,.json" style="display:none;" onchange="magasinImportFile(event)">'
+    + '</div>';
+
   if(!machines.length){
-    container.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune machine dans le magasin.</div>';
+    container.innerHTML = backupBar + '<div class="hint" style="text-align:center;padding:20px 0;">Aucune machine dans le magasin.</div>';
     return;
   }
-  container.innerHTML = machines.map(m => {
+  container.innerHTML = backupBar + machines.map(m => {
     const pris = m.borrow
       ? '<span style="color:#E07A63;font-size:11px;font-weight:700;">Emprunté</span>'
       : '<span style="color:#4FAE6C;font-size:11px;font-weight:700;">Dispo</span>';
@@ -30456,6 +30611,121 @@ async function magasinRenderDevList(container){
       + '</button>'
       + '</div>';
   }).join('');
+}
+
+/* ── Backup : export fichier JSON (photos = URLs incluses) ────────── */
+function magasinExportFile(){
+  _magasinEnsure();
+  const payload = {
+    _type: 'rwood-magasin-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    machines: data.magasinMachines || []
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0,10);
+  a.href = url;
+  a.download = 'rwood-magasin-backup-' + stamp + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  showToast('✓ Sauvegarde exportée');
+}
+
+/* ── Backup : import fichier JSON ────────────────────────────────── */
+function magasinImportFile(event){
+  const file = event.target.files && event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const parsed = JSON.parse(reader.result);
+      const machines = Array.isArray(parsed) ? parsed
+                     : (parsed && Array.isArray(parsed.machines) ? parsed.machines : null);
+      if(!machines){ showToast('⚠️ Fichier invalide'); return; }
+      if(!confirm('Remplacer la liste actuelle par '+machines.length+' machine(s) du fichier ?')){ event.target.value=''; return; }
+      // Nettoyage minimal : garantir un id sur chaque entrée
+      _magasinEnsure();
+      data.magasinMachines = machines.map(m => ({
+        id: m.id || uid(),
+        name: m.name || '',
+        ref: m.ref || '',
+        photo: m.photo || null,
+        borrow: m.borrow || null,
+        addedAt: m.addedAt || Date.now()
+      }));
+      saveData();
+      magasinRender();
+      magasinPush();
+      showToast('✓ '+data.magasinMachines.length+' machine(s) restaurée(s)');
+      const dl = document.getElementById('devPanelList');
+      if(dl) magasinRenderDevList(dl);
+    } catch(e){ showToast('⚠️ Lecture du fichier échouée'); }
+    event.target.value = '';
+  };
+  reader.onerror = () => { showToast('⚠️ Lecture échouée'); event.target.value=''; };
+  reader.readAsText(file);
+}
+
+/* ── Backup : snapshot dans Supabase (clé séparée du live) ────────── */
+async function magasinBackupToSupabase(){
+  _magasinEnsure();
+  if(!navigator.onLine){ showToast('⚠️ Hors ligne'); return; }
+  const payload = {
+    user_id: MAGASIN_BACKUP_KEY,
+    updated_at: new Date().toISOString(),
+    data: JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      machines: data.magasinMachines || []
+    })
+  };
+  try{
+    showSyncStatus('syncing');
+    const res = await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if(res.ok){ showSyncStatus('ok'); showToast('☁️ Sauvegarde cloud enregistrée ('+(data.magasinMachines||[]).length+')'); }
+    else       { showSyncStatus('error'); showToast('⚠️ Sauvegarde cloud échouée'); }
+  } catch(e){ showSyncStatus('offline'); showToast('⚠️ Sauvegarde cloud échouée'); }
+}
+
+/* ── Backup : restauration depuis le snapshot Supabase ───────────── */
+async function magasinRestoreFromSupabase(){
+  if(!navigator.onLine){ showToast('⚠️ Hors ligne'); return; }
+  try{
+    const res = await supaFetch(
+      '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(MAGASIN_BACKUP_KEY) + '&select=data,updated_at',
+      { headers: { 'Prefer': '' } }
+    );
+    if(!res.ok){ showToast('⚠️ Restauration échouée'); return; }
+    const rows = await res.json();
+    if(!rows || !rows.length){ showToast('Aucune sauvegarde cloud trouvée'); return; }
+    const snap = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const machines = snap && Array.isArray(snap.machines) ? snap.machines : null;
+    if(!machines){ showToast('⚠️ Sauvegarde cloud invalide'); return; }
+    const dateStr = rows[0].updated_at ? new Date(rows[0].updated_at).toLocaleString('fr-FR') : '';
+    if(!confirm('Restaurer '+machines.length+' machine(s) de la sauvegarde cloud'+(dateStr?(' du '+dateStr):'')+' ?\nLa liste actuelle sera remplacée.')) return;
+    _magasinEnsure();
+    data.magasinMachines = machines.map(m => ({
+      id: m.id || uid(),
+      name: m.name || '',
+      ref: m.ref || '',
+      photo: m.photo || null,
+      borrow: m.borrow || null,
+      addedAt: m.addedAt || Date.now()
+    }));
+    saveData();
+    magasinRender();
+    magasinPush(); // republie vers le canal live pour tous
+    showToast('✓ '+data.magasinMachines.length+' machine(s) restaurée(s)');
+    const dl = document.getElementById('devPanelList');
+    if(dl) magasinRenderDevList(dl);
+  } catch(e){ showToast('⚠️ Restauration échouée'); }
 }
 
 function magasinDeleteMachine(machineId){
@@ -30551,6 +30821,279 @@ function _magasinStartPolling(){
 }
 document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPolling, 2200));
 /* ═══ MODULE — Magasin (JS)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — Notes (JS)  ·  début
+   Onglet autonome de gestion de la « Liste à faire », partageant le
+   MEME store que la bulle flottante existante : _getPinnedNote().tasks
+   (aucun store séparé). Dictée vocale : capture MediaRecorder →
+   transcription OpenAI Whisper (clé locale) → parsing local sur les
+   mots-clés "plus" / "et" → items cochables ajoutés à la liste.
+   Dépendances base : _getPinnedNote, saveData, pushMyTodoList,
+   _renderPinnedBubble, showToast, escapeHtml, uid, openModal,
+   closeModal. Retrait du module : supprimer ce bloc + les 6 accroches
+   listées en tête de la section DOM Notes.
+   ═══════════════════════════════════════════════════════════════════ */
+const NOTES_OPENAI_KEY_LS = 'rwood-openai-key'; // clé locale (localStorage, jamais synchro)
+let _notesMediaRecorder = null;
+let _notesChunks = [];
+let _notesRecording = false;
+let _notesStream = null;
+
+/* CSS injecté une seule fois (mobile-first ; desktop wrappé @media 860). */
+(function _notesInjectCSS(){
+  if(document.getElementById('notes-styles')) return;
+  const st = document.createElement('style');
+  st.id = 'notes-styles';
+  st.textContent =
+    '#view-notes .notes-wrap{padding:6px 0 90px;}'
+  + '#view-notes .notes-rec-zone{margin:2px 2px 14px;}'
+  + '#view-notes .notes-rec-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:16px;border-radius:14px;border:none;background:var(--wood,#C8862B);color:#1a1206;font-weight:800;font-size:16px;cursor:pointer;transition:background .15s,transform .1s;}'
+  + '#view-notes .notes-rec-btn:active{transform:scale(.98);}'
+  + '#view-notes .notes-rec-btn.recording{background:#E05555;color:#fff;animation:notesPulse 1.2s infinite;}'
+  + '@keyframes notesPulse{0%,100%{opacity:1;}50%{opacity:.72;}}'
+  + '#view-notes .notes-rec-status{text-align:center;font-size:13px;color:var(--ink-soft);margin-top:8px;min-height:16px;}'
+  + '#view-notes .notes-add-row{display:flex;gap:8px;margin:0 2px 14px;}'
+  + '#view-notes .notes-add-row input{flex:1;padding:11px 12px;border-radius:10px;background:#0d0a06;color:var(--ink,#f0e6d2);border:1px solid rgba(255,255,255,.12);font-size:15px;}'
+  + '#view-notes .notes-list-head{display:flex;align-items:center;justify-content:space-between;margin:0 2px 8px;font-size:13px;color:var(--ink-soft);font-weight:600;}'
+  + '#view-notes .notes-clear-done{background:none;border:none;color:var(--wood,#C8862B);font-size:12px;font-weight:700;cursor:pointer;}'
+  + '#view-notes .notes-list{display:flex;flex-direction:column;gap:8px;}'
+  + '#view-notes .notes-item{display:flex;align-items:flex-start;gap:11px;background:var(--card,#211a12);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:12px;}'
+  + '#view-notes .notes-item.done .notes-item-text{text-decoration:line-through;opacity:.5;}'
+  + '#view-notes .notes-check{width:24px;height:24px;flex-shrink:0;border-radius:7px;border:2px solid var(--wood,#C8862B);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1a1206;font-weight:900;font-size:15px;margin-top:1px;}'
+  + '#view-notes .notes-check.on{background:var(--wood,#C8862B);}'
+  + '#view-notes .notes-item-text{flex:1;font-size:15px;line-height:1.4;color:var(--ink,#f0e6d2);word-break:break-word;}'
+  + '#view-notes .notes-del{background:none;border:none;color:#7a6a52;cursor:pointer;padding:2px 4px;flex-shrink:0;}'
+  + '#modal-notesProcessing .notes-spinner{width:34px;height:34px;margin:16px auto 4px;border:3px solid rgba(255,255,255,.15);border-top-color:var(--wood,#C8862B);border-radius:50%;animation:notesSpin .8s linear infinite;}'
+  + '@keyframes notesSpin{to{transform:rotate(360deg);}}'
+  + '@media (min-width:860px){'
+  +   '#view-notes .notes-wrap{max-width:720px;margin:0 auto;}'
+  + '}';
+  document.head.appendChild(st);
+})();
+
+/* ── Clé OpenAI (locale à l'appareil) ────────────────────────────── */
+function notesGetOpenaiKey(){ try{ return localStorage.getItem(NOTES_OPENAI_KEY_LS) || ''; }catch(e){ return ''; } }
+function notesSaveOpenaiKey(v){ try{ localStorage.setItem(NOTES_OPENAI_KEY_LS, (v||'').trim()); showToast('✓ Clé enregistrée'); }catch(e){} }
+
+/* ── Toggles réglages ────────────────────────────────────────────── */
+function notesSetBubbleEnabled(on){
+  if(!data.settings) data.settings = {};
+  data.settings.notesBubbleEnabled = !!on;
+  saveData();
+  _renderPinnedBubble(_getPinnedNote());
+}
+function notesSetTabEnabled(on){
+  if(!data.settings) data.settings = {};
+  data.settings.notesTabEnabled = !!on;
+  saveData();
+  notesApplyTabVisibility();
+}
+function notesApplyTabVisibility(){
+  const btn = document.getElementById('notesNavBtn');
+  if(!btn) return;
+  const enabled = !(data.settings && data.settings.notesTabEnabled === false);
+  btn.style.display = enabled ? '' : 'none';
+}
+
+/* Synchronise l'état des contrôles réglages avec les valeurs stockées. */
+function notesSyncSettingsControls(){
+  const tb = document.getElementById('notesToggleBubble');
+  const tt = document.getElementById('notesToggleTab');
+  const kf = document.getElementById('notesOpenaiKey');
+  if(tb) tb.checked = !(data.settings && data.settings.notesBubbleEnabled === false);
+  if(tt) tt.checked = !(data.settings && data.settings.notesTabEnabled === false);
+  if(kf) kf.value = notesGetOpenaiKey();
+}
+
+/* ── Rendu de la liste (store partagé avec la bulle) ─────────────── */
+function notesRender(){
+  const pn = _getPinnedNote();
+  const tasks = pn.tasks || [];
+  const list  = document.getElementById('notesList');
+  const empty = document.getElementById('notesEmpty');
+  const count = document.getElementById('notesCount');
+  const clr   = document.getElementById('notesClearDone');
+  if(!list) return;
+
+  const undone = tasks.filter(t=>!t.done).length;
+  const nDone  = tasks.length - undone;
+  if(count) count.textContent = tasks.length
+    ? (undone + ' à faire' + (nDone ? ' · ' + nDone + ' faite'+(nDone>1?'s':'') : ''))
+    : '';
+  if(clr) clr.style.display = nDone ? '' : 'none';
+
+  if(!tasks.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
+  if(empty) empty.style.display='none';
+
+  list.innerHTML = tasks.map(t =>
+    '<div class="notes-item'+(t.done?' done':'')+'">'
+    + '<button class="notes-check'+(t.done?' on':'')+'" onclick="notesToggle(\''+t.id+'\')">'+(t.done?'✓':'')+'</button>'
+    + '<div class="notes-item-text">'+escapeHtml(t.text||'')+'</div>'
+    + '<button class="notes-del" onclick="notesDelete(\''+t.id+'\')" title="Supprimer">'
+    +   '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
+    + '</button>'
+    + '</div>'
+  ).join('');
+}
+
+/* ── Actions liste (répercutées sur bulle + synchro) ─────────────── */
+function _notesCommit(){
+  saveData();
+  notesRender();
+  _renderPinnedBubble(_getPinnedNote());
+  pushMyTodoList();
+}
+function notesToggle(id){
+  const pn = _getPinnedNote();
+  const t = (pn.tasks||[]).find(x=>x.id===id);
+  if(!t) return;
+  t.done = !t.done;
+  _notesCommit();
+}
+function notesDelete(id){
+  const pn = _getPinnedNote();
+  pn.tasks = (pn.tasks||[]).filter(x=>x.id!==id);
+  _notesCommit();
+}
+function notesAddManual(){
+  const inp = document.getElementById('notesAddInput');
+  const text = (inp ? inp.value : '').trim();
+  if(!text) return;
+  const pn = _getPinnedNote();
+  pn.tasks.push({id:uid(), text, done:false});
+  if(inp) inp.value='';
+  _notesCommit();
+}
+function notesClearDone(){
+  const pn = _getPinnedNote();
+  pn.tasks = (pn.tasks||[]).filter(t=>!t.done);
+  _notesCommit();
+  showToast('Tâches faites effacées');
+}
+
+/* ── Parsing local : segmentation sur "plus" / "et" ──────────────── */
+function notesParseTranscript(raw){
+  if(!raw) return [];
+  let txt = (' ' + raw + ' ')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  // Retire une amorce type "ajouter", "il faut", "note", "rajoute"
+  txt = txt.replace(/^\s*(ajouter|ajoute|rajoute|rajouter|il faut|note|noter|prendre|penser à|penser a)\s+/i, ' ');
+  // Découpe sur les mots-clés d'énumération isolés : "plus" ou "et"
+  const parts = txt.split(/\s+(?:plus|et)\s+/i);
+  return parts
+    .map(s => s.trim().replace(/^[,;.\s]+|[,;.\s]+$/g, ''))
+    .filter(s => s.length > 0)
+    .map(s => s.charAt(0).toUpperCase() + s.slice(1));
+}
+
+/* ── Enregistrement vocal (capture → stop → transcription) ───────── */
+async function notesToggleRecord(){
+  if(_notesRecording){ _notesStopRecord(); return; }
+  const key = notesGetOpenaiKey();
+  if(!key){
+    showToast('⚠️ Ajoute ta clé OpenAI dans Réglages › Liste à faire');
+    return;
+  }
+  if(!navigator.mediaDevices || !window.MediaRecorder){
+    showToast('⚠️ Enregistrement non supporté sur cet appareil');
+    return;
+  }
+  try{
+    _notesStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+  } catch(e){
+    showToast('⚠️ Micro refusé');
+    return;
+  }
+  _notesChunks = [];
+  let mime = '';
+  if(window.MediaRecorder.isTypeSupported){
+    if(MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
+    else if(MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
+    else if(MediaRecorder.isTypeSupported('audio/ogg')) mime = 'audio/ogg';
+  }
+  try{
+    _notesMediaRecorder = mime ? new MediaRecorder(_notesStream, { mimeType:mime })
+                               : new MediaRecorder(_notesStream);
+  } catch(e){
+    _notesMediaRecorder = new MediaRecorder(_notesStream);
+  }
+  _notesMediaRecorder.ondataavailable = e => { if(e.data && e.data.size) _notesChunks.push(e.data); };
+  _notesMediaRecorder.onstop = _notesOnStop;
+  _notesMediaRecorder.start();
+  _notesRecording = true;
+  _notesSetRecUI(true);
+}
+
+function _notesStopRecord(){
+  try{ if(_notesMediaRecorder && _notesMediaRecorder.state !== 'inactive') _notesMediaRecorder.stop(); }catch(e){}
+  _notesRecording = false;
+  _notesSetRecUI(false);
+}
+
+function _notesSetRecUI(on){
+  const btn = document.getElementById('notesRecBtn');
+  const ic  = document.getElementById('notesRecIcon');
+  const lb  = document.getElementById('notesRecLabel');
+  const stt = document.getElementById('notesRecStatus');
+  if(btn) btn.classList.toggle('recording', on);
+  if(ic)  ic.textContent = on ? '⏹️' : '🎤';
+  if(lb)  lb.textContent = on ? 'Arrêter' : 'Enregistrer un vocal';
+  if(stt) stt.textContent = on ? '● Enregistrement… parle puis appuie sur Arrêter' : '';
+}
+
+async function _notesOnStop(){
+  // Libère le micro
+  try{ if(_notesStream){ _notesStream.getTracks().forEach(t=>t.stop()); _notesStream=null; } }catch(e){}
+  const blob = new Blob(_notesChunks, { type: (_notesMediaRecorder && _notesMediaRecorder.mimeType) || 'audio/webm' });
+  _notesChunks = [];
+  if(!blob.size){ showToast('⚠️ Aucun son capté'); return; }
+
+  openModal('notesProcessing');
+  try{
+    const transcript = await _notesTranscribe(blob);
+    closeModal('notesProcessing');
+    if(!transcript || !transcript.trim()){ showToast('⚠️ Rien n\'a été compris'); return; }
+    const items = notesParseTranscript(transcript);
+    if(!items.length){ showToast('⚠️ Aucune tâche détectée'); return; }
+    const pn = _getPinnedNote();
+    items.forEach(text => pn.tasks.push({id:uid(), text, done:false}));
+    _notesCommit();
+    showToast('✓ ' + items.length + ' tâche'+(items.length>1?'s':'')+' ajoutée'+(items.length>1?'s':''));
+  } catch(e){
+    closeModal('notesProcessing');
+    showToast('⚠️ Transcription échouée : ' + (e && e.message ? e.message : 'erreur'));
+  }
+}
+
+/* ── Transcription OpenAI Whisper ────────────────────────────────── */
+async function _notesTranscribe(blob){
+  const key = notesGetOpenaiKey();
+  if(!key) throw new Error('clé manquante');
+  const ext = (blob.type.indexOf('mp4')>=0) ? 'mp4'
+            : (blob.type.indexOf('ogg')>=0) ? 'ogg' : 'webm';
+  const fd = new FormData();
+  fd.append('file', blob, 'note.' + ext);
+  fd.append('model', 'whisper-1');
+  fd.append('language', 'fr');
+  fd.append('response_format', 'text');
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + key },
+    body: fd
+  });
+  if(!res.ok){
+    let msg = 'HTTP ' + res.status;
+    try{ const j = await res.json(); if(j && j.error && j.error.message) msg = j.error.message; }catch(e){}
+    throw new Error(msg);
+  }
+  return (await res.text() || '').trim();
+}
+
+/* Applique la visibilité de l'onglet au démarrage. */
+document.addEventListener('DOMContentLoaded', () => setTimeout(notesApplyTabVisibility, 800));
+/* ═══ MODULE — Notes (JS)  ·  fin ═══ */
 </script>
 
       <div id="journalComposerBar" style="display:none; position:fixed; left:0; right:0; bottom:calc(var(--nav-h) + env(safe-area-inset-bottom, 0px)); z-index:40; background:var(--bg-elev); border-top:1px solid var(--line); padding:10px 14px 10px 14px; box-shadow:0 -2px 12px rgba(0,0,0,0.2);">
