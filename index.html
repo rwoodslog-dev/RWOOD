@@ -11936,44 +11936,72 @@ function deleteZincMetrage(){
    #zincPdfCard. Réutilise jsPDF + compressImgForPDF déjà chargés.
    ═══════════════════════════════════════════════════════════════════ */
 
-/* Convertit le SVG d'aperçu (#zincSchema svg) en data URL PNG pour jsPDF */
-function _zincPdfSchemaToImage(){
-  return new Promise(resolve => {
-    const holder = document.getElementById('zincSchema');
-    const svg = holder && holder.querySelector('svg');
-    if(!svg){ resolve(null); return; }
+/* Construit le HTML SVG d'aperçu à partir d'un profil (indépendant du DOM éditeur) */
+function _zincPdfBuildSchemaHtml(profile){
+  try{
+    if(profile.pieces) return buildPiecesZincSchema(profile, false);
+    if(profile.freeform) return buildFreeformZincSchema(profile.points, false, profile.hasBoudin, profile.boudinPointIndex);
+    if(profile.segments) return buildZincSchema(profile.segments, profile.hasBoudin, false);
+  } catch(e){}
+  return null;
+}
 
-    // Clone + dimensions explicites (viewBox → largeur/hauteur px)
-    const clone = svg.cloneNode(true);
+/* Convertit un aperçu de coupe en data URL PNG pour jsPDF.
+   Rendu off-screen à partir du profil (fonctionne aussi depuis la liste,
+   sans éditeur ouvert). Fallback : SVG déjà présent dans #zincSchema. */
+function _zincPdfSchemaToImage(profile){
+  return new Promise(resolve => {
+    let svg = null;
+    let cleanup = null;
+
+    // 1) Construire le schéma depuis le profil, dans un conteneur off-screen
+    const html = profile ? _zincPdfBuildSchemaHtml(profile) : null;
+    if(html){
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;height:400px;';
+      box.innerHTML = html;
+      document.body.appendChild(box);
+      svg = box.querySelector('svg');
+      cleanup = () => box.remove();
+    }
+    // 2) Fallback : SVG affiché à l'écran
+    if(!svg){
+      const holder = document.getElementById('zincSchema');
+      svg = holder && holder.querySelector('svg');
+    }
+    if(!svg){ if(cleanup) cleanup(); resolve(null); return; }
+
     const vb = (svg.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number);
     const w = svg.clientWidth  || (vb[2] || 800);
     const h = svg.clientHeight || (vb[3] || 400);
+
+    const clone = svg.cloneNode(true);
     clone.setAttribute('width',  w);
     clone.setAttribute('height', h);
-    // Fond blanc pour lisibilité à l'impression
     clone.style.background = '#ffffff';
 
-    const xml  = new XMLSerializer().serializeToString(clone);
+    const xml   = new XMLSerializer().serializeToString(clone);
     const svg64 = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)));
 
     const img = new Image();
     img.onload = () => {
-      const scale = 2; // netteté
+      const scale = 2;
       const canvas = document.createElement('canvas');
       canvas.width = w * scale; canvas.height = h * scale;
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      if(cleanup) cleanup();
       resolve({ dataUrl: canvas.toDataURL('image/png'), w, h });
     };
-    img.onerror = () => resolve(null);
+    img.onerror = () => { if(cleanup) cleanup(); resolve(null); };
     img.src = svg64;
   });
 }
 
-async function generateZincPdf(){
-  const profile = getCurrentZincProfile();
+async function generateZincPdf(profileArg){
+  const profile = profileArg || getCurrentZincProfile();
   if(!profile){ showToast('Aucun pliage'); return; }
 
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
@@ -11990,7 +12018,7 @@ async function generateZincPdf(){
               ? profile.cumulTracage.map(v => formatMm(v)).join('   →   ')
               : null;
   const metrage = profile.metrage ? formatZincMetrageSummary(profile.metrage) : null;
-  const schemaImg = await _zincPdfSchemaToImage();
+  const schemaImg = await _zincPdfSchemaToImage(profile);
 
   // ── Construction PDF ──────────────────────────────────────────────
   const doc    = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
@@ -14222,10 +14250,9 @@ function _renderCloudZincList(siteId, zincs){
           <div style="font-weight:700;font-size:13px;">${escapeHtml(p.name||'Pliage sans nom')}</div>
           <div style="font-size:11px;color:var(--ink-soft);">${total}${mlInfo}</div>
         </div>
-        <div style="display:flex;gap:4px;flex-shrink:0;">
-          <button data-zi="${i}" class="czv btn btn-sm" style="padding:5px 8px;font-size:12px;">👁 Voir</button>
-          <button data-zi="${i}" class="czo btn btn-sm" style="padding:5px 8px;font-size:12px;">📤</button>
-          <button data-zi="${i}" class="czp btn btn-outline btn-sm" style="padding:5px 8px;font-size:11px;">PDF</button>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-zi="${i}" class="czv btn btn-sm" style="padding:5px 10px;font-size:12px;">👁 Voir</button>
+          <button data-zi="${i}" class="czp btn btn-primary btn-sm" style="padding:5px 10px;font-size:12px;white-space:nowrap;">📄 Générer PDF</button>
           <button data-zi="${i}" class="czd" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:4px;">×</button>
         </div>
       </div>`;
@@ -14236,15 +14263,11 @@ function _renderCloudZincList(siteId, zincs){
     if(p._fromCloud && p.pdfUrl) openPdfNativeByUrl(p.pdfUrl, p.name+'.pdf', 'pdf');
     else if(p.id) openZincEditorFromDetail(p.id);
   }));
-  el.querySelectorAll('.czo').forEach(btn => btn.addEventListener('click', () => {
-    const p = window._cloudZincCache[+btn.dataset.zi];
-    if(p._fromCloud && p.pdfUrl) openPdfNativeByUrl(p.pdfUrl, p.name+'.pdf', 'pdf');
-    else if(p.id) _shareZincAsMedia(p, siteId);
-  }));
   el.querySelectorAll('.czp').forEach(btn => btn.addEventListener('click', () => {
     const p = window._cloudZincCache[+btn.dataset.zi];
+    // Pliage déjà cloud (PDF existant) → ouverture native ; sinon génération instantanée + share sheet
     if(p._fromCloud && p.pdfUrl) openPdfNativeByUrl(p.pdfUrl, p.name+'.pdf', 'pdf');
-    else if(p.id) exportZincToPdf(p.id, siteId);
+    else generateZincPdf(p);
   }));
   el.querySelectorAll('.czd').forEach(btn => btn.addEventListener('click', () => {
     const p = window._cloudZincCache[+btn.dataset.zi];
@@ -22143,7 +22166,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.22.0';
+const APP_VERSION = '2.22.1';
 
 const CHANGELOG = [
   {
