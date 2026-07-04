@@ -22735,7 +22735,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.29.10';
+const APP_VERSION = '2.30.0';
 
 const CHANGELOG = [
   {
@@ -28655,9 +28655,11 @@ function switchDevTab(tab){
   const btnC = document.getElementById('devTabComptes');
   const btnP = document.getElementById('devTabPointages');
   const btnM = document.getElementById('devTabMachines');
+  const btnCh = document.getElementById('devTabChantiers');
   if(btnC){ btnC.className = tab==='comptes' ? 'btn btn-primary' : 'btn btn-outline'; btnC.style.flex='1'; btnC.style.fontSize='12px'; }
   if(btnP){ btnP.className = tab==='pointages' ? 'btn btn-primary' : 'btn btn-outline'; btnP.style.flex='1'; btnP.style.fontSize='12px'; }
   if(btnM){ btnM.className = tab==='machines' ? 'btn btn-primary' : 'btn btn-outline'; btnM.style.flex='1'; btnM.style.fontSize='12px'; }
+  if(btnCh){ btnCh.className = tab==='chantiers' ? 'btn btn-primary' : 'btn btn-outline'; btnCh.style.flex='1'; btnCh.style.fontSize='12px'; }
   refreshDevPanel();
 }
 
@@ -28671,6 +28673,8 @@ async function refreshDevPanel(){
     await _renderDevTabComptes(list);
   } else if(_devCurrentTab === 'machines'){
     await magasinRenderDevList(list); // MODULE — Magasin
+  } else if(_devCurrentTab === 'chantiers'){
+    await devChantiersRender(list); // MODULE — DevChantiers
   } else {
     await _renderDevTabPointages(list);
   }
@@ -31851,236 +31855,185 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
 /* ═══ SOUS-MODULE — ChefAutoShare  ·  fin ═══ */
 
 /* ═══════════════════════════════════════════════════════════════════
-   MODULE — AuditChantiers (diagnostic)  ·  début
-   Outil de contrôle LECTURE SEULE. Liste TOUS les chantiers de tous
-   les utilisateurs (local + clé chefs + partagés), avec créateur,
-   données clés, nombre de médias et total d'heures cumulées. Fournit
-   un dump brut ET une vue fusionnée (via le moteur dedupBuildMap).
-   Usage console : await rwoodAuditChantiers();  (dump console)
-                   await rwoodAuditChantiers({ui:true});  (overlay écran)
-   N'écrit jamais en base. Retrait : supprimer ce bloc entier (aucune
-   accroche ailleurs → suppression sans trace).
+   MODULE — DevChantiers (gestion + corbeille)  ·  début
+   Onglet "🏗 Chantiers" du panneau développeur. Liste globale de tous
+   les chantiers (local + clé chefs + partagés) et suppression sécurisée
+   en 2 étapes :
+     Étape 1 — Corbeille : retire le chantier de l'affichage + des stores
+               partagés (CHEF_PUSH_KEY, SHARED_SITES_KEY) → disparaît
+               pour tous. Snapshot conservé dans la corbeille (restaurable).
+     Étape 2 — Suppression définitive : vide le snapshot (irréversible).
+   Réservé mode dev (l'onglet n'est atteignable que via le panneau dev).
+   Corbeille locale : data.settings.devChantiersTrash = [ {snapshot, ts} ].
+   Retrait : supprimer ce bloc + l'onglet devTabChantiers + le case
+   'chantiers' dans switchDevTab/refreshDevPanel.
    ═══════════════════════════════════════════════════════════════════ */
-async function _auditCollectSources(){
-  const sources = [];
-  // 1) Données locales de cet appareil
-  sources.push({ origin:'local', attendance:data.attendance||{}, sites:data.sites||[], workers:data.workers||[] });
+let _devChantiersView = 'list'; // 'list' | 'trash'
 
-  // 2) Chantiers poussés par les chefs (CHEF_PUSH_KEY) — porteur du créateur (fromChef)
+function _devChantiersTrash(){
+  if(!data.settings) data.settings = {};
+  if(!Array.isArray(data.settings.devChantiersTrash)) data.settings.devChantiersTrash = [];
+  return data.settings.devChantiersTrash;
+}
+
+/* Collecte tous les chantiers (dédupliqués par id, toutes origines). */
+async function _devChantiersCollect(){
+  const byId = {};
+  const add = (s, origin) => {
+    if(!s || !s.id) return;
+    if(!byId[s.id]) byId[s.id] = { ...s, _origins:new Set([origin]) };
+    else {
+      byId[s.id]._origins.add(origin);
+      // complète les champs vides
+      ['name','address','keyboxCode','color','tileId','status','fromChef'].forEach(k=>{
+        if((byId[s.id][k]==null||byId[s.id][k]==='') && s[k]) byId[s.id][k]=s[k];
+      });
+    }
+  };
+  (data.sites||[]).forEach(s => add(s,'local'));
   try{
     const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(CHEF_PUSH_KEY)+'&select=data',{headers:{'Prefer':''}});
-    if(res.ok){
+    if(res.ok){ const rows=await res.json(); if(rows&&rows.length){ const d=typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data; (d&&d.sites||[]).forEach(s=>add(s,'chef')); } }
+  }catch(e){}
+  try{
+    if(typeof _fetchSharedSites==='function'){ const sh=await _fetchSharedSites(); (sh||[]).forEach(s=>add(s,'partagé')); }
+  }catch(e){}
+  return Object.values(byId);
+}
+
+/* Rendu de l'onglet Chantiers (liste OU corbeille). */
+async function devChantiersRender(container){
+  const trash = _devChantiersTrash();
+  const header =
+    '<div style="display:flex;gap:6px;margin-bottom:12px;">'
+    + '<button class="btn '+(_devChantiersView==='list'?'btn-primary':'btn-outline')+' btn-sm" style="flex:1;" onclick="devChantiersSetView(\'list\')">Tous les chantiers</button>'
+    + '<button class="btn '+(_devChantiersView==='trash'?'btn-primary':'btn-outline')+' btn-sm" style="flex:1;" onclick="devChantiersSetView(\'trash\')">🗑 Supprimés récemment ('+trash.length+')</button>'
+    + '</div>';
+
+  if(_devChantiersView === 'trash'){
+    container.innerHTML = header + _devChantiersRenderTrash(trash);
+    return;
+  }
+
+  container.innerHTML = header + '<div class="hint" style="text-align:center;padding:16px 0;">Chargement des chantiers…</div>';
+  const sites = await _devChantiersCollect();
+  if(!sites.length){ container.innerHTML = header + '<div class="hint" style="text-align:center;padding:20px 0;">Aucun chantier en base.</div>'; return; }
+
+  const rows = sites.sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s => {
+    const media = Array.isArray(s.sharedMedia)?s.sharedMedia.length:0;
+    return '<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid rgba(255,255,255,.06);">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-weight:700;font-size:14px;">'+_devEsc(s.name||'(sans nom)')+'</div>'
+      +   '<div style="font-size:11px;color:var(--ink-soft);">'+_devEsc(s.address||'—')+' · '+_devEsc(s.status||'—')+(s.fromChef?(' · '+_devEsc(s.fromChef)):'')+' · '+media+' média'+(media>1?'s':'')+'</div>'
+      + '</div>'
+      + '<button class="btn btn-outline btn-sm" style="color:#E07A63;border-color:#5a2f24;padding:6px 10px;flex-shrink:0;" onclick="devChantiersToTrash(\''+s.id+'\')">🗑</button>'
+      + '</div>';
+  }).join('');
+  container.innerHTML = header + rows;
+}
+
+function _devChantiersRenderTrash(trash){
+  if(!trash.length) return '<div class="hint" style="text-align:center;padding:20px 0;">Corbeille vide.</div>';
+  return trash.slice().reverse().map(item => {
+    const s = item.snapshot;
+    const when = item.ts ? new Date(item.ts).toLocaleString('fr-FR') : '';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid rgba(255,255,255,.06);">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-weight:700;font-size:14px;">'+_devEsc(s.name||'(sans nom)')+'</div>'
+      +   '<div style="font-size:11px;color:var(--ink-soft);">Supprimé le '+_devEsc(when)+'</div>'
+      + '</div>'
+      + '<button class="btn btn-outline btn-sm" style="padding:6px 9px;flex-shrink:0;" onclick="devChantiersRestore(\''+s.id+'\')">↩️ Restaurer</button>'
+      + '<button class="btn btn-outline btn-sm" style="color:#E07A63;border-color:#5a2f24;padding:6px 9px;flex-shrink:0;" onclick="devChantiersPurge(\''+s.id+'\')">✕ Définitif</button>'
+      + '</div>';
+  }).join('');
+}
+
+function devChantiersSetView(v){
+  _devChantiersView = v;
+  const list = document.getElementById('devPanelList');
+  if(list) devChantiersRender(list);
+}
+
+/* Étape 1 : envoi en corbeille + retrait des stores partagés (pour tous). */
+async function devChantiersToTrash(siteId){
+  const all = await _devChantiersCollect();
+  const s = all.find(x=>x.id===siteId);
+  if(!s){ showToast('Chantier introuvable'); return; }
+  if(!confirm('Envoyer « '+(s.name||'ce chantier')+' » à la corbeille ?\nIl disparaîtra pour tous les utilisateurs.')) return;
+
+  // Snapshot pour restauration
+  const snap = { ...s }; delete snap._origins;
+  const trash = _devChantiersTrash();
+  if(!trash.some(t=>t.snapshot && t.snapshot.id===siteId)) trash.push({ snapshot:snap, ts:Date.now() });
+
+  // Retrait local + stores partagés
+  data.sites = (data.sites||[]).filter(x=>x.id!==siteId);
+  saveData();
+  await _devChantiersRemoveFromSharedStores(siteId);
+
+  showToast('🗑 Envoyé à la corbeille');
+  const list = document.getElementById('devPanelList');
+  if(list) devChantiersRender(list);
+}
+
+/* Retire un chantier des clés partagées Supabase (CHEF_PUSH + SHARED_SITES). */
+async function _devChantiersRemoveFromSharedStores(siteId){
+  for(const key of [CHEF_PUSH_KEY, SHARED_SITES_KEY]){
+    try{
+      const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(key)+'&select=data',{headers:{'Prefer':''}});
+      if(!res.ok) continue;
       const rows = await res.json();
-      if(rows && rows.length){
-        const d = typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data;
-        sources.push({ origin:'chef_push', attendance:{}, sites:(d&&d.sites)||[], workers:[] });
+      if(!rows || !rows.length) continue;
+      const d = typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data;
+      if(!d || !Array.isArray(d.sites)) continue;
+      const before = d.sites.length;
+      d.sites = d.sites.filter(s=>s.id!==siteId);
+      if(d.sites.length !== before){
+        await supaFetch('/rest/v1/rwood_sync', {
+          method:'POST',
+          headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+          body: JSON.stringify({ user_id:key, updated_at:new Date().toISOString(), data:JSON.stringify(d) })
+        });
       }
-    }
-  }catch(e){}
-
-  // 3) Chantiers partagés (conducteur/patron)
-  try{
-    if(typeof _fetchSharedSites === 'function'){
-      const shared = await _fetchSharedSites();
-      if(Array.isArray(shared)) sources.push({ origin:'shared', attendance:{}, sites:shared, workers:[] });
-    }
-  }catch(e){}
-
-  // 4) Fiches d'heures cross-utilisateurs (pour cumul d'heures par chantier)
-  try{
-    if(typeof pullAllPointagesForComptable === 'function'){
-      const devices = await pullAllPointagesForComptable();
-      (devices||[]).forEach(dev => sources.push({
-        origin:'device:'+(dev.deviceId||'?'),
-        attendance:dev.attendance||{}, sites:dev.sites||[], workers:dev.workers||[]
-      }));
-    }
-  }catch(e){}
-
-  return sources;
-}
-
-/* Compte les heures totales par siteId à partir de toutes les sources. */
-function _auditHoursBySite(sources){
-  const hours = {};
-  sources.forEach(src => {
-    const att = src.attendance||{};
-    Object.keys(att).forEach(dk => {
-      const day = att[dk];
-      if(!day || !day.workers || !day.siteId) return;
-      Object.keys(day.workers).forEach(w => {
-        const h = parseFloat(String(day.workers[w].hours).replace(',','.'));
-        if(isFinite(h) && h>0) hours[day.siteId] = (hours[day.siteId]||0) + h;
-      });
-    });
-  });
-  return hours;
-}
-
-/* Extraction principale. Retourne { raw:[...], merged:[...] }.
-   SÉCURITÉ : réservé au mode développeur. Tout autre rôle est refusé. */
-async function rwoodAuditChantiers(opts){
-  opts = opts || {};
-  if(!window._devRoleUnlocked){
-    if(typeof showToast === 'function') showToast('🔒 Réservé au mode développeur');
-    console.warn('[Audit] Accès refusé : mode développeur requis.');
-    return { raw:[], merged:[], denied:true };
+    }catch(e){ /* silencieux */ }
   }
+}
 
-  // Indicateur de chargement immédiat (feedback visuel)
-  if(opts.ui) _auditRenderLoading();
-
-  let sources;
-  try{
-    sources = await _auditCollectSources();
-  } catch(err){
-    console.error('[Audit] Échec de la collecte des sources :', err);
-    if(opts.ui) _auditRenderError(err);
-    if(typeof showToast === 'function') showToast('⚠️ Audit : erreur de récupération');
-    return { raw:[], merged:[], error:String(err && err.message || err) };
+/* Restauration depuis la corbeille (réinjecte localement + republie). */
+async function devChantiersRestore(siteId){
+  const trash = _devChantiersTrash();
+  const item = trash.find(t=>t.snapshot && t.snapshot.id===siteId);
+  if(!item){ showToast('Introuvable en corbeille'); return; }
+  const snap = item.snapshot;
+  if(!(data.sites||[]).some(s=>s.id===snap.id)){ data.sites.push({ ...snap }); }
+  // retire de la corbeille
+  data.settings.devChantiersTrash = trash.filter(t=>!(t.snapshot && t.snapshot.id===siteId));
+  saveData();
+  // republie vers la clé chefs si c'était un chantier partagé
+  if(typeof pushSiteFromChefToConducteur === 'function' || typeof pushSharedSite === 'function'){
+    try{ if(typeof pushSharedSite === 'function') await pushSharedSite(data.sites.find(s=>s.id===snap.id)); }catch(e){}
   }
-
-  const hoursBySite = _auditHoursBySite(sources);
-
-  // ── Dump BRUT : une entrée par fiche chantier rencontrée (tous users) ──
-  const raw = [];
-  const seenPerOrigin = new Set();
-  sources.forEach(src => {
-    (src.sites||[]).forEach(s => {
-      if(!s || !s.id) return;
-      const dedupeKey = src.origin+'::'+s.id;
-      if(seenPerOrigin.has(dedupeKey)) return;
-      seenPerOrigin.add(dedupeKey);
-      const media = Array.isArray(s.sharedMedia) ? s.sharedMedia.length : 0;
-      raw.push({
-        nom: s.name || '(sans nom)',
-        createur: s.fromChef || s.createdByName || (src.origin==='local'?'(cet appareil)':'—'),
-        origine: src.origin,
-        id: s.id,
-        adresse: s.address || '',
-        keyboxCode: s.keyboxCode || '',
-        statut: s.status || '',
-        nbMedias: media,
-        heures: Math.round((hoursBySite[s.id]||0)*10)/10
-      });
-    });
-  });
-
-  // ── Vue FUSIONNÉE : regroupée par nom via le moteur de dédup existant ──
-  let merged = [];
-  try{
-    if(typeof dedupBuildMap === 'function'){
-      const { canonBy, merged:mergedSites } = dedupBuildMap(sources);
-      const acc = {};
-      Object.keys(mergedSites).forEach(cid => {
-        const s = mergedSites[cid];
-        acc[cid] = {
-          nom: s.name||'(sans nom)',
-          adresse: s.address||'', keyboxCode: s.keyboxCode||'', statut: s.status||'',
-          nbMedias: Array.isArray(s.sharedMedia)?s.sharedMedia.length:0,
-          heures: 0, fichesFusionnees: 0,
-          createurs: new Set()
-        };
-      });
-      Object.keys(hoursBySite).forEach(sid => {
-        const cid = canonBy[sid] || sid;
-        if(acc[cid]) acc[cid].heures += hoursBySite[sid];
-      });
-      raw.forEach(r => {
-        const cid = canonBy[r.id] || r.id;
-        if(acc[cid]){
-          acc[cid].fichesFusionnees += 1;
-          if(r.createur && r.createur !== '—') acc[cid].createurs.add(r.createur);
-        }
-      });
-      merged = Object.keys(acc).map(cid => ({
-        nom: acc[cid].nom,
-        adresse: acc[cid].adresse,
-        keyboxCode: acc[cid].keyboxCode,
-        statut: acc[cid].statut,
-        nbMedias: acc[cid].nbMedias,
-        heures: Math.round(acc[cid].heures*10)/10,
-        fichesFusionnees: acc[cid].fichesFusionnees,
-        createurs: Array.from(acc[cid].createurs)
-      })).sort((a,b) => (a.nom||'').localeCompare(b.nom||''));
-    }
-  } catch(err){
-    console.error('[Audit] Erreur de fusion (dédup) :', err);
-    merged = []; // on affiche au moins le dump brut
-  }
-
-  // Sortie console lisible
-  console.log('%c══ AUDIT CHANTIERS RWOOD ══','font-weight:bold;font-size:14px;');
-  console.log('Total fiches brutes (tous users) :', raw.length);
-  console.log('Total chantiers uniques (fusionnés) :', merged.length);
-  console.table(raw);
-  console.log('%c── Vue fusionnée (dédupliquée) ──','font-weight:bold;');
-  console.table(merged.map(m => ({...m, createurs: m.createurs.join(', ')})));
-
-  if(opts.ui) _auditRenderOverlay(raw, merged);
-  if(typeof showToast === 'function') showToast('✓ Audit : '+raw.length+' fiches, '+merged.length+' chantiers');
-  return { raw, merged };
+  showToast('↩️ Chantier restauré');
+  const list = document.getElementById('devPanelList');
+  if(list) devChantiersRender(list);
 }
 
-/* Overlay de chargement (spinner) affiché pendant la récupération. */
-function _auditRenderLoading(){
-  let ov = document.getElementById('rwoodAuditOverlay');
-  if(ov) ov.remove();
-  ov = document.createElement('div');
-  ov.id = 'rwoodAuditOverlay';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
-  ov.innerHTML =
-    '<div style="width:44px;height:44px;border:4px solid rgba(255,255,255,.15);border-top-color:#C8862B;border-radius:50%;animation:rwoodAuditSpin .8s linear infinite;"></div>'
-    + '<div style="font-weight:700;">Extraction des chantiers…</div>'
-    + '<div style="opacity:.6;font-size:12px;">Récupération globale de tous les utilisateurs</div>'
-    + '<style>@keyframes rwoodAuditSpin{to{transform:rotate(360deg);}}</style>';
-  document.body.appendChild(ov);
+/* Étape 2 : suppression définitive (vide le snapshot corbeille). */
+function devChantiersPurge(siteId){
+  const trash = _devChantiersTrash();
+  const item = trash.find(t=>t.snapshot && t.snapshot.id===siteId);
+  if(!item) return;
+  if(!confirm('Suppression DÉFINITIVE de « '+(item.snapshot.name||'ce chantier')+' » ?\nCette action est irréversible.')) return;
+  data.settings.devChantiersTrash = trash.filter(t=>!(t.snapshot && t.snapshot.id===siteId));
+  saveData();
+  showToast('Supprimé définitivement');
+  const list = document.getElementById('devPanelList');
+  if(list) devChantiersRender(list);
 }
 
-/* Overlay d'erreur (try/catch) affiché en cas d'échec de récupération. */
-function _auditRenderError(err){
-  let ov = document.getElementById('rwoodAuditOverlay');
-  if(ov) ov.remove();
-  ov = document.createElement('div');
-  ov.id = 'rwoodAuditOverlay';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;';
-  ov.innerHTML =
-    '<div style="font-size:40px;">⚠️</div>'
-    + '<div style="font-weight:800;font-size:16px;">Échec de l\'extraction</div>'
-    + '<div style="opacity:.75;font-size:13px;max-width:320px;word-break:break-word;">'+_esc(String(err && err.message || err))+'</div>'
-    + '<div style="opacity:.55;font-size:12px;">Vérifie la connexion réseau puis réessaie.</div>'
-    + '<button onclick="document.getElementById(\'rwoodAuditOverlay\').remove()" style="background:#C8862B;color:#1a0f00;border:none;border-radius:8px;padding:9px 16px;font-weight:800;margin-top:6px;">Fermer</button>';
-  document.body.appendChild(ov);
-}
+function _devEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* ═══ MODULE — DevChantiers (gestion + corbeille)  ·  fin ═══ */
 
-/* Overlay d'affichage à l'écran (optionnel, opts.ui=true). */
-function _auditRenderOverlay(raw, merged){
-  let ov = document.getElementById('rwoodAuditOverlay');
-  if(ov) ov.remove();
-  ov = document.createElement('div');
-  ov.id = 'rwoodAuditOverlay';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;overflow:auto;padding:16px;font-size:12px;';
-  const rowsMerged = merged.map(m =>
-    '<tr><td>'+_esc(m.nom)+'</td><td>'+_esc(m.createurs.join(', '))+'</td><td>'+_esc(m.adresse)+'</td><td>'+_esc(m.keyboxCode)+'</td><td>'+_esc(m.statut)+'</td><td style="text-align:center;">'+m.nbMedias+'</td><td style="text-align:right;">'+m.heures+'h</td><td style="text-align:center;">'+m.fichesFusionnees+'</td></tr>'
-  ).join('');
-  const rowsRaw = raw.map(r =>
-    '<tr><td>'+_esc(r.nom)+'</td><td>'+_esc(r.createur)+'</td><td>'+_esc(r.origine)+'</td><td>'+_esc(r.adresse)+'</td><td>'+_esc(r.statut)+'</td><td style="text-align:center;">'+r.nbMedias+'</td><td style="text-align:right;">'+r.heures+'h</td></tr>'
-  ).join('');
-  ov.innerHTML =
-    '<button onclick="document.getElementById(\'rwoodAuditOverlay\').remove()" style="position:sticky;top:0;float:right;background:#C8862B;color:#1a0f00;border:none;border-radius:8px;padding:8px 14px;font-weight:800;">Fermer ✕</button>'
-    + '<h2 style="margin:4px 0;">Audit chantiers</h2>'
-    + '<p style="opacity:.7;">Fiches brutes : '+raw.length+' · Chantiers uniques : '+merged.length+'</p>'
-    + '<h3>Vue fusionnée (dédupliquée)</h3>'
-    + '<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;margin-bottom:20px;"><tr style="background:#211a12;"><th>Nom</th><th>Créateur(s)</th><th>Adresse</th><th>Boîte clés</th><th>Statut</th><th>Médias</th><th>Heures</th><th>Fiches</th></tr>'+rowsMerged+'</table>'
-    + '<h3>Dump brut (toutes fiches, tous utilisateurs)</h3>'
-    + '<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;"><tr style="background:#211a12;"><th>Nom</th><th>Créateur</th><th>Origine</th><th>Adresse</th><th>Statut</th><th>Médias</th><th>Heures</th></tr>'+rowsRaw+'</table>';
-  document.body.appendChild(ov);
-}
-function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-/* Exposé global pour appel console. */
-window.rwoodAuditChantiers = rwoodAuditChantiers;
-/* ═══ MODULE — AuditChantiers (diagnostic)  ·  fin ═══ */
 
 /* ═══ SOUS-MODULE — PatronNavPreset  ·  fin ═══ */
 
@@ -32745,13 +32698,10 @@ async function comptaEditEnsurePulled(){
       <button id="devTabComptes" class="btn btn-primary" style="flex:1;font-size:12px;" onclick="switchDevTab('comptes')">👥 Comptes</button>
       <button id="devTabPointages" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('pointages')">⏱ Pointages</button>
       <button id="devTabMachines" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('machines')">⚙️ Machines</button>
+      <button id="devTabChantiers" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('chantiers')">🏗 Chantiers</button>
     </div>
     <div style="margin-bottom:12px;">
       <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
-    </div>
-    <!-- MODULE — AuditChantiers : accès réservé mode dev -->
-    <div style="margin-bottom:12px;">
-      <button class="btn btn-outline btn-block" id="devAuditBtn" onclick="(window.rwoodAuditChantiers ? window.rwoodAuditChantiers({ui:true}) : (typeof showToast==='function'?showToast('⚠️ Module audit non chargé — recharge l\'app'):alert('Module audit non chargé')))">🔍 Audit chantiers (tous utilisateurs)</button>
     </div>
     <div id="devPanelList"></div>
   </div>
