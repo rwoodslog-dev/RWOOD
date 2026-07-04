@@ -3129,8 +3129,9 @@
       <button class="nav-btn" data-view="itineraires" onclick="goTo('itineraires')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15 9l-2 6-6 2 2-6z"/></svg></span><span class="lbl">Itinéraires</span>
       </button>
-      <button class="nav-btn" data-view="zone-chantier" style="display:none;" onclick="goTo('zone-chantier')">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></svg></span><span class="lbl">Zone Chantier</span>
+      <!-- MODULE — ZoneAccess : onglet Zone (conducteur/comptable/patron uniquement) -->
+      <button class="nav-btn" data-view="zone-chantier" id="zoneNavBtn" style="display:none;" onclick="goTo('zone-chantier')">
+        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></svg></span><span class="lbl">Zone</span>
       </button>
       <button class="nav-btn" data-view="calcul" onclick="goTo('calcul')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8"/><circle cx="8.3" cy="11.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="12" cy="11.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="15.7" cy="11.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="8.3" cy="14.7" r="0.6" fill="currentColor" stroke="none"/><circle cx="12" cy="14.7" r="0.6" fill="currentColor" stroke="none"/><circle cx="15.7" cy="14.7" r="0.6" fill="currentColor" stroke="none"/><circle cx="8.3" cy="17.9" r="0.6" fill="currentColor" stroke="none"/><circle cx="12" cy="17.9" r="0.6" fill="currentColor" stroke="none"/><circle cx="15.7" cy="17.9" r="0.6" fill="currentColor" stroke="none"/></svg></span><span class="lbl">Calcul</span>
@@ -7546,7 +7547,10 @@ function goTo(viewName, siteId){
   if(viewName === 'couverture') renderCouverture();
   if(viewName === 'photos') renderPhotosGallery();
   if(viewName === 'zinc') renderZincGallery();
-  if(viewName === 'zone-chantier') renderZoneChantier();
+  if(viewName === 'zone-chantier'){
+    if(typeof zoneAccessAllowed === 'function' && !zoneAccessAllowed()){ goTo('chantiers'); return; } // MODULE — ZoneAccess
+    renderZoneChantier();
+  }
 
   if(viewName === 'depot') renderDepot();
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
@@ -20547,6 +20551,7 @@ function setMyProfileRole(el, role){
 /* Affiche/masque le bandeau de verrouillage du mode (chips supprimés → menu déroulant) */
 function applyRoleLockUI(){
   if(typeof suiviApplyNavVisibility === 'function') suiviApplyNavVisibility(); // MODULE — SuiviHeures
+  if(typeof zoneAccessApplyNav === 'function') zoneAccessApplyNav(); // MODULE — ZoneAccess
   const chips    = document.getElementById('myProfileRoleChips'); // legacy, peut être absent
   const lockHint = document.getElementById('myProfileRoleLockHint');
 
@@ -22735,7 +22740,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.30.0';
+const APP_VERSION = '2.30.1';
 
 const CHANGELOG = [
   {
@@ -31736,7 +31741,7 @@ function dedupBuildMap(sources){
 let PATRON_NAV_PRESET_ENABLED = true;
 
 /* Onglets conservés dans la barre pour patron/conducteur (9 principaux). */
-const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notes','suivi','alertes-conducteur'];
+const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notes','suivi','alertes-conducteur','zone-chantier'];
 
 function _patronNavIsTargetRole(){
   const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
@@ -32033,6 +32038,35 @@ function devChantiersPurge(siteId){
 
 function _devEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 /* ═══ MODULE — DevChantiers (gestion + corbeille)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ZoneAccess  ·  début
+   Rend l'onglet "Zone" (carte des zones de déplacement, déjà existante
+   via renderZoneChantier) visible UNIQUEMENT pour conducteur, comptable
+   et patron (+ dev). Masqué et inaccessible pour ouvriers et chefs.
+   N'ajoute aucune carte : réutilise la vue #view-zone-chantier existante
+   (marqueurs colorés + cercles de zones + calcul frais).
+   Retrait : supprimer ce bloc + la garde [zoneaccess] dans goTo + l'appel
+   zoneAccessApplyNav(). Aucun impact sur la saisie terrain.
+   ═══════════════════════════════════════════════════════════════════ */
+function zoneAccessAllowed(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'conducteur' || r === 'comptable' || r === 'patron';
+}
+function zoneAccessApplyNav(){
+  const btn = document.getElementById('zoneNavBtn');
+  if(!btn) return;
+  const allowed = zoneAccessAllowed();
+  // Pour les rôles autorisés, s'assurer que Zone n'est pas masqué par navHidden
+  if(allowed && data.settings && Array.isArray(data.settings.navHidden) && data.settings.navHidden.includes('zone-chantier')){
+    data.settings.navHidden = data.settings.navHidden.filter(v => v !== 'zone-chantier');
+    saveData();
+  }
+  btn.style.display = allowed ? '' : 'none';
+}
+document.addEventListener('DOMContentLoaded', () => setTimeout(zoneAccessApplyNav, 950));
+/* ═══ MODULE — ZoneAccess  ·  fin ═══ */
 
 
 /* ═══ SOUS-MODULE — PatronNavPreset  ·  fin ═══ */
