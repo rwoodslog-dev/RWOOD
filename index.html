@@ -22729,7 +22729,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.29.0';
+const APP_VERSION = '2.29.1';
 
 const CHANGELOG = [
   {
@@ -31305,48 +31305,66 @@ function _suiviValidCategories(){
 /* FIN EXTENSION (déclarations) */
 
 /* ── Agrégation LECTURE SEULE de data.attendance ─────────────────── */
-function _suiviAggregate(){
+/* Agrège une LISTE de sources. Chaque source = {attendance, sites, workers, deviceId}.
+   En mode local (chef/ouvrier) : une seule source = les données locales.
+   En mode patron/dev : toutes les sources remontées par l'équipe. */
+function _suiviAggregate(sources){
+  // Table chantiers globale (fusion de toutes les sources)
   const sitesById = {};
-  (data.sites||[]).forEach(s => { sitesById[s.id] = s; });
+  const workersById = {};
+  sources.forEach(src => {
+    (src.sites||[]).forEach(s => { if(s && s.id && !sitesById[s.id]) sitesById[s.id] = s; });
+    (src.workers||[]).forEach(w => { if(w && w.id && !workersById[w.id]) workersById[w.id] = w; });
+  });
 
-  const overrides = _suiviOverrides(); // [recat]
-  const bySite = {}; // siteId -> { total, tasks:{ label:{icon,hours} }, uncat:[ fiches ] }
-  const attendance = data.attendance || {};
+  const overrides = _suiviOverrides(); // [recat] overrides locaux de catégorie
+  const bySite = {}; // siteId -> { total, tasks:{}, uncat:[] }
 
-  Object.keys(attendance).forEach(dateKey => {
-    const day = attendance[dateKey];
-    if(!day || !day.workers) return;
-    const siteId = day.siteId;
-    if(!siteId) return;                 // jours sans chantier : ignorés (choix validé)
-    if(!sitesById[siteId]) return;      // chantier supprimé : ignoré
+  sources.forEach(src => {
+    const attendance = src.attendance || {};
+    const deviceId = src.deviceId || 'local';
+    Object.keys(attendance).forEach(dateKey => {
+      const day = attendance[dateKey];
+      if(!day || !day.workers) return;
+      const siteId = day.siteId;
+      if(!siteId) return;                 // jours sans chantier : ignorés (choix validé)
+      if(!sitesById[siteId]) return;      // chantier inconnu : ignoré
 
-    Object.keys(day.workers).forEach(wId => {
-      const entry = day.workers[wId];
-      if(!entry) return;
-      const h = parseFloat(String(entry.hours).replace(',','.'));
-      if(!isFinite(h) || h <= 0) return;
+      Object.keys(day.workers).forEach(wId => {
+        let entry = day.workers[wId];
+        let ed = day;
+        // [comptaedit] applique le calque comptable prioritaire si présent
+        if(typeof comptaEditApplyOverride === 'function'){
+          const cov = comptaEditApplyOverride(deviceId, wId, dateKey, entry, ed);
+          if(cov){ entry = cov.entry; ed = cov.ed; }
+        }
+        if(!entry) return;
+        const effSiteId = ed.siteId || siteId;
+        if(!sitesById[effSiteId]) return;
+        const h = parseFloat(String(entry.hours).replace(',','.'));
+        if(!isFinite(h) || h <= 0) return;
 
-      if(!bySite[siteId]) bySite[siteId] = { total:0, tasks:{}, uncat:[] };
-      bySite[siteId].total += h;
+        if(!bySite[effSiteId]) bySite[effSiteId] = { total:0, tasks:{}, uncat:[] };
+        bySite[effSiteId].total += h;
 
-      // [recat] override local prioritaire sur la catégorie déduite
-      let cat;
-      const ov = overrides[_suiviOvKey(dateKey, wId)];
-      if(ov){
-        const known = SUIVI_TASK_MAP.find(c => c.label === ov);
-        cat = { label: ov, icon: known ? known.icon : '📋' };
-      } else {
-        cat = _suiviTaskCategory(entry.task);
-      }
+        // [recat] override de catégorie prioritaire
+        let cat;
+        const ov = overrides[_suiviOvKey(dateKey, wId)];
+        if(ov){
+          const known = SUIVI_TASK_MAP.find(c => c.label === ov);
+          cat = { label: ov, icon: known ? known.icon : '📋' };
+        } else {
+          cat = _suiviTaskCategory(entry.task);
+        }
 
-      if(!bySite[siteId].tasks[cat.label]) bySite[siteId].tasks[cat.label] = { icon:cat.icon, hours:0 };
-      bySite[siteId].tasks[cat.label].hours += h;
+        if(!bySite[effSiteId].tasks[cat.label]) bySite[effSiteId].tasks[cat.label] = { icon:cat.icon, hours:0 };
+        bySite[effSiteId].tasks[cat.label].hours += h;
 
-      // [recat] tracer les fiches réellement non catégorisées (sans override)
-      if(!ov && cat.label === 'Non catégorisé'){
-        const wName = _suiviWorkerName(wId);
-        bySite[siteId].uncat.push({ dateKey, wId, wName, hours:h, raw:(entry.task||'') });
-      }
+        if(!ov && cat.label === 'Non catégorisé'){
+          const wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
+          bySite[effSiteId].uncat.push({ dateKey, wId, wName, hours:h, raw:(entry.task||'') });
+        }
+      });
     });
   });
 
@@ -31355,7 +31373,6 @@ function _suiviAggregate(){
     const tasks = Object.keys(bySite[siteId].tasks).map(label => ({
       label, icon: bySite[siteId].tasks[label].icon, hours: bySite[siteId].tasks[label].hours
     })).sort((a,b) => b.hours - a.hours);
-    // tri des fiches non catégorisées par date décroissante (perf : tri léger)
     const uncat = bySite[siteId].uncat.sort((a,b) => (a.dateKey < b.dateKey ? 1 : -1));
     return {
       siteId,
@@ -31368,6 +31385,18 @@ function _suiviAggregate(){
   }).sort((a,b) => b.total - a.total);
 
   return result;
+}
+
+/* Source locale (données de cet appareil) — utilisée hors mode global. */
+function _suiviLocalSource(){
+  return [{ attendance: data.attendance || {}, sites: data.sites || [], workers: data.workers || [], deviceId: 'local' }];
+}
+
+/* [global] Détermine si le rôle courant a droit à la vue globale patron. */
+function _suiviIsGlobalRole(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'patron';
 }
 
 /* Résout un nom lisible depuis un workerId (fiche ou registre local). */
@@ -31388,13 +31417,52 @@ function _suiviFmt(h){
   return (Number.isInteger(r) ? r.toString() : r.toFixed(1)) + 'h';
 }
 
-/* ── Rafraîchissement (cache : recalcul seulement si demandé/focus) ─ */
-function suiviRefresh(force){
-  if(force || !_suiviCache){
-    _suiviCache = _suiviAggregate();
-    _suiviCacheStamp = Date.now();
+/* ── Rafraîchissement (cache : recalcul seulement si demandé/focus) ──
+   Mode patron/dev : tire TOUTES les fiches de l'équipe (pull global,
+   cross-utilisateurs) puis agrège. Mode local : données de l'appareil. */
+async function suiviRefresh(force){
+  if(!force && _suiviCache){ suiviRender(); return; }
+
+  let sources;
+  if(_suiviIsGlobalRole()){
+    // Indicateur de chargement discret
+    const g = document.getElementById('suiviGlobal');
+    if(g) g.textContent = 'Chargement global…';
+    sources = await _suiviFetchGlobalSources();
+  } else {
+    sources = _suiviLocalSource();
   }
+
+  _suiviCache = _suiviAggregate(sources);
+  _suiviCacheStamp = Date.now();
   suiviRender();
+}
+
+/* [global] Récupère toutes les sources de l'équipe via le pull cross-
+   utilisateurs existant (le même que la comptable). Ne modifie jamais
+   data.attendance local → aucun impact sur la saisie des ouvriers.
+   Le calque comptable est tiré au passage pour cohérence des totaux. */
+async function _suiviFetchGlobalSources(){
+  try{
+    if(typeof comptaEditEnsurePulled === 'function') await comptaEditEnsurePulled();
+    if(typeof pullAllPointagesForComptable !== 'function'){
+      return _suiviLocalSource(); // repli sûr si la fonction n'existe pas
+    }
+    const devices = await pullAllPointagesForComptable();
+    if(!devices || !devices.length) return _suiviLocalSource();
+    // Chaque device expose déjà {attendance, sites, workers, deviceId}
+    const sources = devices.map(d => ({
+      attendance: d.attendance || {},
+      sites: d.sites || [],
+      workers: d.workers || [],
+      deviceId: d.deviceId || ''
+    }));
+    // Ajoute aussi les données locales du patron (au cas où non encore poussées)
+    sources.push(_suiviLocalSource()[0]);
+    return sources;
+  } catch(e){
+    return _suiviLocalSource(); // repli : pas de blocage de l'écran
+  }
 }
 
 /* ── Rendu ───────────────────────────────────────────────────────── */
