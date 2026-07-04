@@ -7920,6 +7920,7 @@ function createSite(){
   closeModal('addSite');
   showToast('Chantier créé');
   if(site.address && data.settings.depotAddress) calculateSiteTrajetZone(site.id, {silent:true});
+  if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
   // Pas de synchro auto à la création simple même côté conducteur : il utilise "Mettre en attente"
   // ou ira dans Synchro Équipe depuis la fiche
 }
@@ -9687,6 +9688,7 @@ function updateSiteField(siteId, field, value){
   if(addressChanged && value && data.settings.depotAddress){
     calculateSiteTrajetZone(siteId, {silent:true});
   }
+  if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
 }
 
 function setSiteProgress(siteId, value){
@@ -22733,7 +22735,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.29.5';
+const APP_VERSION = '2.29.8';
 
 const CHANGELOG = [
   {
@@ -31763,6 +31765,276 @@ function patronNavPreset(){
   saveData();
   if(typeof applyNavHidden === 'function') applyNavHidden();
 }
+/* ═══════════════════════════════════════════════════════════════════
+   SOUS-MODULE — ChefAutoShare  ·  début
+   Pousse AUTOMATIQUEMENT tous les chantiers d'un chef vers la clé
+   partagée CHEF_PUSH_KEY (sans geste manuel), pour que patron et
+   conducteur voient l'intégralité des chantiers terrain.
+   - Ne concerne QUE le rôle 'chef' (ouvriers/conducteurs/patron exclus).
+   - Debounced (regroupe les rafales de modifications).
+   - Réutilise pushSiteFromChefToConducteur (aucune logique dupliquée).
+   Désactivation : CHEF_AUTOSHARE_ENABLED=false. Retrait : supprimer ce
+   bloc + les accroches [autoshare].
+   ═══════════════════════════════════════════════════════════════════ */
+let CHEF_AUTOSHARE_ENABLED = true;
+let _chefAutoShareTimer = null;
+let _chefAutoShareInFlight = false;
+
+function _chefAutoShareIsChef(){
+  return !!(data.settings && data.settings.myProfile && data.settings.myProfile.role === 'chef');
+}
+
+/* Pousse tous les chantiers partageables du chef (debounced). */
+function chefAutoShareSchedule(){
+  if(!CHEF_AUTOSHARE_ENABLED || !_chefAutoShareIsChef()) return;
+  clearTimeout(_chefAutoShareTimer);
+  _chefAutoShareTimer = setTimeout(chefAutoShareAll, 1500);
+}
+
+async function chefAutoShareAll(){
+  if(!CHEF_AUTOSHARE_ENABLED || !_chefAutoShareIsChef()) return;
+  if(_chefAutoShareInFlight || !navigator.onLine) return;
+  _chefAutoShareInFlight = true;
+  try{
+    // Chantiers réels du chef (exclut brouillons "on hold" et dépôt système)
+    const sites = (data.sites||[]).filter(s =>
+      s && s.id && s.name && s.status !== 'brouillon'
+    );
+    for(const s of sites){
+      if(typeof pushSiteFromChefToConducteur === 'function'){
+        // eslint-disable-next-line no-await-in-loop
+        await _chefAutoSharePushSilent(s.id);
+      }
+    }
+  } catch(e){ /* silencieux : ne bloque jamais la saisie */ }
+  _chefAutoShareInFlight = false;
+}
+
+/* Version silencieuse (sans toast/re-render) du push chef→partagé. */
+async function _chefAutoSharePushSilent(siteId){
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const myProfile = data.settings.myProfile || {};
+  const myName = ((myProfile.firstName||'') + ' ' + (myProfile.lastName||'')).trim();
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
+    let sites = [];
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        sites = (d && d.sites) || [];
+      }
+    }
+    const snapshot = {
+      id: site.id, name: site.name, address: site.address,
+      status: site.status, progress: site.progress, color: site.color,
+      keyboxCode: site.keyboxCode||'', dueDate: site.dueDate||null,
+      startDate: site.startDate||null, customEvents: site.customEvents||[],
+      fromChef: myName, fromChefAuthId: data.settings.auth && data.settings.auth.authId,
+      syncLive: true, lastSyncAt: new Date().toISOString()
+    };
+    const idx = sites.findIndex(s => s.id === site.id);
+    if(idx === -1) sites.push(snapshot); else sites[idx] = snapshot;
+    await supaFetch('/rest/v1/rwood_sync', {
+      method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body: JSON.stringify({ user_id: CHEF_PUSH_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ sites }) })
+    });
+  } catch(e){ /* silencieux */ }
+}
+
+/* Auto-partage initial au démarrage (une fois les données chargées). */
+document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+  if(_chefAutoShareIsChef()) chefAutoShareAll();
+}, 7000));
+/* ═══ SOUS-MODULE — ChefAutoShare  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — AuditChantiers (diagnostic)  ·  début
+   Outil de contrôle LECTURE SEULE. Liste TOUS les chantiers de tous
+   les utilisateurs (local + clé chefs + partagés), avec créateur,
+   données clés, nombre de médias et total d'heures cumulées. Fournit
+   un dump brut ET une vue fusionnée (via le moteur dedupBuildMap).
+   Usage console : await rwoodAuditChantiers();  (dump console)
+                   await rwoodAuditChantiers({ui:true});  (overlay écran)
+   N'écrit jamais en base. Retrait : supprimer ce bloc entier (aucune
+   accroche ailleurs → suppression sans trace).
+   ═══════════════════════════════════════════════════════════════════ */
+async function _auditCollectSources(){
+  const sources = [];
+  // 1) Données locales de cet appareil
+  sources.push({ origin:'local', attendance:data.attendance||{}, sites:data.sites||[], workers:data.workers||[] });
+
+  // 2) Chantiers poussés par les chefs (CHEF_PUSH_KEY) — porteur du créateur (fromChef)
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(CHEF_PUSH_KEY)+'&select=data',{headers:{'Prefer':''}});
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data==='string'?JSON.parse(rows[0].data):rows[0].data;
+        sources.push({ origin:'chef_push', attendance:{}, sites:(d&&d.sites)||[], workers:[] });
+      }
+    }
+  }catch(e){}
+
+  // 3) Chantiers partagés (conducteur/patron)
+  try{
+    if(typeof _fetchSharedSites === 'function'){
+      const shared = await _fetchSharedSites();
+      if(Array.isArray(shared)) sources.push({ origin:'shared', attendance:{}, sites:shared, workers:[] });
+    }
+  }catch(e){}
+
+  // 4) Fiches d'heures cross-utilisateurs (pour cumul d'heures par chantier)
+  try{
+    if(typeof pullAllPointagesForComptable === 'function'){
+      const devices = await pullAllPointagesForComptable();
+      (devices||[]).forEach(dev => sources.push({
+        origin:'device:'+(dev.deviceId||'?'),
+        attendance:dev.attendance||{}, sites:dev.sites||[], workers:dev.workers||[]
+      }));
+    }
+  }catch(e){}
+
+  return sources;
+}
+
+/* Compte les heures totales par siteId à partir de toutes les sources. */
+function _auditHoursBySite(sources){
+  const hours = {};
+  sources.forEach(src => {
+    const att = src.attendance||{};
+    Object.keys(att).forEach(dk => {
+      const day = att[dk];
+      if(!day || !day.workers || !day.siteId) return;
+      Object.keys(day.workers).forEach(w => {
+        const h = parseFloat(String(day.workers[w].hours).replace(',','.'));
+        if(isFinite(h) && h>0) hours[day.siteId] = (hours[day.siteId]||0) + h;
+      });
+    });
+  });
+  return hours;
+}
+
+/* Extraction principale. Retourne { raw:[...], merged:[...] }.
+   SÉCURITÉ : réservé au mode développeur. Tout autre rôle est refusé. */
+async function rwoodAuditChantiers(opts){
+  opts = opts || {};
+  if(!window._devRoleUnlocked){
+    if(typeof showToast === 'function') showToast('🔒 Réservé au mode développeur');
+    console.warn('[Audit] Accès refusé : mode développeur requis.');
+    return { raw:[], merged:[], denied:true };
+  }
+  const sources = await _auditCollectSources();
+  const hoursBySite = _auditHoursBySite(sources);
+
+  // ── Dump BRUT : une entrée par fiche chantier rencontrée (tous users) ──
+  const raw = [];
+  const seenPerOrigin = new Set();
+  sources.forEach(src => {
+    (src.sites||[]).forEach(s => {
+      if(!s || !s.id) return;
+      const dedupeKey = src.origin+'::'+s.id;
+      if(seenPerOrigin.has(dedupeKey)) return;
+      seenPerOrigin.add(dedupeKey);
+      const media = Array.isArray(s.sharedMedia) ? s.sharedMedia.length : 0;
+      raw.push({
+        nom: s.name || '(sans nom)',
+        createur: s.fromChef || s.createdByName || (src.origin==='local'?'(cet appareil)':'—'),
+        origine: src.origin,
+        id: s.id,
+        adresse: s.address || '',
+        keyboxCode: s.keyboxCode || '',
+        statut: s.status || '',
+        nbMedias: media,
+        heures: Math.round((hoursBySite[s.id]||0)*10)/10
+      });
+    });
+  });
+
+  // ── Vue FUSIONNÉE : regroupée par nom via le moteur de dédup existant ──
+  let merged = [];
+  if(typeof dedupBuildMap === 'function'){
+    const { canonBy, merged:mergedSites } = dedupBuildMap(sources);
+    const acc = {};
+    // heures/medias cumulés vers le canonique
+    Object.keys(mergedSites).forEach(cid => {
+      const s = mergedSites[cid];
+      acc[cid] = {
+        nom: s.name||'(sans nom)',
+        adresse: s.address||'', keyboxCode: s.keyboxCode||'', statut: s.status||'',
+        nbMedias: Array.isArray(s.sharedMedia)?s.sharedMedia.length:0,
+        heures: 0, fichesFusionnees: 0,
+        createurs: new Set()
+      };
+    });
+    // additionne heures par site → canonique
+    Object.keys(hoursBySite).forEach(sid => {
+      const cid = canonBy[sid] || sid;
+      if(acc[cid]) acc[cid].heures += hoursBySite[sid];
+    });
+    // compte les fiches doublons + créateurs
+    raw.forEach(r => {
+      const cid = canonBy[r.id] || r.id;
+      if(acc[cid]){
+        acc[cid].fichesFusionnees += 1;
+        if(r.createur && r.createur !== '—') acc[cid].createurs.add(r.createur);
+      }
+    });
+    merged = Object.keys(acc).map(cid => ({
+      nom: acc[cid].nom,
+      adresse: acc[cid].adresse,
+      keyboxCode: acc[cid].keyboxCode,
+      statut: acc[cid].statut,
+      nbMedias: acc[cid].nbMedias,
+      heures: Math.round(acc[cid].heures*10)/10,
+      fichesFusionnees: acc[cid].fichesFusionnees,
+      createurs: Array.from(acc[cid].createurs)
+    })).sort((a,b) => (a.nom||'').localeCompare(b.nom||''));
+  }
+
+  // Sortie console lisible
+  console.log('%c══ AUDIT CHANTIERS RWOOD ══','font-weight:bold;font-size:14px;');
+  console.log('Total fiches brutes (tous users) :', raw.length);
+  console.log('Total chantiers uniques (fusionnés) :', merged.length);
+  console.table(raw);
+  console.log('%c── Vue fusionnée (dédupliquée) ──','font-weight:bold;');
+  console.table(merged.map(m => ({...m, createurs: m.createurs.join(', ')})));
+
+  if(opts.ui) _auditRenderOverlay(raw, merged);
+  return { raw, merged };
+}
+
+/* Overlay d'affichage à l'écran (optionnel, opts.ui=true). */
+function _auditRenderOverlay(raw, merged){
+  let ov = document.getElementById('rwoodAuditOverlay');
+  if(ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = 'rwoodAuditOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;overflow:auto;padding:16px;font-size:12px;';
+  const rowsMerged = merged.map(m =>
+    '<tr><td>'+_esc(m.nom)+'</td><td>'+_esc(m.createurs.join(', '))+'</td><td>'+_esc(m.adresse)+'</td><td>'+_esc(m.keyboxCode)+'</td><td>'+_esc(m.statut)+'</td><td style="text-align:center;">'+m.nbMedias+'</td><td style="text-align:right;">'+m.heures+'h</td><td style="text-align:center;">'+m.fichesFusionnees+'</td></tr>'
+  ).join('');
+  const rowsRaw = raw.map(r =>
+    '<tr><td>'+_esc(r.nom)+'</td><td>'+_esc(r.createur)+'</td><td>'+_esc(r.origine)+'</td><td>'+_esc(r.adresse)+'</td><td>'+_esc(r.statut)+'</td><td style="text-align:center;">'+r.nbMedias+'</td><td style="text-align:right;">'+r.heures+'h</td></tr>'
+  ).join('');
+  ov.innerHTML =
+    '<button onclick="document.getElementById(\'rwoodAuditOverlay\').remove()" style="position:sticky;top:0;float:right;background:#C8862B;color:#1a0f00;border:none;border-radius:8px;padding:8px 14px;font-weight:800;">Fermer ✕</button>'
+    + '<h2 style="margin:4px 0;">Audit chantiers</h2>'
+    + '<p style="opacity:.7;">Fiches brutes : '+raw.length+' · Chantiers uniques : '+merged.length+'</p>'
+    + '<h3>Vue fusionnée (dédupliquée)</h3>'
+    + '<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;margin-bottom:20px;"><tr style="background:#211a12;"><th>Nom</th><th>Créateur(s)</th><th>Adresse</th><th>Boîte clés</th><th>Statut</th><th>Médias</th><th>Heures</th><th>Fiches</th></tr>'+rowsMerged+'</table>'
+    + '<h3>Dump brut (toutes fiches, tous utilisateurs)</h3>'
+    + '<table border="1" cellpadding="5" style="border-collapse:collapse;width:100%;"><tr style="background:#211a12;"><th>Nom</th><th>Créateur</th><th>Origine</th><th>Adresse</th><th>Statut</th><th>Médias</th><th>Heures</th></tr>'+rowsRaw+'</table>';
+  document.body.appendChild(ov);
+}
+function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* Exposé global pour appel console. */
+window.rwoodAuditChantiers = rwoodAuditChantiers;
+/* ═══ MODULE — AuditChantiers (diagnostic)  ·  fin ═══ */
+
 /* ═══ SOUS-MODULE — PatronNavPreset  ·  fin ═══ */
 
 /* ═══ MODULE — SuiviHeures (JS)  ·  fin ═══ */
@@ -32429,6 +32701,10 @@ async function comptaEditEnsurePulled(){
     </div>
     <div style="margin-bottom:12px;">
       <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
+    </div>
+    <!-- MODULE — AuditChantiers : accès réservé mode dev -->
+    <div style="margin-bottom:12px;">
+      <button class="btn btn-outline btn-block" onclick="rwoodAuditChantiers({ui:true})">🔍 Audit chantiers (tous utilisateurs)</button>
     </div>
     <div id="devPanelList"></div>
   </div>
