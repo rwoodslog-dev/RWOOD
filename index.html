@@ -11790,11 +11790,16 @@ function closeZincEditor(){
       data.logs.push({id: uid(), siteId, text: `Pliage ajouté : ${name}`, time: formatDateTime(new Date()), type: 'link', linkType: 'zinc', linkId: profile.id});
       saveData();
     }
+    // MODULE ZincSync : pousse le pliage au conducteur (comme photos/docs)
+    if(profile) syncZincToSite(profile);
     goTo('detail', siteId);
     // Pliages fusionnés dans le menu Média unique → on ouvre l'onglet cloud
     setTimeout(()=>{ setDetailMain('media'); setDetailTab('cloud'); }, 0);
     return;
   }
+
+  // Enregistrement hors flux "retour détail" : synchro aussi si le pliage a un chantier
+  if(profile && profile.siteId) syncZincToSite(profile);
 
   document.getElementById('zincFolderView').style.display = 'block';
   renderZincProfileList();
@@ -12036,16 +12041,12 @@ function _zincPdfSchemaToImage(profile){
   });
 }
 
-async function generateZincPdf(profileArg){
-  const profile = profileArg || getCurrentZincProfile();
-  if(!profile){ showToast('Aucun pliage'); return; }
-
+/* Construit le document jsPDF d'un pliage (réutilisable : partage OU upload synchro).
+   Retourne { doc, fileName, nom } ou null si jsPDF indisponible. */
+async function _buildZincPdfDoc(profile){
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
-  if(!jsPDFLib){ showToast("Erreur PDF — rechargez l'app"); return; }
+  if(!jsPDFLib) return null;
 
-  showToast('⏳ Génération du PDF…');
-
-  // ── Données strictes ──────────────────────────────────────────────
   const site = data.sites.find(s => s.id === profile.siteId);
   const nom  = profile.name || 'Pliage sans nom';
   const developpe = formatMm(getProfileTotalLength(profile))
@@ -12056,14 +12057,12 @@ async function generateZincPdf(profileArg){
   const metrage = profile.metrage ? formatZincMetrageSummary(profile.metrage) : null;
   const schemaImg = await _zincPdfSchemaToImage(profile);
 
-  // ── Construction PDF ──────────────────────────────────────────────
   const doc    = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
   const pageW  = doc.internal.pageSize.getWidth();
   const margin = 14;
   const contentW = pageW - margin*2;
   let y = margin;
 
-  // En-tête
   doc.setFillColor(167,139,250);
   doc.rect(0, 0, pageW, 22, 'F');
   doc.setTextColor(255,255,255);
@@ -12076,7 +12075,6 @@ async function generateZincPdf(profileArg){
   doc.setTextColor(0,0,0);
   y = 30;
 
-  // 1) Photo de l'aperçu (la coupe)
   doc.setFont('helvetica','bold'); doc.setFontSize(12);
   doc.text('Aperçu de la coupe', margin, y); y += 4;
   if(schemaImg){
@@ -12093,7 +12091,6 @@ async function generateZincPdf(profileArg){
     doc.text('(aperçu indisponible)', margin, y + 6); y += 14;
   }
 
-  // Bloc valeur réutilisable
   const block = (label, value) => {
     if(y > 260){ doc.addPage(); y = margin; }
     doc.setFillColor(245,243,255);
@@ -12108,16 +12105,106 @@ async function generateZincPdf(profileArg){
     y += boxH + 6;
   };
 
-  // 2) Développé total
   block('Développé total', developpe);
-  // 3) Cumul de traçage
   block('Cumul de traçage', cumul || 'Non défini');
-  // 4) Métrage chantier
   block('Métrage chantier', metrage || 'Non défini');
 
-  // ── Sortie ────────────────────────────────────────────────────────
   const safeName = nom.replace(/[^\w\-]+/g,'_').slice(0,40);
-  const fileName = `Pliage_${safeName}.pdf`;
+  return { doc, fileName: `Pliage_${safeName}.pdf`, nom };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ZincSync  (début)
+   ---------------------------------------------------------------------
+   Harmonise les pliages zinc avec les photos/documents : à l'enregistrement
+   d'un pliage sur un chantier synchronisé, on génère son PDF, on l'upload,
+   et on l'ajoute dans site.sharedMedia (type:'zinc', lié par zincId) puis
+   pushSharedSite → réception immédiate côté conducteur dans l'onglet Média.
+   Bidirectionnel : lié à l'id du chantier, re-poussé à chaque modification.
+
+   ISOLATION : préfixe syncZincToSite / _zincSync*. Câblé dans
+   closeZincEditor. Pour retirer : supprimer ce bloc + l'appel dans
+   closeZincEditor. Rien d'autre.
+   ═══════════════════════════════════════════════════════════════════ */
+
+const _zincSyncInFlight = new Set();
+
+async function syncZincToSite(profile){
+  if(!profile || !profile.siteId) return;
+  const site = data.sites.find(s => s.id === profile.siteId);
+  if(!site) return;
+
+  // On ne synchronise que les chantiers en synchro active (comme photos/docs)
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const canSync = site.syncLive || role === 'chef' || role === 'conducteur' || role === 'patron';
+  if(!canSync) return;
+
+  const key = profile.id;
+  if(_zincSyncInFlight.has(key)) return;
+  _zincSyncInFlight.add(key);
+  try{
+    const built = await _buildZincPdfDoc(profile);
+    if(!built) return;
+    const blob = built.doc.output('blob');
+    const file = new File([blob], built.fileName, { type:'application/pdf' });
+
+    const url = await uploadFileToSupabase(file, site.id);
+
+    const uploader = (function(){
+      const p = data.settings.myProfile || {};
+      return ((p.firstName||'') + ' ' + (p.lastName||'')).trim()
+           || data.settings.teamName || 'Chef';
+    })();
+
+    if(!site.sharedMedia) site.sharedMedia = [];
+    // Entry liée au pliage par zincId → mise à jour au lieu de doublon
+    const idx = site.sharedMedia.findIndex(m => m.type === 'zinc' && m.zincId === profile.id);
+    const entry = {
+      id:         (idx !== -1 ? site.sharedMedia[idx].id : uid()),
+      zincId:     profile.id,
+      name:       (profile.name || 'Pliage') + '.pdf',
+      url,
+      type:       'zinc',
+      mimeType:   'application/pdf',
+      uploadedBy: uploader,
+      uploadedAt: new Date().toISOString(),
+      siteId:     site.id
+    };
+    if(idx !== -1) site.sharedMedia[idx] = entry; else site.sharedMedia.push(entry);
+
+    saveData();
+    if(typeof currentDetailSite !== 'undefined' && currentDetailSite === site.id){
+      renderCloudMedia(site.id);
+    }
+    // Push temps réel vers le conducteur (même canal que photos/docs)
+    await pushSharedSite(site);
+  } catch(e){ /* non bloquant */ }
+  finally{ _zincSyncInFlight.delete(key); }
+}
+
+/* Retire l'entrée sharedMedia d'un pliage supprimé + re-push */
+async function unsyncZincFromSite(siteId, zincProfileId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site || !Array.isArray(site.sharedMedia)) return;
+  const before = site.sharedMedia.length;
+  site.sharedMedia = site.sharedMedia.filter(m => !(m.type === 'zinc' && m.zincId === zincProfileId));
+  if(site.sharedMedia.length !== before){
+    saveData();
+    try{ await pushSharedSite(site); }catch(e){}
+  }
+}
+
+/* ═══ MODULE — ZincSync  (fin) ═══ */
+
+async function generateZincPdf(profileArg){
+  const profile = profileArg || getCurrentZincProfile();
+  if(!profile){ showToast('Aucun pliage'); return; }
+
+  const built = await _buildZincPdfDoc(profile);
+  if(!built){ showToast("Erreur PDF — rechargez l'app"); return; }
+  showToast('⏳ Génération du PDF…');
+  const { doc, fileName, nom } = built;
+
   try{
     const blob = doc.output('blob');
     const file = new File([blob], fileName, { type:'application/pdf' });
@@ -13488,8 +13575,12 @@ function openZincEditorFromDetail(profileId){
 function deleteZincProfileFromDetail(profileId){
   if(!confirm('Supprimer ce pliage ?')) return;
   ensureZincProfiles();
+  const prof = data.zincProfiles.find(p=>p.id===profileId);
+  const siteId = (prof && prof.siteId) || currentDetailSite;
   data.zincProfiles = data.zincProfiles.filter(p=>p.id!==profileId);
   saveData();
+  // MODULE ZincSync : retirer aussi le pliage de la synchro conducteur
+  if(siteId) unsyncZincFromSite(siteId, profileId);
   renderSiteZincList(currentDetailSite);
 }
 
@@ -22202,7 +22293,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.22.2';
+const APP_VERSION = '2.23.0';
 
 const CHANGELOG = [
   {
