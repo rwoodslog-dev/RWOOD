@@ -28467,14 +28467,16 @@ function submitDevCode(){
 }
 
 /* Recupere la liste des comptes synchronises (memes donnees que pour la comptable) */
-let _devCurrentTab = 'comptes'; // 'comptes' | 'pointages'
+let _devCurrentTab = 'comptes'; // 'comptes' | 'pointages' | 'machines'
 
 function switchDevTab(tab){
   _devCurrentTab = tab;
   const btnC = document.getElementById('devTabComptes');
   const btnP = document.getElementById('devTabPointages');
+  const btnM = document.getElementById('devTabMachines');
   if(btnC){ btnC.className = tab==='comptes' ? 'btn btn-primary' : 'btn btn-outline'; btnC.style.flex='1'; btnC.style.fontSize='12px'; }
   if(btnP){ btnP.className = tab==='pointages' ? 'btn btn-primary' : 'btn btn-outline'; btnP.style.flex='1'; btnP.style.fontSize='12px'; }
+  if(btnM){ btnM.className = tab==='machines' ? 'btn btn-primary' : 'btn btn-outline'; btnM.style.flex='1'; btnM.style.fontSize='12px'; }
   refreshDevPanel();
 }
 
@@ -28486,6 +28488,8 @@ async function refreshDevPanel(){
 
   if(_devCurrentTab === 'comptes'){
     await _renderDevTabComptes(list);
+  } else if(_devCurrentTab === 'machines'){
+    await magasinRenderDevList(list); // MODULE — Magasin
   } else {
     await _renderDevTabPointages(list);
   }
@@ -30228,7 +30232,7 @@ function magasinRender(){
   const addBtn= document.getElementById('magasinAddBtn');
   if(!list) return;
 
-  if(addBtn) addBtn.style.display = _magasinIsAdmin() ? '' : 'none';
+  if(addBtn) addBtn.style.display = ''; // ajout ouvert à tous
 
   const machines = data.magasinMachines || [];
   if(count){
@@ -30291,18 +30295,12 @@ function magasinOpenDetail(machineId){
     actionHtml = '<button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="magasinPromptBorrow(\''+m.id+'\')">J\'emprunte</button>';
   }
 
-  let adminHtml = '';
-  if(_magasinIsAdmin()){
-    adminHtml = '<button class="btn btn-outline btn-sm" style="width:100%;margin-top:8px;color:#E07A63;border-color:#5a2f24;" onclick="magasinDeleteMachine(\''+m.id+'\')">Supprimer cette machine</button>';
-  }
-
   body.innerHTML =
     photo
     + '<h2 style="margin:0 0 2px;">'+escapeHtml(m.name||'Sans nom')+'</h2>'
     + '<p style="color:var(--ink-soft);font-size:13px;margin:0 0 4px;">Réf : '+escapeHtml(m.ref||'—')+'</p>'
     + statusHtml
-    + actionHtml
-    + adminHtml;
+    + actionHtml;
 
   openModal('magasinDetail');
 }
@@ -30383,9 +30381,8 @@ function magasinReturn(machineId){
   magasinPush(); // synchro automatique immédiate
 }
 
-/* ── Ajout machine (mode dev / admin uniquement) ─────────────────── */
+/* ── Ajout machine (ouvert à tous) ───────────────────────────────── */
 function magasinOpenAdd(){
-  if(!_magasinIsAdmin()){ showToast('Réservé au mode développeur'); return; }
   document.getElementById('magasinAddName').value  = '';
   document.getElementById('magasinAddRef').value   = '';
   const ph = document.getElementById('magasinAddPhoto'); if(ph) ph.value = '';
@@ -30393,7 +30390,6 @@ function magasinOpenAdd(){
 }
 
 async function magasinSubmitAdd(){
-  if(!_magasinIsAdmin()){ showToast('Réservé au mode développeur'); return; }
   const name = document.getElementById('magasinAddName').value.trim();
   const ref  = document.getElementById('magasinAddRef').value.trim();
   const fileInput = document.getElementById('magasinAddPhoto');
@@ -30431,15 +30427,53 @@ async function magasinSubmitAdd(){
   magasinPush();
 }
 
+/* ── Liste des machines dans le panneau développeur (suppression) ──
+   Rendu dans #devPanelList via switchDevTab('machines'). Pull frais
+   depuis Supabase pour refléter l'état global avant suppression. */
+async function magasinRenderDevList(container){
+  _magasinEnsure();
+  await magasinPull();           // état global à jour
+  const machines = data.magasinMachines || [];
+  if(!machines.length){
+    container.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune machine dans le magasin.</div>';
+    return;
+  }
+  container.innerHTML = machines.map(m => {
+    const pris = m.borrow
+      ? '<span style="color:#E07A63;font-size:11px;font-weight:700;">Emprunté</span>'
+      : '<span style="color:#4FAE6C;font-size:11px;font-weight:700;">Dispo</span>';
+    const thumb = m.photo
+      ? '<img src="'+escapeHtml(m.photo)+'" style="width:38px;height:38px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#0d0a06;">'
+      : '<div style="width:38px;height:38px;border-radius:8px;flex-shrink:0;background:#0d0a06;"></div>';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.06);">'
+      + thumb
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escapeHtml(m.name||'Sans nom')+'</div>'
+      +   '<div style="font-size:11px;color:var(--ink-soft);">'+escapeHtml(m.ref||'—')+' · '+pris+'</div>'
+      + '</div>'
+      + '<button class="btn btn-outline btn-sm" style="color:#E07A63;border-color:#5a2f24;padding:6px 10px;flex-shrink:0;" title="Supprimer" onclick="magasinDeleteMachine(\''+m.id+'\')">'
+      +   '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>'
+      + '</button>'
+      + '</div>';
+  }).join('');
+}
+
 function magasinDeleteMachine(machineId){
   if(!_magasinIsAdmin()) return;
   _magasinEnsure();
-  data.magasinMachines = (data.magasinMachines||[]).filter(m => m.id !== machineId);
+  const m = (data.magasinMachines||[]).find(x => x.id === machineId);
+  if(!m) return;
+  if(!confirm('Supprimer « ' + (m.name||'cette machine') + ' » du magasin ?')) return;
+  data.magasinMachines = (data.magasinMachines||[]).filter(x => x.id !== machineId);
   saveData();
-  closeModal('magasinDetail');
   magasinRender();
   showToast('Machine supprimée');
   magasinPush();
+  // Rafraîchir la liste du panneau dev si elle est ouverte
+  const devList = document.getElementById('devPanelList');
+  if(devList && typeof _devCurrentTab !== 'undefined' && _devCurrentTab === 'machines'){
+    magasinRenderDevList(devList);
+  }
 }
 
 /* ── Synchro Supabase (canal isolé company_magasin_machines) ─────── */
@@ -30929,10 +30963,11 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPoll
       <div id="devCompanyCodesList" style="margin-top:12px;"></div>
     </div>
 
-    <!-- Onglets Comptes / Pointages -->
+    <!-- Onglets Comptes / Pointages / Machines -->
     <div style="display:flex; gap:6px; margin-bottom:12px;">
       <button id="devTabComptes" class="btn btn-primary" style="flex:1;font-size:12px;" onclick="switchDevTab('comptes')">👥 Comptes</button>
       <button id="devTabPointages" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('pointages')">⏱ Pointages</button>
+      <button id="devTabMachines" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('machines')">⚙️ Machines</button>
     </div>
     <div style="margin-bottom:12px;">
       <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
