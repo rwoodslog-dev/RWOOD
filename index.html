@@ -4498,6 +4498,14 @@
           </div>
         </div>
 
+        <!-- Générer PDF pour le fabricant plieur (visible en mode lecture) -->
+        <div class="card" id="zincPdfCard" style="display:none;">
+          <button class="btn btn-primary btn-block" onclick="generateZincPdf()">
+            <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 13h6M9 17h4"/></svg>
+            Générer PDF (fabricant)
+          </button>
+        </div>
+
         <!-- ═══ WRAPPER PLEIN ÉCRAN : gauche = aperçu, droite = contrôles ═══ -->
 
           <div id="zincEditFields">
@@ -10728,21 +10736,87 @@ async function shareMediaFile(mediaId, siteId){
 }
 
 /* Exporte tous les fichiers du chantier via le menu de partage natif ou ZIP */
-async function exportAllSharedMedia(siteId){
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — MediaExportPicker  (début)
+   Clic "Exporter les rapports" → liste de cases à cocher pour choisir
+   manuellement les documents à exporter. _runMediaExport gère l'envoi.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function exportAllSharedMedia(siteId){
   const site  = data.sites.find(s => s.id === siteId);
   const media = (site && site.sharedMedia) || [];
   if(!media.length){ showToast('Aucun fichier à exporter'); return; }
 
+  const ex = document.getElementById('modal-mediaExportPicker');
+  if(ex) ex.remove();
+
+  const iconFor = m => (m.type==='pdf'||(m.mimeType||'').includes('pdf')) ? '📄'
+                     : (m.type==='zinc') ? '⚙️'
+                     : (m.type==='photo'||(m.mimeType||'').startsWith('image/')) ? '📷' : '📎';
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-mediaExportPicker';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">📦 Exporter les rapports</span>
+        <button class="modal-close" id="mepClose">×</button>
+      </div>
+      <div style="padding:0 16px 8px;">
+        <div class="hint" style="margin-bottom:10px;">Coche les documents à exporter.</div>
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 4px;margin-bottom:6px;border-bottom:1px solid var(--line);cursor:pointer;font-weight:700;font-size:13px;">
+          <input type="checkbox" id="mepAll" checked style="width:18px;height:18px;accent-color:var(--wood);"> Tout sélectionner
+        </label>
+        <div id="mepList" style="display:flex;flex-direction:column;gap:6px;max-height:48vh;overflow-y:auto;padding-right:4px;">
+          ${media.map((m,i) => `
+            <label style="display:flex;align-items:center;gap:10px;padding:9px 10px;background:var(--card);border:1.5px solid var(--line);border-radius:10px;cursor:pointer;">
+              <input type="checkbox" class="mepItem" data-id="${m.id}" checked style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;">
+              <span style="font-size:18px;flex-shrink:0;">${iconFor(m)}</span>
+              <span style="flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name||'Document')}</span>
+            </label>`).join('')}
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" id="mepCancel">Annuler</button>
+        <button class="btn btn-primary" id="mepConfirm">📤 Exporter (<span id="mepCount">${media.length}</span>)</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+
+  const items   = () => Array.from(div.querySelectorAll('.mepItem'));
+  const countEl = div.querySelector('#mepCount');
+  const refresh = () => { countEl.textContent = items().filter(c => c.checked).length; };
+
+  div.querySelector('#mepAll').addEventListener('change', e => {
+    items().forEach(c => c.checked = e.target.checked); refresh();
+  });
+  items().forEach(c => c.addEventListener('change', refresh));
+
+  const close = () => div.remove();
+  div.querySelector('#mepClose').addEventListener('click', close);
+  div.querySelector('#mepCancel').addEventListener('click', close);
+  div.querySelector('#mepConfirm').addEventListener('click', () => {
+    const ids = items().filter(c => c.checked).map(c => c.dataset.id);
+    if(!ids.length){ showToast('Sélectionne au moins un document'); return; }
+    close();
+    _runMediaExport(siteId, ids);
+  });
+}
+
+async function _runMediaExport(siteId, ids){
+  const site  = data.sites.find(s => s.id === siteId);
+  const media = ((site && site.sharedMedia) || []).filter(m => ids.includes(m.id));
+  if(!media.length){ showToast('Aucun fichier à exporter'); return; }
+
   showToast('⏳ Préparation de l\'export…');
   try{
-    // Télécharger tous les fichiers en parallèle
     const files = await Promise.all(media.map(async m => {
       const res  = await fetch(m.url);
       const blob = await res.blob();
       return new File([blob], m.name, { type: m.mimeType || blob.type });
     }));
 
-    // Web Share API avec plusieurs fichiers (Dropbox, Drive, email…)
     if(navigator.canShare && navigator.canShare({ files })){
       await navigator.share({
         files,
@@ -10750,14 +10824,13 @@ async function exportAllSharedMedia(siteId){
         text: files.length + ' fichier(s) du chantier ' + (site.name||'')
       });
     } else {
-      // Fallback : télécharger fichier par fichier
       for(const f of files){
         const url = URL.createObjectURL(f);
         const a   = document.createElement('a');
         a.href     = url;
         a.download = f.name;
         a.click();
-        await new Promise(r => setTimeout(r, 500)); // pause entre téléchargements
+        await new Promise(r => setTimeout(r, 500));
         URL.revokeObjectURL(url);
       }
       showToast(files.length + ' fichier(s) téléchargé(s)');
@@ -10766,6 +10839,8 @@ async function exportAllSharedMedia(siteId){
     if(e.name !== 'AbortError') showToast('Erreur export : ' + (e.message||''));
   }
 }
+
+/* ═══ MODULE — MediaExportPicker  (fin) ═══ */
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -11852,10 +11927,155 @@ function deleteZincMetrage(){
   renderSiteZincList(profile.siteId);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ZincPdf  (début)
+   Génère un PDF pour le fabricant plieur. Contenu STRICT :
+   photo de l'aperçu (la coupe) · Développé total · Cumul de traçage ·
+   Métrage chantier.
+   ISOLATION : préfixe generateZincPdf / _zincPdf*. Câblé sur le bouton
+   #zincPdfCard. Réutilise jsPDF + compressImgForPDF déjà chargés.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Convertit le SVG d'aperçu (#zincSchema svg) en data URL PNG pour jsPDF */
+function _zincPdfSchemaToImage(){
+  return new Promise(resolve => {
+    const holder = document.getElementById('zincSchema');
+    const svg = holder && holder.querySelector('svg');
+    if(!svg){ resolve(null); return; }
+
+    // Clone + dimensions explicites (viewBox → largeur/hauteur px)
+    const clone = svg.cloneNode(true);
+    const vb = (svg.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number);
+    const w = svg.clientWidth  || (vb[2] || 800);
+    const h = svg.clientHeight || (vb[3] || 400);
+    clone.setAttribute('width',  w);
+    clone.setAttribute('height', h);
+    // Fond blanc pour lisibilité à l'impression
+    clone.style.background = '#ffffff';
+
+    const xml  = new XMLSerializer().serializeToString(clone);
+    const svg64 = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)));
+
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2; // netteté
+      const canvas = document.createElement('canvas');
+      canvas.width = w * scale; canvas.height = h * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve({ dataUrl: canvas.toDataURL('image/png'), w, h });
+    };
+    img.onerror = () => resolve(null);
+    img.src = svg64;
+  });
+}
+
+async function generateZincPdf(){
+  const profile = getCurrentZincProfile();
+  if(!profile){ showToast('Aucun pliage'); return; }
+
+  const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!jsPDFLib){ showToast("Erreur PDF — rechargez l'app"); return; }
+
+  showToast('⏳ Génération du PDF…');
+
+  // ── Données strictes ──────────────────────────────────────────────
+  const site = data.sites.find(s => s.id === profile.siteId);
+  const nom  = profile.name || 'Pliage sans nom';
+  const developpe = formatMm(getProfileTotalLength(profile))
+                  + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
+  const cumul = (profile.cumulTracage && profile.cumulTracage.length)
+              ? profile.cumulTracage.map(v => formatMm(v)).join('   →   ')
+              : null;
+  const metrage = profile.metrage ? formatZincMetrageSummary(profile.metrage) : null;
+  const schemaImg = await _zincPdfSchemaToImage();
+
+  // ── Construction PDF ──────────────────────────────────────────────
+  const doc    = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
+  const pageW  = doc.internal.pageSize.getWidth();
+  const margin = 14;
+  const contentW = pageW - margin*2;
+  let y = margin;
+
+  // En-tête
+  doc.setFillColor(167,139,250);
+  doc.rect(0, 0, pageW, 22, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFont('helvetica','bold'); doc.setFontSize(16);
+  doc.text('Pliage Zinc', margin, 10);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  doc.text(nom, margin, 17);
+  doc.text(new Date().toLocaleDateString('fr-FR'), pageW - margin, 10, {align:'right'});
+  if(site){ doc.text('Chantier : ' + (site.name||''), pageW - margin, 17, {align:'right'}); }
+  doc.setTextColor(0,0,0);
+  y = 30;
+
+  // 1) Photo de l'aperçu (la coupe)
+  doc.setFont('helvetica','bold'); doc.setFontSize(12);
+  doc.text('Aperçu de la coupe', margin, y); y += 4;
+  if(schemaImg){
+    const ratio = schemaImg.h / schemaImg.w;
+    const imgW = contentW;
+    const imgH = Math.min(imgW * ratio, 120);
+    const drawW = imgH === 120 ? imgH / ratio : imgW;
+    doc.setDrawColor(220,220,220);
+    doc.rect(margin, y, contentW, imgH + 4);
+    doc.addImage(schemaImg.dataUrl, 'PNG', margin + (contentW-drawW)/2 + 0, y + 2, drawW, imgH);
+    y += imgH + 10;
+  } else {
+    doc.setFont('helvetica','italic'); doc.setFontSize(10);
+    doc.text('(aperçu indisponible)', margin, y + 6); y += 14;
+  }
+
+  // Bloc valeur réutilisable
+  const block = (label, value) => {
+    if(y > 260){ doc.addPage(); y = margin; }
+    doc.setFillColor(245,243,255);
+    doc.setDrawColor(220,215,245);
+    const boxH = 16;
+    doc.roundedRect(margin, y, contentW, boxH, 2, 2, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(120,110,160);
+    doc.text(label.toUpperCase(), margin + 4, y + 6);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(30,30,30);
+    doc.text(value, margin + 4, y + 12.5);
+    doc.setTextColor(0,0,0);
+    y += boxH + 6;
+  };
+
+  // 2) Développé total
+  block('Développé total', developpe);
+  // 3) Cumul de traçage
+  block('Cumul de traçage', cumul || 'Non défini');
+  // 4) Métrage chantier
+  block('Métrage chantier', metrage || 'Non défini');
+
+  // ── Sortie ────────────────────────────────────────────────────────
+  const safeName = nom.replace(/[^\w\-]+/g,'_').slice(0,40);
+  const fileName = `Pliage_${safeName}.pdf`;
+  try{
+    const blob = doc.output('blob');
+    const file = new File([blob], fileName, { type:'application/pdf' });
+    if(navigator.canShare && navigator.canShare({ files:[file] })){
+      await navigator.share({ files:[file], title:nom });
+    } else {
+      doc.save(fileName);
+      showToast('✅ PDF généré');
+    }
+  } catch(e){
+    if(e.name !== 'AbortError'){ doc.save(fileName); }
+  }
+}
+
+/* ═══ MODULE — ZincPdf  (fin) ═══ */
+
 /* Affiche ou masque les champs d'édition selon le mode courant (lecture / modification) */
 function applyZincEditModeVisibility(profile){
   document.getElementById('zincNameFieldCard').style.display = zincIsEditMode ? 'block' : 'none';
   document.getElementById('zincEditFields').style.display = zincIsEditMode ? 'block' : 'none';
+  const pdfCard = document.getElementById('zincPdfCard');
+  if(pdfCard) pdfCard.style.display = zincIsEditMode ? 'none' : 'block';
   document.getElementById('zincAddBoudinBtn').style.display = (profile.freeform && !profile.pieces) ? 'block' : 'none';
   if(profile.freeform && profile.hasBoudin){
     document.getElementById('zincAddBoudinBtn').innerHTML = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Retirer le boudin';
@@ -21923,7 +22143,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.21.4';
+const APP_VERSION = '2.22.0';
 
 const CHANGELOG = [
   {
