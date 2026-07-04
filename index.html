@@ -3700,11 +3700,7 @@
               <span>Onglet « Notes » dans la barre</span>
               <input type="checkbox" id="notesToggleTab" style="width:22px;height:22px;accent-color:var(--wood);" onchange="notesSetTabEnabled(this.checked)">
             </label>
-            <div class="field" style="margin-top:14px;margin-bottom:0;">
-              <label>Clé API OpenAI (dictée vocale)</label>
-              <input type="password" id="notesOpenaiKey" placeholder="sk-..." autocomplete="off" onchange="notesSaveOpenaiKey(this.value)">
-              <div class="hint" style="margin-top:4px;">Stockée uniquement sur cet appareil. Nécessaire pour la transcription vocale.</div>
-            </div>
+            <div class="hint" style="margin-top:14px;">🎤 Dictée vocale gratuite (reconnaissance en direct). Dis tes tâches séparées par « plus » ou « et ».</div>
           </div>
 
           <!-- Sélecteur chef (ouvrier uniquement) -->
@@ -4863,15 +4859,6 @@
       </div>
     </section>
 
-    <!-- MODAL Notes : transcription en cours -->
-    <div class="modal-overlay" id="modal-notesProcessing">
-      <div class="modal" style="text-align:center;">
-        <div style="font-size:40px;margin:6px 0 10px;">🎙️</div>
-        <h2 id="notesProcTitle">Transcription en cours…</h2>
-        <p style="color:var(--ink-soft);font-size:13px;" id="notesProcMsg">Analyse du vocal, un instant.</p>
-        <div class="notes-spinner"></div>
-      </div>
-    </div>
     <!-- MODULE — Notes (fin DOM) -->
 
 
@@ -22638,7 +22625,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.27.0';
+const APP_VERSION = '2.27.1';
 
 const CHANGELOG = [
   {
@@ -30834,11 +30821,9 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPoll
    closeModal. Retrait du module : supprimer ce bloc + les 6 accroches
    listées en tête de la section DOM Notes.
    ═══════════════════════════════════════════════════════════════════ */
-const NOTES_OPENAI_KEY_LS = 'rwood-openai-key'; // clé locale (localStorage, jamais synchro)
-let _notesMediaRecorder = null;
-let _notesChunks = [];
+let _notesRecog = null;        // instance SpeechRecognition
 let _notesRecording = false;
-let _notesStream = null;
+let _notesFinalText = '';      // accumulation du texte final reconnu
 
 /* CSS injecté une seule fois (mobile-first ; desktop wrappé @media 860). */
 (function _notesInjectCSS(){
@@ -30864,17 +30849,11 @@ let _notesStream = null;
   + '#view-notes .notes-check.on{background:var(--wood,#C8862B);}'
   + '#view-notes .notes-item-text{flex:1;font-size:15px;line-height:1.4;color:var(--ink,#f0e6d2);word-break:break-word;}'
   + '#view-notes .notes-del{background:none;border:none;color:#7a6a52;cursor:pointer;padding:2px 4px;flex-shrink:0;}'
-  + '#modal-notesProcessing .notes-spinner{width:34px;height:34px;margin:16px auto 4px;border:3px solid rgba(255,255,255,.15);border-top-color:var(--wood,#C8862B);border-radius:50%;animation:notesSpin .8s linear infinite;}'
-  + '@keyframes notesSpin{to{transform:rotate(360deg);}}'
   + '@media (min-width:860px){'
   +   '#view-notes .notes-wrap{max-width:720px;margin:0 auto;}'
   + '}';
   document.head.appendChild(st);
 })();
-
-/* ── Clé OpenAI (locale à l'appareil) ────────────────────────────── */
-function notesGetOpenaiKey(){ try{ return localStorage.getItem(NOTES_OPENAI_KEY_LS) || ''; }catch(e){ return ''; } }
-function notesSaveOpenaiKey(v){ try{ localStorage.setItem(NOTES_OPENAI_KEY_LS, (v||'').trim()); showToast('✓ Clé enregistrée'); }catch(e){} }
 
 /* ── Toggles réglages ────────────────────────────────────────────── */
 function notesSetBubbleEnabled(on){
@@ -30900,10 +30879,8 @@ function notesApplyTabVisibility(){
 function notesSyncSettingsControls(){
   const tb = document.getElementById('notesToggleBubble');
   const tt = document.getElementById('notesToggleTab');
-  const kf = document.getElementById('notesOpenaiKey');
   if(tb) tb.checked = !(data.settings && data.settings.notesBubbleEnabled === false);
   if(tt) tt.checked = !(data.settings && data.settings.notesTabEnabled === false);
-  if(kf) kf.value = notesGetOpenaiKey();
 }
 
 /* ── Rendu de la liste (store partagé avec la bulle) ─────────────── */
@@ -30988,48 +30965,64 @@ function notesParseTranscript(raw){
     .map(s => s.charAt(0).toUpperCase() + s.slice(1));
 }
 
-/* ── Enregistrement vocal (capture → stop → transcription) ───────── */
-async function notesToggleRecord(){
+/* ── Dictée vocale GRATUITE (Web Speech API, reconnaissance en direct) ──
+   Aucune clé, aucun compte. Fonctionne sur Android Chrome. La
+   transcription arrive au fil de la parole ; à l'arrêt, on parse le
+   texte final sur "plus"/"et" et on ajoute les items à la liste. */
+function notesToggleRecord(){
   if(_notesRecording){ _notesStopRecord(); return; }
-  const key = notesGetOpenaiKey();
-  if(!key){
-    showToast('⚠️ Ajoute ta clé OpenAI dans Réglages › Liste à faire');
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){
+    showToast('⚠️ Dictée non supportée sur ce navigateur (essaie Chrome)');
     return;
   }
-  if(!navigator.mediaDevices || !window.MediaRecorder){
-    showToast('⚠️ Enregistrement non supporté sur cet appareil');
-    return;
-  }
+
+  _notesFinalText = '';
+  _notesRecog = new SR();
+  _notesRecog.lang = 'fr-FR';
+  _notesRecog.continuous = true;       // ne s'arrête pas à la 1re pause
+  _notesRecog.interimResults = true;   // affichage en temps réel
+
+  _notesRecog.onresult = (event) => {
+    let interim = '';
+    for(let i = event.resultIndex; i < event.results.length; i++){
+      const txt = event.results[i][0].transcript;
+      if(event.results[i].isFinal) _notesFinalText += ' ' + txt;
+      else interim += txt;
+    }
+    const stt = document.getElementById('notesRecStatus');
+    if(stt) stt.textContent = '● ' + (_notesFinalText + ' ' + interim).trim();
+  };
+
+  _notesRecog.onerror = (e) => {
+    _notesRecording = false;
+    _notesSetRecUI(false);
+    if(e && e.error === 'not-allowed') showToast('⚠️ Micro refusé — autorise le micro');
+    else if(e && e.error === 'no-speech') showToast('⚠️ Rien entendu, réessaie');
+    else showToast('⚠️ Erreur dictée');
+  };
+
+  _notesRecog.onend = () => {
+    // Fin (arrêt manuel ou silence prolongé) → traitement du texte final
+    const wasRecording = _notesRecording;
+    _notesRecording = false;
+    _notesSetRecUI(false);
+    if(wasRecording) _notesProcessFinal();
+  };
+
   try{
-    _notesStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    _notesRecog.start();
+    _notesRecording = true;
+    _notesSetRecUI(true);
   } catch(e){
-    showToast('⚠️ Micro refusé');
-    return;
+    showToast('⚠️ Impossible de démarrer la dictée');
   }
-  _notesChunks = [];
-  let mime = '';
-  if(window.MediaRecorder.isTypeSupported){
-    if(MediaRecorder.isTypeSupported('audio/webm')) mime = 'audio/webm';
-    else if(MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
-    else if(MediaRecorder.isTypeSupported('audio/ogg')) mime = 'audio/ogg';
-  }
-  try{
-    _notesMediaRecorder = mime ? new MediaRecorder(_notesStream, { mimeType:mime })
-                               : new MediaRecorder(_notesStream);
-  } catch(e){
-    _notesMediaRecorder = new MediaRecorder(_notesStream);
-  }
-  _notesMediaRecorder.ondataavailable = e => { if(e.data && e.data.size) _notesChunks.push(e.data); };
-  _notesMediaRecorder.onstop = _notesOnStop;
-  _notesMediaRecorder.start();
-  _notesRecording = true;
-  _notesSetRecUI(true);
 }
 
 function _notesStopRecord(){
-  try{ if(_notesMediaRecorder && _notesMediaRecorder.state !== 'inactive') _notesMediaRecorder.stop(); }catch(e){}
-  _notesRecording = false;
-  _notesSetRecUI(false);
+  try{ if(_notesRecog) _notesRecog.stop(); }catch(e){}
+  // onend s'occupe du traitement
 }
 
 function _notesSetRecUI(on){
@@ -31039,56 +31032,21 @@ function _notesSetRecUI(on){
   const stt = document.getElementById('notesRecStatus');
   if(btn) btn.classList.toggle('recording', on);
   if(ic)  ic.textContent = on ? '⏹️' : '🎤';
-  if(lb)  lb.textContent = on ? 'Arrêter' : 'Enregistrer un vocal';
-  if(stt) stt.textContent = on ? '● Enregistrement… parle puis appuie sur Arrêter' : '';
+  if(lb)  lb.textContent = on ? 'Arrêter' : 'Dicter un vocal';
+  if(stt && !on) stt.textContent = '';
+  if(stt && on)  stt.textContent = '● Parle… puis appuie sur Arrêter';
 }
 
-async function _notesOnStop(){
-  // Libère le micro
-  try{ if(_notesStream){ _notesStream.getTracks().forEach(t=>t.stop()); _notesStream=null; } }catch(e){}
-  const blob = new Blob(_notesChunks, { type: (_notesMediaRecorder && _notesMediaRecorder.mimeType) || 'audio/webm' });
-  _notesChunks = [];
-  if(!blob.size){ showToast('⚠️ Aucun son capté'); return; }
-
-  openModal('notesProcessing');
-  try{
-    const transcript = await _notesTranscribe(blob);
-    closeModal('notesProcessing');
-    if(!transcript || !transcript.trim()){ showToast('⚠️ Rien n\'a été compris'); return; }
-    const items = notesParseTranscript(transcript);
-    if(!items.length){ showToast('⚠️ Aucune tâche détectée'); return; }
-    const pn = _getPinnedNote();
-    items.forEach(text => pn.tasks.push({id:uid(), text, done:false}));
-    _notesCommit();
-    showToast('✓ ' + items.length + ' tâche'+(items.length>1?'s':'')+' ajoutée'+(items.length>1?'s':''));
-  } catch(e){
-    closeModal('notesProcessing');
-    showToast('⚠️ Transcription échouée : ' + (e && e.message ? e.message : 'erreur'));
-  }
-}
-
-/* ── Transcription OpenAI Whisper ────────────────────────────────── */
-async function _notesTranscribe(blob){
-  const key = notesGetOpenaiKey();
-  if(!key) throw new Error('clé manquante');
-  const ext = (blob.type.indexOf('mp4')>=0) ? 'mp4'
-            : (blob.type.indexOf('ogg')>=0) ? 'ogg' : 'webm';
-  const fd = new FormData();
-  fd.append('file', blob, 'note.' + ext);
-  fd.append('model', 'whisper-1');
-  fd.append('language', 'fr');
-  fd.append('response_format', 'text');
-  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + key },
-    body: fd
-  });
-  if(!res.ok){
-    let msg = 'HTTP ' + res.status;
-    try{ const j = await res.json(); if(j && j.error && j.error.message) msg = j.error.message; }catch(e){}
-    throw new Error(msg);
-  }
-  return (await res.text() || '').trim();
+function _notesProcessFinal(){
+  const transcript = (_notesFinalText || '').trim();
+  _notesFinalText = '';
+  if(!transcript){ showToast('⚠️ Rien n\'a été compris'); return; }
+  const items = notesParseTranscript(transcript);
+  if(!items.length){ showToast('⚠️ Aucune tâche détectée'); return; }
+  const pn = _getPinnedNote();
+  items.forEach(text => pn.tasks.push({id:uid(), text, done:false}));
+  _notesCommit();
+  showToast('✓ ' + items.length + ' tâche'+(items.length>1?'s':'')+' ajoutée'+(items.length>1?'s':''));
 }
 
 /* Applique la visibilité de l'onglet au démarrage. */
