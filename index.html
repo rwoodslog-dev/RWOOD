@@ -3161,6 +3161,10 @@
       <button class="nav-btn" data-view="notes" id="notesNavBtn" onclick="goTo('notes')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13l3 3v13a0 0 0 0 1 0 0H4z"/><path d="M8 3v5h8"/><path d="M8 13h8M8 17h5"/></svg></span><span class="lbl">Notes</span>
       </button>
+      <!-- MODULE — SuiviHeures : bouton nav (patron / dev uniquement) -->
+      <button class="nav-btn" data-view="suivi" id="suiviNavBtn" onclick="goTo('suivi')" style="display:none;">
+        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"/></svg></span><span class="lbl">Suivi</span>
+      </button>
 
       <button class="nav-btn" data-view="alertes-conducteur" id="navBtnAlertesConducteur" style="display:none;" onclick="goTo('alertes-conducteur')">
         <span class="ico" style="position:relative;">
@@ -4860,6 +4864,34 @@
     </section>
 
     <!-- MODULE — Notes (fin DOM) -->
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         MODULE — SuiviHeures (début)  ·  onglet 100% isolé, patron/dev
+         Accroches base (a retirer pour desinstaller proprement) :
+           1. bouton nav  data-view="suivi" #suiviNavBtn   (barre nav)
+           2. goTo()      cas 'suivi' + titre + garde role  (routeur)
+           3. cette section #view-suivi                     (DOM)
+           4. bloc JS balise MODULE — SuiviHeures (JS)       (script)
+           5. appel suiviApplyNavVisibility() au chargement / changement role
+         LECTURE SEULE : agrège data.attendance sans jamais le modifier.
+         Aucun couplage avec la saisie des heures (aucune écriture).
+         ═══════════════════════════════════════════════════════════════ -->
+    <section class="view" id="view-suivi">
+      <div class="suivi-wrap">
+        <div class="suivi-toolbar">
+          <div class="suivi-global" id="suiviGlobal">—</div>
+          <button class="btn btn-outline btn-sm" onclick="suiviRefresh(true)">↻ Actualiser</button>
+        </div>
+        <div id="suiviList" class="suivi-list"></div>
+        <div id="suiviEmpty" class="empty" style="display:none;">
+          <div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"/></svg></div>
+          <h3>Aucune heure saisie</h3>
+          <p>Les heures apparaîtront ici dès que les équipes pointeront sur un chantier.</p>
+        </div>
+      </div>
+    </section>
+    <!-- MODULE — SuiviHeures (fin DOM) -->
+
 
 
 
@@ -7410,6 +7442,7 @@ function goTo(viewName, siteId){
     depot:       ['Dépôt', 'Inventaire machines partagé'],
     magasin:     ['Magasin', 'Machines partagées — emprunt par camion'],
     notes:       ['Notes', 'Liste à faire — dictée vocale'],
+    suivi:       ['Suivi analytique', 'Cumul des heures par chantier'],
     detail:      [null, null]
   };
 
@@ -7476,6 +7509,10 @@ function goTo(viewName, siteId){
   if(viewName === 'depot') renderDepot();
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
   if(viewName === 'notes') notesRender(); // MODULE — Notes
+  if(viewName === 'suivi'){ // MODULE — SuiviHeures : réservé patron/dev
+    if(!suiviCanAccess()){ goTo('chantiers'); return; }
+    suiviRefresh(false);
+  }
   if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
   if(viewName === 'recap-patron') renderRecapPatron();
 
@@ -20438,6 +20475,7 @@ function setMyProfileRole(el, role){
 
 /* Affiche/masque le bandeau de verrouillage du mode (chips supprimés → menu déroulant) */
 function applyRoleLockUI(){
+  if(typeof suiviApplyNavVisibility === 'function') suiviApplyNavVisibility(); // MODULE — SuiviHeures
   const chips    = document.getElementById('myProfileRoleChips'); // legacy, peut être absent
   const lockHint = document.getElementById('myProfileRoleLockHint');
 
@@ -22625,7 +22663,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.27.3';
+const APP_VERSION = '2.28.0';
 
 const CHANGELOG = [
   {
@@ -31067,6 +31105,227 @@ function _notesProcessFinal(){
 /* Applique la visibilité de l'onglet au démarrage. */
 document.addEventListener('DOMContentLoaded', () => setTimeout(notesApplyTabVisibility, 800));
 /* ═══ MODULE — Notes (JS)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — SuiviHeures (JS)  ·  début
+   Tableau de bord LECTURE SEULE : agrège data.attendance et affiche le
+   cumul d'heures par chantier puis par tâche. Réservé patron / dev.
+   N'écrit JAMAIS dans data.attendance (zéro impact sur la saisie).
+   Cache : recalcul uniquement au focus de l'écran ou clic Actualiser.
+   Dépendances base : data (attendance, sites, settings), goTo,
+   escapeHtml. Retrait : supprimer ce bloc + les 5 accroches listées en
+   tête de la section DOM SuiviHeures.
+   ═══════════════════════════════════════════════════════════════════ */
+let _suiviCache = null;          // résultat d'agrégation mémorisé
+let _suiviCacheStamp = 0;        // date du dernier calcul
+let _suiviOpen = {};             // état déplié/replié par chantier
+
+/* Catégories connues → libellé propre + icône. Les tâches hors liste
+   sont conservées telles quelles (aucune perte de donnée). */
+const SUIVI_TASK_MAP = [
+  { keys:['charpente','charpentes','ossature','ossature bois'], label:'Charpente', icon:'🔨' },
+  { keys:['couverture','couvertures','toiture','toit','tuile','tuiles','ardoise','ardoises'], label:'Couverture', icon:'🏠' },
+  { keys:['zinguerie','zinguerie','zinc','zingue','gouttiere','gouttieres','cheneau','cheneaux','noue','noues'], label:'Zinguerie', icon:'💧' },
+  { keys:['bardage','bardages','bardage bois'], label:'Bardage', icon:'🪵' },
+  { keys:['isolation','isolant'], label:'Isolation', icon:'🧊' },
+  { keys:['terrasse','terrasses','platelage'], label:'Terrasse', icon:'🪑' },
+  { keys:['demolition','demontage','depose'], label:'Démolition', icon:'🧱' },
+  { keys:['manutention','chargement','dechargement','livraison'], label:'Manutention', icon:'📦' },
+  { keys:['atelier','fabrication','taille'], label:'Atelier', icon:'🪚' },
+  { keys:['deplacement','route','trajet'], label:'Déplacement', icon:'🚚' }
+];
+
+/* CSS injecté une fois (mobile-first ; desktop wrappé @media 860). */
+(function _suiviInjectCSS(){
+  if(document.getElementById('suivi-styles')) return;
+  const st = document.createElement('style');
+  st.id = 'suivi-styles';
+  st.textContent =
+    '#view-suivi .suivi-wrap{padding:4px 0 90px;}'
+  + '#view-suivi .suivi-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px 14px;}'
+  + '#view-suivi .suivi-global{font-size:14px;font-weight:800;color:var(--ink,#f0e6d2);}'
+  + '#view-suivi .suivi-global span{color:var(--wood,#C8862B);}'
+  + '#view-suivi .suivi-list{display:flex;flex-direction:column;gap:10px;}'
+  + '#view-suivi .suivi-site{background:var(--card,#211a12);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden;}'
+  + '#view-suivi .suivi-site-head{display:flex;align-items:center;gap:10px;padding:13px 14px;cursor:pointer;}'
+  + '#view-suivi .suivi-site-head:active{background:rgba(255,255,255,.03);}'
+  + '#view-suivi .suivi-chevron{flex-shrink:0;transition:transform .2s;color:var(--ink-soft);}'
+  + '#view-suivi .suivi-site.open .suivi-chevron{transform:rotate(90deg);}'
+  + '#view-suivi .suivi-site-info{flex:1;min-width:0;}'
+  + '#view-suivi .suivi-site-name{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+  + '#view-suivi .suivi-site-status{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;display:inline-block;margin-top:3px;}'
+  + '#view-suivi .suivi-site-status.encours{background:#1E3326;color:#4FAE6C;}'
+  + '#view-suivi .suivi-site-status.fini{background:#2a2418;color:#c8a24b;}'
+  + '#view-suivi .suivi-site-total{flex-shrink:0;font-weight:800;font-size:15px;color:var(--wood,#C8862B);}'
+  + '#view-suivi .suivi-tasks{border-top:1px solid rgba(255,255,255,.06);padding:4px 14px 8px;display:none;}'
+  + '#view-suivi .suivi-site.open .suivi-tasks{display:block;}'
+  + '#view-suivi .suivi-task-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04);}'
+  + '#view-suivi .suivi-task-row:last-child{border-bottom:none;}'
+  + '#view-suivi .suivi-task-name{flex:1;font-size:14px;color:var(--ink,#f0e6d2);}'
+  + '#view-suivi .suivi-task-hours{font-weight:700;font-size:14px;color:var(--ink,#f0e6d2);}'
+  + '#view-suivi .suivi-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);margin-top:4px;overflow:hidden;}'
+  + '#view-suivi .suivi-bar > i{display:block;height:100%;background:var(--wood,#C8862B);border-radius:3px;}'
+  + '@media (min-width:860px){ #view-suivi .suivi-wrap{max-width:760px;margin:0 auto;} }';
+  document.head.appendChild(st);
+})();
+
+/* ── Contrôle d'accès (patron / dev) ─────────────────────────────── */
+function suiviCanAccess(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'patron';
+}
+function suiviApplyNavVisibility(){
+  const btn = document.getElementById('suiviNavBtn');
+  if(!btn) return;
+  btn.style.display = suiviCanAccess() ? '' : 'none';
+}
+
+/* ── Normalisation + mapping de la tâche texte libre ─────────────── */
+function _suiviNormalize(s){
+  return (s||'')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // retire accents
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function _suiviTaskCategory(rawTask){
+  const norm = _suiviNormalize(rawTask);
+  if(!norm) return { label:'Non catégorisé', icon:'❓' };
+  for(const cat of SUIVI_TASK_MAP){
+    for(const k of cat.keys){
+      if(norm === k || norm.indexOf(k) >= 0) return { label:cat.label, icon:cat.icon };
+    }
+  }
+  // Tâche inconnue : conservée telle quelle (1re lettre en majuscule)
+  const label = rawTask.trim().charAt(0).toUpperCase() + rawTask.trim().slice(1);
+  return { label, icon:'📋' };
+}
+
+/* ── Agrégation LECTURE SEULE de data.attendance ─────────────────── */
+function _suiviAggregate(){
+  const sitesById = {};
+  (data.sites||[]).forEach(s => { sitesById[s.id] = s; });
+
+  const bySite = {}; // siteId -> { total, tasks:{ label:{icon,hours} } }
+  const attendance = data.attendance || {};
+
+  Object.keys(attendance).forEach(dateKey => {
+    const day = attendance[dateKey];
+    if(!day || !day.workers) return;
+    const siteId = day.siteId;
+    if(!siteId) return;                 // jours sans chantier : ignorés (choix validé)
+    if(!sitesById[siteId]) return;      // chantier supprimé : ignoré
+
+    Object.keys(day.workers).forEach(wId => {
+      const entry = day.workers[wId];
+      if(!entry) return;
+      const h = parseFloat(String(entry.hours).replace(',','.'));
+      if(!isFinite(h) || h <= 0) return;
+
+      if(!bySite[siteId]) bySite[siteId] = { total:0, tasks:{} };
+      bySite[siteId].total += h;
+
+      const cat = _suiviTaskCategory(entry.task);
+      if(!bySite[siteId].tasks[cat.label]) bySite[siteId].tasks[cat.label] = { icon:cat.icon, hours:0 };
+      bySite[siteId].tasks[cat.label].hours += h;
+    });
+  });
+
+  // Mise en forme triée (chantiers par total décroissant, tâches idem)
+  const result = Object.keys(bySite).map(siteId => {
+    const s = sitesById[siteId];
+    const tasks = Object.keys(bySite[siteId].tasks).map(label => ({
+      label, icon: bySite[siteId].tasks[label].icon, hours: bySite[siteId].tasks[label].hours
+    })).sort((a,b) => b.hours - a.hours);
+    return {
+      siteId,
+      name: (s && s.name) || 'Chantier',
+      status: (s && s.status) || '',
+      total: bySite[siteId].total,
+      tasks
+    };
+  }).sort((a,b) => b.total - a.total);
+
+  return result;
+}
+
+/* ── Format heures (arrondi 1 décimale, sans .0 inutile) ─────────── */
+function _suiviFmt(h){
+  const r = Math.round(h * 10) / 10;
+  return (Number.isInteger(r) ? r.toString() : r.toFixed(1)) + 'h';
+}
+
+/* ── Rafraîchissement (cache : recalcul seulement si demandé/focus) ─ */
+function suiviRefresh(force){
+  if(force || !_suiviCache){
+    _suiviCache = _suiviAggregate();
+    _suiviCacheStamp = Date.now();
+  }
+  suiviRender();
+}
+
+/* ── Rendu ───────────────────────────────────────────────────────── */
+function suiviRender(){
+  const listEl  = document.getElementById('suiviList');
+  const emptyEl = document.getElementById('suiviEmpty');
+  const globalEl= document.getElementById('suiviGlobal');
+  if(!listEl) return;
+
+  const sites = _suiviCache || [];
+  const grandTotal = sites.reduce((sum,s) => sum + s.total, 0);
+  if(globalEl) globalEl.innerHTML = sites.length
+    ? 'Total global : <span>' + _suiviFmt(grandTotal) + '</span>'
+    : '';
+
+  if(!sites.length){ listEl.innerHTML=''; if(emptyEl) emptyEl.style.display='block'; return; }
+  if(emptyEl) emptyEl.style.display='none';
+
+  listEl.innerHTML = sites.map(site => {
+    const isFini = _suiviNormalize(site.status).indexOf('fini') >= 0
+                || _suiviNormalize(site.status).indexOf('termin') >= 0;
+    const statusLabel = isFini ? 'Fini' : 'En cours';
+    const statusClass = isFini ? 'fini' : 'encours';
+    const open = !!_suiviOpen[site.siteId];
+    const maxTask = site.tasks.length ? site.tasks[0].hours : 1;
+
+    const tasksHtml = site.tasks.map(t => {
+      const pct = maxTask > 0 ? Math.round((t.hours / maxTask) * 100) : 0;
+      return '<div class="suivi-task-row">'
+        + '<div style="flex:1;min-width:0;">'
+        +   '<div style="display:flex;align-items:center;gap:8px;">'
+        +     '<span>'+t.icon+'</span>'
+        +     '<span class="suivi-task-name">'+escapeHtml(t.label)+'</span>'
+        +     '<span class="suivi-task-hours">'+_suiviFmt(t.hours)+'</span>'
+        +   '</div>'
+        +   '<div class="suivi-bar"><i style="width:'+pct+'%;"></i></div>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+
+    return '<div class="suivi-site'+(open?' open':'')+'" id="suivi-site-'+site.siteId+'">'
+      + '<div class="suivi-site-head" onclick="suiviToggle(\''+site.siteId+'\')">'
+      +   '<svg class="suivi-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>'
+      +   '<div class="suivi-site-info">'
+      +     '<div class="suivi-site-name">'+escapeHtml(site.name)+'</div>'
+      +     '<span class="suivi-site-status '+statusClass+'">'+statusLabel+'</span>'
+      +   '</div>'
+      +   '<div class="suivi-site-total">'+_suiviFmt(site.total)+'</div>'
+      + '</div>'
+      + '<div class="suivi-tasks">'+tasksHtml+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+function suiviToggle(siteId){
+  _suiviOpen[siteId] = !_suiviOpen[siteId];
+  const el = document.getElementById('suivi-site-' + siteId);
+  if(el) el.classList.toggle('open', !!_suiviOpen[siteId]);
+}
+
+/* Applique la visibilité de l'onglet au démarrage. */
+document.addEventListener('DOMContentLoaded', () => setTimeout(suiviApplyNavVisibility, 900));
+/* ═══ MODULE — SuiviHeures (JS)  ·  fin ═══ */
 </script>
 
       <div id="journalComposerBar" style="display:none; position:fixed; left:0; right:0; bottom:calc(var(--nav-h) + env(safe-area-inset-bottom, 0px)); z-index:40; background:var(--bg-elev); border-top:1px solid var(--line); padding:10px 14px 10px 14px; box-shadow:0 -2px 12px rgba(0,0,0,0.2);">
