@@ -6607,7 +6607,9 @@ async function initRwoodStorage(){
   // Démarrer le polling sync : pour les conducteurs qui ont des chantiers syncLive,
   // ET pour les chefs qui doivent recevoir de nouveaux chantiers
   const isChefRole = data.settings.myProfile && data.settings.myProfile.role === 'chef';
-  if((data.sites||[]).some(s => s.syncLive) || isChefRole) startSyncLivePolling();
+  const isPatronRole = data.settings.myProfile && data.settings.myProfile.role === 'patron'; // MODULE — PatronSync
+  const isConducteurRole = data.settings.myProfile && data.settings.myProfile.role === 'conducteur'; // MODULE — PatronSync
+  if((data.sites||[]).some(s => s.syncLive) || isChefRole || isPatronRole || isConducteurRole) startSyncLivePolling();
 }
 
 async function getStorageUsageInfo(){
@@ -18705,6 +18707,7 @@ function getDateOfISOWeek(week, year){
   await new Promise(r => requestAnimationFrame(r));
   applyComptableNavRestrictions();
   applyNavOrder();
+  if(typeof patronNavPreset === 'function') patronNavPreset(); // [navpreset] MODULE — PatronSync
   applyNavHidden();
   loadAccentColor();
   setupNavReorder();
@@ -20631,6 +20634,7 @@ function submitRoleMigration(){
   showToast('Profil mis à jour — note bien ton nouveau mot de passe');
   applyComptableNavRestrictions();
   applyNavOrder();
+  if(typeof patronNavPreset === 'function') patronNavPreset(); // [navpreset] MODULE — PatronSync
   applyNavHidden();
   loadAccentColor();
   pushMyUserRegistration();
@@ -22729,7 +22733,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.29.1';
+const APP_VERSION = '2.29.5';
 
 const CHANGELOG = [
   {
@@ -29661,7 +29665,8 @@ async function pushSiteFromChefToConducteur(siteId){
 /* Conducteur : pull les chantiers envoyés par les chefs */
 async function pullSitesFromChefs(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  if(role !== 'conducteur') return;
+  // MODULE — PatronSync : le patron reçoit aussi tous les chantiers des chefs (comme un conducteur, sans assignation)
+  if(role !== 'conducteur' && role !== 'patron') return;
   try{
     const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
     if(!res.ok) return;
@@ -29671,10 +29676,12 @@ async function pullSitesFromChefs(){
     const remoteSites = (d && d.sites) || [];
     if(!remoteSites.length) return;
     let changed = false;
+    const _isPatron = (role === 'patron'); // MODULE — PatronSync
     remoteSites.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
       if(idx === -1){
-        data.sites.push({ ...remote, shared: true, fromChef: remote.fromChef, stockNeeds:{}, stockTaken:{} });
+        // Patron : syncLive activé pour que ses modifications repartent au serveur global
+        data.sites.push({ ...remote, shared: true, syncLive: _isPatron ? true : remote.syncLive, fromChef: remote.fromChef, stockNeeds:{}, stockTaken:{} });
         changed = true;
         showToast('🏗 Nouveau chantier reçu de ' + (remote.fromChef||'un chef'));
       } else {
@@ -29683,6 +29690,7 @@ async function pullSitesFromChefs(){
         ['name','address','status','progress','color','keyboxCode','dueDate','startDate','customEvents'].forEach(k=>{
           if(remote[k] !== undefined) local[k] = remote[k];
         });
+        if(_isPatron) local.syncLive = true; // le patron peut repousser
         changed = true;
       }
     });
@@ -29694,14 +29702,19 @@ let _syncLivePollingInterval = null;
 function startSyncLivePolling(){
   if(_syncLivePollingInterval) return;
   _syncLivePollingInterval = setInterval(async ()=>{
+    const _role = data.settings.myProfile && data.settings.myProfile.role;
+    const _isPatron = _role === 'patron'; // MODULE — PatronSync
+    const _isConducteur = _role === 'conducteur'; // MODULE — PatronSync
     const hasSyncLive = (data.sites||[]).some(s => s.syncLive) ||
-      (data.settings.myProfile && data.settings.myProfile.role === 'chef');
+      (_role === 'chef') || _isPatron || _isConducteur;
     if(!hasSyncLive){
       clearInterval(_syncLivePollingInterval);
       _syncLivePollingInterval = null;
       return;
     }
     await pullSharedSites();
+    // MODULE — PatronSync : patron ET conducteur récupèrent aussi les chantiers poussés par les chefs
+    if((_isPatron || _isConducteur) && typeof pullSitesFromChefs === 'function') await pullSitesFromChefs();
   }, 60000); // 60s pour les chefs (au lieu de 90s)
 }
 
@@ -29944,19 +29957,22 @@ async function pullSharedSites(){
 
     relevant.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
+      const _isPatron = (role === 'patron'); // MODULE — PatronSync
       if(idx === -1){
-        // Premier arrivage : créer la copie locale
-        data.sites.push({ ...remote, shared:true, stockNeeds:{}, stockTaken:{} });
+        // Premier arrivage : créer la copie locale (patron : syncLive pour repush)
+        data.sites.push({ ...remote, shared:true, syncLive: _isPatron ? true : remote.syncLive, stockNeeds:{}, stockTaken:{} });
         changed = true;
       } else if(remote.syncLive){
         // Synchro temps réel : mettre à jour les champs conducteur sans toucher aux données chef
         const local = data.sites[idx];
         conducteurFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
         local.shared = true;
+        if(_isPatron) local.syncLive = true;
         changed = true;
       } else if(!data.sites[idx].shared){
         // Chantier reçu mais pas encore marqué shared : corriger
         data.sites[idx].shared = true;
+        if(_isPatron) data.sites[idx].syncLive = true;
         changed = true;
       }
     });
@@ -31258,7 +31274,7 @@ const SUIVI_TASK_MAP = [
 function suiviCanAccess(){
   if(window._devRoleUnlocked) return true;
   const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  return r === 'patron';
+  return r === 'patron' || r === 'conducteur'; // MODULE — PatronSync : conducteur = mêmes droits
 }
 function suiviApplyNavVisibility(){
   const btn = document.getElementById('suiviNavBtn');
@@ -31317,8 +31333,15 @@ function _suiviAggregate(sources){
     (src.workers||[]).forEach(w => { if(w && w.id && !workersById[w.id]) workersById[w.id] = w; });
   });
 
+  // [dedup] table de fusion des chantiers de même nom (sous-module SiteDedup)
+  const _dedup = (typeof dedupBuildMap === 'function')
+    ? dedupBuildMap(sources)
+    : { canonBy:{}, merged:{} };
+  const _canon = (id) => (_dedup.canonBy[id] || id);
+  const _siteInfo = (id) => (_dedup.merged[id] || sitesById[id]);
+
   const overrides = _suiviOverrides(); // [recat] overrides locaux de catégorie
-  const bySite = {}; // siteId -> { total, tasks:{}, uncat:[] }
+  const bySite = {}; // canonId -> { total, tasks:{}, uncat:[] }
 
   sources.forEach(src => {
     const attendance = src.attendance || {};
@@ -31339,8 +31362,9 @@ function _suiviAggregate(sources){
           if(cov){ entry = cov.entry; ed = cov.ed; }
         }
         if(!entry) return;
-        const effSiteId = ed.siteId || siteId;
-        if(!sitesById[effSiteId]) return;
+        const rawSiteId = ed.siteId || siteId;
+        if(!sitesById[rawSiteId]) return;
+        const effSiteId = _canon(rawSiteId); // [dedup] regroupe sous le canonique
         const h = parseFloat(String(entry.hours).replace(',','.'));
         if(!isFinite(h) || h <= 0) return;
 
@@ -31369,7 +31393,7 @@ function _suiviAggregate(sources){
   });
 
   const result = Object.keys(bySite).map(siteId => {
-    const s = sitesById[siteId];
+    const s = _siteInfo(siteId); // [dedup] fiche canonique fusionnée
     const tasks = Object.keys(bySite[siteId].tasks).map(label => ({
       label, icon: bySite[siteId].tasks[label].icon, hours: bySite[siteId].tasks[label].hours
     })).sort((a,b) => b.hours - a.hours);
@@ -31396,7 +31420,7 @@ function _suiviLocalSource(){
 function _suiviIsGlobalRole(){
   if(window._devRoleUnlocked) return true;
   const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  return r === 'patron';
+  return r === 'patron' || r === 'conducteur'; // MODULE — PatronSync : conducteur = vue globale + dédup
 }
 
 /* Résout un nom lisible depuis un workerId (fiche ou registre local). */
@@ -31598,6 +31622,149 @@ function suiviApplyRecat(label){
 
 /* Applique la visibilité de l'onglet au démarrage. */
 document.addEventListener('DOMContentLoaded', () => setTimeout(suiviApplyNavVisibility, 900));
+/* ═══════════════════════════════════════════════════════════════════
+   SOUS-MODULE — SiteDedup (déduplication/fusion chantiers)  ·  début
+   Greffé sur l'agrégation globale du Suivi. Fusionne les chantiers de
+   même nom (insensible casse/accents/espaces) créés par plusieurs
+   utilisateurs, en une fiche canonique unique :
+     - identitaires (adresse, keyboxCode, tileId, zone, couleur, statut) :
+       complète les champs vides depuis les autres fiches (pas de doublon)
+     - cumulatifs (sharedMedia, deliveryDates, customEvents) : compilés
+   LECTURE SEULE : ne réécrit jamais data.sites. Produit une table de
+   correspondance {siteId -> canonId} + une map de fiches fusionnées,
+   consommées par _suiviAggregate.
+   Désactivation : mettre SITEDEDUP_ENABLED=false (repli : aucune fusion,
+   comportement d'origine). Retrait : supprimer ce bloc + l'accroche
+   [dedup] dans _suiviAggregate.
+   ═══════════════════════════════════════════════════════════════════ */
+let SITEDEDUP_ENABLED = true;
+
+/* Normalise un nom de chantier pour comparaison. */
+function _dedupNormName(name){
+  return (name||'')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+/* Complète les champs identitaires vides de `into` avec ceux de `from`. */
+function _dedupFillIdentity(into, from){
+  const idFields = ['address','keyboxCode','tileId','trajetZone','trajetDistanceKm','color','status'];
+  idFields.forEach(f => {
+    const cur = into[f];
+    const isEmpty = (cur == null || cur === '' || (f==='trajetDistanceKm' && !(cur>0)));
+    if(isEmpty && from[f] != null && from[f] !== '') into[f] = from[f];
+  });
+}
+
+/* Compile (dédoublonne par id) un tableau cumulatif. */
+function _dedupMergeArray(into, from, key){
+  if(!Array.isArray(from) || !from.length) return;
+  if(!Array.isArray(into[key])) into[key] = [];
+  const seen = new Set(into[key].map(x => (x && x.id) || JSON.stringify(x)));
+  from.forEach(item => {
+    const k = (item && item.id) || JSON.stringify(item);
+    if(!seen.has(k)){ into[key].push(item); seen.add(k); }
+  });
+}
+
+/* Construit la table de fusion à partir de TOUTES les sources.
+   Retourne { canonBy: {siteId->canonId}, merged: {canonId->ficheFusionnée} }. */
+function dedupBuildMap(sources){
+  const canonByName = {};   // normName -> canonId
+  const merged = {};        // canonId -> fiche fusionnée
+  const canonBy = {};       // n'importe quel siteId -> canonId
+
+  if(!SITEDEDUP_ENABLED){
+    // Pas de fusion : chaque site pointe sur lui-même
+    sources.forEach(src => (src.sites||[]).forEach(s => {
+      if(s && s.id){ canonBy[s.id] = s.id; if(!merged[s.id]) merged[s.id] = Object.assign({}, s); }
+    }));
+    return { canonBy, merged };
+  }
+
+  // Ordre déterministe : par id, pour un canonique stable entre rafraîchissements
+  const allSites = [];
+  sources.forEach(src => (src.sites||[]).forEach(s => { if(s && s.id) allSites.push(s); }));
+  allSites.sort((a,b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  allSites.forEach(s => {
+    const nn = _dedupNormName(s.name);
+    if(!nn){ // nom vide : traité comme unique
+      canonBy[s.id] = s.id;
+      if(!merged[s.id]) merged[s.id] = Object.assign({}, s);
+      return;
+    }
+    if(canonByName[nn] == null){
+      canonByName[nn] = s.id;
+      merged[s.id] = Object.assign({}, s); // fiche de base
+      canonBy[s.id] = s.id;
+    } else {
+      const canonId = canonByName[nn];
+      canonBy[s.id] = canonId;
+      // Fusion dans la fiche canonique
+      _dedupFillIdentity(merged[canonId], s);
+      _dedupMergeArray(merged[canonId], s.sharedMedia,   'sharedMedia');
+      _dedupMergeArray(merged[canonId], s.deliveryDates, 'deliveryDates');
+      _dedupMergeArray(merged[canonId], s.customEvents,  'customEvents');
+    }
+  });
+
+  return { canonBy, merged };
+}
+
+/* ═══ SOUS-MODULE — SiteDedup  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   SOUS-MODULE — PatronNavPreset  ·  début
+   Préréglage de la barre de navigation pour patron / conducteur :
+   masque par défaut tous les onglets sauf les 9 principaux. Appliqué
+   UNE SEULE FOIS (flag navPresetDone) pour ne pas ré-écraser les choix
+   ultérieurs du patron/conducteur. Les onglets masqués restent
+   réactivables via Paramètres › onglets masqués (mécanisme existant).
+   Désactivation : mettre PATRON_NAV_PRESET_ENABLED=false, ou vider
+   data.settings.navHidden. Retrait : supprimer ce bloc + l'appel
+   patronNavPreset() (accroche [navpreset]).
+   ═══════════════════════════════════════════════════════════════════ */
+let PATRON_NAV_PRESET_ENABLED = true;
+
+/* Onglets conservés dans la barre pour patron/conducteur (9 principaux). */
+const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notes','suivi','alertes-conducteur'];
+
+function _patronNavIsTargetRole(){
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'patron' || r === 'conducteur';
+}
+
+/* Applique le préréglage une seule fois. */
+function patronNavPreset(){
+  if(!PATRON_NAV_PRESET_ENABLED) return;
+  if(!_patronNavIsTargetRole()) return;
+  if(!data.settings) data.settings = {};
+  if(data.settings.navPresetDone) return; // déjà appliqué → respecte les choix manuels
+
+  if(!Array.isArray(data.settings.navHidden)) data.settings.navHidden = [];
+  const keep = new Set(PATRON_NAV_KEEP);
+  // Masque tout onglet présent dans la barre qui n'est pas gardé (hors 'parametres' et 'scanner' accessibles autrement)
+  document.querySelectorAll('nav.bottom .nav-btn').forEach(btn => {
+    const view = btn.dataset.view;
+    if(!view || view === 'parametres') return;
+    if(!keep.has(view) && !data.settings.navHidden.includes(view)){
+      data.settings.navHidden.push(view);
+    }
+    // S'assure que les 9 gardés ne sont pas masqués par un état antérieur
+    if(keep.has(view)){
+      data.settings.navHidden = data.settings.navHidden.filter(v => v !== view);
+    }
+  });
+
+  data.settings.navPresetDone = true;
+  saveData();
+  if(typeof applyNavHidden === 'function') applyNavHidden();
+}
+/* ═══ SOUS-MODULE — PatronNavPreset  ·  fin ═══ */
+
 /* ═══ MODULE — SuiviHeures (JS)  ·  fin ═══ */
 
 /* ═══════════════════════════════════════════════════════════════════
