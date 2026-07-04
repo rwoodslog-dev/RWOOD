@@ -4901,6 +4901,37 @@
     </div>
     <!-- MODULE — SuiviHeures (fin DOM) -->
 
+    <!-- MODULE — ComptaEdit : modal correction fiche (comptable) -->
+    <div class="modal-overlay" id="modal-comptaEdit">
+      <div class="modal">
+        <button class="modal-close" onclick="closeModal('comptaEdit')">×</button>
+        <h2>Corriger la fiche</h2>
+        <p id="comptaEditSub" style="color:var(--ink-soft);font-size:13px;margin:-4px 0 14px;"></p>
+        <div class="ce-field">
+          <label>Heures</label>
+          <input type="number" id="comptaEditHours" step="0.5" min="0" inputmode="decimal" placeholder="Ex : 7.5">
+        </div>
+        <div class="ce-field">
+          <label>Chantier</label>
+          <select id="comptaEditSite"></select>
+        </div>
+        <div class="ce-field">
+          <label>Tâche</label>
+          <div class="ce-chips" id="comptaEditChips"></div>
+          <input type="text" id="comptaEditTask" placeholder="Tâche (ou saisie libre)">
+        </div>
+        <div class="ce-field">
+          <label>Panier</label>
+          <label class="ce-panier"><span>Panier repas</span>
+            <input type="checkbox" id="comptaEditPanier" style="width:22px;height:22px;accent-color:var(--wood);">
+          </label>
+        </div>
+        <button class="btn btn-primary" style="width:100%;margin-top:6px;" onclick="comptaEditSave()">Enregistrer la correction</button>
+        <button class="ce-reset" onclick="comptaEditReset()">↩️ Annuler la correction (revenir à la saisie d'origine)</button>
+      </div>
+    </div>
+    <!-- MODULE — ComptaEdit (fin DOM) -->
+
 
 
 
@@ -17569,6 +17600,7 @@ async function refreshComptableLiveFiches(showSpinner){
   const btn = document.getElementById('comptableRefreshBtn');
   if(showSpinner && btn){ btn.disabled = true; btn.textContent = '⏳ Actualisation…'; }
 
+  if(typeof comptaEditEnsurePulled === 'function') await comptaEditEnsurePulled(); // MODULE — ComptaEdit
   const rows = await pullAllPointagesForComptable();
 
   if(btn){ btn.disabled = false; btn.textContent = '🔄 Actualiser maintenant'; }
@@ -17615,18 +17647,28 @@ function _computeWorkerWeekData(aw, offset){
   const device = aw.device;
   let weekTotal = 0;
   const dayRows = days.map((d,i)=>{
-    const ed = device.attendance[dateKeyOf(d)];
-    const entry = ed && ed.workers && ed.workers[aw.workerId];
+    const dKey = dateKeyOf(d);
+    let ed = device.attendance[dKey];
+    let entry = ed && ed.workers && ed.workers[aw.workerId];
+    // MODULE — ComptaEdit : applique le calque de corrections comptable (prioritaire)
+    if(typeof comptaEditApplyOverride === 'function'){
+      const ov = comptaEditApplyOverride(device.deviceId || aw.device.deviceId, aw.workerId, dKey, entry, ed);
+      if(ov){ entry = ov.entry; ed = ov.ed; }
+    }
     const h = entry ? parseFloat(entry.hours||0) : 0;
     weekTotal += h;
     const site = (ed && ed.siteId) ? (device.sites||[]).find(s=>s.id===ed.siteId) : null;
     return {
-      date: d,
+      date: d, dateKey: dKey,
       label: dayFullLabels[i], h,
       task: entry ? (entry.task||'') : '',
       panier: entry ? !!entry.panier : false,
+      siteId: ed ? (ed.siteId||'') : '',
       siteName: site ? site.name : '',
-      zone: site ? (site.trajetZone||'') : ''
+      zone: site ? (site.trajetZone||'') : '',
+      workerId: aw.workerId,
+      deviceId: device.deviceId || aw.device.deviceId,
+      workerKey: aw.key
     };
   });
   return { monday, days, weekNum, year, weekTotal, dayRows: dayRows.filter(r=>r.h>0) };
@@ -17651,9 +17693,16 @@ function _computeWorkerMonthData(aw, monthOffset){
 
   let cursor = new Date(firstDay);
   while(cursor <= lastDay){
-    const ed = device.attendance[dateKeyOf(cursor)];
-    if(ed && ed.workers && ed.workers[aw.workerId]){
-      const h = parseFloat(ed.workers[aw.workerId].hours||0) || 0;
+    const _dk = dateKeyOf(cursor);
+    let ed = device.attendance[_dk];
+    let entry = ed && ed.workers && ed.workers[aw.workerId];
+    // MODULE — ComptaEdit : calque prioritaire pour le cumul mensuel
+    if(typeof comptaEditApplyOverride === 'function'){
+      const ov = comptaEditApplyOverride(device.deviceId, aw.workerId, _dk, entry, ed);
+      if(ov){ entry = ov.entry; ed = ov.ed; }
+    }
+    if(entry){
+      const h = parseFloat(entry.hours||0) || 0;
       if(h > 0){
         const monday = getMondayOfWeek(cursor, 0);
         const wn = getISOWeekNumber(monday);
@@ -17834,9 +17883,12 @@ function _renderComptableWorkerWeek(aw){
     ${offset !== 0 ? `<div style="text-align:center;margin-bottom:10px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); resetComptableWorkerWeek('${aw.key}')">Revenir à cette semaine</button></div>` : ''}
     ${dayRows.length ? dayRows.map(r => `
       <div style="padding:8px 0;border-top:1px solid var(--line);">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
           <span style="font-weight:700;font-size:13px;">${r.label} ${_formatDayDate(r.date)}</span>
-          <span style="font-weight:800;color:var(--wood);font-size:13px;">${r.h}h</span>
+          <span style="display:flex;align-items:center;gap:8px;">
+            <span style="font-weight:800;color:var(--wood);font-size:13px;">${r.h}h</span>
+            ${(typeof comptaEditEnabled==='function' && comptaEditEnabled()) ? `<button onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" style="background:none;border:1px solid var(--wood);color:var(--wood);border-radius:7px;padding:4px 7px;cursor:pointer;font-size:12px;">✏️</button>` : ''}
+          </span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:11px;color:var(--ink-soft);">
           ${r.siteName ? `<span>🏗 ${escapeHtml(r.siteName)}${r.zone ? ' · Zone ' + escapeHtml(r.zone) : ''}</span>` : `<span style="font-style:italic;">Chantier non renseigné</span>`}
@@ -22677,7 +22729,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.28.2';
+const APP_VERSION = '2.29.0';
 
 const CHANGELOG = [
   {
@@ -28581,6 +28633,7 @@ function submitDevCode(){
     _devCurrentTab = 'comptes';
     switchDevTab('comptes'); // force l'onglet Comptes actif + charge la liste
     renderDevCompaniesList();
+    if(typeof comptaEditSyncToggle === 'function') comptaEditSyncToggle(); // MODULE — ComptaEdit
   } else {
     document.getElementById('devCodeError').style.display = 'block';
     document.getElementById('devCodeInput').value = '';
@@ -31478,6 +31531,240 @@ function suiviApplyRecat(label){
 /* Applique la visibilité de l'onglet au démarrage. */
 document.addEventListener('DOMContentLoaded', () => setTimeout(suiviApplyNavVisibility, 900));
 /* ═══ MODULE — SuiviHeures (JS)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ComptaEdit (JS)  ·  début
+   Autorise (si flag dev activé) la comptable à corriger les fiches
+   d'heures de tous : heures, tâche, chantier, panier. Les corrections
+   forment un CALQUE prioritaire (comptable_overrides) poussé sur un
+   canal Supabase dédié, appliqué PAR-DESSUS les fiches brutes → la
+   correction comptable gagne toujours et n'est jamais écrasée par un
+   ré-envoi de l'ouvrier.
+   Flag : data.settings.comptableCanEdit (persistant, réglable en dev).
+   Calque : data.settings.comptableOverrides = { "device::worker::date": {…} }.
+   Dépendances base : data/saveData, supaFetch, COMPANY_SYNC_KEY,
+   escapeHtml, showToast, openModal/closeModal, TRANCHES,
+   refreshComptableLiveFiches / renderComptableFichesContent.
+   Retrait : supprimer ce bloc + les accroches marquées [comptaedit].
+   ═══════════════════════════════════════════════════════════════════ */
+const COMPTAEDIT_SYNC_KEY = 'comptable_overrides_v1';
+let _comptaEditCtx = null;         // fiche en cours d'édition
+let _comptaEditPulled = false;     // calque déjà tiré du cloud ?
+
+/* CSS injecté une fois (mobile-first). */
+(function _comptaEditInjectCSS(){
+  if(document.getElementById('comptaedit-styles')) return;
+  const st = document.createElement('style');
+  st.id = 'comptaedit-styles';
+  st.textContent =
+    '#modal-comptaEdit .ce-field{margin-bottom:12px;}'
+  + '#modal-comptaEdit .ce-field label{display:block;font-size:12px;font-weight:700;color:var(--ink-soft);margin-bottom:5px;}'
+  + '#modal-comptaEdit .ce-field input, #modal-comptaEdit .ce-field select{width:100%;padding:11px 12px;border-radius:10px;background:#0d0a06;color:var(--ink,#f0e6d2);border:1px solid rgba(255,255,255,.12);font-size:15px;}'
+  + '#modal-comptaEdit .ce-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px;}'
+  + '#modal-comptaEdit .ce-chip{padding:5px 11px;border-radius:20px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer;}'
+  + '#modal-comptaEdit .ce-chip.on{border-color:var(--wood);background:var(--wood);color:#1a0f00;}'
+  + '#modal-comptaEdit .ce-panier{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:10px;background:#0d0a06;border:1px solid rgba(255,255,255,.12);}'
+  + '#modal-comptaEdit .ce-reset{margin-top:6px;width:100%;background:none;border:1px dashed rgba(255,255,255,.2);color:var(--ink-soft);border-radius:10px;padding:10px;font-size:13px;cursor:pointer;}';
+  document.head.appendChild(st);
+})();
+
+/* ── Flag & calque ───────────────────────────────────────────────── */
+function comptaEditEnabled(){ return !!(data.settings && data.settings.comptableCanEdit); }
+function _comptaEditOverrides(){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.comptableOverrides) data.settings.comptableOverrides = {};
+  return data.settings.comptableOverrides;
+}
+function _comptaEditKey(deviceId, workerId, dateKey){ return deviceId + '::' + workerId + '::' + dateKey; }
+
+/* Toggle dev : active/désactive le droit + sync visuel. */
+function comptaEditSetFlag(on){
+  if(!data.settings) data.settings = {};
+  data.settings.comptableCanEdit = !!on;
+  saveData();
+  showToast(on ? '✓ Modification comptable autorisée' : 'Modification comptable désactivée');
+  // rafraîchir la grille comptable si visible
+  if(typeof _comptableLiveData !== 'undefined' && _comptableLiveData && typeof renderComptableFichesContent === 'function'){
+    renderComptableFichesContent(_comptableLiveData);
+  }
+}
+function comptaEditSyncToggle(){
+  const t = document.getElementById('comptaEditToggle');
+  if(t) t.checked = comptaEditEnabled();
+}
+
+/* [comptaedit] Applique le calque à une cellule (appelé depuis le calcul
+   semaine/mois comptable). Renvoie {entry, ed} corrigés, ou null. */
+function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
+  const ov = _comptaEditOverrides()[_comptaEditKey(deviceId, workerId, dateKey)];
+  if(!ov) return null;
+  const newEntry = Object.assign({}, entry || {}, {
+    hours:  (ov.hours  != null ? ov.hours  : (entry ? entry.hours  : '')),
+    task:   (ov.task   != null ? ov.task   : (entry ? entry.task   : '')),
+    panier: (ov.panier != null ? ov.panier : (entry ? entry.panier : false))
+  });
+  const newEd = Object.assign({}, ed || {}, {
+    siteId: (ov.siteId != null ? ov.siteId : (ed ? ed.siteId : null)),
+    workers: Object.assign({}, (ed && ed.workers) || {}, { [workerId]: newEntry })
+  });
+  return { entry:newEntry, ed:newEd };
+}
+
+/* ── Édition d'une fiche (modal) ─────────────────────────────────── */
+function comptaEditOpen(deviceId, workerId, dateKey){
+  if(!comptaEditEnabled()) return;
+  // Retrouver l'ouvrier + sa donnée courante (calque déjà appliqué au rendu)
+  const aw = _comptaEditFindWorker(deviceId, workerId);
+  const device = aw ? aw.device : null;
+  let ed = device && device.attendance ? device.attendance[dateKey] : null;
+  let entry = ed && ed.workers ? ed.workers[workerId] : null;
+  const applied = comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed);
+  if(applied){ entry = applied.entry; ed = applied.ed; }
+
+  _comptaEditCtx = { deviceId, workerId, dateKey, sites: (device && device.sites) || [] };
+
+  document.getElementById('comptaEditSub').textContent =
+    (aw ? aw.name : 'Ouvrier') + ' · ' + dateKey;
+  document.getElementById('comptaEditHours').value = entry && entry.hours != null ? entry.hours : '';
+
+  // Sélecteur chantier
+  const siteSel = document.getElementById('comptaEditSite');
+  const curSite = ed ? (ed.siteId||'') : '';
+  siteSel.innerHTML = '<option value="">— Aucun chantier —</option>'
+    + ((device && device.sites) || []).map(s =>
+        '<option value="'+s.id+'"'+(s.id===curSite?' selected':'')+'>'+escapeHtml(s.name)+'</option>'
+      ).join('');
+
+  // Chips de tâche (même liste que le pointage)
+  const curTask = entry ? (entry.task||'') : '';
+  document.getElementById('comptaEditTask').value = curTask;
+  _comptaEditRenderChips(curTask);
+
+  // Panier
+  document.getElementById('comptaEditPanier').checked = entry ? !!entry.panier : false;
+
+  openModal('comptaEdit');
+}
+
+function _comptaEditRenderChips(current){
+  const box = document.getElementById('comptaEditChips');
+  if(!box) return;
+  const opts = (typeof TRANCHES !== 'undefined' ? TRANCHES : []).reduce((acc,tr)=>{
+    if(tr.sub && tr.sub.length) tr.sub.forEach(s=>acc.push(tr.label+' / '+s));
+    else acc.push(tr.label);
+    return acc;
+  }, []);
+  box.innerHTML = opts.map(opt =>
+    '<button type="button" class="ce-chip'+(opt===current?' on':'')+'" onclick="_comptaEditPickChip(this,\''+opt.replace(/'/g,"\\'")+'\')">'+escapeHtml(opt)+'</button>'
+  ).join('');
+}
+function _comptaEditPickChip(el, opt){
+  document.getElementById('comptaEditTask').value = opt;
+  document.querySelectorAll('#comptaEditChips .ce-chip').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on');
+}
+
+/* Retrouve l'ouvrier dans le cache live comptable. */
+function _comptaEditFindWorker(deviceId, workerId){
+  if(typeof _comptableLiveData === 'undefined' || !_comptableLiveData) return null;
+  for(const device of _comptableLiveData){
+    if((device.deviceId) !== deviceId) continue;
+    // reconstruit un aw minimal
+    const w = (device.workers||[]).find(x=>x.id===workerId);
+    return { device, workerId, name: w ? w.name : 'Ouvrier', key: _workerKey(deviceId, workerId) };
+  }
+  return null;
+}
+
+/* ── Enregistrement d'une correction → calque + push ─────────────── */
+async function comptaEditSave(){
+  if(!_comptaEditCtx) return;
+  const { deviceId, workerId, dateKey } = _comptaEditCtx;
+  const hoursRaw = document.getElementById('comptaEditHours').value.trim();
+  const hours = hoursRaw === '' ? '' : String(parseFloat(hoursRaw.replace(',','.')) || 0);
+  const task = document.getElementById('comptaEditTask').value.trim();
+  const siteId = document.getElementById('comptaEditSite').value || null;
+  const panier = document.getElementById('comptaEditPanier').checked;
+
+  const ov = _comptaEditOverrides();
+  ov[_comptaEditKey(deviceId, workerId, dateKey)] = {
+    hours, task, siteId, panier, ts: Date.now()
+  };
+  saveData();
+  closeModal('comptaEdit');
+  _comptaEditCtx = null;
+  showToast('✓ Fiche corrigée');
+
+  // Rafraîchir la grille immédiatement (calque déjà en mémoire)
+  if(typeof _comptableLiveData !== 'undefined' && _comptableLiveData && typeof renderComptableFichesContent === 'function'){
+    renderComptableFichesContent(_comptableLiveData);
+  }
+  comptaEditPush(); // partage la correction
+}
+
+/* Réinitialise une correction (revient à la fiche brute de l'ouvrier). */
+function comptaEditReset(){
+  if(!_comptaEditCtx) return;
+  const { deviceId, workerId, dateKey } = _comptaEditCtx;
+  const ov = _comptaEditOverrides();
+  delete ov[_comptaEditKey(deviceId, workerId, dateKey)];
+  saveData();
+  closeModal('comptaEdit');
+  _comptaEditCtx = null;
+  showToast('Correction annulée');
+  if(typeof _comptableLiveData !== 'undefined' && _comptableLiveData && typeof renderComptableFichesContent === 'function'){
+    renderComptableFichesContent(_comptableLiveData);
+  }
+  comptaEditPush();
+}
+
+/* ── Synchro du calque (canal dédié, fusion par horodatage) ──────── */
+async function comptaEditPush(){
+  if(!navigator.onLine) return;
+  const payload = {
+    user_id: COMPTAEDIT_SYNC_KEY,
+    updated_at: new Date().toISOString(),
+    data: JSON.stringify({ overrides: _comptaEditOverrides() })
+  };
+  try{
+    await supaFetch('/rest/v1/rwood_sync', {
+      method:'POST',
+      headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+  } catch(e){}
+}
+
+async function comptaEditPull(){
+  if(!navigator.onLine) return false;
+  try{
+    const res = await supaFetch(
+      '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(COMPTAEDIT_SYNC_KEY) + '&select=data',
+      { headers:{ 'Prefer':'' } }
+    );
+    if(!res.ok) return false;
+    const rows = await res.json();
+    if(!rows || !rows.length) return false;
+    const remote = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    if(!remote || !remote.overrides) return false;
+    // Fusion : l'override le plus récent (ts) gagne
+    const local = _comptaEditOverrides();
+    Object.keys(remote.overrides).forEach(k => {
+      const r = remote.overrides[k], l = local[k];
+      if(!l || (r.ts||0) >= (l.ts||0)) local[k] = r;
+    });
+    saveData(true);
+    return true;
+  } catch(e){ return false; }
+}
+
+/* [comptaedit] Tire le calque avant chaque refresh comptable. */
+async function comptaEditEnsurePulled(){
+  if(_comptaEditPulled) return;
+  _comptaEditPulled = true;
+  await comptaEditPull();
+}
+/* ═══ MODULE — ComptaEdit (JS)  ·  fin ═══ */
 </script>
 
       <div id="journalComposerBar" style="display:none; position:fixed; left:0; right:0; bottom:calc(var(--nav-h) + env(safe-area-inset-bottom, 0px)); z-index:40; background:var(--bg-elev); border-top:1px solid var(--line); padding:10px 14px 10px 14px; box-shadow:0 -2px 12px rgba(0,0,0,0.2);">
@@ -31888,6 +32175,15 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(suiviApplyNavVisi
         <button class="btn btn-primary" onclick="generateCompanyCode()">Générer</button>
       </div>
       <div id="devCompanyCodesList" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- MODULE — ComptaEdit : toggle droit modification comptable (dev) -->
+    <div class="card" style="margin-bottom:12px;padding:12px;border:1.5px solid var(--wood);">
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+        <span style="font-weight:700;">Autoriser la modification massive par la Comptable</span>
+        <input type="checkbox" id="comptaEditToggle" style="width:22px;height:22px;accent-color:var(--wood);flex-shrink:0;" onchange="comptaEditSetFlag(this.checked)">
+      </label>
+      <div class="hint" style="margin-top:6px;">Si activé, la comptable peut corriger heures, tâche, chantier et panier de toutes les fiches. Les corrections priment et sont partagées. Décoche pour repasser en lecture seule.</div>
     </div>
 
     <!-- Onglets Comptes / Pointages / Machines -->
