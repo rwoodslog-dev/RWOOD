@@ -3082,7 +3082,7 @@
     </div>
     <div class="saw-edge"></div>
 
-    <button class="fab" id="fabBtn" onclick="openModal('addSite')" title="Nouveau chantier" data-label="Nouveau chantier">+</button>
+    <button class="fab" id="fabBtn" title="Nouveau chantier" data-label="Nouveau chantier">+</button>
 
 
     <nav class="bottom">
@@ -7123,6 +7123,79 @@ function seedData(){
 }
 
 /* ============ NAVIGATION ============ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — FabRouter  (début)
+   ---------------------------------------------------------------------
+   Source UNIQUE de vérité pour l'action du bouton "+" (FAB).
+   Au lieu de réassigner fab.onclick à plusieurs endroits (qui se
+   marchaient dessus et laissaient l'action "Nouveau chantier" par
+   défaut), on décide ici, à chaque changement de vue, quoi faire selon
+   la vue courante + le rôle. L'onclick inline du HTML a été retiré.
+
+   État courant : _fabContext = { view, siteId }.
+   Pour retirer le module : rebrancher fab.onclick=openModal('addSite')
+   dans le HTML. Rien d'autre ne dépend de ce bloc.
+   ═══════════════════════════════════════════════════════════════════ */
+
+const _fabContext = { view: 'chantiers', siteId: null };
+
+function _fabRole(){
+  return (data.settings && data.settings.myProfile && data.settings.myProfile.role) || null;
+}
+
+/* Applique l'apparence + l'action + la visibilité du FAB pour un contexte donné.
+   Appelé par goTo à chaque navigation. Une seule fonction touche fab.onclick. */
+function updateFab(view, siteId){
+  const fab = document.getElementById('fabBtn');
+  if(!fab) return;
+  _fabContext.view = view;
+  _fabContext.siteId = siteId || null;
+
+  const role = _fabRole();
+  const canEditMedia = (role === 'chef' || role === 'conducteur' || role === 'patron');
+
+  // 1) Vue chantier (detail) → menu d'ajout média (éditeurs uniquement)
+  if(view === 'detail' && siteId){
+    if(canEditMedia){
+      fab.style.display = 'block';
+      fab.textContent = '+';
+      fab.title = 'Ajouter au chantier';
+      fab.dataset.label = 'Ajouter';
+      fab.onclick = () => openMediaFabSheet(_fabContext.siteId);
+    } else {
+      fab.style.display = 'none';
+      fab.onclick = null;
+    }
+    return;
+  }
+
+  // 2) Liste des chantiers → créer un nouveau chantier
+  if(view === 'chantiers'){
+    fab.style.display = 'block';
+    fab.textContent = '+';
+    fab.title = 'Nouveau chantier';
+    fab.dataset.label = 'Nouveau chantier';
+    fab.onclick = () => { setupAddSiteModal(); openModal('addSite'); };
+    return;
+  }
+
+  // 3) Dépôt / Stock : l'action est gérée par leurs propres renders
+  //    (renderDepot / renderStock réassignent fab.onclick puis appellent
+  //    updateFab indirectement). On laisse le render décider : ici on ne
+  //    fait qu'assurer la visibilité par défaut.
+  if(view === 'depot' || view === 'stock'){
+    fab.style.display = 'block';
+    return;
+  }
+
+  // 4) Toute autre vue → FAB masqué, aucune action
+  fab.style.display = 'none';
+  fab.onclick = null;
+}
+
+/* ═══ MODULE — FabRouter  (fin) ═══ */
+
 function goTo(viewName, siteId){
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){
@@ -7182,25 +7255,8 @@ function goTo(viewName, siteId){
       setDetailMain('cumul');
     }
     pageTitleWrap.classList.add('hidden');
-    // FAB contextuel : dans une vue chantier, le "+" ouvre le menu d'ajout média
-    // (jamais "Nouveau chantier"). Réservé aux rôles éditeurs ; ouvrier = lecture seule.
-    (function(){
-      const fab = document.getElementById('fabBtn');
-      const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-      const canEditMedia = (role === 'chef' || role === 'conducteur' || role === 'patron');
-      if(fab){
-        if(canEditMedia){
-          fab.style.display = 'block';
-          fab.textContent = '+';
-          fab.title = 'Ajouter au chantier';
-          fab.dataset.label = 'Ajouter';
-          fab.onclick = () => openMediaFabSheet(siteId);
-        } else {
-          fab.style.display = 'none';
-          fab.onclick = null;
-        }
-      }
-    })();
+    // FAB géré par le routeur unique (menu média en vue chantier, jamais "Nouveau chantier")
+    updateFab('detail', siteId);
     return;
   }
 
@@ -7217,13 +7273,8 @@ function goTo(viewName, siteId){
 
   pageTitleEl.textContent = titles[viewName][0];
   pageSubEl.textContent = titles[viewName][1];
-  document.getElementById('fabBtn').style.display = (viewName === 'chantiers' || viewName === 'depot' || viewName === 'stock') ? 'block' : 'none';
-  if(viewName === 'chantiers'){
-    document.getElementById('fabBtn').onclick = () => { setupAddSiteModal(); openModal('addSite'); };
-    document.getElementById('fabBtn').title = 'Nouveau chantier';
-    document.getElementById('fabBtn').textContent = '+';
-    document.getElementById('fabBtn').dataset.label = 'Nouveau chantier';
-  }
+  // FAB : décision centralisée par le routeur unique (voir MODULE FabRouter)
+  updateFab(viewName, null);
 
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
@@ -17901,6 +17952,7 @@ function getDateOfISOWeek(week, year){
     goTo('heures');
   } else {
     renderSites();
+    updateFab('chantiers', null); // écran d'accueil : FAB = Nouveau chantier
   }
 
   // Raccourcis Android (long-appui sur l'icône de l'app, définis dans manifest.json)
@@ -21833,7 +21885,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.21.1';
+const APP_VERSION = '2.21.2';
 
 const CHANGELOG = [
   {
