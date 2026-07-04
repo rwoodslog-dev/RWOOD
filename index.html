@@ -3303,6 +3303,14 @@
             <div id="cloudZincList"></div>
           </div>
 
+          <!-- Section Événements / dates de livraison (créés par le conducteur) -->
+          <div id="cloudEventsSection" style="margin-top:16px;">
+            <div class="section-title" style="display:flex;align-items:center;gap:6px;">
+              📅 Événements <span id="cloudEventsCount" style="font-size:11px;color:var(--ink-soft);font-weight:400;"></span>
+            </div>
+            <div id="cloudEventsList"></div>
+          </div>
+
           <!-- Documents reçus du chef (ouvriers) -->
           <div id="workerReceivedMediaSection" style="display:none;margin-top:16px;">
             <div class="section-title">📥 Reçus du chef</div>
@@ -7269,7 +7277,9 @@ function goTo(viewName, siteId){
     const _detailEl = document.getElementById('view-detail');
     _detailEl.classList.add('active', 'ios-slide-in');
     setTimeout(()=>_detailEl.classList.remove('ios-slide-in'), 350);
-    if(currentDetailSite !== siteId) detailInfoCollapsed = true;
+    // La carte info (nom, adresse, équipe, couleur) est toujours repliée par
+    // défaut à l'ouverture d'un chantier, pour épurer les onglets média dessous.
+    detailInfoCollapsed = true;
     currentDetailSite = siteId;
     setDetailMain('media');
     setDetailTab('cloud');
@@ -14316,6 +14326,7 @@ function renderCloudMedia(siteId){
 
   // ── Pliages Zinc
   _renderCloudZincList(siteId, zincs);
+  renderCloudEvents(siteId);
 }
 
 function _cloudMediaCard(m, siteId){
@@ -14337,6 +14348,104 @@ function _cloudMediaCard(m, siteId){
       </div>
     </div>`;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — MediaEvents  (début)
+   ---------------------------------------------------------------------
+   Section "Événements" du panneau Média : liste les événements / dates de
+   livraison du chantier (customEvents, créés par le conducteur) avec un
+   bouton "Ajouter à l'agenda" qui crée une tâche dans l'agenda interne de
+   l'app. La couleur de la tâche découle automatiquement du chantier (le
+   rendu agenda applique site.color via siteId).
+   ISOLATION : préfixe renderCloudEvents / addEventToAgenda / _mev*.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Rassemble les événements d'un chantier (customEvents + deliveryDates éventuels),
+   normalisés en { id, label, date, time? } et triés par date. */
+function _mevCollect(site){
+  const out = [];
+  (site.customEvents || []).forEach(ev => {
+    if(ev && ev.label) out.push({ id: ev.id||uid(), label: ev.label, date: ev.date||'', time: ev.time||'' });
+  });
+  (site.deliveryDates || []).forEach(dd => {
+    const label = dd.label || dd.text || 'Livraison';
+    if(dd && (dd.date || label)) out.push({ id: dd.id||uid(), label, date: dd.date||'', time: dd.time||'' });
+  });
+  return out.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+}
+
+function _mevFormatDate(ev){
+  if(!ev.date) return '';
+  const d = new Date(ev.date + 'T' + (ev.time || '00:00') + ':00');
+  const opts = { day:'numeric', month:'long' };
+  let s = d.toLocaleDateString('fr-FR', opts);
+  if(ev.time) s += ' à ' + ev.time;
+  return s;
+}
+
+function renderCloudEvents(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  const listEl  = document.getElementById('cloudEventsList');
+  const countEl = document.getElementById('cloudEventsCount');
+  const section = document.getElementById('cloudEventsSection');
+  if(!listEl) return;
+
+  const events = site ? _mevCollect(site) : [];
+  if(countEl) countEl.textContent = events.length ? `(${events.length})` : '';
+  if(section) section.style.display = events.length ? 'block' : 'none';
+
+  if(!events.length){
+    listEl.innerHTML = '<div class="hint" style="padding:8px 0 4px;">Aucun événement.</div>';
+    return;
+  }
+
+  window._mevCache = events;
+  const rawColor = (site && site.color) ? site.color : '';
+  const siteColor = (!rawColor || rawColor.startsWith('var(')) ? 'var(--wood)' : colorFull(rawColor);
+  listEl.innerHTML = events.map((ev,i) => `
+    <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;border-left:5px solid ${siteColor};">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:13px;">${escapeHtml(ev.label)}</div>
+        ${ev.date ? `<div style="font-size:11px;color:var(--ink-soft);">${_mevFormatDate(ev)}</div>` : '<div style="font-size:11px;color:var(--ink-soft);">Sans date</div>'}
+      </div>
+      <button class="mevAdd btn btn-primary btn-sm" data-i="${i}" style="padding:6px 10px;font-size:12px;white-space:nowrap;">📅 Agenda</button>
+    </div>`).join('');
+
+  listEl.querySelectorAll('.mevAdd').forEach(btn => btn.addEventListener('click', () => {
+    addEventToAgenda(siteId, window._mevCache[+btn.dataset.i]);
+  }));
+}
+
+/* Ajoute l'événement à l'agenda INTERNE de l'app (data.tasks).
+   Titre : "[Intitulé] - [Nom chantier]". Couleur : héritée du chantier via siteId. */
+function addEventToAgenda(siteId, ev){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site || !ev){ return; }
+  if(!ev.date){ showToast('Cet événement n\'a pas de date'); return; }
+  if(!data.tasks) data.tasks = [];
+
+  const title = ev.label + ' - ' + (site.name || 'Chantier');
+
+  // Anti-doublon : même chantier + même date + même titre
+  const exists = data.tasks.some(t => t.siteId === siteId && t.date === ev.date && t.text === title);
+  if(exists){ showToast('Déjà dans l\'agenda'); return; }
+
+  const taskId = uid();
+  data.tasks.push({ id: taskId, date: ev.date, siteId: siteId, text: title, time: ev.time || '' });
+
+  if(!data.logs) data.logs = [];
+  const d = new Date(ev.date + 'T00:00:00');
+  data.logs.push({
+    id: uid(), siteId,
+    text: '📅 Événement ajouté à l\'agenda : ' + title + ' — ' + d.toLocaleDateString('fr-FR',{day:'numeric',month:'long'}),
+    time: formatDateTime(new Date()), type: 'link', linkType: 'task', linkId: taskId
+  });
+
+  saveData();
+  showToast('✅ Ajouté à l\'agenda');
+}
+
+/* ═══ MODULE — MediaEvents  (fin) ═══ */
 
 function _renderCloudZincList(siteId, zincs){
   const el = document.getElementById('cloudZincList');
@@ -22295,7 +22404,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.23.1';
+const APP_VERSION = '2.24.1';
 
 const CHANGELOG = [
   {
