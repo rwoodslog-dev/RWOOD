@@ -22625,7 +22625,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.27.2';
+const APP_VERSION = '2.27.3';
 
 const CHANGELOG = [
   {
@@ -30372,6 +30372,7 @@ function magasinOpenDetail(machineId){
 
   const editHtml = _magasinCanEdit()
     ? '<button class="btn btn-outline btn-sm" style="width:100%;margin-top:8px;" onclick="magasinOpenEdit(\''+m.id+'\')">✏️ Modifier</button>'
+      + '<button class="btn btn-outline btn-sm" style="width:100%;margin-top:8px;color:#E07A63;border-color:#5a2f24;" onclick="magasinDeleteFromDetail(\''+m.id+'\')">🗑️ Supprimer</button>'
     : '';
 
   body.innerHTML =
@@ -30594,7 +30595,7 @@ async function magasinRenderDevList(container, skipPull){
       +   '<div style="font-size:11px;color:var(--ink-soft);">'+escapeHtml(m.ref||'—')+' · '+pris+'</div>'
       + '</div>'
       + '<button class="btn btn-outline btn-sm" style="color:#E07A63;border-color:#5a2f24;padding:6px 10px;flex-shrink:0;" title="Supprimer" onclick="magasinDeleteMachine(\''+m.id+'\')">'
-      +   '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>'
+      +   '<svg style="pointer-events:none;" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>'
       + '</button>'
       + '</div>';
   }).join('');
@@ -30715,23 +30716,36 @@ async function magasinRestoreFromSupabase(){
   } catch(e){ showToast('⚠️ Restauration échouée'); }
 }
 
-function magasinDeleteMachine(machineId){
-  if(!_magasinIsAdmin()) return;
+async function magasinDeleteMachine(machineId){
+  // Autorisé : chef, conducteur, patron (+ mode dév)
+  if(!_magasinCanEdit()){ showToast('Suppression non autorisée'); return; }
   _magasinEnsure();
   const m = (data.magasinMachines||[]).find(x => x.id === machineId);
   if(!m) return;
   if(!confirm('Supprimer « ' + (m.name||'cette machine') + ' » du magasin ?')) return;
+
+  // Suppression locale
   data.magasinMachines = (data.magasinMachines||[]).filter(x => x.id !== machineId);
   saveData();
   magasinRender();
-  showToast('Machine supprimée');
-  magasinPush();
-  // Rafraîchir la liste du panneau dev SANS re-puller (le push n'a peut-être
-  // pas encore propagé ; re-puller ré-afficherait la machine supprimée)
+
+  // Pousser au cloud ET ATTENDRE la confirmation avant de rafraîchir,
+  // sinon le polling/pull pourrait ré-afficher la machine supprimée.
+  showToast('Suppression…');
+  await magasinPush();
+  showToast('✓ Machine supprimée');
+
+  // Rafraîchir la liste du panneau dev sans re-puller
   const devList = document.getElementById('devPanelList');
   if(devList && typeof _devCurrentTab !== 'undefined' && _devCurrentTab === 'machines'){
     magasinRenderDevList(devList, true);
   }
+}
+
+/* Suppression depuis la fiche détail (onglet Magasin) — rôles autorisés */
+async function magasinDeleteFromDetail(machineId){
+  closeModal('magasinDetail');
+  await magasinDeleteMachine(machineId);
 }
 
 /* ── Synchro Supabase (canal isolé company_magasin_machines) ─────── */
