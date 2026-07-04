@@ -22735,7 +22735,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.29.8';
+const APP_VERSION = '2.29.9';
 
 const CHANGELOG = [
   {
@@ -31926,7 +31926,20 @@ async function rwoodAuditChantiers(opts){
     console.warn('[Audit] Accès refusé : mode développeur requis.');
     return { raw:[], merged:[], denied:true };
   }
-  const sources = await _auditCollectSources();
+
+  // Indicateur de chargement immédiat (feedback visuel)
+  if(opts.ui) _auditRenderLoading();
+
+  let sources;
+  try{
+    sources = await _auditCollectSources();
+  } catch(err){
+    console.error('[Audit] Échec de la collecte des sources :', err);
+    if(opts.ui) _auditRenderError(err);
+    if(typeof showToast === 'function') showToast('⚠️ Audit : erreur de récupération');
+    return { raw:[], merged:[], error:String(err && err.message || err) };
+  }
+
   const hoursBySite = _auditHoursBySite(sources);
 
   // ── Dump BRUT : une entrée par fiche chantier rencontrée (tous users) ──
@@ -31955,43 +31968,45 @@ async function rwoodAuditChantiers(opts){
 
   // ── Vue FUSIONNÉE : regroupée par nom via le moteur de dédup existant ──
   let merged = [];
-  if(typeof dedupBuildMap === 'function'){
-    const { canonBy, merged:mergedSites } = dedupBuildMap(sources);
-    const acc = {};
-    // heures/medias cumulés vers le canonique
-    Object.keys(mergedSites).forEach(cid => {
-      const s = mergedSites[cid];
-      acc[cid] = {
-        nom: s.name||'(sans nom)',
-        adresse: s.address||'', keyboxCode: s.keyboxCode||'', statut: s.status||'',
-        nbMedias: Array.isArray(s.sharedMedia)?s.sharedMedia.length:0,
-        heures: 0, fichesFusionnees: 0,
-        createurs: new Set()
-      };
-    });
-    // additionne heures par site → canonique
-    Object.keys(hoursBySite).forEach(sid => {
-      const cid = canonBy[sid] || sid;
-      if(acc[cid]) acc[cid].heures += hoursBySite[sid];
-    });
-    // compte les fiches doublons + créateurs
-    raw.forEach(r => {
-      const cid = canonBy[r.id] || r.id;
-      if(acc[cid]){
-        acc[cid].fichesFusionnees += 1;
-        if(r.createur && r.createur !== '—') acc[cid].createurs.add(r.createur);
-      }
-    });
-    merged = Object.keys(acc).map(cid => ({
-      nom: acc[cid].nom,
-      adresse: acc[cid].adresse,
-      keyboxCode: acc[cid].keyboxCode,
-      statut: acc[cid].statut,
-      nbMedias: acc[cid].nbMedias,
-      heures: Math.round(acc[cid].heures*10)/10,
-      fichesFusionnees: acc[cid].fichesFusionnees,
-      createurs: Array.from(acc[cid].createurs)
-    })).sort((a,b) => (a.nom||'').localeCompare(b.nom||''));
+  try{
+    if(typeof dedupBuildMap === 'function'){
+      const { canonBy, merged:mergedSites } = dedupBuildMap(sources);
+      const acc = {};
+      Object.keys(mergedSites).forEach(cid => {
+        const s = mergedSites[cid];
+        acc[cid] = {
+          nom: s.name||'(sans nom)',
+          adresse: s.address||'', keyboxCode: s.keyboxCode||'', statut: s.status||'',
+          nbMedias: Array.isArray(s.sharedMedia)?s.sharedMedia.length:0,
+          heures: 0, fichesFusionnees: 0,
+          createurs: new Set()
+        };
+      });
+      Object.keys(hoursBySite).forEach(sid => {
+        const cid = canonBy[sid] || sid;
+        if(acc[cid]) acc[cid].heures += hoursBySite[sid];
+      });
+      raw.forEach(r => {
+        const cid = canonBy[r.id] || r.id;
+        if(acc[cid]){
+          acc[cid].fichesFusionnees += 1;
+          if(r.createur && r.createur !== '—') acc[cid].createurs.add(r.createur);
+        }
+      });
+      merged = Object.keys(acc).map(cid => ({
+        nom: acc[cid].nom,
+        adresse: acc[cid].adresse,
+        keyboxCode: acc[cid].keyboxCode,
+        statut: acc[cid].statut,
+        nbMedias: acc[cid].nbMedias,
+        heures: Math.round(acc[cid].heures*10)/10,
+        fichesFusionnees: acc[cid].fichesFusionnees,
+        createurs: Array.from(acc[cid].createurs)
+      })).sort((a,b) => (a.nom||'').localeCompare(b.nom||''));
+    }
+  } catch(err){
+    console.error('[Audit] Erreur de fusion (dédup) :', err);
+    merged = []; // on affiche au moins le dump brut
   }
 
   // Sortie console lisible
@@ -32003,7 +32018,39 @@ async function rwoodAuditChantiers(opts){
   console.table(merged.map(m => ({...m, createurs: m.createurs.join(', ')})));
 
   if(opts.ui) _auditRenderOverlay(raw, merged);
+  if(typeof showToast === 'function') showToast('✓ Audit : '+raw.length+' fiches, '+merged.length+' chantiers');
   return { raw, merged };
+}
+
+/* Overlay de chargement (spinner) affiché pendant la récupération. */
+function _auditRenderLoading(){
+  let ov = document.getElementById('rwoodAuditOverlay');
+  if(ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = 'rwoodAuditOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
+  ov.innerHTML =
+    '<div style="width:44px;height:44px;border:4px solid rgba(255,255,255,.15);border-top-color:#C8862B;border-radius:50%;animation:rwoodAuditSpin .8s linear infinite;"></div>'
+    + '<div style="font-weight:700;">Extraction des chantiers…</div>'
+    + '<div style="opacity:.6;font-size:12px;">Récupération globale de tous les utilisateurs</div>'
+    + '<style>@keyframes rwoodAuditSpin{to{transform:rotate(360deg);}}</style>';
+  document.body.appendChild(ov);
+}
+
+/* Overlay d'erreur (try/catch) affiché en cas d'échec de récupération. */
+function _auditRenderError(err){
+  let ov = document.getElementById('rwoodAuditOverlay');
+  if(ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = 'rwoodAuditOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#12100b;color:#f0e6d2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;';
+  ov.innerHTML =
+    '<div style="font-size:40px;">⚠️</div>'
+    + '<div style="font-weight:800;font-size:16px;">Échec de l\'extraction</div>'
+    + '<div style="opacity:.75;font-size:13px;max-width:320px;word-break:break-word;">'+_esc(String(err && err.message || err))+'</div>'
+    + '<div style="opacity:.55;font-size:12px;">Vérifie la connexion réseau puis réessaie.</div>'
+    + '<button onclick="document.getElementById(\'rwoodAuditOverlay\').remove()" style="background:#C8862B;color:#1a0f00;border:none;border-radius:8px;padding:9px 16px;font-weight:800;margin-top:6px;">Fermer</button>';
+  document.body.appendChild(ov);
 }
 
 /* Overlay d'affichage à l'écran (optionnel, opts.ui=true). */
