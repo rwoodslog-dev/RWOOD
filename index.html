@@ -22707,7 +22707,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.33.2';
+const APP_VERSION = '2.33.3';
 
 const CHANGELOG = [
   {
@@ -30726,6 +30726,7 @@ let _suiviCache = null;          // résultat d'agrégation mémorisé
 let _suiviCacheStamp = 0;        // date du dernier calcul
 let _suiviOpen = {};             // état déplié/replié par chantier
 let _suiviUncatOpen = {};        // [recat] sous-liste "non catégorisé" dépliée
+let _suiviWorkersOpen = {};      // onglet "ouvriers" déplié par chantier
 let _suiviRecatCtx = null;       // [recat] fiche en cours de recatégorisation
 
 /* Catégories connues → libellé propre + icône. Les tâches hors liste
@@ -30786,6 +30787,12 @@ const SUIVI_TASK_MAP = [
   + '#modal-suiviRecat .suivi-recat-opt{display:flex;align-items:center;gap:10px;width:100%;padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#0d0a06;color:var(--ink,#f0e6d2);font-size:15px;font-weight:600;cursor:pointer;margin-bottom:8px;}'
   + '#modal-suiviRecat .suivi-recat-opt:active{background:rgba(255,255,255,.05);}'
   + '#modal-suiviRecat .suivi-recat-reset{border-style:dashed;color:var(--ink-soft);font-weight:500;}'
+  + '#view-suivi .suivi-workers-block{margin-top:8px;border-top:1px solid rgba(255,255,255,.06);padding-top:6px;}'
+  + '#view-suivi .suivi-workers-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 4px;font-size:13px;font-weight:700;color:var(--ink,#f0e6d2);cursor:pointer;}'
+  + '#view-suivi .suivi-workers-list{margin:2px 0 6px 8px;padding-left:10px;border-left:2px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:4px;}'
+  + '#view-suivi .suivi-worker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,.03);border-radius:9px;padding:8px 10px;}'
+  + '#view-suivi .suivi-worker-name{font-size:13px;font-weight:600;color:var(--ink,#f0e6d2);}'
+  + '#view-suivi .suivi-worker-hours{font-size:12px;font-weight:700;color:var(--wood,#C8862B);flex-shrink:0;}'
   + '@media (min-width:860px){ #view-suivi .suivi-wrap{max-width:760px;margin:0 auto;} }';
   document.head.appendChild(st);
 })();
@@ -30888,8 +30895,13 @@ function _suiviAggregate(sources){
         const h = parseFloat(String(entry.hours).replace(',','.'));
         if(!isFinite(h) || h <= 0) return;
 
-        if(!bySite[effSiteId]) bySite[effSiteId] = { total:0, tasks:{}, uncat:[] };
+        if(!bySite[effSiteId]) bySite[effSiteId] = { total:0, tasks:{}, uncat:[], workers:{} };
         bySite[effSiteId].total += h;
+
+        // Ouvriers ayant travaillé sur ce chantier (nom + heures cumulées)
+        const _wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
+        if(!bySite[effSiteId].workers[wId]) bySite[effSiteId].workers[wId] = { name:_wName, hours:0 };
+        bySite[effSiteId].workers[wId].hours += h;
 
         // [recat] override de catégorie prioritaire
         let cat;
@@ -30918,13 +30930,17 @@ function _suiviAggregate(sources){
       label, icon: bySite[siteId].tasks[label].icon, hours: bySite[siteId].tasks[label].hours
     })).sort((a,b) => b.hours - a.hours);
     const uncat = bySite[siteId].uncat.sort((a,b) => (a.dateKey < b.dateKey ? 1 : -1));
+    const workers = Object.keys(bySite[siteId].workers)
+      .map(wId => bySite[siteId].workers[wId])
+      .sort((a,b) => b.hours - a.hours);
     return {
       siteId,
       name: (s && s.name) || 'Chantier',
       status: (s && s.status) || '',
       total: bySite[siteId].total,
       tasks,
-      uncat
+      uncat,
+      workers
     };
   }).sort((a,b) => b.total - a.total);
 
@@ -31073,6 +31089,27 @@ function suiviRender(){
       return row;
     }).join('');
 
+    // Onglet dépliable : ouvriers ayant travaillé sur le chantier
+    const workersOpen = !!_suiviWorkersOpen[site.siteId];
+    const workers = site.workers || [];
+    let workersHtml = '';
+    if(workers.length){
+      workersHtml = '<div class="suivi-workers-block">'
+        + '<div class="suivi-workers-head suivi-clickable" onclick="suiviToggleWorkers(\''+site.siteId+'\')">'
+        +   '<span>👷 Ouvriers <span class="suivi-uncat-count">('+workers.length+')</span></span>'
+        +   '<svg class="suivi-uncat-chev'+(workersOpen?' open':'')+'" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>'
+        + '</div>'
+        + (workersOpen
+            ? '<div class="suivi-workers-list">' + workers.map(w =>
+                '<div class="suivi-worker-item">'
+                + '<span class="suivi-worker-name">'+escapeHtml(w.name)+'</span>'
+                + '<span class="suivi-worker-hours">'+_suiviFmt(w.hours)+'</span>'
+                + '</div>'
+              ).join('') + '</div>'
+            : '')
+        + '</div>';
+    }
+
     return '<div class="suivi-site'+(open?' open':'')+'" id="suivi-site-'+site.siteId+'">'
       + '<div class="suivi-site-head" onclick="suiviToggle(\''+site.siteId+'\')">'
       +   '<svg class="suivi-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>'
@@ -31082,7 +31119,7 @@ function suiviRender(){
       +   '</div>'
       +   '<div class="suivi-site-total">'+_suiviFmt(site.total)+'</div>'
       + '</div>'
-      + '<div class="suivi-tasks">'+tasksHtml+'</div>'
+      + '<div class="suivi-tasks">'+tasksHtml+workersHtml+'</div>'
       + '</div>';
   }).join('');
 }
@@ -31091,6 +31128,14 @@ function suiviToggle(siteId){
   _suiviOpen[siteId] = !_suiviOpen[siteId];
   const el = document.getElementById('suivi-site-' + siteId);
   if(el) el.classList.toggle('open', !!_suiviOpen[siteId]);
+}
+
+/* Onglet "ouvriers ayant travaillé sur le chantier" */
+function suiviToggleWorkers(siteId){
+  _suiviWorkersOpen[siteId] = !_suiviWorkersOpen[siteId];
+  suiviRender();
+  const el = document.getElementById('suivi-site-' + siteId);
+  if(el) el.classList.add('open');
 }
 
 /* ── EXTENSION Recatégorisation : UI (sous-liste + sélecteur) ─────── */
