@@ -22707,7 +22707,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.33.4';
+const APP_VERSION = '2.33.5';
 
 const CHANGELOG = [
   {
@@ -30878,8 +30878,9 @@ function _suiviAggregate(sources){
       const day = attendance[dateKey];
       if(!day || !day.workers) return;
       const siteId = day.siteId;
-      if(!siteId) return;                 // jours sans chantier : ignorés (choix validé)
-      if(!sitesById[siteId]) return;      // chantier inconnu : ignoré
+      // NB : on n'écarte PLUS ici les jours sans chantier. Une ancienne fiche
+      // en texte libre (sans siteId) peut se voir attribuer un chantier par
+      // le calque comptable ci-dessous → elle doit pouvoir remonter au Suivi.
 
       Object.keys(day.workers).forEach(wId => {
         let entry = day.workers[wId];
@@ -30891,7 +30892,8 @@ function _suiviAggregate(sources){
         }
         if(!entry) return;
         const rawSiteId = ed.siteId || siteId;
-        if(!sitesById[rawSiteId]) return;
+        if(!rawSiteId) return;              // toujours aucun chantier (même après correction) : ignoré
+        if(!sitesById[rawSiteId]) return;   // chantier inconnu : ignoré
         const effSiteId = _canon(rawSiteId); // [dedup] regroupe sous le canonique
 
         // [antidoublon] Une fiche = un ouvrier + une date + un chantier.
@@ -31768,11 +31770,25 @@ function comptaEditOpen(deviceId, workerId, dateKey){
     (aw ? aw.name : 'Ouvrier') + ' · ' + dateKey;
   document.getElementById('comptaEditHours').value = entry && entry.hours != null ? entry.hours : '';
 
-  // Sélecteur chantier
+  // Sélecteur chantier — alimenté par la liste GLOBALE synchronisée
+  // (tous les appareils + local), pas seulement l'appareil de l'ouvrier.
   const siteSel = document.getElementById('comptaEditSite');
   const curSite = ed ? (ed.siteId||'') : '';
-  siteSel.innerHTML = '<option value="">— Aucun chantier —</option>'
-    + ((device && device.sites) || []).map(s =>
+  const allSites = _comptaEditAllSites();
+
+  // [fallback texte libre] Ancienne fiche : chantier écrit à la main dans
+  // la tâche, sans siteId → on l'affiche en tête pour ne pas bloquer la modal.
+  let fallbackOpt = '';
+  const rawFreeText = (!curSite && entry && entry.task) ? String(entry.task).trim() : '';
+  // On ne propose le fallback que si ce texte ne correspond à aucun chantier connu
+  const matchesKnown = rawFreeText && allSites.some(s => (s.name||'').toLowerCase().trim() === rawFreeText.toLowerCase());
+  if(rawFreeText && !matchesKnown){
+    fallbackOpt = '<option value="__free__" selected>Valeur actuelle : '+escapeHtml(rawFreeText)+'</option>';
+  }
+
+  siteSel.innerHTML = fallbackOpt
+    + '<option value="">— Aucun chantier —</option>'
+    + allSites.map(s =>
         '<option value="'+s.id+'"'+(s.id===curSite?' selected':'')+'>'+escapeHtml(s.name)+'</option>'
       ).join('');
 
@@ -31805,6 +31821,21 @@ function _comptaEditPickChip(el, opt){
   el.classList.add('on');
 }
 
+/* Liste GLOBALE de tous les chantiers connus (local + tous les appareils
+   du cache comptable), dédupliquée par id, triée par nom. C'est la vraie
+   liste synchronisée que la comptable doit pouvoir choisir. */
+function _comptaEditAllSites(){
+  const byId = {};
+  const addSites = (arr) => {
+    (arr||[]).forEach(s => { if(s && s.id && s.name && !byId[s.id]) byId[s.id] = { id:s.id, name:s.name }; });
+  };
+  addSites(data.sites);
+  if(typeof _comptableLiveData !== 'undefined' && Array.isArray(_comptableLiveData)){
+    _comptableLiveData.forEach(dev => addSites(dev && dev.sites));
+  }
+  return Object.values(byId).sort((a,b) => (a.name||'').localeCompare(b.name||''));
+}
+
 /* Retrouve l'ouvrier dans le cache live comptable. */
 function _comptaEditFindWorker(deviceId, workerId){
   if(typeof _comptableLiveData === 'undefined' || !_comptableLiveData) return null;
@@ -31824,22 +31855,32 @@ async function comptaEditSave(){
   const hoursRaw = document.getElementById('comptaEditHours').value.trim();
   const hours = hoursRaw === '' ? '' : String(parseFloat(hoursRaw.replace(',','.')) || 0);
   const task = document.getElementById('comptaEditTask').value.trim();
-  const siteId = document.getElementById('comptaEditSite').value || null;
   const panier = document.getElementById('comptaEditPanier').checked;
 
+  // Chantier : le select renvoie l'ID synchronisé choisi.
+  // '__free__' = l'utilisateur a laissé l'ancienne valeur texte → on ne
+  // touche pas au siteId (pas de migration). Sinon on écrit le vrai ID.
+  const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
-  ov[_comptaEditKey(deviceId, workerId, dateKey)] = {
-    hours, task, siteId, panier, ts: Date.now()
-  };
+  const ovData = { hours, task, panier, ts: Date.now() };
+  if(rawSel !== '__free__'){
+    ovData.siteId = rawSel || null; // ID synchronisé (ou null = aucun chantier)
+  }
+  ov[_comptaEditKey(deviceId, workerId, dateKey)] = Object.assign(
+    ov[_comptaEditKey(deviceId, workerId, dateKey)] || {}, ovData
+  );
+
   saveData();
   closeModal('comptaEdit');
   _comptaEditCtx = null;
   showToast('✓ Fiche corrigée');
 
-  // Rafraîchir la grille immédiatement (calque déjà en mémoire)
+  // Rafraîchir la grille comptable immédiatement (calque déjà en mémoire)
   if(typeof _comptableLiveData !== 'undefined' && _comptableLiveData && typeof renderComptableFichesContent === 'function'){
     renderComptableFichesContent(_comptableLiveData);
   }
+  // Actualiser le Suivi pour que les heures migrent vers le bon chantier
+  if(typeof suiviRefresh === 'function'){ try{ suiviRefresh(true); }catch(e){} }
   comptaEditPush(); // partage la correction
 }
 
