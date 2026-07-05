@@ -22907,7 +22907,7 @@ function renderHiddenNavList(){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.31.2';
+const APP_VERSION = '2.31.3';
 
 const CHANGELOG = [
   {
@@ -31274,18 +31274,25 @@ function notesParseTranscript(raw){
     .replace(/\s+/g, ' ');
   // Retire une amorce type "ajouter", "il faut", "note", "rajoute"
   txt = txt.replace(/^\s*(ajouter|ajoute|rajoute|rajouter|il faut|note|noter|prendre|penser à|penser a)\s+/i, ' ');
-  // Découpe sur les mots-clés d'énumération isolés : "plus" ou "et"
-  const parts = txt.split(/\s+(?:plus|et)\s+/i);
+  // Découpe sur les mots-clés d'énumération isolés : "plus", "et" ou le symbole "+"
+  const parts = txt.split(/\s+(?:plus|et|\+)\s+/i);
   return parts
     .map(s => s.trim().replace(/^[,;.\s]+|[,;.\s]+$/g, ''))
     .filter(s => s.length > 0)
     .map(s => s.charAt(0).toUpperCase() + s.slice(1));
 }
 
-/* ── Dictée vocale GRATUITE (Web Speech API, reconnaissance en direct) ──
-   Aucune clé, aucun compte. Fonctionne sur Android Chrome. La
-   transcription arrive au fil de la parole ; à l'arrêt, on parse le
-   texte final sur "plus"/"et" et on ajoute les items à la liste. */
+/* ── Dictée vocale GRATUITE (Web Speech API) — pipeline "analyse à l'arrêt" ──
+   Aucune clé, aucun compte. Fonctionne sur Android Chrome.
+   ANTI-BÉGAIEMENT : plus AUCUNE retranscription live mot à mot. Pendant
+   l'enregistrement, les résultats sont bufferisés PAR INDEX (l'écrasement
+   par index neutralise les re-livraisons dupliquées d'Android Chrome).
+   À l'arrêt, le texte est reconstruit d'un seul coup depuis le buffer,
+   puis nettoyé par un filtre de déduplication syntaxique (n-grammes
+   répétés), et enfin découpé sur "PLUS"/"ET"/"+" en notes distinctes. */
+let _notesResultsBuf = {};     // index -> texte FINAL (écrasement par index)
+let _notesLastInterim = '';    // dernier fragment provisoire (secours si 0 final)
+
 function notesToggleRecord(){
   if(_notesRecording){ _notesStopRecord(); return; }
 
@@ -31295,21 +31302,27 @@ function notesToggleRecord(){
     return;
   }
 
+  _notesResultsBuf = {};
+  _notesLastInterim = '';
   _notesFinalText = '';
   _notesRecog = new SR();
   _notesRecog.lang = 'fr-FR';
   _notesRecog.continuous = true;       // ne s'arrête pas à la 1re pause
-  _notesRecog.interimResults = true;   // affichage en temps réel
+  _notesRecog.interimResults = true;   // nécessaires au moteur, mais NON affichés
 
   _notesRecog.onresult = (event) => {
-    let interim = '';
-    for(let i = event.resultIndex; i < event.results.length; i++){
-      const txt = event.results[i][0].transcript;
-      if(event.results[i].isFinal) _notesFinalText += ' ' + txt;
-      else interim += txt;
+    // Bufferisation par index : on repart de 0 à chaque événement et on
+    // ÉCRASE — les doublons re-livrés par Android atterrissent sur le même
+    // index et ne se cumulent donc jamais.
+    for(let i = 0; i < event.results.length; i++){
+      const txt = (event.results[i][0].transcript || '').trim();
+      if(!txt) continue;
+      if(event.results[i].isFinal) _notesResultsBuf[i] = txt;
+      else _notesLastInterim = txt;
     }
+    // Aucun texte live à l'écran : simple indicateur d'activité.
     const stt = document.getElementById('notesRecStatus');
-    if(stt) stt.textContent = '● ' + (_notesFinalText + ' ' + interim).trim();
+    if(stt) stt.textContent = '● Enregistrement… parle, puis appuie sur Arrêter';
   };
 
   _notesRecog.onerror = (e) => {
@@ -31321,7 +31334,7 @@ function notesToggleRecord(){
   };
 
   _notesRecog.onend = () => {
-    // Fin (arrêt manuel ou silence prolongé) → traitement du texte final
+    // Fin (arrêt manuel ou silence prolongé) → analyse INTÉGRALE en une fois
     const wasRecording = _notesRecording;
     _notesRecording = false;
     _notesSetRecUI(false);
@@ -31354,16 +31367,51 @@ function _notesSetRecUI(on){
   if(stt && on)  stt.textContent = '● Parle… puis appuie sur Arrêter';
 }
 
+/* Filtre de déduplication syntaxique : supprime les n-grammes répétés
+   consécutifs (bégaiements) — "j'ai j'ai j'ai mangé" → "j'ai mangé",
+   "boîte de vis boîte de vis" → "boîte de vis". n testé de 4 à 1. */
+function _notesDedupTranscript(text){
+  let tokens = (text || '').split(/\s+/).filter(Boolean);
+  for(let n = 4; n >= 1; n--){
+    const out = [];
+    let i = 0;
+    while(i < tokens.length){
+      out.push(tokens[i]);
+      // si le n-gramme finissant ici se répète juste après, on saute la répétition
+      if(out.length >= n && i + n < tokens.length + 0){
+        const gram = out.slice(-n).join(' ').toLowerCase();
+        while(i + n < tokens.length + 0 &&
+              tokens.slice(i+1, i+1+n).join(' ').toLowerCase() === gram){
+          i += n; // saute la copie
+        }
+      }
+      i++;
+    }
+    tokens = out;
+  }
+  return tokens.join(' ');
+}
+
 function _notesProcessFinal(){
-  const transcript = (_notesFinalText || '').trim();
+  // Reconstruction INTÉGRALE en une fois depuis le buffer indexé
+  const keys = Object.keys(_notesResultsBuf).map(Number).sort((a,b)=>a-b);
+  let transcript = keys.map(k => _notesResultsBuf[k]).join(' ').trim();
+  if(!transcript) transcript = (_notesLastInterim || '').trim(); // secours : aucun final reçu
+  _notesResultsBuf = {};
+  _notesLastInterim = '';
   _notesFinalText = '';
   if(!transcript){ showToast('⚠️ Rien n\'a été compris'); return; }
-  const items = notesParseTranscript(transcript);
-  if(!items.length){ showToast('⚠️ Aucune tâche détectée'); return; }
-  const pn = _getPinnedNote();
-  items.forEach(text => pn.tasks.push({id:uid(), text, done:false}));
-  _notesCommit();
-  showToast('✓ ' + items.length + ' tâche'+(items.length>1?'s':'')+' ajoutée'+(items.length>1?'s':''));
+
+  // Traitement asynchrone (tâche de fond) : ne bloque jamais l'interface
+  setTimeout(() => {
+    const cleaned = _notesDedupTranscript(transcript);   // anti-bégaiement
+    const items = notesParseTranscript(cleaned);         // découpage PLUS/ET/+
+    if(!items.length){ showToast('⚠️ Aucune tâche détectée'); return; }
+    const pn = _getPinnedNote();
+    items.forEach(text => pn.tasks.push({id:uid(), text, done:false}));
+    _notesCommit();
+    showToast('✓ ' + items.length + ' tâche'+(items.length>1?'s':'')+' ajoutée'+(items.length>1?'s':''));
+  }, 0);
 }
 
 /* Applique la visibilité de l'onglet au démarrage. */
