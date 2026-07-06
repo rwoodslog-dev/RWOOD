@@ -7922,6 +7922,7 @@ function createSite(){
   showToast('Chantier créé');
   if(site.address && data.settings.depotAddress) calculateSiteTrajetZone(site.id, {silent:true});
   if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
+  if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300); // MODULE — SyncAllSites : partage immédiat
   // Pas de synchro auto à la création simple même côté conducteur : il utilise "Mettre en attente"
   // ou ira dans Synchro Équipe depuis la fiche
 }
@@ -9608,6 +9609,7 @@ function updateSiteField(siteId, field, value){
     calculateSiteTrajetZone(siteId, {silent:true});
   }
   if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
+  if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300); // MODULE — SyncAllSites
 }
 
 function setSiteProgress(siteId, value){
@@ -22725,7 +22727,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.33.7';
+const APP_VERSION = '2.34.1';
 
 const CHANGELOG = [
   {
@@ -28700,6 +28702,24 @@ async function _addDeletedSiteId(siteId){
   } catch(e){ /* silencieux */ }
 }
 
+/* Retire un id de la liste des tombstones (utilisé à la restauration dev). */
+async function _removeDeletedSiteId(siteId){
+  try{
+    const ids = await _fetchDeletedSiteIds();
+    if(!ids.includes(siteId)) return;
+    const next = ids.filter(x => x !== siteId);
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DELETED_SITES_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ ids: next })
+      })
+    });
+  } catch(e){ /* silencieux */ }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    CODE CREATOR — generation de Code Entreprise (Mode Developpeur)
    Cle dediee, totalement separee des donnees clients.
@@ -29639,6 +29659,137 @@ async function pullSharedSites(){
 
 /* Ouvre la selection d'un chef d'equipe (parmi les contacts) pour assigner un chantier */
 let _assignChefCandidates = [];
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — SyncAllSites  ·  début
+   Objectif : TOUT LE MONDE voit TOUS les chantiers de l'entreprise.
+   - Push universel : pousse tous les chantiers locaux vers la clé
+     partagée (SHARED_SITES_KEY), pas seulement ceux marqués syncLive.
+   - Pull universel : tous les rôles (ouvrier inclus) récupèrent la
+     liste partagée complète et la fusionnent dans data.sites.
+   N'écrase jamais une saisie locale sensible : fusionne les champs
+   d'identité du chantier. Débrayable : supprimer ce bloc + les 2
+   accroches (syncAllSitesPushAll / syncAllSitesPull) dans les hooks.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Pousse TOUS les chantiers locaux vers la synchro partagée. */
+async function syncAllSitesPushAll(){
+  try{
+    if(!Array.isArray(data.sites) || !data.sites.length) return;
+    const deletedIds = (typeof _fetchDeletedSiteIds === 'function') ? await _fetchDeletedSiteIds() : [];
+    const shared = await _fetchSharedSites();
+    const byId = {};
+    shared.forEach(s => { if(s && s.id) byId[s.id] = s; });
+
+    let touched = false;
+    data.sites.forEach(site => {
+      if(!site || !site.id) return;
+      if(deletedIds.includes(site.id)) return;         // supprimé définitivement : on ne repousse pas
+      // On ne re-pousse pas une copie reçue d'un autre appareil telle quelle
+      // (elle est déjà partagée par son propriétaire) — sauf si on en est l'origine.
+      const snapshot = {
+        id: site.id, name: site.name, address: site.address, status: site.status,
+        progress: site.progress, color: site.color, trajetZone: site.trajetZone,
+        keyboxCode: site.keyboxCode || '', startDate: site.startDate || null,
+        dueDate: site.dueDate || null, deliveryDates: site.deliveryDates || [],
+        customEvents: site.customEvents || [], ownerDeviceId: site.ownerDeviceId || getDeviceSyncId(),
+        syncLive: true, // [syncall] tous les chantiers deviennent visibles/synchronisés
+        lastSyncAt: new Date().toISOString(),
+        assignedTeamName: site.assignedTeamName || '',
+        assignedChefs: Array.isArray(site.assignedChefs) ? site.assignedChefs : [],
+        assignedChefContactId: site.assignedChefContactId || null,
+        assignedChefPhone: site.assignedChefPhone || '', assignedChefName: site.assignedChefName || '',
+        assignedChefAuthId: site.assignedChefAuthId || '', assignedAt: site.assignedAt || null,
+        teamName: site.teamName || '',
+        sharedMedia: Array.isArray(site.sharedMedia) ? site.sharedMedia : [],
+        assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : []
+      };
+      const existing = byId[site.id];
+      // Écrase si absent, ou si notre version est plus récente / on en est l'auteur
+      if(!existing || (site.ownerDeviceId || getDeviceSyncId()) === getDeviceSyncId()){
+        byId[site.id] = snapshot;
+        touched = true;
+      }
+    });
+
+    if(touched){
+      await _saveSharedSites(Object.values(byId));
+    }
+  } catch(e){ /* silencieux */ }
+}
+
+/* Récupère TOUS les chantiers partagés (tous rôles) et les fusionne. */
+async function syncAllSitesPull(){
+  try{
+    const deletedIds = (typeof _fetchDeletedSiteIds === 'function') ? await _fetchDeletedSiteIds() : [];
+    // Nettoyer les tombstoned encore présents localement
+    if(deletedIds.length){
+      const before = data.sites.length;
+      data.sites = data.sites.filter(s => !deletedIds.includes(s.id));
+      if(data.sites.length !== before) saveData();
+    }
+
+    const shared = await _fetchSharedSites();
+    const relevant = shared.filter(s => s && s.id && !deletedIds.includes(s.id));
+    if(!relevant.length) return;
+
+    const identityFields = ['name','address','status','progress','color','keyboxCode',
+      'startDate','dueDate','deliveryDates','customEvents','trajetZone','teamName',
+      'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
+      'assignedTeamName','sharedMedia','lastSyncAt','ownerDeviceId'];
+
+    let changed = false;
+    relevant.forEach(remote => {
+      const idx = data.sites.findIndex(s => s.id === remote.id);
+      if(idx === -1){
+        // Nouveau chantier reçu : copie locale visible par tous
+        data.sites.push({ ...remote, shared:true, stockNeeds:{}, stockTaken:{} });
+        changed = true;
+      } else {
+        // Chantier déjà présent : on rafraîchit son identité si la version
+        // distante est plus récente, sans toucher aux données locales de stock.
+        const local = data.sites[idx];
+        const remoteTs = Date.parse(remote.lastSyncAt || 0) || 0;
+        const localTs  = Date.parse(local.lastSyncAt || 0) || 0;
+        // Ne pas écraser notre propre chantier plus récent
+        const iAmOwner = (local.ownerDeviceId || '') === getDeviceSyncId();
+        if(!iAmOwner && remoteTs >= localTs){
+          identityFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+          local.shared = true;
+          changed = true;
+        } else if(!local.shared){
+          local.shared = true;
+          changed = true;
+        }
+      }
+    });
+
+    if(changed){
+      saveData();
+      const chantiersView = document.getElementById('view-chantiers');
+      if(chantiersView && chantiersView.classList.contains('active') && typeof renderSites === 'function') renderSites();
+    }
+  } catch(e){ /* silencieux */ }
+}
+
+/* Cycle complet : je pousse mes chantiers, puis je récupère ceux des autres. */
+async function syncAllSitesCycle(){
+  await syncAllSitesPushAll();
+  await syncAllSitesPull();
+}
+
+/* Polling léger + au démarrage + au retour au premier plan. */
+let _syncAllSitesTimer = null;
+function syncAllSitesStart(){
+  if(_syncAllSitesTimer) return;
+  setTimeout(syncAllSitesCycle, 3000);                 // au démarrage
+  _syncAllSitesTimer = setInterval(syncAllSitesCycle, 30000); // toutes les 30 s
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible') syncAllSitesCycle();
+  });
+}
+document.addEventListener('DOMContentLoaded', () => setTimeout(syncAllSitesStart, 3500));
+/* ═══ MODULE — SyncAllSites  ·  fin ═══ */
 
 async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
@@ -31559,6 +31710,9 @@ async function devChantiersToTrash(siteId){
   data.sites = (data.sites||[]).filter(x=>x.id!==siteId);
   saveData();
   await _devChantiersRemoveFromSharedStores(siteId);
+  // [syncall] Poser un tombstone : empêche que SyncAllSites (ou un autre
+  // appareil ayant encore ce chantier en local) ne le repousse aussitôt.
+  if(typeof _addDeletedSiteId === 'function'){ try{ await _addDeletedSiteId(siteId); }catch(e){} }
 
   showToast('🗑 Envoyé à la corbeille');
   const list = document.getElementById('devPanelList');
@@ -31594,14 +31748,16 @@ async function devChantiersRestore(siteId){
   const item = trash.find(t=>t.snapshot && t.snapshot.id===siteId);
   if(!item){ showToast('Introuvable en corbeille'); return; }
   const snap = item.snapshot;
+  // [syncall] Lever le tombstone AVANT de republier, sinon la restauration
+  // serait aussitôt annulée par le filtre "supprimé définitivement".
+  if(typeof _removeDeletedSiteId === 'function'){ try{ await _removeDeletedSiteId(snap.id); }catch(e){} }
   if(!(data.sites||[]).some(s=>s.id===snap.id)){ data.sites.push({ ...snap }); }
   // retire de la corbeille
   data.settings.devChantiersTrash = trash.filter(t=>!(t.snapshot && t.snapshot.id===siteId));
   saveData();
-  // republie vers la clé chefs si c'était un chantier partagé
-  if(typeof pushSiteFromChefToConducteur === 'function' || typeof pushSharedSite === 'function'){
-    try{ if(typeof pushSharedSite === 'function') await pushSharedSite(data.sites.find(s=>s.id===snap.id)); }catch(e){}
-  }
+  // republie vers la synchro partagée
+  try{ if(typeof pushSharedSite === 'function') await pushSharedSite(data.sites.find(s=>s.id===snap.id)); }catch(e){}
+  if(typeof syncAllSitesCycle === 'function'){ try{ await syncAllSitesCycle(); }catch(e){} }
   showToast('↩️ Chantier restauré');
   const list = document.getElementById('devPanelList');
   if(list) devChantiersRender(list);
