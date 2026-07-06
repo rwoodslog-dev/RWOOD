@@ -3215,6 +3215,11 @@
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"/></svg></span><span class="lbl">Suivi</span>
       </button>
 
+      <!-- MODULE — DevAccess : onglet DEV, visible uniquement pour DEV_USER_ID -->
+      <button class="nav-btn" id="devNavBtn" style="display:none;" onclick="devAccessOpenPanel()">
+        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6M13 4l-2 16"/></svg></span><span class="lbl">DEV</span>
+      </button>
+
       <button class="nav-btn" data-view="alertes-conducteur" id="navBtnAlertesConducteur" style="display:none;" onclick="goTo('alertes-conducteur')">
         <span class="ico" style="position:relative;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
@@ -7965,6 +7970,7 @@ function createSite(){
   if(site.address && data.settings.depotAddress) calculateSiteTrajetZone(site.id, {silent:true});
   if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
   if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300); // MODULE — SyncAllSites : partage immédiat
+  if(typeof devSiteAlertRaise === 'function') devSiteAlertRaise(site); // MODULE — DevSiteAlerts
   // Pas de synchro auto à la création simple même côté conducteur : il utilise "Mettre en attente"
   // ou ira dans Synchro Équipe depuis la fiche
 }
@@ -18754,12 +18760,14 @@ function getDateOfISOWeek(week, year){
   initTheme();
   setupAllDropZones();
   await loadData();
+  if(typeof devAccessAutoUnlock === 'function') devAccessAutoUnlock(); // MODULE — DevAccess : auto-unlock si mon compte
   // Repaint immédiat avant les rendus lourds — l'UI s'affiche vite
   await new Promise(r => requestAnimationFrame(r));
   applyComptableNavRestrictions();
   applyNavOrder();
   if(typeof patronNavPreset === 'function') patronNavPreset(); // [navpreset] MODULE — PatronSync
   applyNavHidden();
+  if(typeof devAccessApplyNav === 'function') devAccessApplyNav(); // MODULE — DevAccess : onglet DEV réservé
   loadAccentColor();
   setupNavReorder();
 
@@ -20598,6 +20606,7 @@ function setMyProfileRole(el, role){
 function applyRoleLockUI(){
   if(typeof suiviApplyNavVisibility === 'function') suiviApplyNavVisibility(); // MODULE — SuiviHeures
   if(typeof zoneAccessApplyNav === 'function') zoneAccessApplyNav(); // MODULE — ZoneAccess
+  if(typeof devAccessApplyNav === 'function') devAccessApplyNav(); // MODULE — DevAccess
   const chips    = document.getElementById('myProfileRoleChips'); // legacy, peut être absent
   const lockHint = document.getElementById('myProfileRoleLockHint');
 
@@ -22815,7 +22824,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.35.1';
+const APP_VERSION = '2.37.0';
 
 const CHANGELOG = [
   {
@@ -28384,6 +28393,55 @@ function _refreshAfterRoleSwitch(){
 
 
 const DEV_ACCESS_CODE = '31072021'; // code fourni par le developpeur
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — DevAccess  ·  début
+   Accès développeur facilité pour le compte de référence, SANS retirer
+   l'accès classique par code (logo → code, toujours actif).
+   - DEV_USER_ID : mon compte. Au chargement, si l'utilisateur connecté
+     correspond, on active le rôle dev en tâche de fond (pas de code).
+   - Onglet nav "DEV" visible UNIQUEMENT pour DEV_USER_ID → ouvre le
+     panneau dev directement.
+   Mon compte garde 100% de ses fonctions Chef d'équipe.
+   Retrait : supprimer ce bloc + le bouton #devNavBtn + l'accroche
+   devAccessAutoUnlock() et devAccessApplyNav().
+   ═══════════════════════════════════════════════════════════════════ */
+const DEV_USER_ID = 'remi.piechaczek'; // authId de référence (prenom.nom)
+
+/* authId de l'utilisateur connecté (minuscules, sans espaces). */
+function devAccessCurrentUser(){
+  const a = data.settings && data.settings.auth && data.settings.auth.authId;
+  return (a || '').toString().trim().toLowerCase();
+}
+function devAccessIsDevUser(){
+  return devAccessCurrentUser() === DEV_USER_ID.toLowerCase();
+}
+
+/* Auto-déverrouillage silencieux si c'est mon compte (aucun code demandé). */
+function devAccessAutoUnlock(){
+  if(devAccessIsDevUser()){
+    window._devRoleUnlocked = true;
+    if(data.settings && data.settings.auth) data.settings.auth.roleLocked = false;
+  }
+}
+
+/* Onglet "DEV" : visible seulement pour DEV_USER_ID, masqué pour tous. */
+function devAccessApplyNav(){
+  const btn = document.getElementById('devNavBtn');
+  if(!btn) return;
+  btn.style.display = devAccessIsDevUser() ? '' : 'none';
+}
+
+/* Ouvre le panneau dev directement (sans code) depuis l'onglet. */
+function devAccessOpenPanel(){
+  if(!devAccessIsDevUser()) return; // garde stricte
+  window._devRoleUnlocked = true;
+  openModal('devPanel');
+  _devCurrentTab = 'chantiers'; // ouvre sur la vue chantiers (alertes + force-sync)
+  switchDevTab('chantiers');
+  if(typeof comptaEditSyncToggle === 'function') comptaEditSyncToggle();
+}
+/* ═══ MODULE — DevAccess  ·  fin ═══ */
 const REVOKED_DEVICES_KEY = 'company_revoked_devices'; // cle Supabase fixe
 
 function openDevCodeModal(){
@@ -29945,6 +30003,160 @@ function syncAllSitesStart(){
 }
 document.addEventListener('DOMContentLoaded', () => setTimeout(syncAllSitesStart, 3500));
 /* ═══ MODULE — SyncAllSites  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — DevSiteAlerts  ·  début
+   1) Alerte : chaque création de chantier par un utilisateur pose une
+      alerte dans un canal Supabase dédié (DEV_SITE_ALERTS_KEY), lue
+      uniquement dans le Mode Développeur (invisible pour les autres).
+   2) Force-sync : bouton dev qui pousse data.sites vers TOUS via le
+      canal partagé, en contournant les conditions locales.
+   Retrait : supprimer ce bloc + les appels devSiteAlertRaise() aux
+   points de création + le rendu dans devChantiersRender.
+   ═══════════════════════════════════════════════════════════════════ */
+const DEV_SITE_ALERTS_KEY = 'dev_site_alerts_v1';
+
+/* Pose une alerte "nouveau chantier créé" sur le canal dev (best effort). */
+async function devSiteAlertRaise(site){
+  try{
+    if(!site || !site.id) return;
+    const prof = (data.settings && data.settings.myProfile) || {};
+    const who = prof.authId || ((prof.firstName||'') + '.' + (prof.lastName||'')).toLowerCase() || 'inconnu';
+    const alert = {
+      id: site.id,
+      user: who,
+      role: prof.role || '',
+      name: site.name || '(sans nom)',
+      address: site.address || '',
+      ts: Date.now()
+    };
+    // Récupère la liste existante, ajoute (dédup par site.id, garde le plus récent)
+    let list = await devSiteAlertsFetch();
+    list = list.filter(a => a.id !== alert.id);
+    list.unshift(alert);
+    if(list.length > 100) list = list.slice(0, 100); // borne
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DEV_SITE_ALERTS_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ alerts: list })
+      })
+    });
+  } catch(e){ /* silencieux : l'alerte ne doit jamais bloquer la création */ }
+}
+
+/* Lit les alertes dev (retourne un tableau, jamais null). */
+async function devSiteAlertsFetch(){
+  try{
+    const res = await supaFetch(
+      '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DEV_SITE_ALERTS_KEY) + '&select=data',
+      { headers:{ 'Prefer':'' } }
+    );
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && Array.isArray(d.alerts)) ? d.alerts : [];
+  } catch(e){ return []; }
+}
+
+/* Efface une alerte (dev l'a traitée). */
+async function devSiteAlertDismiss(siteId){
+  try{
+    let list = await devSiteAlertsFetch();
+    list = list.filter(a => a.id !== siteId);
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DEV_SITE_ALERTS_KEY, updated_at: new Date().toISOString(),
+        data: JSON.stringify({ alerts: list })
+      })
+    });
+  } catch(e){}
+  const el = document.getElementById('devPanelList');
+  if(el && typeof devChantiersRender === 'function') devChantiersRender(el);
+}
+
+/* Efface toutes les alertes. */
+async function devSiteAlertsClearAll(){
+  try{
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DEV_SITE_ALERTS_KEY, updated_at: new Date().toISOString(),
+        data: JSON.stringify({ alerts: [] })
+      })
+    });
+  } catch(e){}
+  showToast('Alertes effacées');
+  const el = document.getElementById('devPanelList');
+  if(el && typeof devChantiersRender === 'function') devChantiersRender(el);
+}
+
+/* ⚡ FORCE-SYNC : pousse data.sites vers TOUS (canal partagé), en
+   contournant les conditions locales, puis re-tire pour cohérence. */
+async function devForceSyncAllSites(){
+  const btn = document.getElementById('devForceSyncBtn');
+  if(!confirm('Forcer la re-synchronisation de TOUS les chantiers vers tous les utilisateurs ?\n\nCela réécrit la liste partagée depuis cet appareil.')) return;
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Synchronisation…'; }
+  try{
+    if(!navigator.onLine){ showToast('⚠️ Hors ligne'); return; }
+    // 1) Récupère les tombstones pour ne pas ressusciter des chantiers supprimés
+    const deletedIds = (typeof _fetchDeletedSiteIds === 'function') ? await _fetchDeletedSiteIds() : [];
+    // 2) Construit la liste propre depuis data.sites (source dev de vérité)
+    const clean = (data.sites || []).filter(s => s && s.id && !deletedIds.includes(s.id));
+    // 3) Écrase la clé partagée avec cette liste (force l'écriture globale)
+    if(typeof _saveSharedSites === 'function'){
+      await _saveSharedSites(clean.map(s => Object.assign({}, s, {
+        syncLive: true, lastSyncAt: new Date().toISOString()
+      })));
+    }
+    // 4) Push/pull massif via le module SyncAllSites pour redistribuer
+    if(typeof syncAllSitesPushAll === 'function') await syncAllSitesPushAll();
+    if(typeof syncAllSitesPull === 'function') await syncAllSitesPull();
+    showToast('⚡ Re-synchronisation forcée effectuée');
+  } catch(e){
+    showToast('⚠️ Échec de la synchro forcée');
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = '⚡ Forcer la re-synchronisation globale'; }
+    const el = document.getElementById('devPanelList');
+    if(el && typeof devChantiersRender === 'function') devChantiersRender(el);
+  }
+}
+
+/* Rend le bandeau d'alertes + le bouton force-sync en tête du panneau dev. */
+async function devSiteAlertsRenderInto(container){
+  const alerts = await devSiteAlertsFetch();
+  const alertsHtml = alerts.length ? `
+    <div style="margin-bottom:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-size:13px;font-weight:700;color:#E07A63;">🔔 Nouveaux chantiers (${alerts.length})</span>
+        <button class="btn btn-outline btn-sm" onclick="devSiteAlertsClearAll()">Tout effacer</button>
+      </div>
+      ${alerts.map(a => `
+        <div style="background:#E07A6318;border:1px solid #E07A6355;border-radius:10px;padding:8px 10px;margin-bottom:6px;font-size:12px;">
+          <div style="display:flex;justify-content:space-between;gap:8px;">
+            <span style="line-height:1.4;">⚠️ Ajouté par <b>${escapeHtml(a.user)}</b>${a.role?' ('+escapeHtml(a.role)+')':''} :<br><b>${escapeHtml(a.name)}</b>${a.address?' — '+escapeHtml(a.address):''}</span>
+            <button onclick="devSiteAlertDismiss('${a.id}')" style="background:none;border:none;color:var(--ink-soft);font-size:18px;cursor:pointer;flex-shrink:0;">×</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : '';
+
+  const syncBtn = `
+    <button id="devForceSyncBtn" class="btn btn-block" style="background:#C0392B;color:#fff;font-weight:700;margin-bottom:14px;" onclick="devForceSyncAllSites()">
+      ⚡ Forcer la re-synchronisation globale
+    </button>`;
+
+  const wrap = document.createElement('div');
+  wrap.innerHTML = alertsHtml + syncBtn;
+  container.prepend(wrap);
+}
+/* ═══ MODULE — DevSiteAlerts  ·  fin ═══ */
 
 async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
@@ -31810,12 +32022,17 @@ async function devChantiersRender(container){
 
   if(_devChantiersView === 'trash'){
     container.innerHTML = header + _devChantiersRenderTrash(trash);
+    if(typeof devSiteAlertsRenderInto === 'function'){ try{ await devSiteAlertsRenderInto(container); }catch(e){} }
     return;
   }
 
   container.innerHTML = header + '<div class="hint" style="text-align:center;padding:16px 0;">Chargement des chantiers…</div>';
   const sites = await _devChantiersCollect();
-  if(!sites.length){ container.innerHTML = header + '<div class="hint" style="text-align:center;padding:20px 0;">Aucun chantier en base.</div>'; return; }
+  if(!sites.length){
+    container.innerHTML = header + '<div class="hint" style="text-align:center;padding:20px 0;">Aucun chantier en base.</div>';
+    if(typeof devSiteAlertsRenderInto === 'function'){ try{ await devSiteAlertsRenderInto(container); }catch(e){} }
+    return;
+  }
 
   const rows = sites.sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(s => {
     const media = Array.isArray(s.sharedMedia)?s.sharedMedia.length:0;
@@ -31828,6 +32045,7 @@ async function devChantiersRender(container){
       + '</div>';
   }).join('');
   container.innerHTML = header + rows;
+  if(typeof devSiteAlertsRenderInto === 'function'){ try{ await devSiteAlertsRenderInto(container); }catch(e){} }
 }
 
 function _devChantiersRenderTrash(trash){
