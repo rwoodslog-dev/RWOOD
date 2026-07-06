@@ -2937,6 +2937,18 @@
     background:var(--card); color:var(--ink); border:1px solid var(--line);
     font-size:14px;
   }
+  /* MODULE — SitesFilter : barre recherche + filtres */
+  .sites-filter-bar{ margin-bottom:14px; display:flex; flex-direction:column; gap:8px; }
+  .sites-filter-search{
+    width:100%; box-sizing:border-box; padding:12px 14px; font-size:15px;
+    border-radius:11px; border:1px solid var(--line); background:var(--card); color:var(--ink);
+  }
+  .sites-filter-search:focus{ outline:none; border-color:var(--wood); }
+  .sites-filter-selects{ display:flex; gap:8px; }
+  .sites-filter-selects select{
+    flex:1; min-width:0; padding:10px 12px; font-size:14px;
+    border-radius:11px; border:1px solid var(--line); background:var(--card); color:var(--ink);
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -7741,7 +7753,18 @@ function renderSites(){
   const sorted = [...data.sites].sort((a,b)=> (order[a.status]??9)-(order[b.status]??9));
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
 
-  container.innerHTML = sorted.map(site => `
+  // MODULE — SitesFilter : barre recherche + filtres zone/chef, puis filtrage cumulé
+  const filterBarHtml = _sitesFilterBarHtml(sorted);
+  const visible = _sitesApplyFilters(sorted);
+
+  if(!visible.length){
+    container.innerHTML = filterBarHtml
+      + '<div class="empty" style="padding:40px 20px;"><div class="icon" style="font-size:38px;">🏜️</div><h3>Aucun chantier ne correspond à vos critères</h3><p>Modifie ta recherche ou tes filtres.</p></div>';
+    _sitesFilterRestoreFocus();
+    return;
+  }
+
+  container.innerHTML = filterBarHtml + visible.map(site => `
     <div class="card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}" onclick="goTo('detail', '${site.id}')">
       <div class="card-row">
         <div>
@@ -7760,7 +7783,85 @@ function renderSites(){
       ` : ''}
     </div>
   `).join('');
+  _sitesFilterRestoreFocus();
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — SitesFilter  ·  début
+   Recherche texte (nom/adresse) + filtre zone + filtre chef assigné,
+   cumulés (ET). État conservé en mémoire pour survivre au re-render.
+   Retrait : supprimer ce bloc + les 3 lignes [sitesfilter] dans
+   renderSites (filterBarHtml / _sitesApplyFilters / restoreFocus).
+   ═══════════════════════════════════════════════════════════════════ */
+const _sitesFilter = { text:'', zone:'', chef:'' };
+
+/* Zones réellement présentes dans les chantiers (triées). */
+function _sitesFilterZones(sites){
+  const set = new Set();
+  sites.forEach(s => { if(s.trajetZone) set.add(String(s.trajetZone)); });
+  return Array.from(set).sort((a,b) => a.localeCompare(b, undefined, {numeric:true}));
+}
+/* Chefs assignés réellement présents (nom). */
+function _sitesFilterChefs(sites){
+  const set = new Set();
+  sites.forEach(s => { if(s.assignedChefName) set.add(s.assignedChefName); });
+  return Array.from(set).sort((a,b) => a.localeCompare(b));
+}
+
+/* Applique les 3 critères cumulés. */
+function _sitesApplyFilters(sites){
+  const q = (_sitesFilter.text || '').toLowerCase().trim();
+  return sites.filter(s => {
+    if(q){
+      const hay = ((s.name||'') + ' ' + (s.address||'')).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    if(_sitesFilter.zone && String(s.trajetZone||'') !== _sitesFilter.zone) return false;
+    if(_sitesFilter.chef && (s.assignedChefName||'') !== _sitesFilter.chef) return false;
+    return true;
+  });
+}
+
+/* Barre HTML : recherche + 2 selects, alimentés dynamiquement. */
+function _sitesFilterBarHtml(sites){
+  const zones = _sitesFilterZones(sites);
+  const chefs = _sitesFilterChefs(sites);
+  const zoneOpts = '<option value="">Toutes les zones</option>'
+    + zones.map(z => `<option value="${escapeHtml(z)}"${_sitesFilter.zone===z?' selected':''}>Zone ${escapeHtml(z)}</option>`).join('');
+  const chefOpts = '<option value="">Toutes les assignations</option>'
+    + chefs.map(c => `<option value="${escapeHtml(c)}"${_sitesFilter.chef===c?' selected':''}>${escapeHtml(c)}</option>`).join('');
+  // Les selects zone/chef ne s'affichent que s'il y a matière à filtrer
+  const showZone = zones.length > 0;
+  const showChef = chefs.length > 0;
+  return `
+    <div class="sites-filter-bar">
+      <input type="text" id="search-chantiers" class="sites-filter-search" placeholder="🔍 Rechercher un chantier..."
+        value="${escapeHtml(_sitesFilter.text)}" oninput="_sitesFilterOnText(this.value)">
+      ${(showZone || showChef) ? `<div class="sites-filter-selects">
+        ${showZone ? `<select id="filter-zone" onchange="_sitesFilterOnZone(this.value)">${zoneOpts}</select>` : ''}
+        ${showChef ? `<select id="filter-assignation" onchange="_sitesFilterOnChef(this.value)">${chefOpts}</select>` : ''}
+      </div>` : ''}
+    </div>`;
+}
+
+/* Handlers : mettent à jour l'état + re-render (sans reconstruire la barre
+   pour le texte, afin de garder le focus/curseur pendant la frappe). */
+let _sitesFilterFocusFlag = false;
+function _sitesFilterOnText(v){ _sitesFilter.text = v; _sitesFilterFocusFlag = true; renderSites(); }
+function _sitesFilterOnZone(v){ _sitesFilter.zone = v; renderSites(); }
+function _sitesFilterOnChef(v){ _sitesFilter.chef = v; renderSites(); }
+
+/* Rend le focus au champ de recherche après re-render (frappe continue). */
+function _sitesFilterRestoreFocus(){
+  if(!_sitesFilterFocusFlag) return;
+  _sitesFilterFocusFlag = false;
+  const el = document.getElementById('search-chantiers');
+  if(el){
+    el.focus();
+    const val = el.value; el.value = ''; el.value = val; // curseur en fin
+  }
+}
+/* ═══ MODULE — SitesFilter  ·  fin ═══ */
 
 /* Calcule l'état de préparation d'un chantier (checklist conducteur de travaux) */
 function getSiteReadiness(site){
@@ -22831,7 +22932,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.37.1';
+const APP_VERSION = '2.38.0';
 
 const CHANGELOG = [
   {
