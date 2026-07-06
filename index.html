@@ -3227,7 +3227,7 @@
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"/></svg></span><span class="lbl">Suivi</span>
       </button>
 
-      <!-- MODULE — DevAccess : onglet DEV, visible uniquement pour DEV_USER_ID -->
+      <!-- MODULE — DevAccess : onglet DEV, visible si is_dev=true (flag dynamique) -->
       <button class="nav-btn" id="devNavBtn" style="display:none;" onclick="devAccessOpenPanel()">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6M13 4l-2 16"/></svg></span><span class="lbl">DEV</span>
       </button>
@@ -18861,7 +18861,7 @@ function getDateOfISOWeek(week, year){
   initTheme();
   setupAllDropZones();
   await loadData();
-  if(typeof devAccessAutoUnlock === 'function') devAccessAutoUnlock(); // MODULE — DevAccess : auto-unlock si mon compte
+  if(typeof devAccessRefresh === 'function') devAccessRefresh(); // MODULE — DevAccess : droits dynamiques (async)
   // Repaint immédiat avant les rendus lourds — l'UI s'affiche vite
   await new Promise(r => requestAnimationFrame(r));
   applyComptableNavRestrictions();
@@ -22932,7 +22932,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.38.0';
+const APP_VERSION = '2.39.0';
 
 const CHANGELOG = [
   {
@@ -28503,41 +28503,97 @@ function _refreshAfterRoleSwitch(){
 const DEV_ACCESS_CODE = '31072021'; // code fourni par le developpeur
 
 /* ═══════════════════════════════════════════════════════════════════
-   MODULE — DevAccess  ·  début
-   Accès développeur facilité pour le compte de référence, SANS retirer
-   l'accès classique par code (logo → code, toujours actif).
-   - DEV_USER_ID : mon compte. Au chargement, si l'utilisateur connecté
-     correspond, on active le rôle dev en tâche de fond (pas de code).
-   - Onglet nav "DEV" visible UNIQUEMENT pour DEV_USER_ID → ouvre le
-     panneau dev directement.
-   Mon compte garde 100% de ses fonctions Chef d'équipe.
-   Retrait : supprimer ce bloc + le bouton #devNavBtn + l'accroche
-   devAccessAutoUnlock() et devAccessApplyNav().
+   MODULE — DevAccess  ·  début   (v2.38.0 — droits dynamiques)
+   Les droits développeur ne sont PLUS liés à un ID en dur. Ils reposent
+   sur un flag is_dev par utilisateur, stocké dans un canal Supabase
+   dédié (DEV_USERS_KEY = liste d'authId autorisés). Un dev coche/décoche
+   les utilisateurs dans le panneau (section "Gestion des accès Dev").
+   - Onglet nav "DEV" visible si l'utilisateur connecté a is_dev = true.
+   - Accès de secours : logo → code, toujours actif (inchangé).
+   Retrait : supprimer ce bloc + le bouton #devNavBtn + les accroches
+   devAccessRefresh()/devAccessApplyNav() + la section dans le panneau.
    ═══════════════════════════════════════════════════════════════════ */
-const DEV_USER_ID = 'remi.piechaczek'; // authId de référence (prenom.nom)
+const DEV_USERS_KEY = 'dev_users_v1'; // canal Supabase : { authIds: [...] }
+let _devUsersCache = null;            // liste d'authId dev (en mémoire)
 
 /* authId de l'utilisateur connecté (minuscules, sans espaces). */
 function devAccessCurrentUser(){
   const a = data.settings && data.settings.auth && data.settings.auth.authId;
   return (a || '').toString().trim().toLowerCase();
 }
-function devAccessIsDevUser(){
-  return devAccessCurrentUser() === DEV_USER_ID.toLowerCase();
+
+/* Récupère la liste des authId ayant le rôle dev (depuis Supabase). */
+async function devAccessFetchList(){
+  try{
+    const res = await supaFetch(
+      '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DEV_USERS_KEY) + '&select=data',
+      { headers:{ 'Prefer':'' } }
+    );
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const list = (d && Array.isArray(d.authIds)) ? d.authIds : [];
+    _devUsersCache = list.map(x => String(x).toLowerCase());
+    return _devUsersCache;
+  } catch(e){ return _devUsersCache || []; }
 }
 
-/* Auto-déverrouillage silencieux si c'est mon compte (aucun code demandé).
-   Ne s'exécute PAS si l'app est verrouillée (déconnexion en cours), sinon
-   le rôle dev serait réactivé et empêcherait de repasser par l'écran de
-   connexion. */
+/* Enregistre la liste des authId dev (grave le flag en base). */
+async function devAccessSaveList(list){
+  const clean = Array.from(new Set((list||[]).map(x => String(x).toLowerCase()).filter(Boolean)));
+  _devUsersCache = clean;
+  await supaFetch('/rest/v1/rwood_sync', {
+    method: 'POST',
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      user_id: DEV_USERS_KEY, updated_at: new Date().toISOString(),
+      data: JSON.stringify({ authIds: clean })
+    })
+  });
+}
+
+/* L'utilisateur connecté a-t-il is_dev = true ? (depuis le cache). */
+function devAccessIsDevUser(){
+  const me = devAccessCurrentUser();
+  if(!me) return false;
+  return Array.isArray(_devUsersCache) && _devUsersCache.includes(me);
+}
+
+/* Coche/décoche le rôle dev d'un utilisateur (grave en base + rafraîchit). */
+async function devAccessToggleUser(authId, enabled){
+  const id = String(authId||'').trim().toLowerCase();
+  if(!id) return;
+  let list = await devAccessFetchList();
+  list = list.slice();
+  if(enabled){ if(!list.includes(id)) list.push(id); }
+  else { list = list.filter(x => x !== id); }
+  await devAccessSaveList(list);
+  devAccessApplyNav();     // maj immédiate de l'onglet (si je me suis modifié)
+  devAccessAutoUnlock();
+  showToast(enabled ? '✓ Rôle Dev accordé' : 'Rôle Dev retiré');
+  const el = document.getElementById('devPanelList');
+  if(el && _devCurrentTab === 'comptes' && typeof refreshDevPanel === 'function') refreshDevPanel();
+}
+
+/* Charge la liste dev puis applique nav + auto-unlock (au démarrage). */
+async function devAccessRefresh(){
+  await devAccessFetchList();
+  devAccessAutoUnlock();
+  devAccessApplyNav();
+}
+
+/* Auto-déverrouillage silencieux si l'utilisateur connecté est dev.
+   Ne s'exécute PAS si l'app est verrouillée (déconnexion en cours). */
 function devAccessAutoUnlock(){
-  if(typeof isAppLocked === 'function' && isAppLocked()) return; // déconnecté : on ne réactive rien
+  if(typeof isAppLocked === 'function' && isAppLocked()) return;
   if(devAccessIsDevUser()){
     window._devRoleUnlocked = true;
     if(data.settings && data.settings.auth) data.settings.auth.roleLocked = false;
   }
 }
 
-/* Onglet "DEV" : visible seulement pour DEV_USER_ID, masqué pour tous. */
+/* Onglet "DEV" : visible seulement si is_dev = true pour l'utilisateur. */
 function devAccessApplyNav(){
   const btn = document.getElementById('devNavBtn');
   if(!btn) return;
@@ -28549,7 +28605,7 @@ function devAccessOpenPanel(){
   if(!devAccessIsDevUser()) return; // garde stricte
   window._devRoleUnlocked = true;
   openModal('devPanel');
-  _devCurrentTab = 'chantiers'; // ouvre sur la vue chantiers (alertes + force-sync)
+  _devCurrentTab = 'chantiers';
   switchDevTab('chantiers');
   if(typeof comptaEditSyncToggle === 'function') comptaEditSyncToggle();
 }
@@ -28617,6 +28673,7 @@ async function refreshDevPanel(){
 /* ── Onglet Comptes : tous les utilisateurs inscrits (registre USERS_REGISTRY_KEY) ── */
 async function _renderDevTabComptes(list){
   const users = await _fetchUsersRegistry();
+  const devList = (typeof devAccessFetchList === 'function') ? await devAccessFetchList() : []; // MODULE — DevAccess
   if(!users || !users.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
     return;
@@ -28629,8 +28686,11 @@ async function _renderDevTabComptes(list){
     <div class="hint" style="margin-bottom:10px;">
       ${sorted.length} utilisateur${sorted.length>1?'s':''} inscrit${sorted.length>1?'s':''}
       <span style="float:right;font-size:10px;opacity:0.6;">🗑 = registre + pointages</span>
-    </div>` +
-  sorted.map(u => `
+    </div>
+    <div style="font-size:12px;font-weight:700;color:var(--wood);margin:4px 0 10px;">🔑 Gestion des accès Dev — coche pour accorder le rôle développeur</div>` +
+  sorted.map(u => {
+    const isDev = Array.isArray(devList) && devList.includes(String(u.authId||'').toLowerCase());
+    return `
     <div class="card" style="margin-bottom:8px;">
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="font-size:22px; flex-shrink:0;">${roleIcon[u.role]||'👤'}</span>
@@ -28645,8 +28705,14 @@ async function _renderDevTabComptes(list){
         <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;"
           onclick="confirmDeleteUserFull('${escapeHtml(u.authId)}','${escapeHtml(u.name||'?')}')">🗑</button>
       </div>
-    </div>
-  `).join('');
+      <label style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; padding-top:10px; border-top:1px solid var(--line); cursor:pointer;">
+        <span style="font-size:13px;font-weight:600;">${isDev ? '🛠️ ' : ''}Rôle Développeur</span>
+        <input type="checkbox" ${isDev?'checked':''} ${u.authId?'':'disabled'}
+          style="width:24px;height:24px;accent-color:var(--wood);flex-shrink:0;"
+          onchange="devAccessToggleUser('${escapeHtml(u.authId||'')}', this.checked)">
+      </label>
+    </div>`;
+  }).join('');
 }
 
 async function confirmDeleteUserFull(authId, name){
