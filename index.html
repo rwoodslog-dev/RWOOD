@@ -2977,6 +2977,33 @@
   #galerieLightbox img{ max-width:100%; max-height:82vh; object-fit:contain; border-radius:8px; }
   .galerie-lb-cap{ color:#fff; font-size:13px; text-align:center; opacity:.85; }
   @media (min-width:860px){ #view-galerie #galerieContent{ max-width:900px; margin:0 auto; } }
+  .galerie-cell.selectable{ position:relative; }
+  .galerie-cell.selected img{ outline:3px solid var(--wood); outline-offset:-3px; }
+  .galerie-check{
+    position:absolute; top:6px; right:6px; z-index:2;
+    width:24px; height:24px; border-radius:50%;
+    background:rgba(0,0,0,.5); border:2px solid #fff; color:#fff;
+    display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800;
+  }
+  .galerie-cell.selected .galerie-check{ background:var(--wood); border-color:var(--wood); }
+  .galerie-actionbar{
+    position:fixed; left:0; right:0; bottom:0; z-index:600;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:12px 16px; padding-bottom:calc(12px + env(safe-area-inset-bottom));
+    background:var(--card); border-top:1px solid var(--line); box-shadow:0 -4px 16px rgba(0,0,0,.25);
+  }
+  .galerie-actionbar-count{ font-size:14px; font-weight:700; }
+  #mediaUploadOverlay{
+    position:fixed; inset:0; z-index:1100; background:rgba(0,0,0,.6);
+    display:none; align-items:center; justify-content:center; padding:24px;
+  }
+  #mediaUploadOverlay .mup-box{
+    background:var(--card); border-radius:14px; padding:22px; width:100%; max-width:320px; text-align:center;
+  }
+  #mediaUploadOverlay .mup-title{ font-weight:800; font-size:15px; margin-bottom:6px; }
+  #mediaUploadOverlay .mup-count{ font-size:13px; color:var(--ink-soft); margin-bottom:12px; }
+  #mediaUploadOverlay .mup-track{ height:8px; background:var(--bg-elev); border-radius:8px; overflow:hidden; }
+  #mediaUploadOverlay .mup-fill{ height:100%; width:0%; background:var(--wood); transition:width .2s; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -4429,7 +4456,10 @@
 
     <!-- MODULE — Galerie : vue photos globale par chantier (remplace Photos) -->
     <section class="view" id="view-galerie">
-      <div class="page-title"><span>📸 Galerie</span></div>
+      <div class="page-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <span>📸 Galerie</span>
+        <button id="galerieSelectBtn" class="btn btn-outline btn-sm" onclick="galerieToggleSelectMode()">Sélectionner</button>
+      </div>
       <div id="galerieContent"><div class="hint" style="text-align:center;padding:30px 0;">Chargement…</div></div>
     </section>
 
@@ -7544,6 +7574,11 @@ function goTo(viewName, siteId){
   if(viewName === 'agenda') renderAgenda();
   if(viewName === 'couverture') renderCouverture();
   if(viewName === 'galerie') galerieRender(); // MODULE — Galerie
+  else if(typeof _galerieSelectMode !== 'undefined' && _galerieSelectMode){
+    // Quitter la galerie réinitialise le mode sélection
+    _galerieSelectMode = false; _galerieSelected.clear();
+    const gsb = document.getElementById('galerieSelectBtn'); if(gsb) gsb.textContent = 'Sélectionner';
+  }
   if(viewName === 'zinc') renderZincGallery();
   if(viewName === 'zone-chantier'){
     if(typeof zoneAccessAllowed === 'function' && !zoneAccessAllowed()){ goTo('chantiers'); return; } // MODULE — ZoneAccess
@@ -7838,6 +7873,8 @@ function _sitesFilterRestoreFocus(){
    Retrait : supprimer ce bloc + l'onglet #galerie + le routage galerie.
    ═══════════════════════════════════════════════════════════════════ */
 let _galerieTimer = null;
+let _galerieSelectMode = false;
+const _galerieSelected = new Set(); // clés "siteId|mediaId"
 
 /* Collecte toutes les photos partagées, groupées par chantier. */
 function _galerieCollect(){
@@ -7893,16 +7930,118 @@ function galerieRender(){
     <div class="galerie-group">
       <div class="galerie-group-head">🏗️ ${escapeHtml(g.site.name)}${g.site.trajetZone?`<span class="galerie-zone">Zone ${escapeHtml(String(g.site.trajetZone))}</span>`:''}</div>
       <div class="galerie-grid">
-        ${g.photos.map(m => `
-          <div class="galerie-cell" onclick="galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(g.site.name||'')).replace(/'/g,'&#39;'))}')">
+        ${g.photos.map(m => {
+          const key = g.site.id + '|' + m.id;
+          const checked = _galerieSelected.has(key);
+          const onclick = _galerieSelectMode
+            ? `galerieTogglePhoto('${key}')`
+            : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(g.site.name||'')).replace(/'/g,'&#39;'))}')`;
+          return `
+          <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
+            ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
             <img src="${escapeHtml(m.url)}" loading="lazy" alt="photo">
             <div class="galerie-cap">${_galerieCaption(m)}</div>
-          </div>
-        `).join('')}
+          </div>`;
+        }).join('')}
       </div>
     </div>
-  `).join('');
+  `).join('') + (_galerieSelectMode ? _galerieActionBarHtml() : '');
   _galerieStartPolling();
+}
+
+/* Active/désactive le mode sélection. */
+function galerieToggleSelectMode(){
+  _galerieSelectMode = !_galerieSelectMode;
+  if(!_galerieSelectMode) _galerieSelected.clear();
+  const btn = document.getElementById('galerieSelectBtn');
+  if(btn) btn.textContent = _galerieSelectMode ? 'Annuler' : 'Sélectionner';
+  galerieRender();
+}
+
+/* Coche/décoche une photo. */
+function galerieTogglePhoto(key){
+  if(_galerieSelected.has(key)) _galerieSelected.delete(key);
+  else _galerieSelected.add(key);
+  galerieRender();
+}
+
+/* Barre d'action en bas (export + suppression pour les rôles autorisés). */
+function _galerieActionBarHtml(){
+  const n = _galerieSelected.size;
+  const canDelete = (window._devRoleUnlocked === true)
+    || (typeof devAccessIsDevUser === 'function' && devAccessIsDevUser());
+  return `
+    <div class="galerie-actionbar">
+      <span class="galerie-actionbar-count">${n} sélectionnée${n>1?'s':''}</span>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" ${n?'':'disabled'} onclick="galerieExportSelection()">📥 Exporter</button>
+        ${canDelete ? `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);" ${n?'':'disabled'} onclick="galerieDeleteSelection()">🗑️</button>` : ''}
+      </div>
+    </div>`;
+}
+
+/* Résout la liste des photos sélectionnées {site, media}. */
+function _galerieResolveSelected(){
+  const out = [];
+  _galerieSelected.forEach(key => {
+    const [siteId, mediaId] = key.split('|');
+    const site = (data.sites||[]).find(s => s.id === siteId);
+    if(!site) return;
+    const media = (site.sharedMedia||[]).find(m => m.id === mediaId);
+    if(media) out.push({ site, media });
+  });
+  return out;
+}
+
+/* Export : télécharge les photos sélectionnées (séquentiel, pas de ZIP local). */
+async function galerieExportSelection(){
+  const sel = _galerieResolveSelected();
+  if(!sel.length) return;
+  showToast(`Téléchargement de ${sel.length} photo${sel.length>1?'s':''}…`);
+  for(let i=0;i<sel.length;i++){
+    const { site, media } = sel[i];
+    try{
+      const resp = await fetch(media.url);
+      const blob = await resp.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const ext = (media.name && media.name.includes('.')) ? '' : '.jpg';
+      a.download = (site.name ? site.name.replace(/[^\w-]+/g,'_') + '_' : '') + (media.name || ('photo_'+(i+1))) + ext;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(a.href);
+      await new Promise(r => setTimeout(r, 350)); // évite le blocage des téléchargements successifs
+    }catch(e){ /* on continue */ }
+  }
+  showToast('✅ Téléchargement terminé');
+}
+
+/* Suppression (rôles autorisés). Retire des sharedMedia + resync. */
+async function galerieDeleteSelection(){
+  const canDelete = (window._devRoleUnlocked === true)
+    || (typeof devAccessIsDevUser === 'function' && devAccessIsDevUser());
+  if(!canDelete) return;
+  const sel = _galerieResolveSelected();
+  if(!sel.length) return;
+  openModal('galerieDelete'); // modal de confirmation in-app
+  window.__galerieDeletePending = sel;
+}
+
+/* Confirmé depuis la modal. */
+async function galerieDeleteConfirmed(){
+  closeModal('galerieDelete');
+  const sel = window.__galerieDeletePending || [];
+  window.__galerieDeletePending = null;
+  const bySite = {};
+  sel.forEach(({site,media}) => { (bySite[site.id]=bySite[site.id]||{site,ids:[]}).ids.push(media.id); });
+  for(const sid in bySite){
+    const { site, ids } = bySite[sid];
+    site.sharedMedia = (site.sharedMedia||[]).filter(m => !ids.includes(m.id));
+    try{ if(typeof pushSharedSite === 'function') await pushSharedSite(site); }catch(e){}
+  }
+  saveData();
+  _galerieSelected.clear();
+  showToast('🗑️ Photos supprimées');
+  galerieRender();
 }
 
 /* Lightbox plein écran. */
@@ -10207,11 +10346,12 @@ async function uploadFileToSupabase(file, siteId){
 }
 
 /* Ajoute un fichier au chantier et le pousse en synchro */
-async function addSharedMediaToSite(siteId, file){
+async function addSharedMediaToSite(siteId, file, opts){
+  const silent = opts && opts.silent;
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
 
-  showToast('⬆️ Upload en cours…');
+  if(!silent) showToast('⬆️ Upload en cours…');
   try{
     const url     = await uploadFileToSupabase(file, siteId);
     const isPdf   = file.type === 'application/pdf' || file.name.endsWith('.pdf');
@@ -10233,14 +10373,15 @@ async function addSharedMediaToSite(siteId, file){
     });
 
     saveData();
-    renderCloudMedia(siteId);
-    showToast('✅ ' + file.name + ' ajouté');
+    if(!silent){ renderCloudMedia(siteId); showToast('✅ ' + file.name + ' ajouté'); }
 
-    // Pousser immédiatement si synchro active
+    // Pousser immédiatement si synchro active (toujours, même en silencieux)
     if(site.syncLive) await pushSharedSite(site);
+    else if(typeof syncAllSitesCycle === 'function') { try{ await syncAllSitesPushAll(); }catch(e){} }
 
   } catch(e){
-    showToast('Erreur upload : ' + (e.message||''));
+    if(!silent) showToast('Erreur upload : ' + (e.message||''));
+    else throw e; // en multi, on compte l'échec au niveau de la boucle
   }
 }
 
@@ -11321,15 +11462,61 @@ function triggerSharedMediaUpload(siteId){
     input.type = 'file';
     input.id = 'sharedMediaInput';
     input.accept = 'image/*,.pdf';
+    input.multiple = true; // [multi-import] plusieurs fichiers d'un coup
     input.style.display = 'none';
     document.body.appendChild(input);
   }
+  input.multiple = true;
   input.value = '';
   input.onchange = async () => {
-    const file = input.files && input.files[0];
-    if(file) await addSharedMediaToSite(siteId, file);
+    const files = Array.from(input.files || []);
+    if(!files.length) return;
+    // Un seul fichier : comportement d'origine, sans overlay
+    if(files.length === 1){
+      await addSharedMediaToSite(siteId, files[0]);
+      return;
+    }
+    // Plusieurs fichiers : upload séquentiel + barre de progression
+    _mediaUploadShowProgress(0, files.length);
+    let done = 0, failed = 0;
+    for(const file of files){
+      try{
+        await addSharedMediaToSite(siteId, file, { silent:true });
+      }catch(e){ failed++; }
+      done++;
+      _mediaUploadShowProgress(done, files.length);
+    }
+    _mediaUploadHideProgress();
+    showToast(failed ? `${done-failed}/${files.length} envoyées (${failed} échec)` : `✅ ${done} photos envoyées`);
+    if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId);
   };
   input.click();
+}
+
+/* Overlay de progression d'upload multiple (séquentiel). */
+function _mediaUploadShowProgress(done, total){
+  let ov = document.getElementById('mediaUploadOverlay');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'mediaUploadOverlay';
+    ov.innerHTML = `
+      <div class="mup-box">
+        <div class="mup-title">Envoi des photos…</div>
+        <div class="mup-count" id="mupCount"></div>
+        <div class="mup-track"><div class="mup-fill" id="mupFill"></div></div>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  const pct = total ? Math.round((done/total)*100) : 0;
+  const fill = document.getElementById('mupFill');
+  const cnt  = document.getElementById('mupCount');
+  if(fill) fill.style.width = pct + '%';
+  if(cnt)  cnt.textContent = done < total ? `Envoi de la photo ${done+1} sur ${total}…` : `${total}/${total} terminé`;
+}
+function _mediaUploadHideProgress(){
+  const ov = document.getElementById('mediaUploadOverlay');
+  if(ov) setTimeout(()=>{ ov.style.display = 'none'; }, 400);
 }
 
 
@@ -22984,7 +23171,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.42.1';
+const APP_VERSION = '2.43.0';
 
 const CHANGELOG = [
   {
@@ -33062,6 +33249,21 @@ async function comptaEditEnsurePulled(){
       onkeydown="if(event.key==='Enter') submitDevCode()">
     <div id="devCodeError" style="display:none;color:var(--red);font-size:13px;text-align:center;margin-top:8px;">Code incorrect</div>
     <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="submitDevCode()">Valider</button>
+  </div>
+</div>
+
+<!-- MODAL : Confirmation suppression photos (Galerie) -->
+<div class="modal-overlay" id="modal-galerieDelete">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Supprimer les photos</h2>
+      <button class="modal-close" onclick="closeModal('galerieDelete')">×</button>
+    </div>
+    <div class="hint" style="margin-bottom:16px;">Les photos sélectionnées seront retirées pour toute l'équipe. Action irréversible.</div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-outline" style="flex:1;" onclick="closeModal('galerieDelete')">Annuler</button>
+      <button class="btn btn-primary" style="flex:1;background:var(--red);border-color:var(--red);" onclick="galerieDeleteConfirmed()">Supprimer</button>
+    </div>
   </div>
 </div>
 
