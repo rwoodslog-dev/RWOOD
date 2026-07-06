@@ -22815,7 +22815,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.35.0';
+const APP_VERSION = '2.35.1';
 
 const CHANGELOG = [
   {
@@ -32071,7 +32071,22 @@ function comptaEditSyncToggle(){
 /* [comptaedit] Applique le calque à une cellule (appelé depuis le calcul
    semaine/mois comptable). Renvoie {entry, ed} corrigés, ou null. */
 function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
-  const ov = _comptaEditOverrides()[_comptaEditKey(deviceId, workerId, dateKey)];
+  const all = _comptaEditOverrides();
+  let ov = all[_comptaEditKey(deviceId, workerId, dateKey)];
+  // Fallback : si le deviceId a changé (fusion des appareils d'un même
+  // utilisateur), on retrouve la correction par workerId + dateKey. Sans ça,
+  // la correction "saute" quand la source du pull change de deviceId.
+  if(!ov){
+    const suffix = '::' + workerId + '::' + dateKey;
+    let best = null;
+    Object.keys(all).forEach(k => {
+      if(k.endsWith(suffix)){
+        const cand = all[k];
+        if(!best || (cand.ts||0) > (best.ts||0)) best = cand;
+      }
+    });
+    ov = best;
+  }
   if(!ov) return null;
   const newEntry = Object.assign({}, entry || {}, {
     hours:  (ov.hours  != null ? ov.hours  : (entry ? entry.hours  : '')),
@@ -32233,9 +32248,14 @@ async function comptaEditSave(){
   } else if(rawSel === ''){
     ovData.siteId = null;                                // remis à "aucun chantier"
   }
-  ov[_comptaEditKey(deviceId, workerId, dateKey)] = Object.assign(
-    ov[_comptaEditKey(deviceId, workerId, dateKey)] || {}, ovData
-  );
+  const key = _comptaEditKey(deviceId, workerId, dateKey);
+  const prev = ov[key] || {};
+  // La correction comptable prime TOUJOURS : on fusionne avec l'existant et
+  // on force un ts strictement supérieur à toute version connue (locale ou
+  // reçue), pour qu'aucun pull ultérieur ne puisse la faire "sauter".
+  const newTs = Math.max(Date.now(), (prev.ts || 0) + 1);
+  ovData.ts = newTs;
+  ov[key] = Object.assign({}, prev, ovData);
 
   saveData();
   closeModal('comptaEdit');
@@ -32248,7 +32268,10 @@ async function comptaEditSave(){
   }
   // Actualiser le Suivi pour que les heures migrent vers le bon chantier
   if(typeof suiviRefresh === 'function'){ try{ suiviRefresh(true); }catch(e){} }
-  comptaEditPush(); // partage la correction
+
+  // Pousse la correction, PUIS re-render : le push ne doit pas être annulé
+  // par un pull concurrent (le ts forcé ci-dessus garantit la priorité).
+  try{ await comptaEditPush(); }catch(e){}
 }
 
 /* Réinitialise une correction (revient à la fiche brute de l'ouvrier). */
@@ -32296,11 +32319,13 @@ async function comptaEditPull(){
     if(!rows || !rows.length) return false;
     const remote = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
     if(!remote || !remote.overrides) return false;
-    // Fusion : l'override le plus récent (ts) gagne
+    // Fusion : l'override le plus récent (ts) gagne. STRICTEMENT supérieur —
+    // à ts égal on garde le LOCAL, pour ne jamais faire "sauter" une
+    // correction qu'on vient d'appliquer sur cet appareil.
     const local = _comptaEditOverrides();
     Object.keys(remote.overrides).forEach(k => {
       const r = remote.overrides[k], l = local[k];
-      if(!l || (r.ts||0) >= (l.ts||0)) local[k] = r;
+      if(!l || (r.ts||0) > (l.ts||0)) local[k] = r;
     });
     saveData(true);
     return true;
