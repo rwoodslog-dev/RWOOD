@@ -2926,6 +2926,17 @@
   /* Modals centrés */
   body.pc-mode .modal-overlay{ align-items:center !important; }
 
+  /* MODULE — TypeJournee : badge absence dans les listes */
+  .type-journee-badge{
+    display:inline-flex; align-items:center; gap:3px;
+    font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px;
+    margin-left:6px; white-space:nowrap; vertical-align:middle;
+  }
+  select.fiche-type-journee{
+    width:100%; padding:9px 10px; border-radius:9px;
+    background:var(--card); color:var(--ink); border:1px solid var(--line);
+    font-size:14px;
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -4912,6 +4923,10 @@
         <div class="ce-field">
           <label>Heures</label>
           <input type="number" id="comptaEditHours" step="0.5" min="0" inputmode="decimal" placeholder="Ex : 7.5">
+        </div>
+        <div class="ce-field">
+          <label>Type de journée</label>
+          <select id="comptaEditTypeJournee" class="fiche-type-journee"></select>
         </div>
         <div class="ce-field">
           <label>Chantier</label>
@@ -7046,13 +7061,21 @@ async function syncPush(){
   try{
     showSyncStatus('syncing');
 
-    // RÈGLE STRICTE : chaque device n'envoie QUE son propre ouvrier + sa propre attendance.
-    // Aucune donnée d'un autre ouvrier ne transite vers Supabase via ce device,
-    // quelle que soit la liste data.workers locale.
+    // RÈGLE : un simple ouvrier n'envoie QUE son propre pointage (confidentialité).
+    // MAIS un chef d'équipe / conducteur saisit les heures de son équipe : il doit
+    // donc pouvoir pousser les pointages de TOUS les ouvriers qu'il a saisis, sinon
+    // les heures d'un ouvrier saisies par le chef ne remontent jamais au Suivi
+    // (bug : baptiste.dejouhannet enregistré par le chef, invisible dans le Suivi).
     const myWorkerId = data.settings.myProfile && data.settings.myProfile.workerId;
+    const _myRole = data.settings.myProfile && data.settings.myProfile.role;
+    const _canPushTeam = (_myRole === 'chef' || _myRole === 'conducteur' || _myRole === 'patron');
     const stripped = stripBlobsForSync(data);
 
-    if(myWorkerId){
+    if(_canPushTeam){
+      // Chef/conducteur/patron : on pousse TOUS les pointages saisis sur cet
+      // appareil (toute l'équipe), sans réduire chaque jour à un seul ouvrier.
+      // (stripped.workers et stripped.attendance sont conservés tels quels.)
+    } else if(myWorkerId){
       // Garder uniquement MON ouvrier dans workers[]
       stripped.workers = (stripped.workers || []).filter(w => w.id === myWorkerId);
       // Garder uniquement les pointages où MON ouvrier est présent
@@ -14930,6 +14953,12 @@ function renderPointage(){
               value="${entry.hours}"
               onchange="updateAttendance('${dateKey}','${w.id}','hours', this.value)">
           </div>
+          <div class="field-mini" style="grid-column:1/-1;">
+            <label>Type de journée</label>
+            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value)">
+              ${_typeJourneeOptions(entry.typeJournee || 'normal')}
+            </select>
+          </div>
           <div class="panier-row">
             <label>
               <input type="checkbox" ${entry.panier ? 'checked' : ''}
@@ -14970,6 +14999,45 @@ function updateAttendance(dateKey, workerId, field, value){
   saveData();
   schedulePointageSync();
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — TypeJournee  ·  début
+   Qualifie une fiche d'heures : journée normale ou absence (CP, CSS,
+   férié, maladie). Stocké dans entry.typeJournee ('normal' par défaut).
+   Les journées non-normales ne comptent PAS dans les heures de
+   production des chantiers (onglet Suivi) — filtrées à l'agrégation.
+   Retrait : supprimer ce bloc + le <select> dans le formulaire de
+   pointage et dans ComptaEdit, + le badge dans les listes.
+   ═══════════════════════════════════════════════════════════════════ */
+const TYPE_JOURNEE = {
+  normal:  { label: 'Journée normale de travail', emoji: '💼', short: '' },
+  cp:      { label: 'Congé Payé (CP)',            emoji: '🏖️', short: 'CP',      color: '#3FB27F' },
+  css:     { label: 'Congé Sans Solde (CSS)',     emoji: '🪙', short: 'CSS',     color: '#C8862B' },
+  ferie:   { label: 'Jour Férié',                 emoji: '🗓️', short: 'Férié',   color: '#5B8DEF' },
+  maladie: { label: 'Arrêt Maladie',              emoji: '🤒', short: 'Maladie', color: '#E07A63' }
+};
+
+/* Options HTML du sélecteur, avec la valeur courante sélectionnée. */
+function _typeJourneeOptions(current){
+  const cur = current || 'normal';
+  return Object.keys(TYPE_JOURNEE).map(k =>
+    '<option value="'+k+'"'+(k===cur?' selected':'')+'>'+TYPE_JOURNEE[k].emoji+' '+TYPE_JOURNEE[k].label+'</option>'
+  ).join('');
+}
+
+/* Badge visuel (compta / historique). Rien pour une journée normale. */
+function typeJourneeBadge(type){
+  const t = TYPE_JOURNEE[type];
+  if(!t || type === 'normal') return '';
+  return '<span class="type-journee-badge" style="background:'+t.color+'22;color:'+t.color+';border:1px solid '+t.color+'55;">'
+    + t.emoji + ' ' + t.short + '</span>';
+}
+
+/* Une journée non-normale ne compte pas dans les heures de production. */
+function typeJourneeIsAbsence(type){
+  return !!type && type !== 'normal';
+}
+/* ═══ MODULE — TypeJournee  ·  fin ═══ */
 
 function validatePointageDay(){
   const dateKey = currentPointageDate;
@@ -17617,6 +17685,7 @@ function _computeWorkerWeekData(aw, offset){
       label: dayFullLabels[i], h,
       task: entry ? (entry.task||'') : '',
       panier: entry ? !!entry.panier : false,
+      typeJournee: entry ? (entry.typeJournee || 'normal') : 'normal',
       siteId: ed ? (ed.siteId||'') : '',
       siteName: _ovName,
       zone: site ? (site.trajetZone||'') : '',
@@ -17838,7 +17907,7 @@ function _renderComptableWorkerWeek(aw){
     ${dayRows.length ? dayRows.map(r => `
       <div style="padding:8px 0;border-top:1px solid var(--line);">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <span style="font-weight:700;font-size:13px;">${r.label} ${_formatDayDate(r.date)}</span>
+          <span style="font-weight:700;font-size:13px;">${r.label} ${_formatDayDate(r.date)}${(typeof typeJourneeBadge==='function') ? typeJourneeBadge(r.typeJournee) : ''}</span>
           <span style="display:flex;align-items:center;gap:8px;">
             <span style="font-weight:800;color:var(--wood);font-size:13px;">${r.h}h</span>
             ${(typeof comptaEditEnabled==='function' && comptaEditEnabled()) ? `<button onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" style="background:none;border:1px solid var(--wood);color:var(--wood);border-radius:7px;padding:4px 7px;cursor:pointer;font-size:12px;">✏️</button>` : ''}
@@ -22746,7 +22815,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.34.3';
+const APP_VERSION = '2.35.0';
 
 const CHANGELOG = [
   {
@@ -28175,20 +28244,51 @@ async function pullAllPointagesForComptable(){
       // Plus récent en premier — garantit que le dédoublon garde la version la plus à jour
       .sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 
-    // Dédoublonner : garder une seule entrée par utilisateur (authId prioritaire, sinon nom normalisé)
-    const seenUserKeys = new Map();
-    const deduplicated = [];
+    // Regrouper par utilisateur SANS perdre de pointages : on FUSIONNE les
+    // attendance de tous les appareils d'un même utilisateur, au lieu de ne
+    // garder qu'un seul appareil (ce qui faisait disparaître les fiches — et
+    // donc des ouvriers — enregistrées sur l'autre appareil du même compte).
+    const byUser = new Map();
     for(const device of parsed){
       const comptableAuthId = device.ownerAuthId.trim();
       const comptableNorm   = device.ownerName.trim().toLowerCase().replace(/\s+/g, ' ');
       const userKey = comptableAuthId || comptableNorm;
       if(!userKey) continue;
-      if(!seenUserKeys.has(userKey)){
-        seenUserKeys.set(userKey, true);
-        deduplicated.push(device);
+      if(!byUser.has(userKey)){
+        // Première source de cet utilisateur (la plus récente) : on la garde
+        // comme base, mais on va y fusionner les jours des appareils suivants.
+        byUser.set(userKey, {
+          ...device,
+          attendance: { ...(device.attendance || {}) },
+          sites: [ ...(device.sites || []) ],
+          workers: [ ...(device.workers || []) ]
+        });
+      } else {
+        // Appareil supplémentaire du même utilisateur : on fusionne ses jours.
+        const acc = byUser.get(userKey);
+        const older = device.attendance || {};
+        Object.keys(older).forEach(dateKey => {
+          if(!acc.attendance[dateKey]){
+            // Jour absent de la version récente → on l'ajoute (fiche récupérée)
+            acc.attendance[dateKey] = older[dateKey];
+          } else {
+            // Jour présent des deux côtés : fusionner les ouvriers du jour
+            const a = acc.attendance[dateKey];
+            const b = older[dateKey];
+            if(a && b && a.workers && b.workers){
+              acc.attendance[dateKey] = {
+                siteId: a.siteId != null ? a.siteId : b.siteId,
+                workers: Object.assign({}, b.workers, a.workers) // récent prioritaire
+              };
+            }
+          }
+        });
+        // Compléter sites/workers connus pour la résolution des noms
+        (device.sites||[]).forEach(s => { if(s && s.id && !acc.sites.some(x=>x.id===s.id)) acc.sites.push(s); });
+        (device.workers||[]).forEach(w => { if(w && w.id && !acc.workers.some(x=>x.id===w.id)) acc.workers.push(w); });
       }
-      // doublon ignoré — le premier (plus récent) est déjà gardé
     }
+    const deduplicated = Array.from(byUser.values());
 
     return deduplicated;
   } catch(e){
@@ -31115,6 +31215,9 @@ function _suiviAggregate(sources){
           if(cov){ entry = cov.entry; ed = cov.ed; }
         }
         if(!entry) return;
+        // [typejournee] Les absences (CP, CSS, férié, maladie) ne comptent
+        // PAS dans les heures de production d'un chantier. On ignore la fiche.
+        if(typeof typeJourneeIsAbsence === 'function' && typeJourneeIsAbsence(entry.typeJournee)) return;
         const rawSiteId = ed.siteId || siteId;
         if(!rawSiteId) return;              // toujours aucun chantier (même après correction) : ignoré
         if(!sitesById[rawSiteId]) return;   // chantier inconnu : ignoré
@@ -31973,7 +32076,8 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
   const newEntry = Object.assign({}, entry || {}, {
     hours:  (ov.hours  != null ? ov.hours  : (entry ? entry.hours  : '')),
     task:   (ov.task   != null ? ov.task   : (entry ? entry.task   : '')),
-    panier: (ov.panier != null ? ov.panier : (entry ? entry.panier : false))
+    panier: (ov.panier != null ? ov.panier : (entry ? entry.panier : false)),
+    typeJournee: (ov.typeJournee != null ? ov.typeJournee : (entry ? entry.typeJournee : 'normal'))
   });
   const newEd = Object.assign({}, ed || {}, {
     siteId: (ov.siteId != null ? ov.siteId : (ed ? ed.siteId : null)),
@@ -31999,6 +32103,11 @@ function comptaEditOpen(deviceId, workerId, dateKey){
   document.getElementById('comptaEditSub').textContent =
     (aw ? aw.name : 'Ouvrier') + ' · ' + dateKey;
   document.getElementById('comptaEditHours').value = entry && entry.hours != null ? entry.hours : '';
+  // [typejournee] sélecteur type de journée (défaut normal)
+  const tjSel = document.getElementById('comptaEditTypeJournee');
+  if(tjSel && typeof _typeJourneeOptions === 'function'){
+    tjSel.innerHTML = _typeJourneeOptions((entry && entry.typeJournee) || 'normal');
+  }
 
   // Sélecteur chantier — liste OFFICIELLE synchronisée uniquement (filtre strict)
   const siteSel = document.getElementById('comptaEditSite');
@@ -32106,6 +32215,9 @@ async function comptaEditSave(){
   const hours = hoursRaw === '' ? '' : String(parseFloat(hoursRaw.replace(',','.')) || 0);
   const task = document.getElementById('comptaEditTask').value.trim();
   const panier = document.getElementById('comptaEditPanier').checked;
+  // [typejournee] type de journée corrigé par la comptable
+  const tjEl = document.getElementById('comptaEditTypeJournee');
+  const typeJournee = tjEl ? tjEl.value : 'normal';
 
   // Chantier : le select ne renvoie QUE des valeurs officielles.
   //  - '' (option neutre)  → aucun chantier assigné
@@ -32113,7 +32225,7 @@ async function comptaEditSave(){
   // (l'ancien nom libre "__free__" est disabled, donc jamais renvoyé ici)
   const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
-  const ovData = { hours, task, panier, ts: Date.now() };
+  const ovData = { hours, task, panier, typeJournee, ts: Date.now() };
   if(rawSel && rawSel !== '__free__'){
     const chosen = _comptaEditAllSites().find(s => s.id === rawSel);
     ovData.siteId = rawSel;                              // ID synchronisé officiel
