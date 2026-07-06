@@ -6856,12 +6856,31 @@ function mergeArrayById(localArr, remoteArr){
   const localMap = new Map(localList.map(it => [it.id, it]));
   const remoteMap = new Map(remoteList.map(it => [it.id, it]));
   const ids = new Set([...localMap.keys(), ...remoteMap.keys()]);
+  // Union dédupliquée de deux listes de médias/documents (par id/url/data/name).
+  const mergeMedia = (a, b) => {
+    const out = [], seen = new Set();
+    const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+    [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
+      const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+    });
+    return out;
+  };
   return [...ids].map(id => {
     const local = localMap.get(id);
     const remote = remoteMap.get(id);
     if(!local) return remote;
     if(!remote) return local;
-    return Object.assign({}, remote, local);
+    const merged = Object.assign({}, remote, local);
+    // [fix-docs] Documents et médias : TOUJOURS l'union des deux versions.
+    // Sans ça, la version serveur (allégée par stripBlobsForSync) ou celle
+    // d'un appareil qui ne les a pas écrasait les documents → disparition.
+    if('documents' in local || 'documents' in remote){
+      merged.documents = mergeMedia(local.documents, remote.documents);
+    }
+    if('sharedMedia' in local || 'sharedMedia' in remote){
+      merged.sharedMedia = mergeMedia(local.sharedMedia, remote.sharedMedia);
+    }
+    return merged;
   });
 }
 
@@ -22727,7 +22746,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.34.1';
+const APP_VERSION = '2.34.3';
 
 const CHANGELOG = [
   {
@@ -29682,11 +29701,23 @@ async function syncAllSitesPushAll(){
     shared.forEach(s => { if(s && s.id) byId[s.id] = s; });
 
     let touched = false;
+    // Union médias/docs entre notre version et celle déjà partagée.
+    const _mergeMedia = (a, b) => {
+      const out = [], seen = new Set();
+      const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+      [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
+        const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+      });
+      return out;
+    };
     data.sites.forEach(site => {
       if(!site || !site.id) return;
       if(deletedIds.includes(site.id)) return;         // supprimé définitivement : on ne repousse pas
-      // On ne re-pousse pas une copie reçue d'un autre appareil telle quelle
-      // (elle est déjà partagée par son propriétaire) — sauf si on en est l'origine.
+      const existing = byId[site.id];
+      // Médias/docs : union entre le local et ce qui est déjà sur le serveur,
+      // pour ne JAMAIS faire disparaître un document ajouté par un autre appareil.
+      const mergedMedia = _mergeMedia(site.sharedMedia, existing && existing.sharedMedia);
+      const mergedDocs  = _mergeMedia(site.documents,   existing && existing.documents);
       const snapshot = {
         id: site.id, name: site.name, address: site.address, status: site.status,
         progress: site.progress, color: site.color, trajetZone: site.trajetZone,
@@ -29701,15 +29732,13 @@ async function syncAllSitesPushAll(){
         assignedChefPhone: site.assignedChefPhone || '', assignedChefName: site.assignedChefName || '',
         assignedChefAuthId: site.assignedChefAuthId || '', assignedAt: site.assignedAt || null,
         teamName: site.teamName || '',
-        sharedMedia: Array.isArray(site.sharedMedia) ? site.sharedMedia : [],
+        sharedMedia: mergedMedia,
+        documents: mergedDocs,
         assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : []
       };
-      const existing = byId[site.id];
-      // Écrase si absent, ou si notre version est plus récente / on en est l'auteur
-      if(!existing || (site.ownerDeviceId || getDeviceSyncId()) === getDeviceSyncId()){
-        byId[site.id] = snapshot;
-        touched = true;
-      }
+      // On écrit toujours la version fusionnée (identité à jour + union des médias).
+      byId[site.id] = existing ? Object.assign({}, existing, snapshot) : snapshot;
+      touched = true;
     });
 
     if(touched){
@@ -29736,7 +29765,24 @@ async function syncAllSitesPull(){
     const identityFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','trajetZone','teamName',
       'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
-      'assignedTeamName','sharedMedia','lastSyncAt','ownerDeviceId'];
+      'assignedTeamName','lastSyncAt','ownerDeviceId'];
+    // NB : 'sharedMedia' et 'documents' sont VOLONTAIREMENT exclus ci-dessus.
+    // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMedia)
+    // pour qu'un document/photo n'disparaisse jamais lors d'une synchro.
+
+    // Fusion union de deux listes de médias/documents, dédupliquée par id (ou url/data).
+    const _mergeSiteMedia = (a, b) => {
+      const out = [];
+      const seen = new Set();
+      const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+      [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
+        const k = keyOf(m);
+        if(seen.has(k)) return;
+        seen.add(k);
+        out.push(m);
+      });
+      return out;
+    };
 
     let changed = false;
     relevant.forEach(remote => {
@@ -29751,8 +29797,17 @@ async function syncAllSitesPull(){
         const local = data.sites[idx];
         const remoteTs = Date.parse(remote.lastSyncAt || 0) || 0;
         const localTs  = Date.parse(local.lastSyncAt || 0) || 0;
-        // Ne pas écraser notre propre chantier plus récent
         const iAmOwner = (local.ownerDeviceId || '') === getDeviceSyncId();
+
+        // Médias/documents : TOUJOURS fusionnés en union (jamais écrasés),
+        // quel que soit le propriétaire ou l'horodatage.
+        const mergedMedia = _mergeSiteMedia(local.sharedMedia, remote.sharedMedia);
+        const mergedDocs  = _mergeSiteMedia(local.documents, remote.documents);
+        if(mergedMedia.length !== (local.sharedMedia||[]).length){ local.sharedMedia = mergedMedia; changed = true; }
+        else { local.sharedMedia = mergedMedia; }
+        if(mergedDocs.length !== (local.documents||[]).length){ local.documents = mergedDocs; changed = true; }
+        else { local.documents = mergedDocs; }
+
         if(!iAmOwner && remoteTs >= localTs){
           identityFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
           local.shared = true;
