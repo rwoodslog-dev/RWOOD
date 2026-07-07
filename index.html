@@ -23190,7 +23190,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.43.1';
+const APP_VERSION = '2.43.2';
 
 const CHANGELOG = [
   {
@@ -28932,7 +28932,7 @@ async function confirmDeleteUserFull(authId, name){
   if(!confirm('Supprimer ' + name + ' ?\n\n— Retiré du registre\n— Ses pointages supprimés de la vue comptable\n\nIl pourra se reconnecter mais devra se réinscrire pour réapparaître.')) return;
   try{
     const users = await _fetchUsersRegistry();
-    await _saveUsersRegistry(users.filter(u => u.authId !== authId));
+    await _saveUsersRegistry(users.filter(u => u.authId !== authId), [authId]);
     const rows = await pullAllPointagesForComptable() || [];
     const match = rows.find(r => r.ownerName === name);
     if(match){
@@ -29312,16 +29312,44 @@ async function _fetchUsersRegistry(){
   } catch(e){ return []; }
 }
 
-async function _saveUsersRegistry(users){
+async function _saveUsersRegistry(users, removedAuthIds){
+  // Anti-race (last-write-wins) : deux appareils qui s'enregistrent en même
+  // temps s'écrasaient mutuellement → des utilisateurs disparaissaient du
+  // registre (dev "ne voit pas tout le monde"). On RELIT la version serveur
+  // juste avant d'écrire et on fusionne par authId (le plus récent gagne).
+  // removedAuthIds : ids explicitement supprimés (ne pas les faire revenir).
+  const removed = new Set((removedAuthIds || []).filter(Boolean));
+  let merged = Array.isArray(users) ? users.slice() : [];
+  try{
+    const server = await _fetchUsersRegistry(); // version serveur actuelle
+    if(Array.isArray(server) && server.length){
+      const byId = new Map();
+      // On part de la version serveur…
+      server.forEach(u => { if(u && u.authId && !removed.has(u.authId)) byId.set(u.authId, u); });
+      // …puis on applique notre version (ajouts + mises à jour plus récentes)
+      merged.forEach(u => {
+        if(!u || !u.authId || removed.has(u.authId)) return;
+        const prev = byId.get(u.authId);
+        if(!prev){ byId.set(u.authId, u); return; }
+        const tPrev = Date.parse(prev.updatedAt||0) || 0;
+        const tNew  = Date.parse(u.updatedAt||0) || 0;
+        byId.set(u.authId, tNew >= tPrev ? u : prev);
+      });
+      merged = Array.from(byId.values());
+    }
+  }catch(e){ /* si la relecture échoue, on écrit au moins notre version */ }
+  merged = merged.filter(u => u && u.authId && !removed.has(u.authId));
+
   await supaFetch('/rest/v1/rwood_sync', {
     method: 'POST',
     headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify({
       user_id: USERS_REGISTRY_KEY,
       updated_at: new Date().toISOString(),
-      data: JSON.stringify({ users })
+      data: JSON.stringify({ users: merged })
     })
   });
+  return merged;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
