@@ -11383,17 +11383,36 @@ async function _runMediaExport(siteId, ids){
    bloc + remettre fab.style.display='none' dans goTo. Rien d'autre.
    ═══════════════════════════════════════════════════════════════════ */
 
-/* Déclenche un input fichier ciblé (accept + capture optionnels) puis upload */
-function _mediaFabPickFile(siteId, { accept, capture }){
+/* Déclenche un input fichier ciblé (accept + capture + multiple optionnels) puis upload */
+function _mediaFabPickFile(siteId, { accept, capture, multiple }){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = accept;
   if(capture) input.capture = capture;
+  if(multiple) input.multiple = true; // [multi-import] sélection de plusieurs photos
   input.style.display = 'none';
   document.body.appendChild(input);
   input.onchange = async () => {
-    const file = input.files && input.files[0];
-    if(file) await addSharedMediaToSite(siteId, file);
+    const files = Array.from(input.files || []);
+    if(!files.length){ input.remove(); return; }
+    // Un seul fichier → comportement direct
+    if(files.length === 1){
+      await addSharedMediaToSite(siteId, files[0]);
+      input.remove();
+      return;
+    }
+    // Plusieurs → upload séquentiel + barre de progression
+    _mediaUploadShowProgress(0, files.length);
+    let done = 0, failed = 0;
+    for(const file of files){
+      try{ await addSharedMediaToSite(siteId, file, { silent:true }); }
+      catch(e){ failed++; }
+      done++;
+      _mediaUploadShowProgress(done, files.length);
+    }
+    _mediaUploadHideProgress();
+    showToast(failed ? `${done-failed}/${files.length} envoyées (${failed} échec)` : `✅ ${done} photos envoyées`);
+    if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId);
     input.remove();
   };
   input.click();
@@ -11437,13 +11456,13 @@ function openMediaFabSheet(siteId){
   sheet.onclick = e => { if(e.target === sheet) close(); };
 
   sheet.querySelector('[data-act="file"]').onclick = () => {
-    close(); _mediaFabPickFile(siteId, { accept: 'application/pdf,image/*' });
+    close(); _mediaFabPickFile(siteId, { accept: 'application/pdf,image/*', multiple: true });
   };
   sheet.querySelector('[data-act="photo"]').onclick = () => {
     close(); _mediaFabPickFile(siteId, { accept: 'image/*', capture: 'environment' });
   };
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
-    close(); _mediaFabPickFile(siteId, { accept: 'image/*' });
+    close(); _mediaFabPickFile(siteId, { accept: 'image/*', multiple: true });
   };
   sheet.querySelector('[data-act="zinc"]').onclick = () => {
     close(); createFreeformZincProfileFromDetail();
@@ -23171,7 +23190,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.43.0';
+const APP_VERSION = '2.43.1';
 
 const CHANGELOG = [
   {
