@@ -3004,6 +3004,30 @@
   #mediaUploadOverlay .mup-count{ font-size:13px; color:var(--ink-soft); margin-bottom:12px; }
   #mediaUploadOverlay .mup-track{ height:8px; background:var(--bg-elev); border-radius:8px; overflow:hidden; }
   #mediaUploadOverlay .mup-fill{ height:100%; width:0%; background:var(--wood); transition:width .2s; }
+  /* MODULE — Galerie : dossiers par chantier */
+  .galerie-folders{
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px;
+  }
+  .galerie-folder{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    overflow:hidden; cursor:pointer;
+  }
+  .galerie-folder:active{ background:var(--card-hi, var(--bg-elev)); }
+  .galerie-folder-thumb{
+    position:relative; height:110px; background:var(--bg-elev);
+    display:flex; align-items:center; justify-content:center; font-size:34px; color:var(--ink-soft);
+  }
+  .galerie-folder-thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .galerie-folder-count{
+    position:absolute; right:7px; bottom:7px; background:rgba(0,0,0,.66); color:#fff;
+    font-size:12px; font-weight:800; padding:2px 9px; border-radius:20px;
+  }
+  .galerie-folder-name{ padding:9px 11px 2px; font-weight:700; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .galerie-folder-zone{ padding:0 11px 10px; font-size:12px; color:var(--ink-soft); }
+  .galerie-folder-head{
+    display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;
+  }
+  .galerie-folder-title{ font-size:16px; font-weight:800; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -7574,10 +7598,11 @@ function goTo(viewName, siteId){
   if(viewName === 'agenda') renderAgenda();
   if(viewName === 'couverture') renderCouverture();
   if(viewName === 'galerie') galerieRender(); // MODULE — Galerie
-  else if(typeof _galerieSelectMode !== 'undefined' && _galerieSelectMode){
-    // Quitter la galerie réinitialise le mode sélection
+  else if(typeof _galerieSelectMode !== 'undefined' && (_galerieSelectMode || _galerieOpenSiteId)){
+    // Quitter la galerie réinitialise le mode sélection ET la navigation dossier
     _galerieSelectMode = false; _galerieSelected.clear();
-    const gsb = document.getElementById('galerieSelectBtn'); if(gsb) gsb.textContent = 'Sélectionner';
+    _galerieOpenSiteId = null; _galerieLastCount = -1;
+    const gsb = document.getElementById('galerieSelectBtn'); if(gsb){ gsb.textContent = 'Sélectionner'; gsb.style.display = ''; }
   }
   if(viewName === 'zinc') renderZincGallery();
   if(viewName === 'zone-chantier'){
@@ -7874,6 +7899,7 @@ function _sitesFilterRestoreFocus(){
    ═══════════════════════════════════════════════════════════════════ */
 let _galerieTimer = null;
 let _galerieSelectMode = false;
+let _galerieOpenSiteId = null; // null = vue dossiers ; sinon = dossier chantier ouvert
 const _galerieSelected = new Set(); // clés "siteId|mediaId"
 
 /* Collecte toutes les photos partagées, groupées par chantier. */
@@ -7918,35 +7944,110 @@ function _galerieCaption(m){
 function galerieRender(){
   const root = document.getElementById('galerieContent');
   if(!root) return;
-  const groups = _galerieCollect();
+  // Deux niveaux : liste des dossiers (chantiers) OU photos d'un dossier ouvert.
+  if(_galerieOpenSiteId){
+    _galerieRenderFolder(root, _galerieOpenSiteId);
+  } else {
+    _galerieRenderFolders(root);
+  }
+  _galerieStartPolling();
+}
+
+/* ── Niveau 1 : grille de DOSSIERS (un par chantier), sans charger les
+   photos. On n'affiche qu'une vignette de couverture + le compteur. ── */
+function _galerieRenderFolders(root){
+  const groups = _galerieCollect(); // uniquement les chantiers ayant des photos
+  // Bouton "Sélectionner" masqué au niveau dossiers (la sélection se fait dans un dossier)
+  const selBtn = document.getElementById('galerieSelectBtn');
+  if(selBtn) selBtn.style.display = 'none';
 
   if(!groups.length){
     root.innerHTML = '<div class="empty" style="padding:40px 20px;"><div class="icon" style="font-size:38px;">📸</div><h3>Aucune photo partagée</h3><p>Ajoute des photos depuis l\'onglet Média d\'un chantier ; elles apparaîtront ici pour toute l\'équipe.</p></div>';
-    _galerieStartPolling();
     return;
   }
 
-  root.innerHTML = groups.map(g => `
-    <div class="galerie-group">
-      <div class="galerie-group-head">🏗️ ${escapeHtml(g.site.name)}${g.site.trajetZone?`<span class="galerie-zone">Zone ${escapeHtml(String(g.site.trajetZone))}</span>`:''}</div>
-      <div class="galerie-grid">
-        ${g.photos.map(m => {
-          const key = g.site.id + '|' + m.id;
-          const checked = _galerieSelected.has(key);
-          const onclick = _galerieSelectMode
-            ? `galerieTogglePhoto('${key}')`
-            : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(g.site.name||'')).replace(/'/g,'&#39;'))}')`;
-          return `
-          <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
-            ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
-            <img src="${escapeHtml(m.url)}" loading="lazy" alt="photo">
-            <div class="galerie-cap">${_galerieCaption(m)}</div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>
-  `).join('') + (_galerieSelectMode ? _galerieActionBarHtml() : '');
-  _galerieStartPolling();
+  root.innerHTML = `
+    <div class="galerie-folders">
+      ${groups.map(g => {
+        // Vignette de couverture : la photo la plus récente (une seule image chargée)
+        const cover = g.photos[0];
+        return `
+        <div class="galerie-folder" onclick="galerieOpenFolder('${g.site.id}')">
+          <div class="galerie-folder-thumb">
+            ${cover ? `<img src="${escapeHtml(cover.url)}" loading="lazy" alt="">` : '📁'}
+            <span class="galerie-folder-count">${g.photos.length}</span>
+          </div>
+          <div class="galerie-folder-name">${escapeHtml(g.site.name)}</div>
+          ${g.site.trajetZone ? `<div class="galerie-folder-zone">Zone ${escapeHtml(String(g.site.trajetZone))}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/* ── Niveau 2 : photos d'UN chantier (chargées à la demande). ── */
+function _galerieRenderFolder(root, siteId){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site){ _galerieOpenSiteId = null; _galerieRenderFolders(root); return; }
+
+  const photos = (site.sharedMedia || [])
+    .filter(m => m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url)
+    .sort((a,b) => new Date(b.uploadedAt||0) - new Date(a.uploadedAt||0));
+
+  // Bouton "Sélectionner" visible dans un dossier
+  const selBtn = document.getElementById('galerieSelectBtn');
+  if(selBtn) selBtn.style.display = photos.length ? '' : 'none';
+
+  const backBar = `
+    <div class="galerie-folder-head">
+      <button class="btn btn-outline btn-sm" onclick="galerieCloseFolder()">← Voir tous les dossiers</button>
+      <span class="galerie-folder-title">🏗️ ${escapeHtml(site.name)}</span>
+    </div>`;
+
+  if(!photos.length){
+    root.innerHTML = backBar + '<div class="empty" style="padding:36px 20px;"><div class="icon" style="font-size:34px;">🖼️</div><h3>Aucune photo pour ce chantier</h3></div>';
+    return;
+  }
+
+  root.innerHTML = backBar + `
+    <div class="galerie-grid">
+      ${photos.map(m => {
+        const key = site.id + '|' + m.id;
+        const checked = _galerieSelected.has(key);
+        const onclick = _galerieSelectMode
+          ? `galerieTogglePhoto('${key}')`
+          : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(site.name||'')).replace(/'/g,'&#39;'))}')`;
+        return `
+        <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
+          ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
+          <img src="${escapeHtml(m.url)}" loading="lazy" alt="photo">
+          <div class="galerie-cap">${_galerieCaption(m)}</div>
+        </div>`;
+      }).join('')}
+    </div>` + (_galerieSelectMode ? _galerieActionBarHtml() : '');
+}
+
+/* Ouvre le dossier d'un chantier (charge ses photos à la demande). */
+function galerieOpenFolder(siteId){
+  _galerieOpenSiteId = siteId;
+  _galerieSelectMode = false;
+  _galerieSelected.clear();
+  _galerieLastCount = -1; // recalcul du compteur pour ce dossier
+  const btn = document.getElementById('galerieSelectBtn');
+  if(btn) btn.textContent = 'Sélectionner';
+  const root = document.getElementById('galerieContent');
+  if(root){ root.scrollTop = 0; _galerieRenderFolder(root, siteId); }
+}
+
+/* Revient à la liste des dossiers. */
+function galerieCloseFolder(){
+  _galerieOpenSiteId = null;
+  _galerieSelectMode = false;
+  _galerieSelected.clear();
+  _galerieLastCount = -1; // recalcul du compteur global (dossiers)
+  const btn = document.getElementById('galerieSelectBtn');
+  if(btn){ btn.textContent = 'Sélectionner'; }
+  const root = document.getElementById('galerieContent');
+  if(root){ root.scrollTop = 0; _galerieRenderFolders(root); }
 }
 
 /* Active/désactive le mode sélection. */
@@ -8057,7 +8158,9 @@ function galerieOpenLightbox(url, caption){
   lb.style.display = 'flex';
 }
 
-/* Polling léger quand la galerie est ouverte (quasi temps réel). */
+/* Polling léger quand la galerie est ouverte (quasi temps réel). Ne
+   rafraîchit graphiquement QUE le dossier actuellement ouvert (ou le
+   compteur des dossiers), pour ne pas recharger tout l'écran. */
 function _galerieStartPolling(){
   _galerieStopPolling();
   _galerieTimer = setInterval(() => {
@@ -8069,11 +8172,29 @@ function _galerieStartPolling(){
 }
 function _galerieStopPolling(){ if(_galerieTimer){ clearInterval(_galerieTimer); _galerieTimer = null; } }
 
-/* Re-render seulement si le nombre total de photos a changé (évite le clignotement). */
+/* Re-render ciblé seulement si le nombre de photos PERTINENTES a changé.
+   - Dossier ouvert : on ne compte que ce chantier → on ne rafraîchit que lui.
+   - Vue dossiers : on compte le total → on rafraîchit la liste des dossiers. */
 let _galerieLastCount = -1;
+function _galeriePhotoCount(site){
+  return (site.sharedMedia||[]).filter(m=>m&&(m.type==='photo'||(m.mimeType||'').startsWith('image/'))).length;
+}
 function galerieRenderIfChanged(){
-  const total = (data.sites||[]).reduce((n,s)=> n + ((s.sharedMedia||[]).filter(m=>m&&(m.type==='photo'||(m.mimeType||'').startsWith('image/'))).length), 0);
-  if(total !== _galerieLastCount){ _galerieLastCount = total; galerieRender(); }
+  const root = document.getElementById('galerieContent');
+  if(!root) return;
+  if(_galerieOpenSiteId){
+    // Dossier ouvert : ne surveiller que ce chantier
+    const site = (data.sites||[]).find(s => s.id === _galerieOpenSiteId);
+    const cnt = site ? _galeriePhotoCount(site) : -1;
+    if(cnt !== _galerieLastCount){
+      _galerieLastCount = cnt;
+      if(!_galerieSelectMode) _galerieRenderFolder(root, _galerieOpenSiteId); // ne pas casser une sélection en cours
+    }
+  } else {
+    // Vue dossiers : surveiller le total (apparition d'un nouveau dossier)
+    const total = (data.sites||[]).reduce((n,s)=> n + _galeriePhotoCount(s), 0);
+    if(total !== _galerieLastCount){ _galerieLastCount = total; _galerieRenderFolders(root); }
+  }
 }
 /* ═══ MODULE — Galerie  ·  fin ═══ */
 
@@ -23190,7 +23311,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.43.2';
+const APP_VERSION = '2.44.0';
 
 const CHANGELOG = [
   {
@@ -28885,7 +29006,11 @@ async function refreshDevPanel(){
 
 /* ── Onglet Comptes : tous les utilisateurs inscrits (registre USERS_REGISTRY_KEY) ── */
 async function _renderDevTabComptes(list){
-  const users = await _fetchUsersRegistry();
+  // Réconcilie d'abord le registre avec les pointages : récupère les profils
+  // qui ont des heures mais pas d'entrée (ex. Julien Magne) → plus de divergence.
+  const users = (typeof _reconcileUsersRegistryFromPointages === 'function')
+    ? await _reconcileUsersRegistryFromPointages()
+    : await _fetchUsersRegistry();
   const devList = (typeof devAccessFetchList === 'function') ? await devAccessFetchList() : []; // MODULE — DevAccess
   if(!users || !users.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
@@ -29350,6 +29475,104 @@ async function _saveUsersRegistry(users, removedAuthIds){
     })
   });
   return merged;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Réconciliation : reconstruit le registre des profils À PARTIR des
+   pointages présents en base. Un utilisateur qui a des heures poussées
+   (ex. Julien Magne) mais dont le profil manque au registre y est
+   ré-ajouté automatiquement → la liste "Utilisateurs" (Paramètres/Dev)
+   et la liste "Heures" cessent de diverger. Le registre reste la source
+   unique de vérité, mais on ne perd plus personne.
+   ═══════════════════════════════════════════════════════════════════ */
+async function _reconcileUsersRegistryFromPointages(){
+  try{
+    if(!navigator.onLine) return await _fetchUsersRegistry();
+
+    // 1) Tirer tous les pointages de l'entreprise (mêmes clés que la compta)
+    const res = await supaFetch(
+      '/rest/v1/rwood_sync?user_id=like.' + encodeURIComponent(COMPANY_SYNC_KEY + '_%') + '&select=user_id,data,updated_at',
+      { headers: { 'Prefer': '' } }
+    );
+    if(!res.ok) return await _fetchUsersRegistry();
+    const rows = await res.json();
+    if(!Array.isArray(rows)) return await _fetchUsersRegistry();
+
+    const EXCLUDED_SUFFIXES = ['.dupont', '.test'];
+    const isTest = (id) => {
+      const s = (id || '').toLowerCase();
+      return EXCLUDED_SUFFIXES.some(suf => s.endsWith(suf));
+    };
+    const norm = (s) => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+
+    // 2) Registre actuel, indexé par authId ET par nom normalisé (secours)
+    const registry = await _fetchUsersRegistry();
+    const byAuth = new Map();
+    const byName = new Map();
+    registry.forEach(u => {
+      if(u && u.authId) byAuth.set(u.authId.toLowerCase(), u);
+      if(u && u.name)   byName.set(norm(u.name), u);
+    });
+
+    // 3) Extraire toutes les personnes présentes dans les pointages
+    const discovered = [];
+    const pushCandidate = (authId, name, role, phone, teamName, updatedAt) => {
+      const cleanName = (name || '').toString().trim();
+      const cleanAuth = (authId || '').toString().trim();
+      if(!cleanName && !cleanAuth) return;
+      if(isTest(cleanAuth) || isTest(cleanName)) return;
+      discovered.push({
+        authId: cleanAuth, name: cleanName, role: role || 'ouvrier',
+        phone: phone || '', teamName: teamName || '',
+        updatedAt: updatedAt || new Date().toISOString()
+      });
+    };
+
+    rows.forEach(row => {
+      let d;
+      try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data; }
+      catch(e){ return; }
+      if(!d) return;
+      // 3a) Le propriétaire de l'appareil
+      pushCandidate(d.ownerAuthId, d.ownerName, d.ownerRole, '', d.teamName || '', row.updated_at);
+      // 3b) Chaque ouvrier listé dans l'équipe de cet appareil
+      (Array.isArray(d.workers) ? d.workers : []).forEach(w => {
+        if(!w) return;
+        pushCandidate(w.authId || '', w.name || '', w.role || 'ouvrier', w.phone || '', d.teamName || '', row.updated_at);
+      });
+    });
+
+    // 4) N'ajouter que les personnes ABSENTES du registre (par authId sinon
+    //    par nom normalisé). On ne réécrit pas les profils déjà présents.
+    let added = 0;
+    discovered.forEach(cand => {
+      const authKey = cand.authId ? cand.authId.toLowerCase() : '';
+      const nameKey = norm(cand.name);
+      const existsByAuth = authKey && byAuth.has(authKey);
+      const existsByName = nameKey && byName.has(nameKey);
+      if(existsByAuth || existsByName) return;
+
+      const entry = {
+        authId: cand.authId || ('recovered.' + nameKey.replace(/[^a-z0-9]+/g, '.')),
+        name: cand.name || cand.authId,
+        role: cand.role || 'ouvrier',
+        phone: cand.phone || '',
+        teamName: cand.teamName || '',
+        recoveredFromPointages: true,
+        updatedAt: cand.updatedAt
+      };
+      registry.push(entry);
+      if(entry.authId) byAuth.set(entry.authId.toLowerCase(), entry);
+      if(entry.name)   byName.set(norm(entry.name), entry);
+      added++;
+    });
+
+    // 5) Écrire le registre reconstitué (fusion anti-race incluse)
+    if(added > 0) await _saveUsersRegistry(registry);
+    return registry;
+  } catch(e){
+    return await _fetchUsersRegistry();
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
