@@ -23370,7 +23370,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.45.2';
+const APP_VERSION = '2.45.3';
 
 const CHANGELOG = [
   {
@@ -29500,6 +29500,22 @@ async function _fetchUsersRegistry(){
     const rows = await res.json();
     if(!rows || !rows.length) return [];
     const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const raw = (d && d.users) || [];
+    // Dédoublonnage à la SOURCE : toute lecture du registre est propre,
+    // partout dans l'app (plus aucun doublon "recovered." ne peut s'afficher).
+    return (typeof _dedupeUsersRegistry === 'function') ? _dedupeUsersRegistry(raw) : raw;
+  } catch(e){ return []; }
+}
+
+/* Version brute SANS dédoublonnage — réservée au nettoyage/diagnostic
+   (pour détecter les doublons à purger). */
+async function _fetchUsersRegistryRaw(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(USERS_REGISTRY_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
     return (d && d.users) || [];
   } catch(e){ return []; }
 }
@@ -29518,26 +29534,38 @@ function _dedupeUsersRegistry(users){
   const norm = (s) => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
   const stripRecovered = (id) => (id || '').toString().replace(/^recovered\./i, '').toLowerCase();
   const isRecovered = (u) => !!(u && (u.recoveredFromPointages || /^recovered\./i.test(u.authId || '')));
+  // Nom inversé "Bourdon Pierre" == "Pierre Bourdon" : on trie les mots.
+  const nameKey = (name) => norm(name).split(' ').filter(Boolean).sort().join(' ');
 
-  // Clé d'identité canonique : authId nettoyé du préfixe recovered, sinon nom normalisé
-  const keyOf = (u) => {
-    const a = stripRecovered(u.authId);
-    if(a) return 'a:' + a;
-    const n = norm(u.name);
-    return n ? 'n:' + n : ('x:' + Math.random());
-  };
-
-  // Regrouper par clé, en préférant le profil OFFICIEL comme base
-  const groups = new Map();
+  // ── Passe 1 : regrouper par authId nettoyé du préfixe recovered. ──
+  const byKey = new Map();
   users.forEach(u => {
     if(!u) return;
-    const k = keyOf(u);
-    if(!groups.has(k)){ groups.set(k, []); }
-    groups.get(k).push(u);
+    const a = stripRecovered(u.authId);
+    const k = a ? ('a:' + a) : ('n:' + (nameKey(u.name) || Math.random()));
+    if(!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(u);
   });
 
+  // ── Passe 2 : fusionner les groupes qui partagent le même NOM ──
+  // (couvre "pierre.bourdon" vs "p.bourdon" vs "recovered.pierre.bourdon"
+  //  quand le nom affiché est identique).
+  const byName = new Map();
+  const singles = [];
+  byKey.forEach(list => {
+    // nom représentatif du groupe (le plus fréquent non vide)
+    const nm = nameKey((list.find(x => x && x.name) || {}).name);
+    if(!nm){ singles.push(list); return; }
+    if(!byName.has(nm)) byName.set(nm, []);
+    byName.get(nm).push(...list);
+  });
+
+  const finalGroups = [];
+  byName.forEach(list => finalGroups.push(list));
+  singles.forEach(list => finalGroups.push(list));
+
   const result = [];
-  groups.forEach(list => {
+  finalGroups.forEach(list => {
     // Trier : officiels d'abord (non-recovered), puis le plus récemment mis à jour
     list.sort((a, b) => {
       const ra = isRecovered(a) ? 1 : 0;
@@ -29570,7 +29598,7 @@ function _dedupeUsersRegistry(users){
    Détecte aussi les authId supprimés (recovered.X purgés au profit de X)
    pour ne pas les faire revenir via la fusion. */
 async function _cleanupRecoveredDuplicates(){
-  const before = await _fetchUsersRegistry();
+  const before = await _fetchUsersRegistryRaw();
   if(!Array.isArray(before) || !before.length) return;
   const after = _dedupeUsersRegistry(before);
 
