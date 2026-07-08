@@ -6384,6 +6384,8 @@ async function storeDocFromDataUrl(dataUrl, storageKey, category = 'documents'){
 async function resolveMediaUrl(ref){
   if(!ref) return null;
   if(isDataUrlRef(ref)) return ref;
+  // URL publique (bucket Supabase partagé) → l'utiliser directement.
+  if(typeof ref === 'string' && /^https?:\/\//.test(ref)) return ref;
   if(_mediaUrlCache.has(ref)) return _mediaUrlCache.get(ref);
   const blob = await loadBlobBytes(ref);
   if(!blob) return null;
@@ -6395,6 +6397,7 @@ async function resolveMediaUrl(ref){
 function mediaUrl(ref){
   if(!ref) return '';
   if(isDataUrlRef(ref)) return ref;
+  if(typeof ref === 'string' && /^https?:\/\//.test(ref)) return ref; // URL bucket partagé
   if(_mediaUrlCache.has(ref)) return _mediaUrlCache.get(ref);
   preloadMediaRef(ref);
   return RWOOD_MEDIA_PLACEHOLDER;
@@ -10470,6 +10473,34 @@ async function uploadFileToSupabase(file, siteId){
   return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
 }
 
+/* Upload une photo de tuile vers le bucket public partagé et retourne
+   son URL (visible par tous, comme les photos de la galerie). Repli sur
+   le stockage local si l'upload échoue (hors ligne). */
+async function uploadTilePhotoToBucket(dataUrl, tileId, opts){
+  // Compresser d'abord (même traitement que les autres photos)
+  const compressed = await compressImage(dataUrl, opts);
+  const resp = await fetch(compressed);
+  const blob = await resp.blob();
+  // uploadFileToSupabase attend un objet avec type/name ; on lui passe un File
+  const file = new File([blob], 'tile_' + tileId + '.jpg', { type: blob.type || 'image/jpeg' });
+  // On réutilise le mécanisme du bucket ; le chemin sera sites/<tileId>/...
+  const url = await uploadFileToSupabase(file, 'tiles/' + tileId);
+  return url; // URL publique
+}
+
+/* Enregistre la photo d'une tuile : upload bucket partagé (visible par
+   tous) ; si l'upload échoue (hors ligne), repli sur le stockage local
+   pour ne jamais perdre la photo. */
+async function _saveTilePhoto(dataUrl, tileId){
+  try{
+    const url = await uploadTilePhotoToBucket(dataUrl, tileId);
+    if(url) return url;
+  }catch(e){ /* repli local ci-dessous */ }
+  try{
+    return await storeImageFromDataUrl(dataUrl, 'photo:' + tileId);
+  }catch(e){ return undefined; }
+}
+
 /* Ajoute un fichier au chantier et le pousse en synchro */
 async function addSharedMediaToSite(siteId, file, opts){
   const silent = opts && opts.silent;
@@ -14517,7 +14548,7 @@ async function createTile(){
       tile.ourneMin = ourneMin;
       tile.ourneMax = ourneMax;
       tile.photo = newTilePhotoData && isDataUrlRef(newTilePhotoData)
-        ? await storeImageFromDataUrl(newTilePhotoData, 'photo:' + tile.id)
+        ? await _saveTilePhoto(newTilePhotoData, tile.id)
         : (newTilePhotoData || undefined);
       tile.doc = await resolveTileDocForSave(tile.id);
     }
@@ -14525,7 +14556,7 @@ async function createTile(){
   } else {
     const newTileId = uid();
     const tilePhotoRef = newTilePhotoData
-      ? await storeImageFromDataUrl(newTilePhotoData, 'photo:' + newTileId)
+      ? await _saveTilePhoto(newTilePhotoData, newTileId)
       : undefined;
     data.tiles.push({
       id: newTileId,
@@ -23339,7 +23370,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.45.0';
+const APP_VERSION = '2.45.2';
 
 const CHANGELOG = [
   {
@@ -29034,11 +29065,19 @@ async function refreshDevPanel(){
 
 /* ── Onglet Comptes : tous les utilisateurs inscrits (registre USERS_REGISTRY_KEY) ── */
 async function _renderDevTabComptes(list){
-  // Réconcilie d'abord le registre avec les pointages : récupère les profils
-  // qui ont des heures mais pas d'entrée (ex. Julien Magne) → plus de divergence.
-  const users = (typeof _reconcileUsersRegistryFromPointages === 'function')
+  // Nettoyage unique (une fois par session) : purge les entrées "recovered."
+  // obsolètes du registre si un profil officiel existe déjà.
+  if(!window.__recoveredCleanupDone){
+    window.__recoveredCleanupDone = true;
+    try{ await _cleanupRecoveredDuplicates(); }catch(e){}
+  }
+  // Réconcilie le registre avec les pointages : récupère les profils qui ont
+  // des heures mais pas d'entrée (ex. Julien Magne) → plus de divergence.
+  let users = (typeof _reconcileUsersRegistryFromPointages === 'function')
     ? await _reconcileUsersRegistryFromPointages()
     : await _fetchUsersRegistry();
+  // Dédoublonnage d'affichage : jamais deux fois la même personne à l'écran.
+  users = _dedupeUsersRegistry(users);
   const devList = (typeof devAccessFetchList === 'function') ? await devAccessFetchList() : []; // MODULE — DevAccess
   if(!users || !users.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
@@ -29465,6 +29504,88 @@ async function _fetchUsersRegistry(){
   } catch(e){ return []; }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   Dédoublonnage central du registre des utilisateurs.
+   Règles :
+   - Un authId "recovered.pierre.bourdon" et un authId officiel
+     "pierre.bourdon" (ou le même nom "Pierre Bourdon") = LE MÊME.
+   - On garde TOUJOURS le profil officiel (authId sans "recovered."),
+     et on complète ses champs vides avec ceux du doublon récupéré.
+   - Renvoie un tableau nettoyé, sans doublons.
+   ═══════════════════════════════════════════════════════════════════ */
+function _dedupeUsersRegistry(users){
+  if(!Array.isArray(users)) return [];
+  const norm = (s) => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  const stripRecovered = (id) => (id || '').toString().replace(/^recovered\./i, '').toLowerCase();
+  const isRecovered = (u) => !!(u && (u.recoveredFromPointages || /^recovered\./i.test(u.authId || '')));
+
+  // Clé d'identité canonique : authId nettoyé du préfixe recovered, sinon nom normalisé
+  const keyOf = (u) => {
+    const a = stripRecovered(u.authId);
+    if(a) return 'a:' + a;
+    const n = norm(u.name);
+    return n ? 'n:' + n : ('x:' + Math.random());
+  };
+
+  // Regrouper par clé, en préférant le profil OFFICIEL comme base
+  const groups = new Map();
+  users.forEach(u => {
+    if(!u) return;
+    const k = keyOf(u);
+    if(!groups.has(k)){ groups.set(k, []); }
+    groups.get(k).push(u);
+  });
+
+  const result = [];
+  groups.forEach(list => {
+    // Trier : officiels d'abord (non-recovered), puis le plus récemment mis à jour
+    list.sort((a, b) => {
+      const ra = isRecovered(a) ? 1 : 0;
+      const rb = isRecovered(b) ? 1 : 0;
+      if(ra !== rb) return ra - rb; // officiel (0) avant recovered (1)
+      return (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0);
+    });
+    // Base = premier (officiel de préférence) ; on complète ses trous avec les autres
+    const base = Object.assign({}, list[0]);
+    // Si la base est un "recovered" (aucun officiel dans le groupe), on nettoie
+    // quand même son authId du préfixe pour éviter d'afficher "recovered."
+    if(isRecovered(base)){
+      const cleaned = stripRecovered(base.authId);
+      if(cleaned) base.authId = cleaned;
+      delete base.recoveredFromPointages;
+    }
+    for(let i = 1; i < list.length; i++){
+      const other = list[i];
+      ['name','role','phone','teamName','companyCode','followedChefTodoId'].forEach(f => {
+        if((base[f] == null || base[f] === '') && other[f]) base[f] = other[f];
+      });
+    }
+    result.push(base);
+  });
+  return result;
+}
+
+/* Nettoyage unique : lit le registre, retire définitivement les doublons
+   "recovered." quand l'officiel existe, et réécrit le registre nettoyé.
+   Détecte aussi les authId supprimés (recovered.X purgés au profit de X)
+   pour ne pas les faire revenir via la fusion. */
+async function _cleanupRecoveredDuplicates(){
+  const before = await _fetchUsersRegistry();
+  if(!Array.isArray(before) || !before.length) return;
+  const after = _dedupeUsersRegistry(before);
+
+  // authId présents avant mais plus après (doublons recovered. supprimés)
+  const afterIds = new Set(after.map(u => (u.authId||'').toLowerCase()));
+  const removed = before
+    .map(u => (u && u.authId) ? u.authId : '')
+    .filter(id => id && /^recovered\./i.test(id) && !afterIds.has(id.toLowerCase()));
+
+  // Réécrire seulement s'il y a eu un changement
+  if(after.length !== before.length || removed.length){
+    await _saveUsersRegistry(after, removed);
+  }
+}
+
 async function _saveUsersRegistry(users, removedAuthIds){
   // Anti-race (last-write-wins) : deux appareils qui s'enregistrent en même
   // temps s'écrasaient mutuellement → des utilisateurs disparaissaient du
@@ -29492,6 +29613,8 @@ async function _saveUsersRegistry(users, removedAuthIds){
     }
   }catch(e){ /* si la relecture échoue, on écrit au moins notre version */ }
   merged = merged.filter(u => u && u.authId && !removed.has(u.authId));
+  // Dédoublonnage central : élimine les doublons "recovered." si l'officiel existe.
+  merged = _dedupeUsersRegistry(merged);
 
   await supaFetch('/rest/v1/rwood_sync', {
     method: 'POST',
@@ -29535,10 +29658,14 @@ async function _reconcileUsersRegistryFromPointages(){
 
     // 2) Registre actuel, indexé par authId ET par nom normalisé (secours)
     const registry = await _fetchUsersRegistry();
-    const byAuth = new Map();
-    const byName = new Map();
+    const stripRecovered = (id) => (id || '').toString().replace(/^recovered\./i, '').toLowerCase();
+    const byAuth = new Map();     // authId nettoyé du préfixe recovered
+    const byName = new Map();     // nom normalisé
     registry.forEach(u => {
-      if(u && u.authId) byAuth.set(u.authId.toLowerCase(), u);
+      if(u && u.authId){
+        byAuth.set(u.authId.toLowerCase(), u);
+        byAuth.set(stripRecovered(u.authId), u); // "pierre.bourdon" matche "recovered.pierre.bourdon"
+      }
       if(u && u.name)   byName.set(norm(u.name), u);
     });
 
@@ -29570,36 +29697,43 @@ async function _reconcileUsersRegistryFromPointages(){
       });
     });
 
-    // 4) N'ajouter que les personnes ABSENTES du registre (par authId sinon
-    //    par nom normalisé). On ne réécrit pas les profils déjà présents.
+    // 4) N'ajouter que les personnes ABSENTES du registre. Vérification
+    //    stricte : par authId brut ET nettoyé (recovered.) ET par nom
+    //    normalisé → une personne déjà présente sous une forme est bloquée.
     let added = 0;
     discovered.forEach(cand => {
-      const authKey = cand.authId ? cand.authId.toLowerCase() : '';
-      const nameKey = norm(cand.name);
-      const existsByAuth = authKey && byAuth.has(authKey);
+      const authKey  = cand.authId ? cand.authId.toLowerCase() : '';
+      const authClean = stripRecovered(cand.authId);
+      const nameKey  = norm(cand.name);
+      const existsByAuth = (authKey && byAuth.has(authKey)) || (authClean && byAuth.has(authClean));
       const existsByName = nameKey && byName.has(nameKey);
-      if(existsByAuth || existsByName) return;
+      if(existsByAuth || existsByName) return; // déjà connu → pas de doublon
 
+      // Nouveau profil réel : on l'ajoute avec un authId PROPRE (sans recovered.)
+      const cleanAuthId = cand.authId
+        ? cand.authId.replace(/^recovered\./i, '')
+        : nameKey.replace(/[^a-z0-9]+/g, '.');
       const entry = {
-        authId: cand.authId || ('recovered.' + nameKey.replace(/[^a-z0-9]+/g, '.')),
+        authId: cleanAuthId,
         name: cand.name || cand.authId,
         role: cand.role || 'ouvrier',
         phone: cand.phone || '',
         teamName: cand.teamName || '',
-        recoveredFromPointages: true,
         updatedAt: cand.updatedAt
       };
       registry.push(entry);
-      if(entry.authId) byAuth.set(entry.authId.toLowerCase(), entry);
-      if(entry.name)   byName.set(norm(entry.name), entry);
+      // indexer pour bloquer un éventuel doublon dans le même passage
+      byAuth.set(cleanAuthId.toLowerCase(), entry);
+      if(entry.name) byName.set(norm(entry.name), entry);
       added++;
+      return;
     });
 
-    // 5) Écrire le registre reconstitué (fusion anti-race incluse)
+    // 5) Écrire le registre reconstitué (dédoublonné + fusion anti-race)
     if(added > 0) await _saveUsersRegistry(registry);
-    return registry;
+    return _dedupeUsersRegistry(registry);
   } catch(e){
-    return await _fetchUsersRegistry();
+    return _dedupeUsersRegistry(await _fetchUsersRegistry());
   }
 }
 
