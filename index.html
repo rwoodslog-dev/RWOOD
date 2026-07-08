@@ -4872,7 +4872,7 @@
     <section class="view" id="view-notes">
       <div class="notes-wrap">
         <div class="notes-add-row">
-          <input type="text" id="notesAddInput" placeholder="Ajouter une tâche…" onkeydown="if(event.key==='Enter') notesAddManual()">
+          <textarea id="notesAddInput" rows="1" placeholder="Ajouter une tâche… (Entrée = nouvelle ligne)"></textarea>
           <button class="btn btn-primary" style="padding:0 14px;" onclick="notesAddManual()">+</button>
         </div>
 
@@ -7618,7 +7618,7 @@ function goTo(viewName, siteId){
   }
 
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
-  if(viewName === 'notes') notesRender(); // MODULE — Notes
+  if(viewName === 'notes'){ notesSyncFollowedThenRender(); } // MODULE — Notes
   if(viewName === 'suivi'){ // MODULE — SuiviHeures : réservé patron/dev
     if(!suiviCanAccess()){ goTo('chantiers'); return; }
     suiviRefresh(false);
@@ -23370,7 +23370,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.45.3';
+const APP_VERSION = '2.46.0';
 
 const CHANGELOG = [
   {
@@ -27764,13 +27764,25 @@ function _myTodoSyncKey(){
 /* Chef : push sa liste à chaque modif */
 async function pushMyTodoList(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  if(role !== 'chef') return;
-  const key = _myTodoSyncKey();
+  // Chef : pousse sous SA clé. Ouvrier suivant un chef : pousse sous la clé
+  // de CE chef (collaboration temps réel sur la même liste partagée).
+  let key = null;
+  if(role === 'chef'){
+    key = _myTodoSyncKey();
+  } else {
+    const followed = _getFollowedChefId();
+    if(followed) key = TODO_SYNC_KEY_PREFIX + followed;
+  }
   if(!key) return;
   try{
     const pn = _getPinnedNote();
-    const name = ((data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim()
-              || (data.settings.teamName || 'Chef');
+    let name;
+    const mp = data.settings && data.settings.myProfile;
+    if(role === 'chef'){
+      name = ((mp && mp.firstName||'') + ' ' + (mp && mp.lastName||'')).trim() || (data.settings.teamName || 'Chef');
+    } else {
+      name = _notesCurrentUserName() || 'Ouvrier';
+    }
     await supaFetch('/rest/v1/rwood_sync', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
@@ -31964,8 +31976,8 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPoll
   st.id = 'notes-styles';
   st.textContent =
     '#view-notes .notes-wrap{padding:6px 0 90px;}'
-  + '#view-notes .notes-add-row{display:flex;gap:8px;margin:0 2px 14px;}'
-  + '#view-notes .notes-add-row input{flex:1;padding:11px 12px;border-radius:10px;background:#0d0a06;color:var(--ink,#f0e6d2);border:1px solid rgba(255,255,255,.12);font-size:15px;}'
+  + '#view-notes .notes-add-row{display:flex;gap:8px;margin:0 2px 14px;align-items:flex-end;}'
+  + '#view-notes .notes-add-row textarea{flex:1;padding:11px 12px;border-radius:10px;background:#0d0a06;color:var(--ink,#f0e6d2);border:1px solid rgba(255,255,255,.12);font-size:15px;font-family:inherit;line-height:1.4;resize:vertical;min-height:44px;max-height:220px;}'
   + '#view-notes .notes-list-head{display:flex;align-items:center;justify-content:space-between;margin:0 2px 8px;font-size:13px;color:var(--ink-soft);font-weight:600;}'
   + '#view-notes .notes-clear-done{background:none;border:none;color:var(--wood,#C8862B);font-size:12px;font-weight:700;cursor:pointer;}'
   + '#view-notes .notes-list{display:flex;flex-direction:column;gap:8px;}'
@@ -31973,7 +31985,11 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPoll
   + '#view-notes .notes-item.done .notes-item-text{text-decoration:line-through;opacity:.5;}'
   + '#view-notes .notes-check{width:24px;height:24px;flex-shrink:0;border-radius:7px;border:2px solid var(--wood,#C8862B);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1a1206;font-weight:900;font-size:15px;margin-top:1px;}'
   + '#view-notes .notes-check.on{background:var(--wood,#C8862B);}'
-  + '#view-notes .notes-item-text{flex:1;font-size:15px;line-height:1.4;color:var(--ink,#f0e6d2);word-break:break-word;}'
+  + '#view-notes .notes-body{flex:1;min-width:0;}'
+  + '#view-notes .notes-item-text{font-size:15px;line-height:1.4;color:var(--ink,#f0e6d2);word-break:break-word;white-space:pre-wrap;}'
+  + '#view-notes .notes-item-text.collapsed{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;}'
+  + '#view-notes .notes-more{background:none;border:none;color:var(--wood,#C8862B);font-size:12.5px;font-weight:700;cursor:pointer;padding:4px 0 0;display:inline-flex;align-items:center;gap:4px;}'
+  + '#view-notes .notes-meta{font-size:11px;color:var(--ink-soft);margin-top:4px;opacity:.8;}'
   + '#view-notes .notes-del{background:none;border:none;color:#7a6a52;cursor:pointer;padding:2px 4px;flex-shrink:0;}'
   + '@media (min-width:860px){'
   +   '#view-notes .notes-wrap{max-width:720px;margin:0 auto;}'
@@ -32029,15 +32045,28 @@ function notesRender(){
   if(!tasks.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
   if(empty) empty.style.display='none';
 
-  list.innerHTML = tasks.map(t =>
-    '<div class="notes-item'+(t.done?' done':'')+'">'
-    + '<button class="notes-check'+(t.done?' on':'')+'" onclick="notesToggle(\''+t.id+'\')">'+(t.done?'✓':'')+'</button>'
-    + '<div class="notes-item-text">'+escapeHtml(t.text||'')+'</div>'
-    + '<button class="notes-del" onclick="notesDelete(\''+t.id+'\')" title="Supprimer">'
-    +   '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
-    + '</button>'
-    + '</div>'
-  ).join('');
+  list.innerHTML = tasks.map(t => {
+    const text = t.text || '';
+    const isMulti = /\n/.test(text) || text.length > 90; // plusieurs lignes ou texte long
+    const open = !!_notesExpanded[t.id];
+    const authorLine = t.authorName
+      ? '<div class="notes-meta">✍️ ' + escapeHtml(t.authorName) + (t.editedByName && t.editedByName !== t.authorName ? ' · modifié par ' + escapeHtml(t.editedByName) : '') + '</div>'
+      : '';
+    const moreBtn = isMulti
+      ? '<button class="notes-more" onclick="notesToggleExpand(\'' + t.id + '\')">' + (open ? '🔼 Voir moins' : '🔽 Voir plus') + '</button>'
+      : '';
+    return '<div class="notes-item'+(t.done?' done':'')+'">'
+      + '<button class="notes-check'+(t.done?' on':'')+'" onclick="notesToggle(\''+t.id+'\')">'+(t.done?'✓':'')+'</button>'
+      + '<div class="notes-body">'
+      +   '<div class="notes-item-text'+(isMulti && !open ? ' collapsed' : '')+'" onclick="notesEditPrompt(\''+t.id+'\')">'+escapeHtml(text)+'</div>'
+      +   moreBtn
+      +   authorLine
+      + '</div>'
+      + '<button class="notes-del" onclick="notesDelete(\''+t.id+'\')" title="Supprimer">'
+      +   '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
+      + '</button>'
+      + '</div>';
+  }).join('');
 }
 
 /* ── Actions liste (répercutées sur bulle + synchro) ─────────────── */
@@ -32061,11 +32090,68 @@ function notesDelete(id){
 }
 function notesAddManual(){
   const inp = document.getElementById('notesAddInput');
-  const text = (inp ? inp.value : '').trim();
-  if(!text) return;
+  const text = (inp ? inp.value : '').replace(/\s+$/,''); // garde les \n internes, retire le trailing
+  if(!text.trim()) return;
   const pn = _getPinnedNote();
-  pn.tasks.push({id:uid(), text, done:false});
-  if(inp) inp.value='';
+  const me = _notesCurrentUserName();
+  pn.tasks.push({ id:uid(), text, done:false, authorName: me, authorAuthId: _notesCurrentAuthId(), createdAt: new Date().toISOString() });
+  if(inp){ inp.value=''; inp.style.height='auto'; }
+  _notesCommit();
+}
+
+/* Ouvrier suivant un chef : tire la liste partagée du chef AVANT d'afficher,
+   pour éditer/compléter la même liste (collaboration). Chef ou non-suiveur :
+   affiche simplement sa propre liste. */
+async function notesSyncFollowedThenRender(){
+  try{
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    const followed = (role !== 'chef') ? _getFollowedChefId() : null;
+    if(followed){
+      const todoData = await pullChefTodoList(followed);
+      if(todoData && Array.isArray(todoData.tasks)){
+        const pn = _getPinnedNote();
+        pn.tasks = todoData.tasks;   // travailler sur la liste partagée du chef
+        saveData();
+      }
+    }
+  }catch(e){ /* hors ligne : on affiche la copie locale */ }
+  notesRender();
+}
+
+/* Nom lisible de l'utilisateur courant (pour signer une tâche). */
+function _notesCurrentUserName(){
+  try{
+    const p = data.settings && data.settings.myProfile;
+    if(p){ const n = ((p.firstName||'')+' '+(p.lastName||'')).trim(); if(n) return n; }
+    const a = data.settings && data.settings.auth;
+    if(a && a.authId) return a.authId;
+  }catch(e){}
+  return '';
+}
+function _notesCurrentAuthId(){
+  try{ return (data.settings && data.settings.auth && data.settings.auth.authId) || ''; }catch(e){ return ''; }
+}
+
+/* État déplié/replié par tâche (accordéon "Voir plus"). */
+const _notesExpanded = {};
+function notesToggleExpand(id){
+  _notesExpanded[id] = !_notesExpanded[id];
+  notesRender();
+}
+
+/* Édition d'une tâche existante (collaboration : chef ET ouvriers). Le
+   texte multi-lignes est modifiable ; on trace qui a modifié en dernier. */
+function notesEditPrompt(id){
+  const pn = _getPinnedNote();
+  const t = (pn.tasks||[]).find(x=>x.id===id);
+  if(!t) return;
+  const next = prompt('Modifier la tâche :', t.text || '');
+  if(next == null) return;
+  const clean = next.replace(/\s+$/,'');
+  if(!clean.trim()) return;
+  t.text = clean;
+  t.editedByName = _notesCurrentUserName();
+  t.editedAt = new Date().toISOString();
   _notesCommit();
 }
 function notesClearDone(){
@@ -32077,7 +32163,17 @@ function notesClearDone(){
 
 /* ── Parsing local : segmentation sur "plus" / "et" ──────────────── */
 /* Applique la visibilité de l'onglet au démarrage. */
-document.addEventListener('DOMContentLoaded', () => setTimeout(notesApplyTabVisibility, 800));
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(notesApplyTabVisibility, 800);
+  // Auto-agrandissement du textarea d'ajout (multi-lignes).
+  setTimeout(() => {
+    const ta = document.getElementById('notesAddInput');
+    if(ta && ta.tagName === 'TEXTAREA'){
+      const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'; };
+      ta.addEventListener('input', grow);
+    }
+  }, 900);
+});
 /* ═══ MODULE — Notes (JS)  ·  fin ═══ */
 
 /* ═══════════════════════════════════════════════════════════════════
