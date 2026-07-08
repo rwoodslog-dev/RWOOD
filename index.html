@@ -2557,6 +2557,9 @@
     padding:14px 16px;
     max-width:260px;
     min-width:160px;
+    max-height:calc(100vh - 32px);  /* ne dépasse jamais l'écran */
+    overflow:hidden;                /* le header reste fixe, le scroll est sur la liste */
+    display:flex; flex-direction:column;
     box-shadow:0 6px 24px rgba(0,0,0,0.45);
     z-index:501;
     display:none;
@@ -2565,7 +2568,12 @@
     color:var(--ink);
     word-break:break-word;
   }
-  #pinnedNotePopup.open{ display:block; }
+  #pinnedNotePopup.open{ display:flex; }
+  /* La liste de tâches défile en interne quand elle dépasse l'écran */
+  #pinnedTaskList, #sharedTodoItems{
+    overflow-y:auto; -webkit-overflow-scrolling:touch;
+    max-height:calc(100vh - 180px); /* espace pour header + tabs + marges */
+  }
   #pinnedNotePopup h4{
     margin:0 0 10px; font-size:13px; font-weight:800;
     text-transform:uppercase; letter-spacing:1px; color:var(--wood);
@@ -3028,6 +3036,42 @@
     display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;
   }
   .galerie-folder-title{ font-size:16px; font-weight:800; }
+  /* MODULE — SimpleMode : dashboard 4 boutons style CarPlay */
+  .simple-dash{
+    display:grid; grid-template-columns:1fr 1fr; gap:16px;
+    height:100%; padding:12px 8px;
+    align-content:stretch;
+  }
+  .simple-tile{
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+    background:var(--card); border:1.5px solid var(--line); border-radius:20px;
+    cursor:pointer; padding:20px;
+    box-shadow:0 4px 20px rgba(0,0,0,.3);
+    transition:transform .1s, background .15s;
+  }
+  .simple-tile:active{ transform:scale(.96); background:var(--card-hi, var(--bg-elev)); }
+  .simple-tile-icon{ font-size:48px; line-height:1; }
+  .simple-tile-label{ font-size:17px; font-weight:800; color:var(--ink); letter-spacing:.3px; }
+  #view-simpleDash{ padding:8px 12px 12px; }
+  #view-simpleDash.active{ display:grid; }
+
+  /* Bouton retour au dashboard (bas gauche, plein écran) */
+  #simpleModeBackBtn{
+    position:fixed; left:14px; bottom:calc(14px + env(safe-area-inset-bottom));
+    width:52px; height:52px; border-radius:14px;
+    background:var(--card); border:1.5px solid var(--wood);
+    color:var(--wood); cursor:pointer; z-index:50;
+    display:none; align-items:center; justify-content:center;
+    box-shadow:0 4px 16px rgba(0,0,0,.4);
+  }
+  #simpleModeBackBtn:active{ background:var(--wood); color:#1a0f00; }
+
+  /* Quand Mode Simple actif : la nav bottom est masquée */
+  body.simple-mode nav.bottom{ display:none !important; }
+  body.simple-mode .fab{ display:none !important; }
+  body.simple-mode #simpleModeBackBtn{ display:flex; }
+  /* Dashboard en simple mode : pas de bouton retour (on est déjà au dashboard) */
+  body.simple-mode .view#view-simpleDash ~ #simpleModeBackBtn{ /* géré en JS */ }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -3712,9 +3756,15 @@
               </div>
             </div>
             <div class="hint" style="margin-top:8px;" id="myProfileExplain"></div>
-            <div class="field" style="margin-top:10px; margin-bottom:0;">
-              <label>Numéro de la comptable</label>
-              <input type="tel" id="settingsAccountantPhone" placeholder="Ex : 06 12 34 56 78" onchange="updateAccountantPhone(this.value)">
+            <div style="margin-top:12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div>
+                <div style="font-weight:700; font-size:14px;">Mode simple</div>
+                <div class="hint" style="margin-top:2px;">Dashboard tactile 4 boutons (style CarPlay)</div>
+              </div>
+              <label class="toggle-switch" style="flex-shrink:0;">
+                <input type="checkbox" id="simpleModeToggle" onchange="simpleModeSet(this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
             </div>
             <div class="field" style="margin-top:10px; margin-bottom:0; display:none;">
               <label>Code Entreprise</label>
@@ -4873,7 +4923,8 @@
       <div class="notes-wrap">
         <div class="notes-add-row">
           <textarea id="notesAddInput" rows="1" placeholder="Ajouter une tâche… (Entrée = nouvelle ligne)"></textarea>
-          <button class="btn btn-primary" style="padding:0 14px;" onclick="notesAddManual()">+</button>
+          <button class="btn btn-primary" style="padding:0 14px;" onclick="notesAddManual()" title="Ajouter">+</button>
+          <button class="btn btn-outline" style="padding:0 12px;font-size:16px;" onclick="notesImportFromAgenda()" title="Importer un événement de l'agenda">📅</button>
         </div>
 
         <div class="notes-list-head">
@@ -4890,6 +4941,30 @@
     </section>
 
     <!-- MODULE — Notes (fin DOM) -->
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         MODULE — SimpleMode · Dashboard 4 boutons (style CarPlay)
+         ═══════════════════════════════════════════════════════════════ -->
+    <section class="view" id="view-simpleDash">
+      <div class="simple-dash">
+        <button class="simple-tile" onclick="simpleModeOpen('chantiers')">
+          <span class="simple-tile-icon">🏗️</span>
+          <span class="simple-tile-label">Chantier</span>
+        </button>
+        <button class="simple-tile" onclick="simpleModeOpen('notes')">
+          <span class="simple-tile-icon">📋</span>
+          <span class="simple-tile-label">À faire</span>
+        </button>
+        <button class="simple-tile" onclick="simpleModeOpen('heures')">
+          <span class="simple-tile-icon">⏱️</span>
+          <span class="simple-tile-label">Heures</span>
+        </button>
+        <button class="simple-tile" onclick="simpleModeOpen('itineraires')">
+          <span class="simple-tile-icon">🗺️</span>
+          <span class="simple-tile-label">Itinéraire</span>
+        </button>
+      </div>
+    </section>
 
     <!-- ═══════════════════════════════════════════════════════════════
          MODULE — SuiviHeures (début)  ·  onglet 100% isolé, patron/dev
@@ -5899,6 +5974,11 @@
     </div>
   </div>
 </div>
+
+<!-- MODULE — SimpleMode : bouton retour au dashboard (plein écran) -->
+<button id="simpleModeBackBtn" style="display:none;" onclick="simpleModeBackToDash()">
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+</button>
 
 <div class="toast" id="toast"></div>
 
@@ -7545,7 +7625,8 @@ function goTo(viewName, siteId){
     magasin:     ['Magasin', 'Machines partagées — emprunt par camion'],
     notes:       ['Listes à faire', 'Consulte, coche et gère tes tâches'],
     suivi:       ['Suivi analytique', 'Cumul des heures par chantier'],
-    detail:      [null, null]
+    detail:      [null, null],
+    simpleDash:  ['Mode Simple', 'Dashboard tactile']
   };
 
   const pageTitleEl = document.getElementById('pageTitle');
@@ -7592,6 +7673,13 @@ function goTo(viewName, siteId){
 
   pageTitleEl.textContent = titles[viewName][0];
   pageSubEl.textContent = titles[viewName][1];
+
+  // MODULE — SimpleMode : gérer le bouton retour dashboard
+  if(typeof simpleModeIsActive === 'function' && simpleModeIsActive()){
+    const backBtn = document.getElementById('simpleModeBackBtn');
+    if(backBtn) backBtn.style.display = (viewName === 'simpleDash') ? 'none' : 'flex';
+  }
+
   // FAB : décision centralisée par le routeur unique (voir MODULE FabRouter)
   updateFab(viewName, null);
 
@@ -23370,7 +23458,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.46.2';
+const APP_VERSION = '2.48.0';
 
 const CHANGELOG = [
   {
@@ -27497,7 +27585,7 @@ function _renderPinnedTasksInPopup(){
        </div>` : '';
 
   if(!pn.tasks.length){
-    container.innerHTML = syncBtn + '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0 6px;">Aucune tâche — ajoute-en une ci-dessous.</div>';
+    container.innerHTML = syncBtn + '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0 6px;">Aucune tâche pour le moment.</div>';
     return;
   }
   const sorted = [...pn.tasks].sort((a,b)=> (a.done?1:0)-(b.done?1:0));
@@ -27606,15 +27694,55 @@ async function refreshSharedTodoInPopup(){
 function _positionPinnedPopup(popup){
   const bubble = document.getElementById('pinnedNoteBubble');
   const rect   = bubble.getBoundingClientRect();
-  const pn = _getPinnedNote();
-  const corner = pn.corner || 'bottom-right';
   popup.style.position = 'fixed';
   popup.style.maxWidth = '290px';
   popup.style.width    = '290px';
-  if(corner.includes('right')){ popup.style.right = (window.innerWidth - rect.right) + 'px'; popup.style.left  = 'auto'; }
-  else { popup.style.left  = rect.left + 'px'; popup.style.right = 'auto'; }
-  if(corner.includes('bottom')){ popup.style.bottom = (window.innerHeight - rect.top + 8) + 'px'; popup.style.top    = 'auto'; }
-  else { popup.style.top    = (rect.bottom + 8) + 'px'; popup.style.bottom = 'auto'; }
+
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const margin = 8;
+
+  // ── Max-height dynamique : jamais plus haut que l'écran disponible ──
+  const maxH = vh - margin * 2;
+  popup.style.maxHeight = maxH + 'px';
+
+  // Forcer le display pour mesurer la hauteur réelle du popup
+  const wasHidden = !popup.classList.contains('open');
+  if(wasHidden){ popup.style.visibility='hidden'; popup.classList.add('open'); }
+  const popH = Math.min(popup.offsetHeight, maxH);
+  const popW = popup.offsetWidth;
+  if(wasHidden){ popup.classList.remove('open'); popup.style.visibility=''; }
+
+  // ── Horizontal : garder dans l'écran ──
+  let left = rect.left;
+  if(left + popW > vw - margin) left = vw - popW - margin;
+  if(left < margin) left = margin;
+  popup.style.left  = left + 'px';
+  popup.style.right = 'auto';
+
+  // ── Vertical : au-dessus ou en dessous de la bulle, selon la place ──
+  const spaceBelow = vh - rect.bottom - margin;
+  const spaceAbove = rect.top - margin;
+  let top;
+  if(spaceBelow >= popH){
+    top = rect.bottom + margin;
+  } else if(spaceAbove >= popH){
+    top = rect.top - popH - margin;
+  } else {
+    // Ni l'un ni l'autre : coller au bord le plus spacieux, clampé.
+    top = Math.max(margin, Math.min(vh - popH - margin, (vh - popH) / 2));
+  }
+  // Clamp final : TOUJOURS dans l'écran
+  top = Math.max(margin, Math.min(top, vh - popH - margin));
+  popup.style.top    = top + 'px';
+  popup.style.bottom = 'auto';
+
+  // Recalculer le max-height de la liste interne (espace réel disponible)
+  const headerH = 90; // h4 + tabs + marges (~90px)
+  const listMaxH = Math.max(100, maxH - headerH);
+  const tl = document.getElementById('pinnedTaskList');
+  const sl = document.getElementById('sharedTodoItems');
+  if(tl) tl.style.maxHeight = listMaxH + 'px';
+  if(sl) sl.style.maxHeight = listMaxH + 'px';
 }
 
 function closePinnedNotePopup(){
@@ -32199,6 +32327,56 @@ function notesClearDone(){
   showToast('Tâches faites effacées');
 }
 
+/* ── Import d'événements agenda dans la liste À faire ──────────────── */
+/* Affiche un sélecteur des événements agenda pour en importer un. */
+function notesImportFromAgenda(){
+  const tasks = (data.tasks || []).slice();
+  if(!tasks.length){ showToast('Aucun événement dans l\'agenda'); return; }
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0,10);
+  const upcoming = tasks.filter(t => (t.date || '') >= cutoff).sort((a,b) => (a.date||'').localeCompare(b.date||''));
+  if(!upcoming.length){ showToast('Aucun événement récent ou à venir'); return; }
+  const pn = _getPinnedNote();
+  const existingTexts = new Set((pn.tasks || []).map(t => (t.text||'').toLowerCase().trim()));
+  let html = '<div style="max-height:60vh;overflow-y:auto;margin:12px 0;">';
+  upcoming.forEach(t => {
+    const already = existingTexts.has((t.text||'').toLowerCase().trim());
+    const site = (data.sites||[]).find(s => s.id === t.siteId);
+    const label = escapeHtml(t.text || '(sans titre)');
+    const dateStr = t.date ? new Date(t.date + 'T00:00:00').toLocaleDateString('fr-FR', {weekday:'short',day:'numeric',month:'short'}) : '';
+    const siteName = site ? escapeHtml(site.name) : '';
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.06);${already?'opacity:.4;':'cursor:pointer;'}" ${already?'':'onclick="notesImportAgendaItem(\''+t.id+'\'); closeModal(\'notesAgendaPicker\');"'}>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:14px;">${label}</div>
+        <div style="font-size:12px;color:var(--ink-soft);">${dateStr}${siteName ? ' · ' + siteName : ''}</div>
+      </div>
+      ${already ? '<span style="font-size:11px;color:var(--ink-soft);">déjà ajouté</span>' : '<span style="font-size:18px;">+</span>'}
+    </div>`;
+  });
+  html += '</div>';
+  let overlay = document.getElementById('modal-notesAgendaPicker');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'modal-notesAgendaPicker';
+    overlay.innerHTML = '<div class="modal"><div class="modal-header"><h2>Importer de l\'agenda</h2><button class="modal-close" onclick="closeModal(\'notesAgendaPicker\')">×</button></div><div id="notesAgendaPickerContent"></div></div>';
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('notesAgendaPickerContent').innerHTML = html;
+  openModal('notesAgendaPicker');
+}
+function notesImportAgendaItem(taskId){
+  const agendaTask = (data.tasks || []).find(t => t.id === taskId);
+  if(!agendaTask) return;
+  const pn = _getPinnedNote();
+  const site = (data.sites||[]).find(s => s.id === agendaTask.siteId);
+  const dateStr = agendaTask.date ? new Date(agendaTask.date + 'T00:00:00').toLocaleDateString('fr-FR', {weekday:'short',day:'numeric',month:'short'}) : '';
+  const text = (agendaTask.text || '(sans titre)') + (dateStr ? ' — ' + dateStr : '') + (site ? ' (' + site.name + ')' : '');
+  pn.tasks.push({ id:uid(), text, done:false, authorName:_notesCurrentUserName(), authorAuthId:_notesCurrentAuthId(), createdAt:new Date().toISOString(), importedFromAgendaId:agendaTask.id });
+  _notesCommit();
+  showToast('Événement importé dans la liste');
+}
+
 /* ── Parsing local : segmentation sur "plus" / "et" ──────────────── */
 /* Applique la visibilité de l'onglet au démarrage. */
 document.addEventListener('DOMContentLoaded', () => {
@@ -32213,6 +32391,67 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 900);
 });
 /* ═══ MODULE — Notes (JS)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — SimpleMode (JS)  ·  début
+   Dashboard tactile 4 boutons (style CarPlay). Le mode est persisté
+   dans data.settings.simpleMode (true/false). Quand actif :
+   - L'écran d'accueil = grille 4 tuiles (Chantier, À faire, Heures, Itinéraire)
+   - La nav bottom classique est masquée (class "simple-mode" sur body)
+   - Chaque vue s'ouvre en plein écran, un bouton bas-gauche revient au dashboard
+   Retrait : supprimer ce bloc + le DOM #view-simpleDash + #simpleModeBackBtn
+           + le toggle dans Paramètres + l'entrée simpleDash dans titles.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function simpleModeIsActive(){
+  return !!(data.settings && data.settings.simpleMode);
+}
+
+/* Active/désactive le mode simple et recharge l'interface. */
+function simpleModeSet(on){
+  if(!data.settings) data.settings = {};
+  data.settings.simpleMode = !!on;
+  saveData();
+  simpleModeApply();
+  if(on) goTo('simpleDash');
+  else goTo('chantiers');
+}
+
+/* Applique l'état visuel du mode simple (class body + nav + bouton retour). */
+function simpleModeApply(){
+  const on = simpleModeIsActive();
+  document.body.classList.toggle('simple-mode', on);
+  const backBtn = document.getElementById('simpleModeBackBtn');
+  if(backBtn) backBtn.style.display = on ? 'flex' : 'none';
+  // Sync le toggle dans les paramètres
+  const toggle = document.getElementById('simpleModeToggle');
+  if(toggle) toggle.checked = on;
+}
+
+/* Ouvre une vue depuis le dashboard en plein écran (nav masquée). */
+function simpleModeOpen(viewName){
+  goTo(viewName);
+  // Masquer le bouton retour sur le dashboard, le montrer sur les vues internes
+  const backBtn = document.getElementById('simpleModeBackBtn');
+  if(backBtn) backBtn.style.display = 'flex';
+}
+
+/* Revient au dashboard 4 boutons. */
+function simpleModeBackToDash(){
+  goTo('simpleDash');
+  const backBtn = document.getElementById('simpleModeBackBtn');
+  if(backBtn) backBtn.style.display = 'none';
+}
+
+/* Au démarrage : si mode simple activé, démarrer dessus. */
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => {
+    simpleModeApply();
+    if(simpleModeIsActive()) goTo('simpleDash');
+  }, 200);
+});
+
+/* ═══ MODULE — SimpleMode (JS)  ·  fin ═══ */
 
 /* ═══════════════════════════════════════════════════════════════════
    MODULE — SuiviHeures (JS)  ·  début
@@ -33721,11 +33960,7 @@ async function comptaEditEnsurePulled(){
   <!-- MA LISTE -->
   <div id="todoSectionMaListe">
     <div id="pinnedTaskList"></div>
-    <div id="pinnedPopupAddRow">
-      <input id="pinnedPopupAddInput" type="text" placeholder="Ajouter une tâche…"
-        onkeydown="if(event.key==='Enter') addPinnedTaskFromPopup()">
-      <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()">+</button>
-    </div>
+    <!-- Zone d'ajout supprimée : l'ajout se fait depuis l'onglet "Listes à faire" -->
   </div>
 
   <!-- LISTE PARTAGÉE -->
