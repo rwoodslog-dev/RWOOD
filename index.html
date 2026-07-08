@@ -3036,16 +3036,20 @@
     display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;
   }
   .galerie-folder-title{ font-size:16px; font-weight:800; }
-  /* MODULE — SimpleMode : dashboard 4 boutons style CarPlay */
+  /* MODULE — SimpleMode : dashboard dynamique style CarPlay */
   .simple-dash{
     display:grid; grid-template-columns:1fr 1fr; gap:16px;
-    height:100%; padding:12px 8px;
-    align-content:stretch;
+    min-height:100%; padding:12px 8px;
+    align-content:start;
+    overflow-y:auto; -webkit-overflow-scrolling:touch;
   }
+  /* Si 1 seule tuile : pleine largeur. Si impaire : dernière s'étend. */
+  .simple-dash.cols-1{ grid-template-columns:1fr; }
+  .simple-dash.cols-3{ grid-template-columns:1fr 1fr 1fr; }
   .simple-tile{
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
     background:var(--card); border:1.5px solid var(--line); border-radius:20px;
-    cursor:pointer; padding:20px;
+    cursor:pointer; padding:20px; min-height:140px;
     box-shadow:0 4px 20px rgba(0,0,0,.3);
     transition:transform .1s, background .15s;
   }
@@ -3765,6 +3769,11 @@
                 <input type="checkbox" id="simpleModeToggle" onchange="simpleModeSet(this.checked)">
                 <span class="toggle-slider"></span>
               </label>
+            </div>
+            <!-- Sous-menu : choix des onglets du dashboard (visible si mode simple actif) -->
+            <div id="simpleModeConfig" style="display:none; margin-top:12px; padding:12px; background:var(--bg-elev); border-radius:12px; border:1px solid var(--line);">
+              <div style="font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px;">Onglets affichés sur le dashboard</div>
+              <div id="simpleModeOngletsList"></div>
             </div>
             <div class="field" style="margin-top:10px; margin-bottom:0; display:none;">
               <label>Code Entreprise</label>
@@ -4946,23 +4955,8 @@
          MODULE — SimpleMode · Dashboard 4 boutons (style CarPlay)
          ═══════════════════════════════════════════════════════════════ -->
     <section class="view" id="view-simpleDash">
-      <div class="simple-dash">
-        <button class="simple-tile" onclick="simpleModeOpen('chantiers')">
-          <span class="simple-tile-icon">🏗️</span>
-          <span class="simple-tile-label">Chantier</span>
-        </button>
-        <button class="simple-tile" onclick="simpleModeOpen('notes')">
-          <span class="simple-tile-icon">📋</span>
-          <span class="simple-tile-label">À faire</span>
-        </button>
-        <button class="simple-tile" onclick="simpleModeOpen('heures')">
-          <span class="simple-tile-icon">⏱️</span>
-          <span class="simple-tile-label">Heures</span>
-        </button>
-        <button class="simple-tile" onclick="simpleModeOpen('itineraires')">
-          <span class="simple-tile-icon">🗺️</span>
-          <span class="simple-tile-label">Itinéraire</span>
-        </button>
+      <div class="simple-dash" id="simpleDashGrid">
+        <!-- Rempli dynamiquement par simpleModeRenderDash() -->
       </div>
     </section>
 
@@ -23458,7 +23452,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.48.0';
+const APP_VERSION = '2.49.0';
 
 const CHANGELOG = [
   {
@@ -32394,17 +32388,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
 /* ═══════════════════════════════════════════════════════════════════
    MODULE — SimpleMode (JS)  ·  début
-   Dashboard tactile 4 boutons (style CarPlay). Le mode est persisté
-   dans data.settings.simpleMode (true/false). Quand actif :
-   - L'écran d'accueil = grille 4 tuiles (Chantier, À faire, Heures, Itinéraire)
-   - La nav bottom classique est masquée (class "simple-mode" sur body)
-   - Chaque vue s'ouvre en plein écran, un bouton bas-gauche revient au dashboard
-   Retrait : supprimer ce bloc + le DOM #view-simpleDash + #simpleModeBackBtn
-           + le toggle dans Paramètres + l'entrée simpleDash dans titles.
+   Dashboard tactile dynamique (style CarPlay). L'utilisateur choisit
+   ses onglets dans Paramètres → la grille s'adapte automatiquement.
+   Persistance : data.settings.simpleMode (bool) + data.settings.simpleTiles (array).
    ═══════════════════════════════════════════════════════════════════ */
+
+/* Catalogue complet des onglets disponibles pour le dashboard. */
+const SIMPLE_ALL_TILES = [
+  { view:'chantiers',    icon:'🏗️', label:'Chantier' },
+  { view:'notes',        icon:'📋', label:'À faire' },
+  { view:'heures',       icon:'⏱️', label:'Heures' },
+  { view:'itineraires',  icon:'🗺️', label:'Itinéraire' },
+  { view:'stock',        icon:'📦', label:'Stock' },
+  { view:'contacts',     icon:'📇', label:'Contacts' },
+  { view:'agenda',       icon:'📅', label:'Agenda' },
+  { view:'couverture',   icon:'🏠', label:'Toiture' },
+  { view:'galerie',      icon:'📸', label:'Galerie' },
+  { view:'calcul',       icon:'🧮', label:'Calcul' },
+  { view:'suivi',        icon:'📊', label:'Suivi' },
+  { view:'zinc',         icon:'💧', label:'Zinc' },
+  { view:'scanner',      icon:'📷', label:'Scanner' },
+  { view:'zone-chantier',icon:'🗾', label:'Zone' },
+];
+const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
 
 function simpleModeIsActive(){
   return !!(data.settings && data.settings.simpleMode);
+}
+function _simpleGetTiles(){
+  const sel = data.settings && data.settings.simpleTiles;
+  return (Array.isArray(sel) && sel.length) ? sel : SIMPLE_DEFAULT_TILES.slice();
 }
 
 /* Active/désactive le mode simple et recharge l'interface. */
@@ -32413,31 +32426,86 @@ function simpleModeSet(on){
   data.settings.simpleMode = !!on;
   saveData();
   simpleModeApply();
-  if(on) goTo('simpleDash');
+  if(on){ simpleModeRenderDash(); goTo('simpleDash'); }
   else goTo('chantiers');
 }
 
-/* Applique l'état visuel du mode simple (class body + nav + bouton retour). */
+/* Applique l'état visuel du mode simple. */
 function simpleModeApply(){
   const on = simpleModeIsActive();
   document.body.classList.toggle('simple-mode', on);
   const backBtn = document.getElementById('simpleModeBackBtn');
   if(backBtn) backBtn.style.display = on ? 'flex' : 'none';
-  // Sync le toggle dans les paramètres
   const toggle = document.getElementById('simpleModeToggle');
   if(toggle) toggle.checked = on;
+  // Sous-menu config
+  const cfg = document.getElementById('simpleModeConfig');
+  if(cfg) cfg.style.display = on ? '' : 'none';
+  if(on) simpleModeRenderConfig();
 }
 
-/* Ouvre une vue depuis le dashboard en plein écran (nav masquée). */
+/* ── Rendu dynamique du dashboard ──────────────────────────────────── */
+function simpleModeRenderDash(){
+  const grid = document.getElementById('simpleDashGrid');
+  if(!grid) return;
+  const tiles = _simpleGetTiles();
+  const n = tiles.length;
+  // Adapter les colonnes : 1→1col, 2→2col, 3→3col, 4+→2col (scroll si > 6)
+  grid.classList.remove('cols-1','cols-3');
+  if(n === 1) grid.classList.add('cols-1');
+  else if(n === 3) grid.classList.add('cols-3');
+
+  grid.innerHTML = tiles.map(viewId => {
+    const def = SIMPLE_ALL_TILES.find(t => t.view === viewId);
+    const icon = def ? def.icon : '📁';
+    const label = def ? def.label : viewId;
+    return `<button class="simple-tile" onclick="simpleModeOpen('${viewId}')">
+      <span class="simple-tile-icon">${icon}</span>
+      <span class="simple-tile-label">${escapeHtml(label)}</span>
+    </button>`;
+  }).join('');
+}
+
+/* ── Sous-menu config (Paramètres) : sélection des onglets ─────────── */
+function simpleModeRenderConfig(){
+  const list = document.getElementById('simpleModeOngletsList');
+  if(!list) return;
+  const selected = _simpleGetTiles();
+  list.innerHTML = SIMPLE_ALL_TILES.map(t => {
+    const on = selected.includes(t.view);
+    return `<label style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;">
+      <input type="checkbox" ${on?'checked':''} onchange="simpleModeToggleTile('${t.view}',this.checked)" style="width:20px;height:20px;accent-color:var(--wood);">
+      <span style="font-size:20px;">${t.icon}</span>
+      <span style="font-size:14px;font-weight:600;">${escapeHtml(t.label)}</span>
+    </label>`;
+  }).join('');
+}
+
+function simpleModeToggleTile(viewId, on){
+  if(!data.settings) data.settings = {};
+  let tiles = _simpleGetTiles();
+  if(on){
+    if(!tiles.includes(viewId)) tiles.push(viewId);
+  } else {
+    tiles = tiles.filter(v => v !== viewId);
+    if(!tiles.length) tiles = SIMPLE_DEFAULT_TILES.slice(); // au moins 1
+  }
+  data.settings.simpleTiles = tiles;
+  saveData();
+  simpleModeRenderDash();
+  simpleModeRenderConfig();
+}
+
+/* Ouvre une vue depuis le dashboard en plein écran. */
 function simpleModeOpen(viewName){
   goTo(viewName);
-  // Masquer le bouton retour sur le dashboard, le montrer sur les vues internes
   const backBtn = document.getElementById('simpleModeBackBtn');
   if(backBtn) backBtn.style.display = 'flex';
 }
 
-/* Revient au dashboard 4 boutons. */
+/* Revient au dashboard. */
 function simpleModeBackToDash(){
+  simpleModeRenderDash();
   goTo('simpleDash');
   const backBtn = document.getElementById('simpleModeBackBtn');
   if(backBtn) backBtn.style.display = 'none';
@@ -32447,7 +32515,7 @@ function simpleModeBackToDash(){
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
     simpleModeApply();
-    if(simpleModeIsActive()) goTo('simpleDash');
+    if(simpleModeIsActive()){ simpleModeRenderDash(); goTo('simpleDash'); }
   }, 200);
 });
 
