@@ -23370,7 +23370,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.46.1';
+const APP_VERSION = '2.46.2';
 
 const CHANGELOG = [
   {
@@ -29135,8 +29135,26 @@ async function _renderDevTabComptes(list){
 async function confirmDeleteUserFull(authId, name){
   if(!confirm('Supprimer ' + name + ' ?\n\n— Retiré du registre\n— Ses pointages supprimés de la vue comptable\n\nIl pourra se reconnecter mais devra se réinscrire pour réapparaître.')) return;
   try{
-    const users = await _fetchUsersRegistry();
-    await _saveUsersRegistry(users.filter(u => u.authId !== authId), [authId]);
+    // Lire la version BRUTE (avant dédup) pour supprimer TOUTES les variantes
+    const raw = await _fetchUsersRegistryRaw();
+    const normName = (name||'').toString().trim().toLowerCase().replace(/\s+/g,' ');
+    const stripped = (authId||'').replace(/^recovered\./i,'').toLowerCase();
+    // Collecter tous les authIds à retirer (authId exact + variantes recovered + même nom)
+    const toRemove = [];
+    const kept = [];
+    raw.forEach(u => {
+      if(!u) return;
+      const uid = (u.authId||'').toLowerCase();
+      const uStripped = uid.replace(/^recovered\./i,'');
+      const uName = (u.name||'').toString().trim().toLowerCase().replace(/\s+/g,' ');
+      if(uid === authId.toLowerCase() || uStripped === stripped || uName === normName){
+        toRemove.push(u.authId);
+      } else {
+        kept.push(u);
+      }
+    });
+    await _saveUsersRegistry(kept, toRemove);
+    // Supprimer aussi les pointages associés
     const rows = await pullAllPointagesForComptable() || [];
     const match = rows.find(r => r.ownerName === name);
     if(match){
@@ -29549,14 +29567,24 @@ function _dedupeUsersRegistry(users){
   // Nom inversé "Bourdon Pierre" == "Pierre Bourdon" : on trie les mots.
   const nameKey = (name) => norm(name).split(' ').filter(Boolean).sort().join(' ');
 
-  // IDs parasites à purger définitivement (doublons d'extraction).
-  const BLACKLISTED_IDS = new Set(['equipe','dejouahannet','marcelli','r.mi.piechaczek']);
-  // Filtre préalable : exclure les IDs blacklistés (toute forme : brut, recovered, stripped).
+  // IDs parasites à purger définitivement du registre prod RWOOD.
+  const BLACKLISTED_IDS = new Set([
+    'equipe','marcelli','r.mi.piechaczek',
+    // Toutes les variantes connues de l'ID parasite dejou(a)h(a)n(n)et
+    'dejouahannet','dejouhannet','dejouahanet','dejouhnet',
+    'recovered.dejouahannet','recovered.dejouhannet',
+  ]);
   users = users.filter(u => {
     if(!u) return false;
     const raw = (u.authId || '').toLowerCase();
     const stripped = stripRecovered(u.authId);
-    return !BLACKLISTED_IDS.has(raw) && !BLACKLISTED_IDS.has(stripped);
+    // Blacklist par authId exact
+    if(BLACKLISTED_IDS.has(raw) || BLACKLISTED_IDS.has(stripped)) return false;
+    // Blacklist par nom : si le nom complet est EXACTEMENT un des IDs parasites
+    // (ex: affichage "Dejouahannet" sans prénom = probablement le fantôme)
+    const nameNorm = norm(u.name);
+    if(BLACKLISTED_IDS.has(nameNorm)) return false;
+    return true;
   });
 
   // ── Passe 1 : regrouper par authId nettoyé du préfixe recovered. ──
