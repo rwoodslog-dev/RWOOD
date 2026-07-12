@@ -15469,10 +15469,10 @@ function renderHeures(){
   const pointageTab = document.querySelector('#heuresModeTabs .chip[data-mode="pointage"]');
   const paieTab = document.querySelector('#heuresModeTabs .chip[data-mode="paie"]');
   const tabCompta = document.getElementById('tabComptaPaie');
-  const isComptaRole = myRole === 'comptable' || myRole === 'patron';
+  const isComptaRole = profile.role === 'comptable' || profile.role === 'patron';
   if(tabCompta) tabCompta.style.display = isComptaRole ? '' : 'none';
-  pointageTab.style.display = isComptable ? 'none' : 'inline-block';
-  paieTab.style.display = isComptable ? 'none' : 'inline-block';
+  if(pointageTab) pointageTab.style.display = isComptable ? 'none' : 'inline-block';
+  if(paieTab) paieTab.style.display = isComptable ? 'none' : 'inline-block';
   if(isComptable && currentHeuresMode !== 'fiches') currentHeuresMode = 'fiches';
   setHeuresMode(currentHeuresMode);
 }
@@ -19682,6 +19682,8 @@ function toggleParametresSection(mode){
     openParametresSections.add(mode);
     // Init la section todo au moment où l'accordéon s'ouvre (async safe)
     if(mode === 'pinnedNotes') initChefTodoParamsSection();
+    // Re-scroller les wheel-pickers maintenant qu'ils sont visibles (offsetTop valide)
+    if(mode === 'notifications') _refreshNotifWheelPickers();
   } else {
     openParametresSections.delete(mode);
   }
@@ -19693,7 +19695,33 @@ function applyOpenParametresSections(){
     const wasOpen = openParametresSections.has(mode);
     section.classList.toggle('open', wasOpen);
     if(wasOpen && mode === 'pinnedNotes') initChefTodoParamsSection();
+    if(wasOpen && mode === 'notifications') _refreshNotifWheelPickers();
   });
+}
+
+/* Reconstruit les wheel-pickers notif quand l'accordéon s'ouvre.
+   Les pickers construits en display:none ont offsetTop=0 → scroll impossible.
+   On force un rebuild complet quand le conteneur devient visible.
+   setTimeout(80) laisse le temps au navigateur de recalculer le layout. */
+function _refreshNotifWheelPickers(){
+  setTimeout(()=>{
+    ensureNotifSettings();
+    const n = data.settings.notifications;
+    const pickers = [
+      ['notifAgendaHourPicker', n.agendaHour, (val)=>{ n.agendaHour = val; saveData(); }],
+      ['notifDailyPointageHourPicker', n.dailyPointageHour, (val)=>{ n.dailyPointageHour = val; saveData(); }],
+      ['notifWeeklyAccountantHourPicker', n.weeklyAccountantHour, (val)=>{ n.weeklyAccountantHour = val; saveData(); }],
+      ['notifBackupHourPicker', n.backupHour, (val)=>{ n.backupHour = val; saveData(); }]
+    ];
+    pickers.forEach(([id, val, cb])=>{
+      const el = document.getElementById(id);
+      if(!el) return;
+      // Supprimer le flag built → force la reconstruction avec des offsetTop corrects
+      delete el.dataset.built;
+      el.innerHTML = '';
+      populateHourSelect(id, val, cb);
+    });
+  }, 80);
 }
 
 function renderParametres(){
@@ -19933,7 +19961,9 @@ function populateHourSelect(elementId, selectedMinutes, onChange){
     };
   }
 
-  container._scrollToValue(selectedMinutes);
+  // Différer le scroll au prochain tick pour que offsetTop soit calculé
+  // (sinon offsetTop=0 si le DOM vient d'être injecté via innerHTML)
+  setTimeout(()=> container._scrollToValue(selectedMinutes), 0);
 }
 
 /* ============ PRIME DE TRAJET (zones BTP, calcul automatique via géocodage + itinéraire routier) ============ */
@@ -23452,7 +23482,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.49.3';
+const APP_VERSION = '2.49.5';
 
 const CHANGELOG = [
   {
