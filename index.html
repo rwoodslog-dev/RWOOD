@@ -3028,11 +3028,6 @@
     display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;
   }
   .galerie-folder-title{ font-size:16px; font-weight:800; }
-  /* ═══ Optimisation performance ═══ */
-  /* Les modales non ouvertes ne sont pas layoutées par le navigateur */
-  .modal-overlay:not(.open){ content-visibility:auto; contain-intrinsic-size:0 500px; }
-  /* Accélération GPU sur le conteneur principal */
-  #app{ will-change:transform; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -7413,7 +7408,6 @@ function debouncedSyncPush(){
 }
 
 async function saveData(skipSync){
-  if(typeof _perfInvalidateAll === 'function') _perfInvalidateAll(); // MODULE — PerfOptim
   try{
     localStorage.setItem('rwood-data', JSON.stringify(prepareDataForLocalStorage(data)));
     if(!skipSync) debouncedSyncPush();
@@ -7731,7 +7725,6 @@ const statusLabels = {
 };
 
 function renderSites(){
-  if(typeof _perfShouldSkipRender === 'function' && _perfShouldSkipRender('chantiers', data.sites)) return;
   const container = document.getElementById('chantiersList');
   const dashboard = document.getElementById('conducteurDashboard');
   const isConducteur = data.settings && data.settings.myProfile && data.settings.myProfile.role === 'conducteur';
@@ -16300,7 +16293,6 @@ function applyFavorite(favId){
 }
 
 function renderStock(){
-  if(typeof _perfShouldSkipRender === 'function' && _perfShouldSkipRender('stock', data.stock)) return;
   const container = document.getElementById('stockList');
   if(!container) return;
   ensureTruckSettings();
@@ -16927,7 +16919,6 @@ function renderContactCard(c){
 }
 
 function renderContacts(){
-  if(typeof _perfShouldSkipRender === 'function' && _perfShouldSkipRender('contacts', data.contacts)) return;
   const container = document.getElementById('contactsList');
   const searchInput = document.getElementById('contactSearch');
   const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
@@ -19395,76 +19386,6 @@ function getDateOfISOWeek(week, year){
     if(document.visibilityState === 'visible') checkNotifications();
   });
 })();
-
-/* ═══════════════════════════════════════════════════════════════════
-   MODULE — PerfOptim  ·  début
-   Optimisations de performance :
-   1. Pré-rendu en fond des onglets fréquents après le premier paint
-   2. Cache de rendu : skip si données inchangées
-   3. Debounce des rendus fréquents
-   ═══════════════════════════════════════════════════════════════════ */
-
-/* ── 1. Pré-rendu en fond (idle) ── */
-const _PRERENDER_VIEWS = ['heures','stock','contacts','notes','agenda','couverture'];
-let _prerendered = false;
-
-function _perfPrerenderViews(){
-  if(_prerendered) return;
-  _prerendered = true;
-  const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 100));
-  let i = 0;
-  function next(){
-    if(i >= _PRERENDER_VIEWS.length) return;
-    const view = _PRERENDER_VIEWS[i++];
-    idle(() => {
-      try{
-        const renders = {
-          heures: typeof renderHeures === 'function' ? renderHeures : null,
-          stock: typeof renderStock === 'function' ? renderStock : null,
-          contacts: typeof renderContacts === 'function' ? renderContacts : null,
-          notes: typeof notesRender === 'function' ? notesRender : null,
-          agenda: typeof renderAgenda === 'function' ? renderAgenda : null,
-          couverture: typeof renderCouverture === 'function' ? renderCouverture : null,
-        };
-        if(renders[view]) renders[view]();
-      }catch(e){}
-      next();
-    }, { timeout: 3000 });
-  }
-  next();
-}
-
-/* ── 2. Cache de rendu (skip re-render si données inchangées) ── */
-const _renderCache = {};
-function _perfCacheKey(viewName, dataSlice){
-  try{
-    const arr = Array.isArray(dataSlice) ? dataSlice : [];
-    return viewName + ':' + arr.length + ':' + (arr[0] && (arr[0].id || arr[0].name) || '') + ':' + (arr[arr.length-1] && (arr[arr.length-1].id || '') || '');
-  }catch(e){ return ''; }
-}
-function _perfShouldSkipRender(viewName, dataSlice){
-  const key = _perfCacheKey(viewName, dataSlice);
-  if(!key) return false;
-  if(_renderCache[viewName] === key) return true;
-  _renderCache[viewName] = key;
-  return false;
-}
-function _perfInvalidate(viewName){ delete _renderCache[viewName]; }
-function _perfInvalidateAll(){ Object.keys(_renderCache).forEach(k => delete _renderCache[k]); }
-
-/* ── 3. Debounce utilitaire ── */
-const _perfDebounceTimers = {};
-function _perfDebounce(key, fn, ms){
-  clearTimeout(_perfDebounceTimers[key]);
-  _perfDebounceTimers[key] = setTimeout(fn, ms || 60);
-}
-
-/* Lancement du pré-rendu après le boot */
-document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(_perfPrerenderViews, 4000);
-});
-
-/* ═══ MODULE — PerfOptim  ·  fin ═══ */
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
@@ -23449,7 +23370,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.50.1';
+const APP_VERSION = '2.50.0';
 
 const CHANGELOG = [
   {
