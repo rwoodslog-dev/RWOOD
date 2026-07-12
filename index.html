@@ -2974,6 +2974,12 @@
   .galerie-cell img{
     width:100%; aspect-ratio:1/1; object-fit:cover; display:block; background:var(--bg-elev);
   }
+  .galerie-cell img.galerie-lazy:not([src]){
+    background: linear-gradient(90deg, var(--bg-elev) 25%, rgba(255,255,255,.06) 50%, var(--bg-elev) 75%);
+    background-size: 200% 100%;
+    animation: galerieShimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes galerieShimmer{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
   .galerie-cap{
     font-size:10px; color:var(--ink-soft); padding:4px 6px; line-height:1.3;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
@@ -7691,6 +7697,9 @@ function goTo(viewName, siteId){
     // Quitter la galerie réinitialise le mode sélection ET la navigation dossier
     _galerieSelectMode = false; _galerieSelected.clear();
     _galerieOpenSiteId = null; _galerieLastCount = -1;
+    _galerieCurrentPhotos = [];
+    if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+    if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
     const gsb = document.getElementById('galerieSelectBtn'); if(gsb){ gsb.textContent = 'Sélectionner'; gsb.style.display = ''; }
   }
   if(viewName === 'zinc') renderZincGallery();
@@ -8073,7 +8082,12 @@ function _galerieRenderFolders(root){
     </div>`;
 }
 
-/* ── Niveau 2 : photos d'UN chantier (chargées à la demande). ── */
+/* ── Niveau 2 : photos d'UN chantier — chargement progressif par lots ── */
+const _GALERIE_BATCH = 12; // nombre de photos chargées par lot
+let _galerieRenderedCount = 0; // photos déjà dans le DOM
+let _galerieCurrentPhotos = []; // tableau filtré+trié de la session
+let _galerieSentinelObs = null; // IntersectionObserver pour le scroll infini
+
 function _galerieRenderFolder(root, siteId){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site){ _galerieOpenSiteId = null; _galerieRenderFolders(root); return; }
@@ -8090,6 +8104,7 @@ function _galerieRenderFolder(root, siteId){
     <div class="galerie-folder-head">
       <button class="btn btn-outline btn-sm" onclick="galerieCloseFolder()">← Voir tous les dossiers</button>
       <span class="galerie-folder-title">🏗️ ${escapeHtml(site.name)}</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--ink-soft);font-weight:700;">${photos.length} photo${photos.length>1?'s':''}</span>
     </div>`;
 
   if(!photos.length){
@@ -8097,22 +8112,87 @@ function _galerieRenderFolder(root, siteId){
     return;
   }
 
+  // Reset état de pagination
+  _galerieCurrentPhotos = photos;
+  _galerieRenderedCount = 0;
+
   root.innerHTML = backBar + `
-    <div class="galerie-grid">
-      ${photos.map(m => {
-        const key = site.id + '|' + m.id;
-        const checked = _galerieSelected.has(key);
-        const onclick = _galerieSelectMode
-          ? `galerieTogglePhoto('${key}')`
-          : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(site.name||'')).replace(/'/g,'&#39;'))}')`;
-        return `
-        <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
-          ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
-          <img src="${escapeHtml(m.url)}" loading="lazy" alt="photo">
-          <div class="galerie-cap">${_galerieCaption(m)}</div>
-        </div>`;
-      }).join('')}
-    </div>` + (_galerieSelectMode ? _galerieActionBarHtml() : '');
+    <div class="galerie-grid" id="galerieGrid"></div>
+    <div id="galerieSentinel" style="height:1px;"></div>`
+    + (_galerieSelectMode ? _galerieActionBarHtml() : '');
+
+  // Premier lot
+  _galerieAppendBatch(site);
+
+  // Observer pour charger la suite au scroll
+  _galerieSetupSentinel(site);
+}
+
+/* Ajoute un lot de photos au DOM (sans tout reconstruire). */
+function _galerieAppendBatch(site){
+  const grid = document.getElementById('galerieGrid');
+  if(!grid) return;
+  const photos = _galerieCurrentPhotos;
+  const from = _galerieRenderedCount;
+  const to = Math.min(from + _GALERIE_BATCH, photos.length);
+  if(from >= photos.length) return;
+
+  let html = '';
+  for(let i = from; i < to; i++){
+    const m = photos[i];
+    const key = site.id + '|' + m.id;
+    const checked = _galerieSelected.has(key);
+    const onclick = _galerieSelectMode
+      ? `galerieTogglePhoto('${key}')`
+      : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(site.name||'')).replace(/'/g,'&#39;'))}')`;
+    html += `
+    <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
+      ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
+      <img data-src="${escapeHtml(m.url)}" alt="photo" decoding="async" fetchpriority="${i < 6 ? 'high' : 'low'}" class="galerie-lazy">
+      <div class="galerie-cap">${_galerieCaption(m)}</div>
+    </div>`;
+  }
+  grid.insertAdjacentHTML('beforeend', html);
+  _galerieRenderedCount = to;
+
+  // Activer le lazy load des images ajoutées
+  _galerieLazyLoad(grid);
+}
+
+/* IntersectionObserver sur chaque image : ne charge que quand elle entre dans le viewport. */
+let _galerieLazyObs = null;
+function _galerieLazyLoad(container){
+  if(!_galerieLazyObs){
+    _galerieLazyObs = new IntersectionObserver((entries)=>{
+      entries.forEach(entry=>{
+        if(entry.isIntersecting){
+          const img = entry.target;
+          if(img.dataset.src && !img.src){
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+          }
+          _galerieLazyObs.unobserve(img);
+        }
+      });
+    }, { rootMargin: '200px 0px' }); // précharge 200px avant le viewport
+  }
+  container.querySelectorAll('img.galerie-lazy[data-src]').forEach(img=>{
+    _galerieLazyObs.observe(img);
+  });
+}
+
+/* Sentinelle en bas de la grille : charge le lot suivant au scroll. */
+function _galerieSetupSentinel(site){
+  if(_galerieSentinelObs) _galerieSentinelObs.disconnect();
+  const sentinel = document.getElementById('galerieSentinel');
+  if(!sentinel) return;
+
+  _galerieSentinelObs = new IntersectionObserver((entries)=>{
+    if(entries[0].isIntersecting && _galerieRenderedCount < _galerieCurrentPhotos.length){
+      _galerieAppendBatch(site);
+    }
+  }, { rootMargin: '300px 0px' }); // déclenche 300px avant d'atteindre le bas
+  _galerieSentinelObs.observe(sentinel);
 }
 
 /* Ouvre le dossier d'un chantier (charge ses photos à la demande). */
@@ -8133,6 +8213,9 @@ function galerieCloseFolder(){
   _galerieSelectMode = false;
   _galerieSelected.clear();
   _galerieLastCount = -1; // recalcul du compteur global (dossiers)
+  _galerieCurrentPhotos = [];
+  if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+  if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
   const btn = document.getElementById('galerieSelectBtn');
   if(btn){ btn.textContent = 'Sélectionner'; }
   const root = document.getElementById('galerieContent');
@@ -23482,7 +23565,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.49.5';
+const APP_VERSION = '2.50.0';
 
 const CHANGELOG = [
   {
