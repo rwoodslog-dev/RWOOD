@@ -2726,7 +2726,10 @@
     position: sticky;
     top: 0;
     z-index: 4;
-    margin: 0 0 0;
+    max-height: 45dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0 0 8px;
     background: var(--bg-elev);
     border: 1px solid var(--line);
   }
@@ -2971,6 +2974,12 @@
   .galerie-cell img{
     width:100%; aspect-ratio:1/1; object-fit:cover; display:block; background:var(--bg-elev);
   }
+  .galerie-cell img.galerie-lazy:not([src]){
+    background: linear-gradient(90deg, var(--bg-elev) 25%, rgba(255,255,255,.06) 50%, var(--bg-elev) 75%);
+    background-size: 200% 100%;
+    animation: galerieShimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes galerieShimmer{ 0%{background-position:200% 0} 100%{background-position:-200% 0} }
   .galerie-cap{
     font-size:10px; color:var(--ink-soft); padding:4px 6px; line-height:1.3;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
@@ -3405,21 +3414,29 @@
         <button class="btn btn-outline btn-sm" onclick="openChantierTransfer(currentDetailSite)" style="margin-left:auto;">📤 Transférer</button>
       </div>
 
-      <!-- Résumé compact du chantier (toujours visible, non dépliable) -->
-      <div class="card" id="detailInfoCard" style="padding:12px 14px; margin-bottom:0;">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <div style="flex:1; min-width:0;">
-            <h3 id="detailInfoCompactName" style="margin:0; font-size:17px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></h3>
-            <div class="hint" id="detailInfoCompactAddress" style="margin:2px 0 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+      <div class="card" id="detailInfoCard">
+        <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleDetailInfoCollapse()">
+          <div id="detailInfoCollapsedSummary" style="display:none;">
+            <h3 id="detailInfoCollapsedName" style="margin:0;"></h3>
+            <div class="hint" id="detailInfoCollapsedAddress" style="margin:0;"></div>
           </div>
-          <div id="detailInfoCompactBadge" style="flex-shrink:0;"></div>
+          <div style="flex:1;"></div>
+          <span id="detailInfoToggleIcon" style="font-size:18px; color:var(--ink-soft); flex-shrink:0; padding:4px 8px;">▾</span>
+        </div>
+
+        <div id="detailInfoExpandedContent">
+          <div id="detailHeader"></div>
+
+          <div class="section-title" style="margin-top:18px;">Avancement</div>
+          <div id="detailProgress"></div>
+
+          <div class="section-title" style="margin-top:18px;">Tuile du chantier</div>
+          <div id="detailTile"></div>
         </div>
       </div>
 
-      <!-- 3 boutons principaux : Info + Médias + Synchro + Récap Patron -->
-      <div style="display:flex;gap:8px;margin:12px 0 0;" id="detailMainBtns">
-        <button class="btn btn-outline" style="flex:1;font-weight:800;"
-          onclick="openDetailInfoModal()" id="btnMainInfo">ℹ️ Info</button>
+      <!-- 2 boutons principaux + onglet Récap Patron -->
+      <div style="display:flex;gap:8px;margin:16px 0 0;" id="detailMainBtns">
         <button class="btn btn-primary" style="flex:1;font-weight:800;"
           onclick="setDetailMain('media')" id="btnMainMedia">📎 Médias</button>
         <button class="btn btn-outline" style="flex:1;font-weight:800;"
@@ -7680,6 +7697,9 @@ function goTo(viewName, siteId){
     // Quitter la galerie réinitialise le mode sélection ET la navigation dossier
     _galerieSelectMode = false; _galerieSelected.clear();
     _galerieOpenSiteId = null; _galerieLastCount = -1;
+    _galerieCurrentPhotos = [];
+    if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+    if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
     const gsb = document.getElementById('galerieSelectBtn'); if(gsb){ gsb.textContent = 'Sélectionner'; gsb.style.display = ''; }
   }
   if(viewName === 'zinc') renderZincGallery();
@@ -7704,20 +7724,19 @@ function goTo(viewName, siteId){
 let currentDetailSite = null;
 let detailInfoCollapsed = false;
 
-/* Ouvre la modale Info complète du chantier. */
-function openDetailInfoModal(){
-  const site = data.sites.find(s => s.id === currentDetailSite);
-  if(!site) return;
-  const titleEl = document.getElementById('detailInfoModalTitle');
-  if(titleEl) titleEl.textContent = site.name || 'Infos du chantier';
-  // Le rendu dans detailHeader/detailProgress/detailTile est déjà fait
-  // par renderSiteDetail — ils sont maintenant dans la modale.
-  openModal('detailInfo');
+function toggleDetailInfoCollapse(){
+  detailInfoCollapsed = !detailInfoCollapsed;
+  applyDetailInfoCollapseState();
 }
 
-/* Rétrocompatibilité : l'ancien toggle ne fait plus rien (les appels résiduels ne crashent pas). */
-function toggleDetailInfoCollapse(){ openDetailInfoModal(); }
-function applyDetailInfoCollapseState(){ /* no-op */ }
+function applyDetailInfoCollapseState(){
+  const exp = document.getElementById('detailInfoExpandedContent');
+  const sum = document.getElementById('detailInfoCollapsedSummary');
+  const ico = document.getElementById('detailInfoToggleIcon');
+  if(exp) exp.style.display = detailInfoCollapsed ? 'none' : 'block';
+  if(sum) sum.style.display = detailInfoCollapsed ? 'block' : 'none';
+  if(ico) ico.textContent = detailInfoCollapsed ? '▸' : '▾';
+}
 
 /* Bascule entre les 2 panneaux principaux */
 function setDetailMain(mode){
@@ -7726,17 +7745,20 @@ function setDetailMain(mode){
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
   });
-  // Réinitialiser style de tous les boutons
-  const btnInfo    = document.getElementById('btnMainInfo');
+  // Réinitialiser style des 2 boutons fixes (Médias + Synchro)
+  // btnMainCumul est géré séparément par updateSynchroTab
   const btnMedia   = document.getElementById('btnMainMedia');
   const btnSynchro = document.getElementById('btnMainSynchro');
   const btnCumul   = document.getElementById('btnMainCumul');
-  [btnInfo, btnMedia, btnSynchro, btnCumul].forEach(b => {
+  [btnMedia, btnSynchro, btnCumul].forEach(b => {
     if(b) { b.style.flex='1'; b.style.fontWeight='800'; b.classList.remove('btn-primary'); b.classList.add('btn-outline'); }
   });
   // Activer le mode demandé
+  const panel = document.getElementById('detailMediaPanel'.replace('Media', mode.charAt(0).toUpperCase()+mode.slice(1))
+    .replace('detailMedia', 'detail').replace('detailSynchro','detail').replace('detailCumul','detail'));
+  // Map propre
   const panelIds = { media:'detailMediaPanel', synchro:'detailSynchroPanel', cumul:'detailCumulPanel' };
-  const btnEls   = { info: btnInfo, media: btnMedia, synchro: btnSynchro, cumul: btnCumul };
+  const btnEls   = { media: btnMedia, synchro: btnSynchro, cumul: btnCumul };
   const activePanel = document.getElementById(panelIds[mode]);
   if(activePanel) activePanel.style.display = '';
   if(btnEls[mode]) { btnEls[mode].classList.remove('btn-outline'); btnEls[mode].classList.add('btn-primary'); }
@@ -7796,7 +7818,7 @@ const statusLabels = {
 function renderSites(){
   const container = document.getElementById('chantiersList');
   const dashboard = document.getElementById('conducteurDashboard');
-  const isConducteur = data.settings && data.settings.myProfile && data.settings.myProfile.role === 'conducteur';
+  const isConducteur = data.settings && data.settings.myProfile && (data.settings.myProfile.role === 'conducteur' || data.settings.myProfile.role === 'patron');
   const isChefRole   = data.settings && data.settings.myProfile && data.settings.myProfile.role === 'chef';
   const isPatronRole = isPatron();
 
@@ -7807,7 +7829,7 @@ function renderSites(){
   const navAlertes = document.getElementById('navBtnAlertesConducteur');
   if(navAlertes) navAlertes.style.display = (isConducteur || isPatronRole) ? '' : 'none';
 
-  // Patron = conducteur : dashboard masqué, liste complète sans filtre
+  // Conducteur ET patron : dashboard conducteur
   dashboard.style.display = isConducteur ? 'block' : 'none';
   container.style.display = isConducteur ? 'none' : 'block';
 
@@ -7854,7 +7876,7 @@ function renderSites(){
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${site.progress}%"></div></div>
       <div class="progress-label"><span>Avancement</span><span>${site.progress}%</span></div>
-      ${myRole === 'conducteur' && site.shared ? `
+      ${(myRole === 'conducteur' || myRole === 'patron') && site.shared ? `
         <div class="meta" style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
           <span>${site.assignedChefName ? '👷 ' + userLabelHtml({name: site.assignedChefName, authId: site.assignedChefAuthId||''}, 'chef') : 'Aucun chef assigné'}</span>
           <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); assignChefToSite('${site.id}')">${site.assignedChefName ? 'Réassigner' : 'Assigner'}</button>
@@ -8060,7 +8082,12 @@ function _galerieRenderFolders(root){
     </div>`;
 }
 
-/* ── Niveau 2 : photos d'UN chantier (chargées à la demande). ── */
+/* ── Niveau 2 : photos d'UN chantier — chargement progressif par lots ── */
+const _GALERIE_BATCH = 12; // nombre de photos chargées par lot
+let _galerieRenderedCount = 0; // photos déjà dans le DOM
+let _galerieCurrentPhotos = []; // tableau filtré+trié de la session
+let _galerieSentinelObs = null; // IntersectionObserver pour le scroll infini
+
 function _galerieRenderFolder(root, siteId){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site){ _galerieOpenSiteId = null; _galerieRenderFolders(root); return; }
@@ -8077,6 +8104,7 @@ function _galerieRenderFolder(root, siteId){
     <div class="galerie-folder-head">
       <button class="btn btn-outline btn-sm" onclick="galerieCloseFolder()">← Voir tous les dossiers</button>
       <span class="galerie-folder-title">🏗️ ${escapeHtml(site.name)}</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--ink-soft);font-weight:700;">${photos.length} photo${photos.length>1?'s':''}</span>
     </div>`;
 
   if(!photos.length){
@@ -8084,22 +8112,87 @@ function _galerieRenderFolder(root, siteId){
     return;
   }
 
+  // Reset état de pagination
+  _galerieCurrentPhotos = photos;
+  _galerieRenderedCount = 0;
+
   root.innerHTML = backBar + `
-    <div class="galerie-grid">
-      ${photos.map(m => {
-        const key = site.id + '|' + m.id;
-        const checked = _galerieSelected.has(key);
-        const onclick = _galerieSelectMode
-          ? `galerieTogglePhoto('${key}')`
-          : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(site.name||'')).replace(/'/g,'&#39;'))}')`;
-        return `
-        <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
-          ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
-          <img src="${escapeHtml(m.url)}" loading="lazy" alt="photo">
-          <div class="galerie-cap">${_galerieCaption(m)}</div>
-        </div>`;
-      }).join('')}
-    </div>` + (_galerieSelectMode ? _galerieActionBarHtml() : '');
+    <div class="galerie-grid" id="galerieGrid"></div>
+    <div id="galerieSentinel" style="height:1px;"></div>`
+    + (_galerieSelectMode ? _galerieActionBarHtml() : '');
+
+  // Premier lot
+  _galerieAppendBatch(site);
+
+  // Observer pour charger la suite au scroll
+  _galerieSetupSentinel(site);
+}
+
+/* Ajoute un lot de photos au DOM (sans tout reconstruire). */
+function _galerieAppendBatch(site){
+  const grid = document.getElementById('galerieGrid');
+  if(!grid) return;
+  const photos = _galerieCurrentPhotos;
+  const from = _galerieRenderedCount;
+  const to = Math.min(from + _GALERIE_BATCH, photos.length);
+  if(from >= photos.length) return;
+
+  let html = '';
+  for(let i = from; i < to; i++){
+    const m = photos[i];
+    const key = site.id + '|' + m.id;
+    const checked = _galerieSelected.has(key);
+    const onclick = _galerieSelectMode
+      ? `galerieTogglePhoto('${key}')`
+      : `galerieOpenLightbox('${escapeHtml(m.url)}','${escapeHtml((_galerieCaption(m)+' — '+(site.name||'')).replace(/'/g,'&#39;'))}')`;
+    html += `
+    <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
+      ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
+      <img data-src="${escapeHtml(m.url)}" alt="photo" decoding="async" fetchpriority="${i < 6 ? 'high' : 'low'}" class="galerie-lazy">
+      <div class="galerie-cap">${_galerieCaption(m)}</div>
+    </div>`;
+  }
+  grid.insertAdjacentHTML('beforeend', html);
+  _galerieRenderedCount = to;
+
+  // Activer le lazy load des images ajoutées
+  _galerieLazyLoad(grid);
+}
+
+/* IntersectionObserver sur chaque image : ne charge que quand elle entre dans le viewport. */
+let _galerieLazyObs = null;
+function _galerieLazyLoad(container){
+  if(!_galerieLazyObs){
+    _galerieLazyObs = new IntersectionObserver((entries)=>{
+      entries.forEach(entry=>{
+        if(entry.isIntersecting){
+          const img = entry.target;
+          if(img.dataset.src && !img.src){
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+          }
+          _galerieLazyObs.unobserve(img);
+        }
+      });
+    }, { rootMargin: '200px 0px' }); // précharge 200px avant le viewport
+  }
+  container.querySelectorAll('img.galerie-lazy[data-src]').forEach(img=>{
+    _galerieLazyObs.observe(img);
+  });
+}
+
+/* Sentinelle en bas de la grille : charge le lot suivant au scroll. */
+function _galerieSetupSentinel(site){
+  if(_galerieSentinelObs) _galerieSentinelObs.disconnect();
+  const sentinel = document.getElementById('galerieSentinel');
+  if(!sentinel) return;
+
+  _galerieSentinelObs = new IntersectionObserver((entries)=>{
+    if(entries[0].isIntersecting && _galerieRenderedCount < _galerieCurrentPhotos.length){
+      _galerieAppendBatch(site);
+    }
+  }, { rootMargin: '300px 0px' }); // déclenche 300px avant d'atteindre le bas
+  _galerieSentinelObs.observe(sentinel);
 }
 
 /* Ouvre le dossier d'un chantier (charge ses photos à la demande). */
@@ -8120,6 +8213,9 @@ function galerieCloseFolder(){
   _galerieSelectMode = false;
   _galerieSelected.clear();
   _galerieLastCount = -1; // recalcul du compteur global (dossiers)
+  _galerieCurrentPhotos = [];
+  if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+  if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
   const btn = document.getElementById('galerieSelectBtn');
   if(btn){ btn.textContent = 'Sélectionner'; }
   const root = document.getElementById('galerieContent');
@@ -8422,7 +8518,7 @@ function renderNewSiteChefsList(){
 /* Adapte le modal addSite selon le rôle */
 function setupAddSiteModal(){
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
-  const isConducteur = myRole === 'conducteur';
+  const isConducteur = myRole === 'conducteur' || myRole === 'patron';
   document.getElementById('addSiteConducteurFields').style.display = isConducteur ? '' : 'none';
   document.getElementById('addSiteStandardFields').style.display = isConducteur ? 'none' : '';
   document.getElementById('btnPutOnHold').style.display = isConducteur ? '' : 'none';
@@ -8443,7 +8539,7 @@ function _buildSiteFromForm(status){
   const name = document.getElementById('newSiteName').value.trim();
   const address = document.getElementById('newSiteAddress').value.trim();
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
-  const isConducteur = myRole === 'conducteur';
+  const isConducteur = myRole === 'conducteur' || myRole === 'patron';
 
   if(!name){ showToast('Donne un nom au chantier'); return null; }
 
@@ -8470,7 +8566,7 @@ function _buildSiteFromForm(status){
 
 function createSite(){
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
-  const status = myRole === 'conducteur' ? 'a-faire' : null;
+  const status = (myRole === 'conducteur' || myRole === 'patron') ? 'a-faire' : null;
   const site = _buildSiteFromForm(status || 'a-faire');
   if(!site) return;
 
@@ -8551,14 +8647,11 @@ function renderDetail(siteId){
   if(!site) return;
 
   const _profile = (data.settings && data.settings.myProfile) || {};
-  const isConducteurDetail = _profile.role === 'conducteur';
+  const isConducteurDetail = _profile.role === 'conducteur' || _profile.role === 'patron';
   const isChefDetail = _profile.role === 'chef' || isConducteurDetail;
 
-  document.getElementById('detailInfoCompactName').textContent = site.name;
-  document.getElementById('detailInfoCompactAddress').textContent = site.address || '';
-  // Badge de statut dans le résumé compact
-  const compactBadge = document.getElementById('detailInfoCompactBadge');
-  if(compactBadge) compactBadge.innerHTML = `<span class="badge ${site.status||'brouillon'}">${statusLabels[site.status]||'Brouillon'}</span>`;
+  document.getElementById('detailInfoCollapsedName').textContent = site.name;
+  document.getElementById('detailInfoCollapsedAddress').textContent = site.address || '';
 
   const readiness = getSiteReadiness(site);
   const checkLine = (ok, label) => `<div style="display:flex; align-items:center; gap:8px; padding:4px 0;"><span>${ok ? '✅' : '⚠️'}</span><span style="${ok?'':'color:var(--ink-soft);'}">${label}</span></div>`;
@@ -8641,8 +8734,7 @@ function renderDetail(siteId){
   const logs = data.logs.filter(l=>l.siteId===siteId).slice().sort((a,b)=> parseLogTime(a.time) - parseLogTime(b.time));
 
   if(logs.length === 0){
-    const dl = document.getElementById('detailLog');
-    if(dl) dl.innerHTML = `<div class="hint" style="padding:20px;">Aucune entrée pour le moment. Écris une note ou utilise le bouton "+" ci-dessous.</div>`;
+    document.getElementById('detailLog').innerHTML = `<div class="hint" style="padding:20px;">Aucune entrée pour le moment. Écris une note ou utilise le bouton "+" ci-dessous.</div>`;
   } else {
     // Regroupe les entrées par jour
     const groups = [];
@@ -8658,8 +8750,7 @@ function renderDetail(siteId){
       currentGroup.entries.push(l);
     });
 
-    const dl2 = document.getElementById('detailLog');
-    if(dl2) dl2.innerHTML = groups.map(group => `
+    document.getElementById('detailLog').innerHTML = groups.map(group => `
       <div class="log-day-header">${group.label}</div>
       ${group.entries.map(l=>{
         const date = parseLogTime(l.time);
@@ -8671,8 +8762,7 @@ function renderDetail(siteId){
     `).join('');
   }
   // Activer le chargement des photos du journal
-  const dl3 = document.getElementById('detailLog');
-  if(dl3) requestAnimationFrame(() => hydrateMediaElements(dl3));
+  requestAnimationFrame(() => hydrateMediaElements(document.getElementById('detailLog')));
   // PAS d'auto-scroll au chargement (ça bloquait la page en bas).
   // Le scroll vers le bas se fait uniquement à l'ajout d'une note.
   renderDetailPhotosSection(siteId);
@@ -8808,9 +8898,7 @@ function renderDetailPhotosSection(siteId){
   const emptyEl = document.getElementById('photoEmptyHint');
   if(emptyEl) emptyEl.style.display = photos.length ? 'none' : 'block';
 
-  const dpEl = document.getElementById('detailPhotos');
-  if(!dpEl) return;
-  dpEl.innerHTML = photos.length ? photos.map(p => {
+  document.getElementById('detailPhotos').innerHTML = photos.length ? photos.map(p => {
     const isSelected = _detailPhotoSelected.has(p.id);
     const cap = escapeHtml(p.time) + (p.text ? ' — ' + escapeHtml(p.text) : '');
     if(_detailPhotoSelectMode){
@@ -10197,8 +10285,8 @@ async function deleteSite(siteId){
 
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
 
-  // Le conducteur doit taper le nom du chantier pour confirmer
-  if(role === 'conducteur'){
+  // Le conducteur et le patron doivent taper le nom du chantier pour confirmer
+  if(role === 'conducteur' || role === 'patron'){
     const input = prompt(
       '⚠️ Suppression définitive pour toute l\'équipe.\n\n' +
       'Tape le nom du chantier pour confirmer :\n"' + site.name + '"'
@@ -15464,10 +15552,10 @@ function renderHeures(){
   const pointageTab = document.querySelector('#heuresModeTabs .chip[data-mode="pointage"]');
   const paieTab = document.querySelector('#heuresModeTabs .chip[data-mode="paie"]');
   const tabCompta = document.getElementById('tabComptaPaie');
-  const isComptaRole = myRole === 'comptable' || myRole === 'patron';
+  const isComptaRole = profile.role === 'comptable' || profile.role === 'patron';
   if(tabCompta) tabCompta.style.display = isComptaRole ? '' : 'none';
-  pointageTab.style.display = isComptable ? 'none' : 'inline-block';
-  paieTab.style.display = isComptable ? 'none' : 'inline-block';
+  if(pointageTab) pointageTab.style.display = isComptable ? 'none' : 'inline-block';
+  if(paieTab) paieTab.style.display = isComptable ? 'none' : 'inline-block';
   if(isComptable && currentHeuresMode !== 'fiches') currentHeuresMode = 'fiches';
   setHeuresMode(currentHeuresMode);
 }
@@ -17805,7 +17893,7 @@ function saveFichesEdit(){
 function renderFiches(){
   const profile = (data.settings && data.settings.myProfile) || { workerId: null, role: 'chef' };
 
-  if(profile.role === 'comptable'){
+  if(profile.role === 'comptable' || profile.role === 'patron'){
     if(document.getElementById('fichesAddWorkerBtn')) document.getElementById('fichesAddWorkerBtn').style.display = 'none';
     renderComptableFiches();
     return;
@@ -19677,6 +19765,8 @@ function toggleParametresSection(mode){
     openParametresSections.add(mode);
     // Init la section todo au moment où l'accordéon s'ouvre (async safe)
     if(mode === 'pinnedNotes') initChefTodoParamsSection();
+    // Re-scroller les wheel-pickers maintenant qu'ils sont visibles (offsetTop valide)
+    if(mode === 'notifications') _refreshNotifWheelPickers();
   } else {
     openParametresSections.delete(mode);
   }
@@ -19688,7 +19778,33 @@ function applyOpenParametresSections(){
     const wasOpen = openParametresSections.has(mode);
     section.classList.toggle('open', wasOpen);
     if(wasOpen && mode === 'pinnedNotes') initChefTodoParamsSection();
+    if(wasOpen && mode === 'notifications') _refreshNotifWheelPickers();
   });
+}
+
+/* Reconstruit les wheel-pickers notif quand l'accordéon s'ouvre.
+   Les pickers construits en display:none ont offsetTop=0 → scroll impossible.
+   On force un rebuild complet quand le conteneur devient visible.
+   setTimeout(80) laisse le temps au navigateur de recalculer le layout. */
+function _refreshNotifWheelPickers(){
+  setTimeout(()=>{
+    ensureNotifSettings();
+    const n = data.settings.notifications;
+    const pickers = [
+      ['notifAgendaHourPicker', n.agendaHour, (val)=>{ n.agendaHour = val; saveData(); }],
+      ['notifDailyPointageHourPicker', n.dailyPointageHour, (val)=>{ n.dailyPointageHour = val; saveData(); }],
+      ['notifWeeklyAccountantHourPicker', n.weeklyAccountantHour, (val)=>{ n.weeklyAccountantHour = val; saveData(); }],
+      ['notifBackupHourPicker', n.backupHour, (val)=>{ n.backupHour = val; saveData(); }]
+    ];
+    pickers.forEach(([id, val, cb])=>{
+      const el = document.getElementById(id);
+      if(!el) return;
+      // Supprimer le flag built → force la reconstruction avec des offsetTop corrects
+      delete el.dataset.built;
+      el.innerHTML = '';
+      populateHourSelect(id, val, cb);
+    });
+  }, 80);
 }
 
 function renderParametres(){
@@ -19760,7 +19876,7 @@ function renderParametres(){
   renderAccentPresets(data.settings&&data.settings.accentColor||'#E8AC3D');
 
   const isChef = data.settings.myProfile.role !== 'ouvrier' && data.settings.myProfile.role !== 'comptable';
-  const isConducteur = data.settings.myProfile.role === 'conducteur';
+  const isConducteur = data.settings.myProfile.role === 'conducteur' || data.settings.myProfile.role === 'patron';
   document.getElementById('equipeSection').style.display = isChef ? 'block' : 'none';
   const teamNamesSection = document.getElementById('teamNamesSection');
   if(teamNamesSection) teamNamesSection.style.display = isConducteur ? 'block' : 'none';
@@ -19928,7 +20044,9 @@ function populateHourSelect(elementId, selectedMinutes, onChange){
     };
   }
 
-  container._scrollToValue(selectedMinutes);
+  // Différer le scroll au prochain tick pour que offsetTop soit calculé
+  // (sinon offsetTop=0 si le DOM vient d'être injecté via innerHTML)
+  setTimeout(()=> container._scrollToValue(selectedMinutes), 0);
 }
 
 /* ============ PRIME DE TRAJET (zones BTP, calcul automatique via géocodage + itinéraire routier) ============ */
@@ -20590,6 +20708,11 @@ function updateMyProfileExplain(){
   const profile = data.settings.myProfile || { workerId: null, role: 'chef' };
   const worker = data.workers.find(w=>w.id===profile.workerId);
   const explain = document.getElementById('myProfileExplain');
+
+  if(profile.role === 'patron'){
+    explain.textContent = `Mode patron : accès complet (conducteur + comptable + chef). Dashboard chantiers, fiches d'heures, pointage équipe, export, gestion complète.`;
+    return;
+  }
 
   if(profile.role === 'comptable'){
     explain.textContent = `En mode comptable, l'onglet Heures affiche toutes les fiches reçues, avec export individuel ou groupé.`;
@@ -23447,7 +23570,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.50.0';
+const APP_VERSION = '2.50.1';
 
 const CHANGELOG = [
   {
@@ -25338,7 +25461,7 @@ let _teamFiches = []; // [{name, weekNum, year, data}]
 /* ── Afficher/cacher la section Heures Équipe selon le rôle ─────── */
 function updateHeuresEquipeSection(){
   const profile = (data.settings && data.settings.myProfile) || {};
-  const isChef  = profile.role === 'chef' || profile.role === 'conducteur';
+  const isChef  = profile.role === 'chef' || profile.role === 'conducteur' || profile.role === 'patron';
   const section = document.getElementById('heuresEquipeSection');
   // Le scan QR équipe est désactivé : chaque ouvrier gère uniquement sa propre fiche.
   // La consolidation se fait côté comptable via pullAllPointagesForComptable().
@@ -34190,23 +34313,6 @@ async function comptaEditEnsurePulled(){
     <div style="display:flex; gap:8px;">
       <button class="btn btn-outline" style="flex:1;" onclick="closeModal('galerieDelete')">Annuler</button>
       <button class="btn btn-primary" style="flex:1;background:var(--red);border-color:var(--red);" onclick="galerieDeleteConfirmed()">Supprimer</button>
-    </div>
-  </div>
-</div>
-
-<!-- MODAL : Infos complètes du chantier (bottom sheet) -->
-<div class="modal-overlay" id="modal-detailInfo">
-  <div class="modal" style="max-height:90vh; overflow-y:auto;">
-    <div class="modal-header">
-      <h2 id="detailInfoModalTitle">Infos du chantier</h2>
-      <button class="modal-close" onclick="closeModal('detailInfo')">×</button>
-    </div>
-    <div id="detailInfoModalBody">
-      <div id="detailHeader"></div>
-      <div class="section-title" style="margin-top:18px;">Avancement</div>
-      <div id="detailProgress"></div>
-      <div class="section-title" style="margin-top:18px;">Tuile du chantier</div>
-      <div id="detailTile"></div>
     </div>
   </div>
 </div>
