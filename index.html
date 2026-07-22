@@ -2726,9 +2726,6 @@
     position: sticky;
     top: 0;
     z-index: 4;
-    max-height: 45dvh;
-    overflow-y: auto;
-    overscroll-behavior: contain;
     margin: 0 0 8px;
     background: var(--bg-elev);
     border: 1px solid var(--line);
@@ -3415,34 +3412,35 @@
       </div>
 
       <div class="card" id="detailInfoCard">
-        <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleDetailInfoCollapse()">
-          <div id="detailInfoCollapsedSummary" style="display:none;">
-            <h3 id="detailInfoCollapsedName" style="margin:0;"></h3>
-            <div class="hint" id="detailInfoCollapsedAddress" style="margin:0;"></div>
+        <!-- Résumé compact toujours visible -->
+        <div style="display:flex; align-items:center; gap:10px; padding:2px 0;">
+          <div style="flex:1; min-width:0;">
+            <h3 id="detailInfoCompactName" style="margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></h3>
+            <div class="hint" id="detailInfoCompactAddress" style="margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
           </div>
-          <div style="flex:1;"></div>
-          <span id="detailInfoToggleIcon" style="font-size:18px; color:var(--ink-soft); flex-shrink:0; padding:4px 8px;">▾</span>
-        </div>
-
-        <div id="detailInfoExpandedContent">
-          <div id="detailHeader"></div>
-
-          <div class="section-title" style="margin-top:18px;">Avancement</div>
-          <div id="detailProgress"></div>
-
-          <div class="section-title" style="margin-top:18px;">Tuile du chantier</div>
-          <div id="detailTile"></div>
+          <span id="detailInfoCompactBadge"></span>
         </div>
       </div>
 
-      <!-- 2 boutons principaux + onglet Récap Patron -->
+      <!-- 4 boutons principaux -->
       <div style="display:flex;gap:8px;margin:16px 0 0;" id="detailMainBtns">
+        <button class="btn btn-outline" style="flex:1;font-weight:800;"
+          onclick="setDetailMain('info')" id="btnMainInfo">ℹ️ Info</button>
         <button class="btn btn-primary" style="flex:1;font-weight:800;"
           onclick="setDetailMain('media')" id="btnMainMedia">📎 Médias</button>
         <button class="btn btn-outline" style="flex:1;font-weight:800;"
-          onclick="setDetailMain('synchro')" id="btnMainSynchro" id="tabSynchroEquipe">🔄 Synchro</button>
+          onclick="setDetailMain('synchro')" id="btnMainSynchro">🔄 Synchro</button>
         <button class="btn btn-outline" id="btnMainCumul" style="display:none;flex:1;font-weight:800;"
           onclick="setDetailMain('cumul')">📊 Récap</button>
+      </div>
+
+      <!-- Panneau Info (affiché/masqué par setDetailMain) -->
+      <div id="detailInfoPanel" style="display:none;">
+        <div id="detailHeader"></div>
+        <div class="section-title" style="margin-top:18px;">Avancement</div>
+        <div id="detailProgress"></div>
+        <div class="section-title" style="margin-top:18px;">Tuile du chantier</div>
+        <div id="detailTile"></div>
       </div>
 
       <!-- Sous-onglets Médias -->
@@ -6670,6 +6668,8 @@ async function initRwoodStorage(){
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
+  // Fix pointage vide au 1er lancement : re-render après que pullSharedSites a fini
+  setTimeout(()=> { try{ if(currentHeuresMode === 'pointage') renderPointage(); }catch(e){} }, 5500);
   setTimeout(()=> pullWorkerMedia(), 5800); // ouvrier : documents reçus du chef
   // MODULE WorkerSync : ouvrier reçoit tous les médias des chantiers où il est assigné
   setTimeout(()=> { workerSyncPull(); workerSyncStartPolling(); }, 6200);
@@ -7637,14 +7637,8 @@ function goTo(viewName, siteId){
     const _detailEl = document.getElementById('view-detail');
     _detailEl.classList.add('active', 'ios-slide-in');
     setTimeout(()=>_detailEl.classList.remove('ios-slide-in'), 350);
-    // La carte info (nom, adresse, équipe, couleur) est toujours repliée par
-    // défaut à l'ouverture d'un chantier, pour épurer les onglets média dessous.
-    detailInfoCollapsed = true;
     currentDetailSite = siteId;
-    setDetailMain('media');
-    setDetailTab('cloud');
     renderDetail(siteId);
-    applyDetailInfoCollapseState();
     updateSynchroTab(data.sites.find(s=>s.id===siteId));
 
     // Patron : forcer l'affichage du bouton Récap + ouvrir ce panel
@@ -7653,6 +7647,8 @@ function goTo(viewName, siteId){
       const _btn = document.getElementById('btnMainCumul');
       if(_btn) _btn.style.display = '';
       setDetailMain('cumul');
+    } else {
+      setDetailMain('media');
     }
     pageTitleWrap.classList.add('hidden');
     // FAB géré par le routeur unique (menu média en vue chantier, jamais "Nouveau chantier")
@@ -7725,40 +7721,32 @@ let currentDetailSite = null;
 let detailInfoCollapsed = false;
 
 function toggleDetailInfoCollapse(){
-  detailInfoCollapsed = !detailInfoCollapsed;
-  applyDetailInfoCollapseState();
+  // Rétrocompatibilité : redirige vers le bouton Info
+  setDetailMain('info');
 }
 
 function applyDetailInfoCollapseState(){
-  const exp = document.getElementById('detailInfoExpandedContent');
-  const sum = document.getElementById('detailInfoCollapsedSummary');
-  const ico = document.getElementById('detailInfoToggleIcon');
-  if(exp) exp.style.display = detailInfoCollapsed ? 'none' : 'block';
-  if(sum) sum.style.display = detailInfoCollapsed ? 'block' : 'none';
-  if(ico) ico.textContent = detailInfoCollapsed ? '▸' : '▾';
+  // No-op : remplacé par setDetailMain('info')
 }
 
-/* Bascule entre les 2 panneaux principaux */
+/* Bascule entre les 4 panneaux principaux */
 function setDetailMain(mode){
-  // Masquer les 3 panels
-  ['detailMediaPanel','detailSynchroPanel','detailCumulPanel'].forEach(id => {
+  // Masquer les 4 panels
+  ['detailInfoPanel','detailMediaPanel','detailSynchroPanel','detailCumulPanel'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
   });
-  // Réinitialiser style des 2 boutons fixes (Médias + Synchro)
-  // btnMainCumul est géré séparément par updateSynchroTab
+  // Réinitialiser style des 4 boutons
+  const btnInfo    = document.getElementById('btnMainInfo');
   const btnMedia   = document.getElementById('btnMainMedia');
   const btnSynchro = document.getElementById('btnMainSynchro');
   const btnCumul   = document.getElementById('btnMainCumul');
-  [btnMedia, btnSynchro, btnCumul].forEach(b => {
+  [btnInfo, btnMedia, btnSynchro, btnCumul].forEach(b => {
     if(b) { b.style.flex='1'; b.style.fontWeight='800'; b.classList.remove('btn-primary'); b.classList.add('btn-outline'); }
   });
-  // Activer le mode demandé
-  const panel = document.getElementById('detailMediaPanel'.replace('Media', mode.charAt(0).toUpperCase()+mode.slice(1))
-    .replace('detailMedia', 'detail').replace('detailSynchro','detail').replace('detailCumul','detail'));
   // Map propre
-  const panelIds = { media:'detailMediaPanel', synchro:'detailSynchroPanel', cumul:'detailCumulPanel' };
-  const btnEls   = { media: btnMedia, synchro: btnSynchro, cumul: btnCumul };
+  const panelIds = { info:'detailInfoPanel', media:'detailMediaPanel', synchro:'detailSynchroPanel', cumul:'detailCumulPanel' };
+  const btnEls   = { info: btnInfo, media: btnMedia, synchro: btnSynchro, cumul: btnCumul };
   const activePanel = document.getElementById(panelIds[mode]);
   if(activePanel) activePanel.style.display = '';
   if(btnEls[mode]) { btnEls[mode].classList.remove('btn-outline'); btnEls[mode].classList.add('btn-primary'); }
@@ -8650,8 +8638,10 @@ function renderDetail(siteId){
   const isConducteurDetail = _profile.role === 'conducteur' || _profile.role === 'patron';
   const isChefDetail = _profile.role === 'chef' || isConducteurDetail;
 
-  document.getElementById('detailInfoCollapsedName').textContent = site.name;
-  document.getElementById('detailInfoCollapsedAddress').textContent = site.address || '';
+  document.getElementById('detailInfoCompactName').textContent = site.name;
+  document.getElementById('detailInfoCompactAddress').textContent = site.address || '';
+  const _compactBadge = document.getElementById('detailInfoCompactBadge');
+  if(_compactBadge) _compactBadge.innerHTML = `<span class="badge ${site.status}">${statusLabels[site.status] || site.status}</span>`;
 
   const readiness = getSiteReadiness(site);
   const checkLine = (ok, label) => `<div style="display:flex; align-items:center; gap:8px; padding:4px 0;"><span>${ok ? '✅' : '⚠️'}</span><span style="${ok?'':'color:var(--ink-soft);'}">${label}</span></div>`;
@@ -15662,6 +15652,24 @@ function renderPointage(){
           </div>
         </div>
         <div class="worker-fields">
+          ${(()=>{
+            const tj = entry.typeJournee || 'normal';
+            const tjInfo = TYPE_JOURNEE[tj] || TYPE_JOURNEE.normal;
+            if(typeJourneeIsAbsence(tj)){
+              return `
+              <div style="grid-column:1/-1;padding:16px 12px;text-align:center;border-radius:10px;background:${tjInfo.color}18;border:1.5px solid ${tjInfo.color}44;">
+                <div style="font-size:28px;">${tjInfo.emoji}</div>
+                <div style="font-size:15px;font-weight:800;color:${tjInfo.color};text-transform:uppercase;letter-spacing:1px;">${tjInfo.short}</div>
+                <div style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${tjInfo.label}</div>
+              </div>
+              <div class="field-mini" style="grid-column:1/-1;">
+                <label>Type de journée</label>
+                <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+                  ${_typeJourneeOptions(tj)}
+                </select>
+              </div>`;
+            }
+            return `
           <div class="field-mini">
             <label>Heures faites</label>
             <input type="number" min="0" max="24" step="0.5" placeholder="0"
@@ -15670,8 +15678,8 @@ function renderPointage(){
           </div>
           <div class="field-mini" style="grid-column:1/-1;">
             <label>Type de journée</label>
-            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value)">
-              ${_typeJourneeOptions(entry.typeJournee || 'normal')}
+            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+              ${_typeJourneeOptions(tj)}
             </select>
           </div>
           <div class="panier-row">
@@ -15684,7 +15692,8 @@ function renderPointage(){
           <div class="task-row" style="grid-column:1/-1;">
             <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--ink-soft);font-weight:700;margin-bottom:6px;">Tâche effectuée</div>
             ${renderTacheSelector(dateKey, w.id, entry)}
-          </div>
+          </div>`;
+          })()}
         </div>
         <div class="worker-phone-row">
           <div class="field" style="margin-bottom:0;">
@@ -23570,7 +23579,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.50.1';
+const APP_VERSION = '2.51.0';
 
 const CHANGELOG = [
   {
