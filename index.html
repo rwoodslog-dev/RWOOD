@@ -3525,10 +3525,7 @@
              ailleurs (mode fiche zinc dédié). -->
         <div id="siteZincList" style="display:none;"></div>
 
-        <!-- ─── CUMUL (Patron) ─────────────────────────────────────────── -->
-        <div class="detail-tab" id="detailTab-cumul">
-          <div id="patronCumulContent"></div>
-        </div>
+        <!-- ─── CUMUL (Patron) — déplacé dans detailCumulPanel ─── -->
       </div>
 
       <!-- Panel Synchro Équipe -->
@@ -3883,11 +3880,18 @@
               <button class="btn btn-outline btn-sm" onclick="resetAccentColor()">Réinitialiser</button>
             </div>
           </div>
+          <div class="section-title">Logo entreprise</div>
+          <div class="card">
+            <div class="hint" style="margin-bottom:10px;">Ce logo apparaîtra en haut à gauche de toutes les fiches d'heures PDF.</div>
+            <div id="companyLogoPreview" style="margin-bottom:10px;"></div>
+            <div id="companyLogoDropZone" style="border:2px dashed var(--line);border-radius:12px;padding:20px;text-align:center;cursor:pointer;color:var(--ink-soft);font-size:13px;" onclick="document.getElementById('companyLogoInput').click()">
+              📷 Clique ou glisse ton logo ici
+              <input type="file" id="companyLogoInput" accept="image/*" style="display:none;" onchange="handleCompanyLogoUpload(this)">
+            </div>
+            <button class="btn btn-outline btn-sm" id="companyLogoRemoveBtn" style="display:none;margin-top:8px;color:var(--red);border-color:var(--red);" onclick="removeCompanyLogo()">Supprimer le logo</button>
+          </div>
         </div>
       </div>
-
-
-      <!-- ACCORDÉON : LISTE À FAIRE (notes épinglées) -->
       <div class="accordion-section" id="parametresMode-pinnedNotes">
         <div class="accordion-header" onclick="toggleParametresSection('pinnedNotes')">
           <span>📌 Liste à faire</span><span class="accordion-arrow">▾</span>
@@ -15383,6 +15387,235 @@ function deleteAgendaTaskFromSite(taskId, siteId){
 
 /* ═══ MODULE — MediaEvents  (fin) ═══ */
 
+/* ═══ MODULE — RecapMensuel  ·  début ═══ */
+
+/* Affiche la grille de 12 mois pour le récap chantier (Patron) */
+function renderPatronCumul(siteId){
+  const container = document.getElementById('patronCumulContent');
+  if(!container) return;
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const mois = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+  let html = `<div class="section-title" style="margin-top:8px;">📊 Récap mensuel</div>`;
+  html += `<div class="hint" style="margin-bottom:14px;">Choisis un mois pour générer le récapitulatif PDF des heures sur ce chantier.</div>`;
+
+  // Sélecteur d'année
+  html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+    <button class="btn btn-outline btn-sm" onclick="document.getElementById('recapYearSelect').value=Number(document.getElementById('recapYearSelect').value)-1;renderPatronCumul('${siteId}')">◀</button>
+    <select id="recapYearSelect" style="flex:1;background:var(--bg-elev);border:1.5px solid var(--line);color:var(--ink);border-radius:9px;padding:8px 12px;font-size:14px;font-weight:700;text-align:center;">
+      ${[currentYear-1, currentYear, currentYear+1].map(y => `<option value="${y}" ${y===currentYear?'selected':''}>${y}</option>`).join('')}
+    </select>
+    <button class="btn btn-outline btn-sm" onclick="document.getElementById('recapYearSelect').value=Number(document.getElementById('recapYearSelect').value)+1;renderPatronCumul('${siteId}')">▶</button>
+  </div>`;
+
+  // Grille de 12 mois
+  html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">`;
+  mois.forEach((m, i) => {
+    const isPast = (currentYear === now.getFullYear() && i <= now.getMonth()) || currentYear < now.getFullYear();
+    html += `<button class="btn ${isPast ? 'btn-primary' : 'btn-outline'}" style="padding:14px 8px;font-size:13px;font-weight:700;border-radius:12px;"
+      onclick="_recapGenerate('${siteId}',${i})">${m}</button>`;
+  });
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+
+/* Génère le PDF récap mensuel pour un chantier */
+async function _recapGenerate(siteId, monthIndex){
+  const yearEl = document.getElementById('recapYearSelect');
+  const year = yearEl ? parseInt(yearEl.value) : new Date().getFullYear();
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site){ showToast('Chantier introuvable'); return; }
+
+  // Charger jsPDF
+  if(typeof window.jspdf === 'undefined' && typeof window.jsPDF === 'undefined'){
+    showToast('Chargement du moteur PDF…');
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload=res; s.onerror=()=>{ showToast('PDF indisponible hors-ligne'); rej(); };
+      document.head.appendChild(s);
+    }).catch(()=>{ return; });
+  }
+  const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!jsPDFLib){ showToast('Erreur PDF'); return; }
+
+  const moisNoms = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+  const jourNoms = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
+
+  // Nombre de jours dans le mois
+  const nbJours = new Date(year, monthIndex + 1, 0).getDate();
+
+  // Récupérer les heures de tous les ouvriers pour chaque jour du mois sur ce chantier
+  const workers = (data.workers || []).filter(w => w.active !== false);
+  const dayRows = [];
+  let grandTotal = 0;
+
+  for(let d = 1; d <= nbJours; d++){
+    const date = new Date(year, monthIndex, d);
+    const dateKey = dateKeyOf(date);
+    const dow = date.getDay(); // 0=dim
+    const dayLabel = jourNoms[dow];
+
+    // Numéro de semaine ISO (affiché seulement si c'est lundi OU le 1er du mois)
+    let weekLabel = '';
+    if(dow === 1 || d === 1){
+      weekLabel = 'S' + getISOWeekNumber(date);
+    }
+
+    // Heures de chaque ouvrier ce jour-là sur ce chantier
+    const att = data.attendance && data.attendance[dateKey];
+    let dayTotal = 0;
+    const workerHours = [];
+    const typeJourneeDay = [];
+
+    workers.forEach(w => {
+      const entry = att && att.workers && att.workers[w.id];
+      if(entry && att.siteId === siteId){
+        const h = parseFloat(entry.hours || 0) || 0;
+        const tj = entry.typeJournee || 'normal';
+        dayTotal += h;
+        if(h > 0 || (typeof typeJourneeIsAbsence === 'function' && typeJourneeIsAbsence(tj))){
+          workerHours.push({ name: w.name, hours: h, tj });
+          if(typeof typeJourneeIsAbsence === 'function' && typeJourneeIsAbsence(tj)){
+            typeJourneeDay.push(tj);
+          }
+        }
+      }
+    });
+
+    grandTotal += dayTotal;
+    dayRows.push({ d, dateKey, dayLabel, weekLabel, dow, dayTotal, workerHours, typeJourneeDay });
+  }
+
+  // Générer le PDF
+  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
+  const pageW = 210, pageH = 297, margin = 12;
+  const colW = pageW - margin * 2;
+  let y = margin;
+
+  // Logo entreprise en haut à gauche
+  const companyLogo = data.settings && data.settings.companyLogo;
+  let textLeft = margin;
+  if(companyLogo){
+    try{
+      const props = doc.getImageProperties(companyLogo);
+      let logoW = 24, logoH = (props.height / props.width) * logoW;
+      if(logoH > 18){ logoH = 18; logoW = (props.width / props.height) * logoH; }
+      doc.addImage(companyLogo, 'PNG', margin, y, logoW, logoH);
+      textLeft = margin + logoW + 4;
+    } catch(err){}
+  }
+
+  // En-tête
+  doc.setFont('helvetica','bold'); doc.setFontSize(14);
+  doc.text(`Récap — ${escapeHtml(site.name)}`, textLeft, y + 6);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  doc.text(`${moisNoms[monthIndex]} ${year}`, textLeft, y + 12);
+  const teamName = data.settings.teamName || '';
+  if(teamName) doc.text(teamName, textLeft, y + 17);
+  doc.setFont('helvetica','bold');
+  doc.text(`Total : ${grandTotal}h`, pageW - margin, y + 12, { align:'right' });
+  doc.setFont('helvetica','normal');
+  y += (companyLogo ? 24 : 20);
+
+  doc.setDrawColor(200,190,175); doc.line(margin, y, pageW - margin, y); y += 4;
+
+  // Tableau calendrier
+  const rowH = 6.5;
+  const hCols = [margin, margin+10, margin+22, margin+55]; // Jour, Date, Résumé ouvriers, Heures
+  const hWidths = [10, 12, colW-10-12-20, 20];
+
+  // En-tête tableau
+  doc.setFillColor(40,30,20);
+  doc.rect(margin, y, colW, 7, 'F');
+  doc.setTextColor(255,255,255); doc.setFontSize(8); doc.setFont('helvetica','bold');
+  ['Jour','Date','Détail','Heures'].forEach((h,i) => {
+    doc.text(h, hCols[i] + 1, y + 5);
+  });
+  doc.setTextColor(0,0,0); doc.setFont('helvetica','normal');
+  y += 7;
+
+  dayRows.forEach(row => {
+    // Saut de page si nécessaire
+    if(y + rowH > pageH - 20){ doc.addPage(); y = margin; }
+
+    const isWeekend = (row.dow === 0 || row.dow === 6);
+    const bg = isWeekend ? [240,235,225] : (row.d % 2 === 0 ? [255,255,255] : [250,248,244]);
+    doc.setFillColor(...bg);
+    doc.rect(margin, y, colW, rowH, 'FD');
+
+    doc.setFontSize(7);
+
+    // Semaine label
+    if(row.weekLabel){
+      doc.setFont('helvetica','bold');
+      doc.setTextColor(180,140,60);
+      doc.text(row.weekLabel, margin + 1, y + rowH - 1.5);
+      doc.setTextColor(0,0,0);
+    }
+
+    // Jour (Lun, Mar...)
+    doc.setFont('helvetica', isWeekend ? 'italic' : 'normal');
+    doc.text(row.dayLabel, hCols[0] + 1, y + rowH - 1.5);
+
+    // Date (01, 02...)
+    doc.text(String(row.d).padStart(2,'0'), hCols[1] + 1, y + rowH - 1.5);
+
+    // Détail ouvriers ou absence
+    doc.setFontSize(6.5);
+    if(row.typeJourneeDay.length > 0){
+      const tjI = TYPE_JOURNEE[row.typeJourneeDay[0]] || {};
+      doc.setTextColor(150,100,50);
+      doc.text((tjI.emoji||'') + ' ' + (tjI.short||row.typeJourneeDay[0]), hCols[2] + 1, y + rowH - 1.5);
+      doc.setTextColor(0,0,0);
+    } else if(row.workerHours.length > 0){
+      const detail = row.workerHours.map(wh => wh.name.split(' ')[0] + ':' + wh.hours + 'h').join('  ');
+      doc.text(detail.substring(0, 80), hCols[2] + 1, y + rowH - 1.5);
+    }
+
+    // Total heures du jour
+    doc.setFontSize(7);
+    doc.setFont('helvetica','bold');
+    if(row.dayTotal > 0){
+      doc.text(row.dayTotal + 'h', hCols[3] + 1, y + rowH - 1.5);
+    }
+    doc.setFont('helvetica','normal');
+
+    y += rowH;
+  });
+
+  // Pied avec total
+  if(y + 8 > pageH - 15){ doc.addPage(); y = margin; }
+  doc.setFillColor(40,30,20);
+  doc.rect(margin, y, colW, 7, 'F');
+  doc.setTextColor(255,255,255); doc.setFontSize(9); doc.setFont('helvetica','bold');
+  doc.text(`TOTAL ${moisNoms[monthIndex].toUpperCase()} ${year}`, margin + 2, y + 5);
+  doc.text(grandTotal + 'h', pageW - margin - 2, y + 5, { align:'right' });
+  doc.setTextColor(0,0,0); doc.setFont('helvetica','normal');
+  y += 10;
+
+  doc.setFontSize(7); doc.setFont('helvetica','italic');
+  doc.text(`Généré par RWOOD — ${new Date().toLocaleDateString('fr-FR')}`, margin, pageH - 8);
+
+  // Partager ou télécharger
+  const slug = site.name.replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_\-]/g,'').substring(0,20);
+  const fileName = `Recap_${slug}_${moisNoms[monthIndex]}_${year}.pdf`;
+  const pdfBlob = doc.output('blob');
+  if(typeof shareOrDownloadPDF === 'function'){
+    await shareOrDownloadPDF(pdfBlob, fileName, 'Récap RWOOD');
+  } else {
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a'); a.href = url; a.download = fileName; a.click();
+    URL.revokeObjectURL(url);
+  }
+  showToast('✅ PDF généré');
+}
+
+/* ═══ MODULE — RecapMensuel  ·  fin ═══ */
+
 function _renderCloudZincList(siteId, zincs){
   const el = document.getElementById('cloudZincList');
   const countEl = document.getElementById('cloudZincCount');
@@ -20637,11 +20870,13 @@ function checkNotifications(){
   if(changed) saveData();
 }
 
+function handleCompanyLogoUpload(input){ setCompanyLogo(input); }
+
 function setCompanyLogo(input){
   if(!input.files || !input.files[0]) return;
   const file = input.files[0];
-  if(file.type !== 'image/png'){
-    showToast('Le logo doit être au format PNG');
+  if(!file.type.startsWith('image/')){
+    showToast('Le fichier doit être une image');
     return;
   }
   const reader = new FileReader();
@@ -23642,7 +23877,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.51.5';
+const APP_VERSION = '2.52.0';
 
 const CHANGELOG = [
   {
