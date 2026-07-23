@@ -15290,10 +15290,14 @@ function renderCloudEvents(siteId){
   if(!listEl) return;
 
   const events = site ? _mevCollect(site) : [];
-  if(countEl) countEl.textContent = events.length ? `(${events.length})` : '';
-  if(section) section.style.display = events.length ? 'block' : 'none';
+  // Tâches agenda liées à ce chantier
+  const agendaTasks = (data.tasks || []).filter(t => t.siteId === siteId);
 
-  if(!events.length){
+  const total = events.length + agendaTasks.length;
+  if(countEl) countEl.textContent = total ? `(${total})` : '';
+  if(section) section.style.display = total ? 'block' : 'none';
+
+  if(!total){
     listEl.innerHTML = '<div class="hint" style="padding:8px 0 4px;">Aucun événement.</div>';
     return;
   }
@@ -15301,7 +15305,9 @@ function renderCloudEvents(siteId){
   window._mevCache = events;
   const rawColor = (site && site.color) ? site.color : '';
   const siteColor = (!rawColor || rawColor.startsWith('var(')) ? 'var(--wood)' : colorFull(rawColor);
-  listEl.innerHTML = events.map((ev,i) => `
+
+  // Événements conducteur (customEvents + deliveryDates)
+  let html = events.map((ev,i) => `
     <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;border-left:5px solid ${siteColor};">
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;font-size:13px;">${escapeHtml(ev.label)}</div>
@@ -15309,6 +15315,22 @@ function renderCloudEvents(siteId){
       </div>
       <button class="mevAdd btn btn-primary btn-sm" data-i="${i}" style="padding:6px 10px;font-size:12px;white-space:nowrap;">📅 Agenda</button>
     </div>`).join('');
+
+  // Tâches agenda liées
+  html += agendaTasks.map(t => {
+    const d = t.date ? new Date(t.date + 'T00:00:00') : null;
+    const dateStr = d ? d.toLocaleDateString('fr-FR', {day:'numeric', month:'long'}) : '';
+    return `
+    <div class="card" style="padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;border-left:5px solid ${siteColor};background:${siteColor}0a;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:13px;">📅 ${escapeHtml(t.text)}</div>
+        ${dateStr ? `<div style="font-size:11px;color:var(--ink-soft);">${dateStr}</div>` : ''}
+      </div>
+      <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);padding:3px 8px;flex-shrink:0;" onclick="deleteAgendaTaskFromSite('${t.id}','${siteId}')">✕</button>
+    </div>`;
+  }).join('');
+
+  listEl.innerHTML = html;
 
   listEl.querySelectorAll('.mevAdd').forEach(btn => btn.addEventListener('click', () => {
     addEventToAgenda(siteId, window._mevCache[+btn.dataset.i]);
@@ -15342,6 +15364,21 @@ function addEventToAgenda(siteId, ev){
 
   saveData();
   showToast('✅ Ajouté à l\'agenda');
+}
+
+/* Supprime une tâche agenda depuis la fiche chantier (suppression définitive). */
+function deleteAgendaTaskFromSite(taskId, siteId){
+  if(!confirm('Supprimer cet événement ?')) return;
+  // Marquer comme supprimé pour empêcher le re-pull
+  if(!data.settings.deletedTaskIds) data.settings.deletedTaskIds = [];
+  if(!data.settings.deletedTaskIds.includes(taskId)){
+    data.settings.deletedTaskIds.push(taskId);
+  }
+  data.tasks = (data.tasks || []).filter(t => t.id !== taskId);
+  saveData();
+  renderCloudEvents(siteId);
+  if(typeof renderAgenda === 'function') renderAgenda();
+  showToast('Événement supprimé');
 }
 
 /* ═══ MODULE — MediaEvents  (fin) ═══ */
@@ -18133,31 +18170,28 @@ async function buildFichePDF(workerId, weekNum, year){
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 12;
 
+  // Logo de l'entreprise (haut gauche)
+  const companyLogo = data.settings && data.settings.companyLogo;
+  let textLeft = margin;
+  if(companyLogo){
+    try{
+      const logoMaxW = 28, logoMaxH = 20;
+      const props = doc.getImageProperties(companyLogo);
+      let logoW = logoMaxW, logoH = (props.height / props.width) * logoW;
+      if(logoH > logoMaxH){ logoH = logoMaxH; logoW = (props.width / props.height) * logoH; }
+      doc.addImage(companyLogo, 'PNG', margin, 6, logoW, logoH);
+      textLeft = margin + logoW + 4;
+    } catch(err){ /* logo invalide, on ignore */ }
+  }
+
   doc.setFont('helvetica','bold');
   doc.setFontSize(16);
-  doc.text("RWOOD — Fiche d'heures", margin, 16);
+  doc.text("RWOOD — Fiche d'heures", textLeft, 16);
 
   doc.setFontSize(11);
   doc.setFont('helvetica','normal');
-  doc.text(`Semaine ${weekNum} — ${year}  (du ${formatShort(days[0])} au ${formatShort(days[6])})`, margin, 23);
-  doc.text(`Ouvrier : ${w.name}`, margin, 29);
-
-  // Logo de l'entreprise (haut droite)
-  const companyLogo = data.settings && data.settings.companyLogo;
-  if(companyLogo){
-    try{
-      const logoMaxW = 30, logoMaxH = 18;
-      const props = doc.getImageProperties(companyLogo);
-      let logoW = logoMaxW, logoH = (props.height / props.width) * logoW;
-      if(logoH > logoMaxH){
-        logoH = logoMaxH;
-        logoW = (props.width / props.height) * logoH;
-      }
-      doc.addImage(companyLogo, 'PNG', pageW - margin - logoW, 8, logoW, logoH);
-    } catch(err){
-      // Logo invalide, on ignore silencieusement
-    }
-  }
+  doc.text(`Semaine ${weekNum} — ${year}  (du ${formatShort(days[0])} au ${formatShort(days[6])})`, textLeft, 23);
+  doc.text(`Ouvrier : ${w.name}`, textLeft, 29);
 
 
   // Table
@@ -18982,14 +19016,30 @@ async function printComptableMonthPDF(workerKey, dateFrom, dateTo, selectedWeeks
 
     let y = margin;
     const teamName = data.settings.teamName || '';
+    const companyLogo = data.settings && data.settings.companyLogo;
+    let textLeft = margin; // décalage du texte si logo présent
+
+    // Logo entreprise en haut à gauche
+    if(companyLogo){
+      try{
+        const logoMaxH = 20, logoMaxW = 28;
+        const props = doc.getImageProperties(companyLogo);
+        let logoH = logoMaxH, logoW = (props.width / props.height) * logoH;
+        if(logoW > logoMaxW){ logoW = logoMaxW; logoH = (props.height / props.width) * logoW; }
+        doc.addImage(companyLogo, 'PNG', margin, y, logoW, logoH);
+        textLeft = margin + logoW + 4; // texte décalé à droite du logo
+      } catch(err){ /* logo invalide, on ignore */ }
+    }
+
     doc.setFont('helvetica','bold'); doc.setFontSize(14);
-    doc.text('Fiche d\'heures — ' + aw.name, margin, y+6); y += 10;
+    doc.text('Fiche d\'heures — ' + aw.name, textLeft, y+6); y += 10;
     doc.setFont('helvetica','normal'); doc.setFontSize(10);
-    if(teamName){ doc.text('Équipe : ' + teamName, margin, y); y += 5; }
-    doc.text('Période : ' + periodLabel, margin, y);
+    if(teamName){ doc.text('Équipe : ' + teamName, textLeft, y); y += 5; }
+    doc.text('Période : ' + periodLabel, textLeft, y);
     doc.setFont('helvetica','bold');
     doc.text('Total : ' + periodTotal + 'h', pageW-margin, y, {align:'right'});
     doc.setFont('helvetica','normal'); y += 8;
+    if(companyLogo && y < margin + 22) y = margin + 22; // ne pas chevaucher le logo
     doc.setDrawColor(200,190,175); doc.line(margin, y, pageW-margin, y); y += 5;
 
     // Tableaux par semaine sélectionnée
@@ -23592,7 +23642,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.51.3';
+const APP_VERSION = '2.51.5';
 
 const CHANGELOG = [
   {
@@ -25695,12 +25745,24 @@ async function buildAndShareFicheFromData(ficheData, fileName){
   const pw     = 210 - margin*2;
 
   // En-tête
+  const companyLogo3 = data.settings && data.settings.companyLogo;
+  let logoEndX3 = margin;
+  if(companyLogo3){
+    try{
+      const logoMaxW = 24, logoMaxH = 18;
+      const props = doc.getImageProperties(companyLogo3);
+      let logoW = logoMaxW, logoH = (props.height / props.width) * logoW;
+      if(logoH > logoMaxH){ logoH = logoMaxH; logoW = (props.width / props.height) * logoH; }
+      doc.addImage(companyLogo3, 'PNG', margin, 6, logoW, logoH);
+      logoEndX3 = margin + logoW + 4;
+    } catch(err){ /* logo invalide */ }
+  }
   doc.setFontSize(16); doc.setFont('helvetica','bold');
   doc.text('FICHE DE POINTAGE', 105, 14, {align:'center'});
   doc.setFontSize(10); doc.setFont('helvetica','normal');
   doc.text(ficheData.teamName || '', 105, 20, {align:'center'});
-  doc.text(`Semaine ${ficheData.weekNum} — ${ficheData.year}`, margin, 27);
-  doc.text(`Ouvrier : ${ficheData.workerName}`, margin, 33);
+  doc.text(`Semaine ${ficheData.weekNum} — ${ficheData.year}`, Math.max(logoEndX3, margin), 27);
+  doc.text(`Ouvrier : ${ficheData.workerName}`, Math.max(logoEndX3, margin), 33);
   doc.text(`Total heures : ${ficheData.totalHours}h`, pw + margin - 40, 33);
 
   // Tableau
