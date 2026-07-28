@@ -1,9 +1,25 @@
-const CACHE_NAME = 'rwood-cache-v457';
+const CACHE_NAME = 'rwood-cache-v458';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/logo-header.png',
+  './icons/tuiles/chantier.png',
+  './icons/tuiles/afaire.png',
+  './icons/tuiles/heures.png',
+  './icons/tuiles/itineraire.png',
+  './icons/tuiles/galerie.png',
+  './icons/tuiles/contacts.png',
+  './icons/tuiles/agenda.png',
+  './icons/tuiles/magasin.png',
+  './icons/tuiles/calcul.png',
+  './icons/tuiles/zinc.png',
+  './icons/tuiles/dev.png',
+  './icons/tuiles/toiture.png',
+  './icons/tuiles/scanner.png',
+  './icons/tuiles/stock.png',
+  './icons/tuiles/suivi.png',
+  './icons/tuiles/zone.png',
 ];
 
 self.addEventListener('install', (event) => {
