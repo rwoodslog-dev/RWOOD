@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v470';
+const CACHE_NAME = 'rwood-cache-v473';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -20,6 +20,13 @@ const ASSETS = [
   './icons/stock.png',
   './icons/suivi.png',
   './icons/zone.png',
+  './icons/bulle-warning.png',
+  './icons/bulle-punaise.png',
+  './icons/bulle-cle.png',
+  './icons/bulle-clipboard.png',
+  './icons/bulle-gyrophare.png',
+  './icons/bulle-ampoule.png',
+  './icons/bulle-cone.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -51,12 +58,17 @@ self.addEventListener('fetch', (event) => {
   const url = event.request.url;
   if(NET_ONLY.test(url)) return;
 
-  // index.html — TOUJOURS réseau, jamais de cache
-  if(/index\.html|\/([^.]*)?$/.test(url)){
+  // Navigation (chargement de la page) — TOUJOURS réseau d'abord, jamais
+  // l'ancien HTML en cache. On détecte via request.mode === 'navigate',
+  // qui couvre l'URL racine "/RWOOD/" comme "/index.html" de façon fiable.
+  const isDocument = event.request.mode === 'navigate'
+                     || /index\.html(\?.*)?$/.test(url)
+                     || /\/RWOOD\/?(\?.*)?$/.test(url);
+  if(isDocument){
     event.respondWith(
-      fetch(event.request, { cache: 'no-cache' })
-        .then((r) => { if(r.ok) caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
-        .catch(() => caches.match(event.request))
+      fetch(event.request, { cache: 'no-store' })
+        .then((r) => { if(r && r.ok) caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
+        .catch(() => caches.match(event.request).then(m => m || caches.match('./index.html')))
     );
     return;
   }
@@ -68,9 +80,10 @@ self.addEventListener('fetch', (event) => {
       return cached || fetch(event.request);
     }));
   } else {
+    // Autres ressources (JS inline exclu car dans index.html) : réseau d'abord.
     event.respondWith(
-      fetch(event.request)
-        .then((r) => { caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
+      fetch(event.request, { cache: 'no-cache' })
+        .then((r) => { if(r && r.ok) caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
         .catch(() => caches.match(event.request))
     );
   }
