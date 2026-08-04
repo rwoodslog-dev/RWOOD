@@ -5698,9 +5698,10 @@
       <button class="modal-close" onclick="closeModal('editFiche')">×</button>
     </div>
     <div class="field">
-      <label>Chantier</label>
-      <select id="editFicheSite"></select>
+      <label>Statut de la journée</label>
+      <select id="editFicheTypeJournee" class="fiche-type-journee" onchange="_editFicheToggleAbsence()"></select>
     </div>
+    <div id="editFicheWorkFields">
     <div class="field">
       <label>Heures faites</label>
       <input type="number" min="0" max="24" step="0.5" id="editFicheHours" placeholder="0">
@@ -5718,6 +5719,21 @@
       <button type="button" class="btn btn-outline btn-sm" style="margin-top:6px;width:100%;color:var(--ink-soft);"
         onclick="promptAddCustomTache(document.getElementById('editFicheTask').value)">+ Créer une tâche et l'enregistrer dans la liste</button>
     </div>
+    <div class="field">
+      <label>Chantier</label>
+      <select id="editFicheSite"></select>
+    </div>
+    <div class="field">
+      <label>Nom affiché personnalisé (facultatif)</label>
+      <input type="text" id="editFicheSiteCustom" placeholder="Laisse vide pour garder le nom du chantier">
+      <div class="hint" style="margin-top:4px;">Si rempli, ce texte remplace le nom du chantier dans le tableau pour ce jour.</div>
+    </div>
+    <div class="field">
+      <label>Zone de trajet</label>
+      <select id="editFicheZone"></select>
+      <div class="hint" style="margin-top:4px;">« Automatique » suit le chantier. « Aucune » = journée payée sans trajet.</div>
+    </div>
+    </div><!-- /editFicheWorkFields -->
     <button class="btn btn-primary btn-block" onclick="saveFichesEdit()">Enregistrer</button>
   </div>
 </div>
@@ -15820,11 +15836,18 @@ function renderRecapPerso(){
       totalHeures += parseFloat(entry.hours) || 0;
       // Panier
       if(entry.panier) paniers++;
-      // Zone (via le chantier du jour)
-      const site = data.sites.find(s => s.id === day.siteId);
-      if(site && site.trajetZone && site.trajetZone !== 'GD'){
-        const z = site.trajetZone;
-        zonesCount[z] = (zonesCount[z] || 0) + 1;
+      // Zone (override du jour prioritaire, sinon chantier)
+      const zoneOv = entry.zoneOverride;
+      if(zoneOv === 'none'){
+        // pas de trajet compté
+      } else if(zoneOv && zoneOv !== 'auto'){
+        zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
+      } else {
+        const site = data.sites.find(s => s.id === day.siteId);
+        if(site && site.trajetZone && site.trajetZone !== 'GD'){
+          const z = site.trajetZone;
+          zonesCount[z] = (zonesCount[z] || 0) + 1;
+        }
       }
     });
 
@@ -18164,9 +18187,28 @@ function openFichesEdit(workerId, dateKey){
 
   const siteSelect = document.getElementById('editFicheSite');
   const currentSiteId = dayData.siteId || data.sites[0]?.id || '';
-  siteSelect.innerHTML = data.sites.map(s=>`<option value="${s.id}" ${s.id===currentSiteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+  siteSelect.innerHTML = '<option value="">— Aucun chantier —</option>' +
+    data.sites.map(s=>`<option value="${s.id}" ${s.id===currentSiteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+
+  // Sélecteur de zone de trajet (override par jour)
+  const zoneSelect = document.getElementById('editFicheZone');
+  if(zoneSelect){
+    const cur = entry.zoneOverride || 'auto';
+    let opts = `<option value="auto"${cur==='auto'?' selected':''}>Automatique (selon le chantier)</option>`;
+    opts += `<option value="none"${cur==='none'?' selected':''}>Aucune (pas de trajet)</option>`;
+    opts += ZONES_TRAJET.map(z => `<option value="${z}"${cur===z?' selected':''}>Zone ${z}</option>`).join('');
+    zoneSelect.innerHTML = opts;
+  }
 
   document.getElementById('editFicheHours').value = entry.hours || '';
+  // Sélecteur de statut de journée (comme le pointage)
+  const tjSel = document.getElementById('editFicheTypeJournee');
+  if(tjSel){
+    tjSel.innerHTML = _typeJourneeOptions(entry.typeJournee || 'normal');
+    _editFicheToggleAbsence();
+  }
+  const customEl = document.getElementById('editFicheSiteCustom');
+  if(customEl) customEl.value = entry.siteLabelOverride || '';
   document.getElementById('editFichePanier').checked = !!entry.panier;
   document.getElementById('editFicheTask').value = entry.task || '';
   // Remplir les chips de tâche prédéfinies (même liste que le Pointage : TRANCHES)
@@ -18187,6 +18229,15 @@ function openFichesEdit(workerId, dateKey){
   openModal('editFiche');
 }
 
+/* Masque les champs chantier/heures/panier/tâche quand la journée est une absence. */
+function _editFicheToggleAbsence(){
+  const tjSel = document.getElementById('editFicheTypeJournee');
+  const work = document.getElementById('editFicheWorkFields');
+  if(!tjSel || !work) return;
+  const isAbsence = tjSel.value && tjSel.value !== 'normal';
+  work.style.display = isAbsence ? 'none' : 'block';
+}
+
 function saveFichesEdit(){
   if(!editFicheContext) return;
   const {workerId, dateKey} = editFicheContext;
@@ -18196,9 +18247,29 @@ function saveFichesEdit(){
 
   dayData.siteId = document.getElementById('editFicheSite').value;
   if(!dayData.workers[workerId]) dayData.workers[workerId] = {hours:'', panier:false, task:''};
+  // Statut de journée
+  const tjSel = document.getElementById('editFicheTypeJournee');
+  const tjVal = tjSel ? tjSel.value : 'normal';
+  if(tjVal && tjVal !== 'normal'){
+    dayData.workers[workerId].typeJournee = tjVal;
+  } else {
+    delete dayData.workers[workerId].typeJournee;
+  }
   dayData.workers[workerId].hours = document.getElementById('editFicheHours').value;
   dayData.workers[workerId].panier = document.getElementById('editFichePanier').checked;
   dayData.workers[workerId].task = document.getElementById('editFicheTask').value.trim();
+  const customEl = document.getElementById('editFicheSiteCustom');
+  if(customEl){
+    const cv = customEl.value.trim();
+    if(cv) dayData.workers[workerId].siteLabelOverride = cv;
+    else delete dayData.workers[workerId].siteLabelOverride;
+  }
+  const zoneSel = document.getElementById('editFicheZone');
+  if(zoneSel){
+    const zv = zoneSel.value;
+    if(zv === 'auto') delete dayData.workers[workerId].zoneOverride;
+    else dayData.workers[workerId].zoneOverride = zv;
+  }
 
   saveData();
   closeModal('editFiche');
@@ -18277,7 +18348,14 @@ function renderFiches(){
       const hours = parseFloat(entry.hours) || 0;
       if(!hasTypeJournee) totalHours += hours;
       let trajetRates = null;
-      if(!hasTypeJournee && site && site.trajetZone && site.trajetZone !== 'GD'){
+      // Zone : override par jour si présent, sinon zone du chantier.
+      const zoneOv = entry.zoneOverride;
+      if(!hasTypeJournee && zoneOv === 'none'){
+        trajetRates = null; // journée payée sans trajet
+      } else if(!hasTypeJournee && zoneOv && zoneOv !== 'auto'){
+        trajetRates = getTrajetRates(zoneOv);
+        if(trajetRates){ totalTrajet += trajetRates.trajet; }
+      } else if(!hasTypeJournee && site && site.trajetZone && site.trajetZone !== 'GD'){
         trajetRates = getTrajetRates(site.trajetZone);
         if(trajetRates){ totalTrajet += trajetRates.trajet; }
       }
@@ -18286,7 +18364,7 @@ function renderFiches(){
       return {
         empty:false,
         key,
-        site: site ? site.name : '—',
+        site: entry.siteLabelOverride ? entry.siteLabelOverride : (site ? site.name : '—'),
         color: site ? site.color : null,
         hours: entry.hours || '0',
         panier: !!entry.panier,
@@ -23874,7 +23952,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.59.3';
+const APP_VERSION = '2.60.2';
 
 const CHANGELOG = [
   {
