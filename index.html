@@ -15768,18 +15768,17 @@ function setHeuresMode(mode){
   if(mode === 'compta') renderComptaPaie();
 }
 
-/* MODULE — Récap perso : mois par mois, UNIQUEMENT les données de
-   l'utilisateur courant (confidentialité : chacun voit ses propres chiffres). */
+/* MODULE — Récap perso : mois par mois, calculé à partir des FICHES D'HEURES
+   réelles (data.attendance), UNIQUEMENT pour l'utilisateur courant. */
 function renderRecapPerso(){
   const container = document.getElementById('recapPersoContent');
   if(!container) return;
 
-  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
   const profile = data.settings.myProfile || {};
   const workerId = profile.workerId;
 
-  if(!authId){
-    container.innerHTML = `<div class="card"><div class="hint">Connecte-toi avec ton compte pour voir ton récap personnel.</div></div>`;
+  if(!workerId){
+    container.innerHTML = `<div class="card"><div class="hint">Associe ton profil à un ouvrier (dans le pointage) pour voir ton récap personnel.</div></div>`;
     return;
   }
 
@@ -15788,49 +15787,58 @@ function renderRecapPerso(){
   const blocks = [];
 
   for(let i = 0; i < 13; i++){
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const year = d.getFullYear();
-    const month = d.getMonth() + 1;
-    const moisKey = `${year}-${String(month).padStart(2,'0')}`;
+    const dRef = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const year = dRef.getFullYear();
+    const month = dRef.getMonth() + 1;
     const moisLabel = `${MOIS_FR[month-1]} ${year}`;
 
-    // --- Heures pointées ce mois (depuis data.attendance) ---
     let totalHeures = 0;
-    if(workerId && data.attendance){
-      Object.keys(data.attendance).forEach(dateKey => {
-        const dd = new Date(dateKey + 'T00:00:00');
-        if(dd.getFullYear() === year && (dd.getMonth()+1) === month){
-          const entry = data.attendance[dateKey].workers && data.attendance[dateKey].workers[workerId];
-          if(entry && entry.hours) totalHeures += parseFloat(entry.hours) || 0;
-        }
-      });
-    }
-    // Heures sup estimées : au-delà de la base contractuelle × nb semaines
+    let paniers = 0;
+    const zonesCount = {};          // { '2': 3, '5': 6, ... }
+    const parMotif = {};            // { 'Maladie': 2, ... } en jours
+
+    // Parcourir tous les jours pointés de ce mois pour cet ouvrier
+    Object.keys(data.attendance || {}).forEach(dateKey => {
+      const dd = new Date(dateKey + 'T00:00:00');
+      if(dd.getFullYear() !== year || (dd.getMonth()+1) !== month) return;
+
+      const day = data.attendance[dateKey];
+      const entry = day.workers && day.workers[workerId];
+      if(!entry) return;
+
+      const tj = entry.typeJournee || 'normal';
+      const isAbsence = tj !== 'normal';
+
+      if(isAbsence){
+        // Compter 1 jour d'absence sous son libellé
+        const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
+        parMotif[label] = (parMotif[label] || 0) + 1;
+        return; // une journée d'absence ne compte pas en heures/panier/zone
+      }
+
+      // Heures
+      totalHeures += parseFloat(entry.hours) || 0;
+      // Panier
+      if(entry.panier) paniers++;
+      // Zone (via le chantier du jour)
+      const site = data.sites.find(s => s.id === day.siteId);
+      if(site && site.trajetZone && site.trajetZone !== 'GD'){
+        const z = site.trajetZone;
+        zonesCount[z] = (zonesCount[z] || 0) + 1;
+      }
+    });
+
+    // Heures sup : au-delà de la base contractuelle × nb semaines du mois
     const nbSem = _nbSemainesMois(year, month);
     const seuilMois = weeklyBase * nbSem;
     const heuresSup = Math.max(0, totalHeures - seuilMois);
 
-    // --- Variables compta de l'utilisateur (paniers, zones, absences) ---
-    const vars = (data.comptaVariables && data.comptaVariables[moisKey] && data.comptaVariables[moisKey][authId]) || null;
-    const paniers = vars ? (parseInt(vars.paniers,10) || 0) : 0;
-    const trajets = vars ? (vars.trajets || {}) : {};
-    const absences = vars ? (vars.absences || []) : [];
-
-    // Zones détaillées (ne montrer que celles > 0)
+    // Zones triées (ordre du barème), seulement > 0
     const zonesLignes = ZONES_TRAJET
-      .map(z => ({ z, n: parseInt(trajets[z],10) || 0 }))
+      .map(z => ({ z, n: zonesCount[z] || 0 }))
       .filter(o => o.n > 0);
 
-    // Absences regroupées par motif (jours)
-    const parMotif = {};
-    absences.forEach(a => {
-      if(!a.debut || !a.fin) return;
-      const jours = Math.max(1, Math.round((new Date(a.fin) - new Date(a.debut))/86400000) + 1);
-      const m = a.motif || 'Autre';
-      parMotif[m] = (parMotif[m] || 0) + jours;
-    });
-
-    // Si le mois est totalement vide, on le saute
+    // Mois totalement vide → on saute
     const vide = totalHeures === 0 && paniers === 0 && !zonesLignes.length && !Object.keys(parMotif).length;
     if(vide) continue;
 
@@ -15858,7 +15866,7 @@ function renderRecapPerso(){
 
   container.innerHTML = blocks.length
     ? blocks.join('')
-    : `<div class="card"><div class="hint">Aucune donnée à afficher pour l'instant. Ton récap se remplira au fil de tes pointages et des variables saisies par le bureau.</div></div>`;
+    : `<div class="card"><div class="hint">Aucune donnée à afficher pour l'instant. Ton récap se remplit au fil de tes pointages.</div></div>`;
 }
 
 let currentPointageDate = new Date().toISOString().slice(0,10);
@@ -23866,7 +23874,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.59.2';
+const APP_VERSION = '2.59.3';
 
 const CHANGELOG = [
   {
