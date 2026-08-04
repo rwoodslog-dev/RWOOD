@@ -2555,6 +2555,11 @@
   #pinnedNoteBubble:active{ transform:scale(.92); }
   #pinnedNoteBubble.dragging{ transform:scale(1.08); box-shadow:0 8px 20px rgba(0,0,0,0.6); }
   #pinnedBubbleEmoji{ font-size:28px; line-height:1; }
+  /* MODULE — Récap perso */
+  .recap-line{ display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,.04); font-size:14px; }
+  .recap-line span{ color:var(--ink-soft); }
+  .recap-line strong{ color:var(--ink); font-weight:800; }
+  .recap-sub{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--wood); margin-top:10px; margin-bottom:2px; }
   /* MODULE — Bulle aide/fermeture · début */
   #pinnedBubbleClose{
     position:absolute; top:-6px; left:-6px;
@@ -3604,6 +3609,7 @@
       <div class="chip-row" id="heuresModeTabs" style="margin-bottom:14px;">
         <div class="chip selected" data-mode="pointage" onclick="setHeuresMode('pointage')">Pointage</div>
         <div class="chip" data-mode="fiches" onclick="setHeuresMode('fiches')">Fiches d'heures</div>
+        <div class="chip" data-mode="recap" onclick="setHeuresMode('recap')">Récap</div>
         <!-- chip Paie supprimé (v2.49.2) -->
         <div class="chip" data-mode="compta" id="tabComptaPaie" style="display:none;" onclick="setHeuresMode('compta')">📊 Compta Paie</div>
       </div>
@@ -3670,6 +3676,11 @@
         <div class="card" id="fichesWeekHeader"></div>
         <div id="fichesContent"></div>
 
+      </div>
+
+      <!-- SOUS-VUE : RÉCAP PERSO (mois par mois, données de l'utilisateur courant) -->
+      <div class="heures-mode" id="heuresMode-recap" style="display:none;">
+        <div id="recapPersoContent"></div>
       </div>
 
       <!-- SOUS-VUE : PAIE -->
@@ -14823,7 +14834,7 @@ function openTileRecap(siteId){
    ═══════════════════════════════════════ */
 const MOIS_FR = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const ZONES_TRAJET = ['1A','1B','2','3','4','5'];
-const MOTIFS_ABSENCE = ['Maladie','CP','RTT','Paternité','CSS','Accident du travail','Autre'];
+const MOTIFS_ABSENCE = ['Maladie','CP','RTT','Paternité','CSS','Chômage partiel','Accident du travail','Autre'];
 
 
 function _getComptaVars(mois, authId){
@@ -15752,8 +15763,102 @@ function setHeuresMode(mode){
 
   if(mode === 'pointage') renderPointage();
   if(mode === 'fiches') renderFiches();
+  if(mode === 'recap')  renderRecapPerso();
   if(mode === 'paie')   renderPaie();
   if(mode === 'compta') renderComptaPaie();
+}
+
+/* MODULE — Récap perso : mois par mois, UNIQUEMENT les données de
+   l'utilisateur courant (confidentialité : chacun voit ses propres chiffres). */
+function renderRecapPerso(){
+  const container = document.getElementById('recapPersoContent');
+  if(!container) return;
+
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  const profile = data.settings.myProfile || {};
+  const workerId = profile.workerId;
+
+  if(!authId){
+    container.innerHTML = `<div class="card"><div class="hint">Connecte-toi avec ton compte pour voir ton récap personnel.</div></div>`;
+    return;
+  }
+
+  const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
+  const now = new Date();
+  const blocks = [];
+
+  for(let i = 0; i < 13; i++){
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    const moisKey = `${year}-${String(month).padStart(2,'0')}`;
+    const moisLabel = `${MOIS_FR[month-1]} ${year}`;
+
+    // --- Heures pointées ce mois (depuis data.attendance) ---
+    let totalHeures = 0;
+    if(workerId && data.attendance){
+      Object.keys(data.attendance).forEach(dateKey => {
+        const dd = new Date(dateKey + 'T00:00:00');
+        if(dd.getFullYear() === year && (dd.getMonth()+1) === month){
+          const entry = data.attendance[dateKey].workers && data.attendance[dateKey].workers[workerId];
+          if(entry && entry.hours) totalHeures += parseFloat(entry.hours) || 0;
+        }
+      });
+    }
+    // Heures sup estimées : au-delà de la base contractuelle × nb semaines
+    const nbSem = _nbSemainesMois(year, month);
+    const seuilMois = weeklyBase * nbSem;
+    const heuresSup = Math.max(0, totalHeures - seuilMois);
+
+    // --- Variables compta de l'utilisateur (paniers, zones, absences) ---
+    const vars = (data.comptaVariables && data.comptaVariables[moisKey] && data.comptaVariables[moisKey][authId]) || null;
+    const paniers = vars ? (parseInt(vars.paniers,10) || 0) : 0;
+    const trajets = vars ? (vars.trajets || {}) : {};
+    const absences = vars ? (vars.absences || []) : [];
+
+    // Zones détaillées (ne montrer que celles > 0)
+    const zonesLignes = ZONES_TRAJET
+      .map(z => ({ z, n: parseInt(trajets[z],10) || 0 }))
+      .filter(o => o.n > 0);
+
+    // Absences regroupées par motif (jours)
+    const parMotif = {};
+    absences.forEach(a => {
+      if(!a.debut || !a.fin) return;
+      const jours = Math.max(1, Math.round((new Date(a.fin) - new Date(a.debut))/86400000) + 1);
+      const m = a.motif || 'Autre';
+      parMotif[m] = (parMotif[m] || 0) + jours;
+    });
+
+    // Si le mois est totalement vide, on le saute
+    const vide = totalHeures === 0 && paniers === 0 && !zonesLignes.length && !Object.keys(parMotif).length;
+    if(vide) continue;
+
+    const zonesHtml = zonesLignes.length
+      ? zonesLignes.map(o => `<div class="recap-line"><span>Zone ${o.z}</span><strong>${o.n}×</strong></div>`).join('')
+      : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
+
+    const motifHtml = Object.keys(parMotif).length
+      ? Object.keys(parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${parMotif[m]} j</strong></div>`).join('')
+      : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
+
+    blocks.push(`
+      <div class="section-title">${moisLabel}</div>
+      <div class="card" style="display:flex;flex-direction:column;gap:2px;">
+        <div class="recap-line"><span>Heures totales</span><strong>${totalHeures.toFixed(1).replace('.',',')} h</strong></div>
+        <div class="recap-line"><span>Heures supplémentaires</span><strong>${heuresSup.toFixed(1).replace('.',',')} h</strong></div>
+        <div class="recap-line"><span>Paniers repas</span><strong>${paniers}</strong></div>
+        <div class="recap-sub">Zones de trajet</div>
+        ${zonesHtml}
+        <div class="recap-sub">Absences / congés</div>
+        ${motifHtml}
+      </div>
+    `);
+  }
+
+  container.innerHTML = blocks.length
+    ? blocks.join('')
+    : `<div class="card"><div class="hint">Aucune donnée à afficher pour l'instant. Ton récap se remplira au fil de tes pointages et des variables saisies par le bureau.</div></div>`;
 }
 
 let currentPointageDate = new Date().toISOString().slice(0,10);
@@ -23760,7 +23865,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.58.1';
+const APP_VERSION = '2.59.1';
 
 const CHANGELOG = [
   {
