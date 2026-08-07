@@ -3628,6 +3628,21 @@
         <div class="site-select-wrap">
           <select id="pointageSite" class="card" style="border:1.5px solid var(--line); width:100%; padding:12px; font-size:15px;"></select>
         </div>
+        <div id="pointageCustomBlock" style="display:none;background:var(--bg-elev);border:1.5px solid var(--wood-dark);border-radius:12px;padding:12px;margin-top:10px;">
+          <div class="field" style="margin-bottom:10px;">
+            <label>Nom du chantier (dépannage)</label>
+            <input type="text" id="pointageCustomName" placeholder="Ex : Dépannage Dupont" oninput="_pointageSaveCustom()">
+          </div>
+          <div class="field" style="margin-bottom:8px;">
+            <label>Zone de trajet</label>
+            <select id="pointageCustomZone" onchange="_pointageSaveCustom()"></select>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="text" id="pointageCustomAddr" placeholder="Adresse (facultatif)" style="flex:1;">
+            <button type="button" class="btn btn-outline" style="white-space:nowrap;padding:0 14px;" onclick="_pointageCalcZone()">Calculer</button>
+          </div>
+          <div class="hint" id="pointageCustomHint" style="margin-top:6px;">Choisis la zone, ou tape une adresse et clique « Calculer ». Ce chantier n'apparaît pas dans l'onglet Chantiers.</div>
+        </div>
 
         <div class="section-title">Transport</div>
         <div class="card" style="padding:14px 16px;">
@@ -5696,13 +5711,17 @@
 <div class="modal-overlay" id="modal-editFiche">
   <div class="modal">
     <div class="modal-header">
-      <h2 id="editFicheTitle">Modifier la journée</h2>
+      <h2 id="editFicheTitle" style="display:flex;align-items:center;gap:10px;">
+        <span id="editFicheColorDot" style="width:20px;height:20px;border-radius:50%;flex-shrink:0;background:var(--wood);"></span>
+        <span id="editFicheTitleText">Modifier la journée</span>
+      </h2>
       <button class="modal-close" onclick="closeModal('editFiche')">×</button>
     </div>
     <div class="field">
       <label>Statut de la journée</label>
       <select id="editFicheTypeJournee" class="fiche-type-journee" onchange="_editFicheToggleAbsence()"></select>
     </div>
+    <div id="editFicheAbsenceBox" style="display:none;"></div>
     <div id="editFicheWorkFields">
     <div class="field">
       <label>Heures faites</label>
@@ -5724,6 +5743,21 @@
     <div class="field">
       <label>Chantier</label>
       <select id="editFicheSite"></select>
+    </div>
+    <div id="editFicheCustomBlock" style="display:none;background:var(--bg-elev);border:1.5px solid var(--wood-dark);border-radius:12px;padding:12px;margin-bottom:12px;">
+      <div class="field" style="margin-bottom:10px;">
+        <label>Nom du chantier (dépannage)</label>
+        <input type="text" id="editFicheCustomName" placeholder="Ex : Dépannage Dupont">
+      </div>
+      <div class="field" style="margin-bottom:8px;">
+        <label>Zone de trajet</label>
+        <select id="editFicheCustomZone"></select>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input type="text" id="editFicheCustomAddr" placeholder="Adresse (facultatif)" style="flex:1;">
+        <button type="button" class="btn btn-outline" style="white-space:nowrap;padding:0 14px;" onclick="_editFicheCalcZone()">Calculer</button>
+      </div>
+      <div class="hint" id="editFicheCustomHint" style="margin-top:6px;">Choisis la zone dans la liste, ou tape une adresse et clique « Calculer ». Ce chantier n'apparaît pas dans l'onglet Chantiers.</div>
     </div>
     <div class="field">
       <label>Zone de trajet</label>
@@ -7384,6 +7418,36 @@ async function loadData(){
     localStorage.setItem('rwood-stock-alert-reset-done', '1');
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // MODULE — SyncSubscriptions (Livraison 1 : fondations + migration)
+  // Découple l'abonnement sync de l'assignation. syncedSites = liste des
+  // chantiers que CET utilisateur a choisi de synchroniser localement.
+  // ═══════════════════════════════════════════════════════════════════
+  if(!data.settings) data.settings = {};
+  if(!Array.isArray(data.settings.syncedSites)) data.settings.syncedSites = [];
+
+  // Migration one-shot : les chantiers actuellement assignés à l'utilisateur
+  // sont ajoutés à syncedSites, pour qu'il ne perde pas l'accès du jour au
+  // lendemain. Ne se rejoue jamais (flag).
+  if(!localStorage.getItem('rwood-sync-migration-done')){
+    try{
+      const authId = (data.settings.auth && data.settings.auth.authId) || null;
+      const nameTrim = (
+        ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+        ((data.settings.myProfile && data.settings.myProfile.lastName)||'')
+      ).trim().toLowerCase();
+      if(authId && Array.isArray(data.sites) && typeof _wsyncSiteAssignedToWorker === 'function'){
+        const set = new Set(data.settings.syncedSites);
+        data.sites.forEach(s => {
+          if(_wsyncSiteAssignedToWorker(s, authId, nameTrim)) set.add(s.id);
+        });
+        data.settings.syncedSites = Array.from(set);
+        await saveData();
+      }
+    }catch(e){ /* migration best-effort, ne bloque jamais le boot */ }
+    localStorage.setItem('rwood-sync-migration-done', '1');
+  }
+
   await initRwoodStorage();
 
   // Sync Supabase — délai plus long pour que l'UI soit complètement affichée d'abord
@@ -7400,6 +7464,29 @@ async function loadData(){
   } else {
     setTimeout(startSyncPolling, 3000);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE — SyncSubscriptions : helpers de gestion (Livraison 1)
+// Gèrent uniquement le tableau data.settings.syncedSites. Pas de purge
+// ni de pull ici (ce sera les livraisons suivantes).
+// ═══════════════════════════════════════════════════════════════════
+function _syncedSites(){
+  if(!data.settings) data.settings = {};
+  if(!Array.isArray(data.settings.syncedSites)) data.settings.syncedSites = [];
+  return data.settings.syncedSites;
+}
+function isSiteSynced(siteId){
+  return _syncedSites().includes(siteId);
+}
+function subscribeSite(siteId){
+  const arr = _syncedSites();
+  if(!arr.includes(siteId)){ arr.push(siteId); saveData(); }
+}
+function unsubscribeSite(siteId){
+  const arr = _syncedSites();
+  const i = arr.indexOf(siteId);
+  if(i !== -1){ arr.splice(i, 1); saveData(); }
 }
 
 // Debounce du syncPush : regroupe les sauvegardes rapides en 1 seul appel réseau
@@ -15899,6 +15986,46 @@ function setPointageDate(dateStr){
   renderPointage();
 }
 
+/* MODULE — Chantier libre (dépannage) dans le pointage.
+   Le chantier libre s'applique à la journée (today.customSite). */
+function _pointageToggleCustom(show){
+  const b = document.getElementById('pointageCustomBlock');
+  if(b) b.style.display = show ? 'block' : 'none';
+}
+function _pointageSaveCustom(){
+  const dateKey = currentPointageDate;
+  if(!data.attendance[dateKey]) return;
+  const today = data.attendance[dateKey];
+  const name = (document.getElementById('pointageCustomName').value||'').trim();
+  const zone = document.getElementById('pointageCustomZone').value||'';
+  if(name || zone){
+    today.customSite = { name, zone };
+    today.siteId = null;
+  }
+  saveData();
+}
+async function _pointageCalcZone(){
+  const addr = (document.getElementById('pointageCustomAddr').value||'').trim();
+  const hint = document.getElementById('pointageCustomHint');
+  const zEl = document.getElementById('pointageCustomZone');
+  if(!addr){ if(hint) hint.textContent='Tape une adresse avant de calculer.'; return; }
+  if(!data.settings.depotAddress){ if(hint) hint.textContent="Renseigne l'adresse du dépôt dans Paramètres → Prime de trajet."; return; }
+  if(hint) hint.textContent='Calcul en cours…';
+  try{
+    if(!data.settings.depotCoords){
+      const dgeo = await geocodeAddress(data.settings.depotAddress);
+      if(dgeo){ data.settings.depotCoords = dgeo; saveData(); }
+    }
+    const geo = await geocodeAddress(addr);
+    if(!geo){ if(hint) hint.textContent='Adresse introuvable.'; return; }
+    const km = haversineKm(data.settings.depotCoords.lat, data.settings.depotCoords.lng, geo.lat, geo.lng);
+    const kmR = Math.round(km*10)/10;
+    const zone = findTrajetZone(kmR);
+    if(zEl && zone){ zEl.value = zone; _pointageSaveCustom(); }
+    if(hint) hint.textContent = zone ? `${kmR} km → Zone ${zone}` : `${kmR} km — hors barème`;
+  }catch(e){ if(hint) hint.textContent='Erreur de calcul, choisis la zone manuellement.'; }
+}
+
 function renderPointage(){
   const now = new Date(currentPointageDate + 'T00:00:00');
   const dateStr = now.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
@@ -15918,11 +16045,29 @@ function renderPointage(){
   const today = data.attendance[dateKey];
 
   const siteSelect = document.getElementById('pointageSite');
-  siteSelect.innerHTML = data.sites.map(s=>`<option value="${s.id}" ${s.id===today.siteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+  const hasCustom = !!(today.customSite && today.customSite.name);
+  siteSelect.innerHTML = data.sites.map(s=>`<option value="${s.id}" ${(!hasCustom && s.id===today.siteId)?'selected':''}>${escapeHtml(s.name)}</option>`).join('') +
+    `<option value="__custom__"${hasCustom?' selected':''}>✏️ Chantier libre (dépannage)…</option>`;
   siteSelect.onchange = ()=>{
-    today.siteId = siteSelect.value;
-    saveData();
+    if(siteSelect.value === '__custom__'){
+      _pointageToggleCustom(true);
+    } else {
+      _pointageToggleCustom(false);
+      today.siteId = siteSelect.value;
+      delete today.customSite;
+      saveData();
+    }
   };
+  // Pré-remplir le bloc custom
+  const cs = today.customSite || {};
+  const nEl = document.getElementById('pointageCustomName');
+  const zEl = document.getElementById('pointageCustomZone');
+  if(nEl) nEl.value = cs.name || '';
+  if(zEl){
+    zEl.innerHTML = '<option value="">— Choisir la zone —</option>' +
+      ZONES_TRAJET.map(z=>`<option value="${z}"${cs.zone===z?' selected':''}>Zone ${z}</option>`).join('');
+  }
+  _pointageToggleCustom(hasCustom);
 
   // Initialiser le toggle voiture perso
   renderVoiturePersoToggle(today.voiturePerso || false);
@@ -18170,6 +18315,38 @@ function changeFichesWeek(delta){
 
 let editFicheContext = null;
 
+/* MODULE — Chantier libre (dépannage) dans la fiche d'heures.
+   Permet de saisir un nom + zone sans créer de chantier dans l'onglet. */
+function _editFicheToggleCustomSite(show){
+  const block = document.getElementById('editFicheCustomBlock');
+  if(block) block.style.display = show ? 'block' : 'none';
+}
+function _editFicheOnSiteChange(){
+  const sel = document.getElementById('editFicheSite');
+  _editFicheToggleCustomSite(sel && sel.value === '__custom__');
+}
+async function _editFicheCalcZone(){
+  const addr = (document.getElementById('editFicheCustomAddr').value || '').trim();
+  const hint = document.getElementById('editFicheCustomHint');
+  const zoneEl = document.getElementById('editFicheCustomZone');
+  if(!addr){ if(hint) hint.textContent = 'Tape une adresse avant de calculer.'; return; }
+  if(!data.settings.depotAddress){ if(hint) hint.textContent = "Renseigne l'adresse du dépôt dans Paramètres → Prime de trajet."; return; }
+  if(hint) hint.textContent = 'Calcul en cours…';
+  try{
+    if(!data.settings.depotCoords){
+      const dgeo = await geocodeAddress(data.settings.depotAddress);
+      if(dgeo){ data.settings.depotCoords = dgeo; saveData(); }
+    }
+    const geo = await geocodeAddress(addr);
+    if(!geo){ if(hint) hint.textContent = 'Adresse introuvable.'; return; }
+    const km = haversineKm(data.settings.depotCoords.lat, data.settings.depotCoords.lng, geo.lat, geo.lng);
+    const kmR = Math.round(km*10)/10;
+    const zone = findTrajetZone(kmR);
+    if(zoneEl && zone) zoneEl.value = zone;
+    if(hint) hint.textContent = zone ? `${kmR} km → Zone ${zone}` : `${kmR} km — hors barème`;
+  }catch(e){ if(hint) hint.textContent = 'Erreur de calcul, choisis la zone manuellement.'; }
+}
+
 function openFichesEdit(workerId, dateKey){
   const worker = data.workers.find(w=>w.id===workerId);
   if(!worker) return;
@@ -18182,12 +18359,29 @@ function openFichesEdit(workerId, dateKey){
 
   const d = new Date(dateKey + 'T00:00:00');
   const dateLabel = d.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
-  document.getElementById('editFicheTitle').textContent = `${worker.name} — ${dateLabel}`;
+  const titleTextEl = document.getElementById('editFicheTitleText');
+  if(titleTextEl) titleTextEl.textContent = `${worker.name} — ${dateLabel}`;
+  const dotEl = document.getElementById('editFicheColorDot');
+  if(dotEl) dotEl.style.background = worker.color || 'var(--wood)';
 
   const siteSelect = document.getElementById('editFicheSite');
   const currentSiteId = dayData.siteId || data.sites[0]?.id || '';
+  const hasCustom = !!(entry.customSite && entry.customSite.name);
   siteSelect.innerHTML = '<option value="">— Aucun chantier —</option>' +
-    data.sites.map(s=>`<option value="${s.id}" ${s.id===currentSiteId?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+    data.sites.map(s=>`<option value="${s.id}" ${(!hasCustom && s.id===currentSiteId)?'selected':''}>${escapeHtml(s.name)}</option>`).join('') +
+    `<option value="__custom__"${hasCustom?' selected':''}>✏️ Chantier libre (dépannage)…</option>`;
+  siteSelect.onchange = _editFicheOnSiteChange;
+
+  // Bloc chantier libre : nom + zone + calcul
+  const cs = entry.customSite || {};
+  const nameEl = document.getElementById('editFicheCustomName');
+  const zoneEl = document.getElementById('editFicheCustomZone');
+  if(nameEl) nameEl.value = cs.name || '';
+  if(zoneEl){
+    zoneEl.innerHTML = '<option value="">— Choisir la zone —</option>' +
+      ZONES_TRAJET.map(z=>`<option value="${z}"${cs.zone===z?' selected':''}>Zone ${z}</option>`).join('');
+  }
+  _editFicheToggleCustomSite(hasCustom);
 
   // Sélecteur de zone de trajet (override par jour)
   const zoneSelect = document.getElementById('editFicheZone');
@@ -18230,9 +18424,25 @@ function openFichesEdit(workerId, dateKey){
 function _editFicheToggleAbsence(){
   const tjSel = document.getElementById('editFicheTypeJournee');
   const work = document.getElementById('editFicheWorkFields');
+  const box = document.getElementById('editFicheAbsenceBox');
   if(!tjSel || !work) return;
-  const isAbsence = tjSel.value && tjSel.value !== 'normal';
+  const tj = tjSel.value || 'normal';
+  const isAbsence = tj !== 'normal';
   work.style.display = isAbsence ? 'none' : 'block';
+  if(box){
+    if(isAbsence){
+      const info = TYPE_JOURNEE[tj] || TYPE_JOURNEE.normal;
+      box.style.display = 'block';
+      box.innerHTML = `<div style="padding:16px 12px;text-align:center;border-radius:10px;background:${info.color}18;border:1.5px solid ${info.color}44;margin-bottom:12px;">
+        <div style="font-size:28px;">${info.emoji}</div>
+        <div style="font-size:15px;font-weight:800;color:${info.color};text-transform:uppercase;letter-spacing:1px;">${info.short||''}</div>
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:4px;">${info.label}</div>
+      </div>`;
+    } else {
+      box.style.display = 'none';
+      box.innerHTML = '';
+    }
+  }
 }
 
 function saveFichesEdit(){
@@ -18242,8 +18452,22 @@ function saveFichesEdit(){
   if(!data.attendance[dateKey]) data.attendance[dateKey] = {siteId: null, workers: {}};
   const dayData = data.attendance[dateKey];
 
-  dayData.siteId = document.getElementById('editFicheSite').value;
+  const siteVal = document.getElementById('editFicheSite').value;
   if(!dayData.workers[workerId]) dayData.workers[workerId] = {hours:'', panier:false, task:''};
+  const wk = dayData.workers[workerId];
+
+  if(siteVal === '__custom__'){
+    // Chantier libre (dépannage) : stocké sur l'entrée du jour, pas de chantier créé
+    const cname = (document.getElementById('editFicheCustomName').value || '').trim();
+    const czone = document.getElementById('editFicheCustomZone').value || '';
+    if(!cname){ showToast('Donne un nom au chantier de dépannage'); return; }
+    if(!czone){ showToast('Choisis la zone du chantier de dépannage'); return; }
+    wk.customSite = { name: cname, zone: czone };
+    dayData.siteId = null;
+  } else {
+    dayData.siteId = siteVal;
+    delete wk.customSite;
+  }
   // Statut de journée
   const tjSel = document.getElementById('editFicheTypeJournee');
   const tjVal = tjSel ? tjSel.value : 'normal';
@@ -18339,9 +18563,13 @@ function renderFiches(){
       const hours = parseFloat(entry.hours) || 0;
       if(!hasTypeJournee) totalHours += hours;
       let trajetRates = null;
-      // Zone : override par jour si présent, sinon zone du chantier.
+      const custom = entry.customSite;
+      // Zone : chantier libre > override par jour > zone du chantier.
       const zoneOv = entry.zoneOverride;
-      if(!hasTypeJournee && zoneOv === 'none'){
+      if(!hasTypeJournee && custom && custom.zone){
+        trajetRates = getTrajetRates(custom.zone);
+        if(trajetRates){ totalTrajet += trajetRates.trajet; }
+      } else if(!hasTypeJournee && zoneOv === 'none'){
         trajetRates = null; // journée payée sans trajet
       } else if(!hasTypeJournee && zoneOv && zoneOv !== 'auto'){
         trajetRates = getTrajetRates(zoneOv);
@@ -18355,8 +18583,8 @@ function renderFiches(){
       return {
         empty:false,
         key,
-        site: site ? site.name : '—',
-        color: site ? site.color : null,
+        site: custom && custom.name ? custom.name : (site ? site.name : '—'),
+        color: custom ? 'var(--wood)' : (site ? site.color : null),
         hours: entry.hours || '0',
         panier: !!entry.panier,
         task: entry.task || '',
@@ -23943,7 +24171,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.60.4';
+const APP_VERSION = '2.63.0';
 
 const CHANGELOG = [
   {
