@@ -787,9 +787,10 @@
     cursor:pointer;
     z-index: 9;
     max-width: 480px;
-    display: flex; align-items: center; justify-content: center;
+    display: none; align-items: center; justify-content: center;
     transition: transform 0.18s ease;
   }
+  body.fab-visible:not(.on-simple-dash) .fab{ display:flex; }
   .fab:active{ transform: scale(0.91); }
   @media (min-width: 481px) and (max-width: 859px){
     .fab{ right: calc(50% - 240px + 16px); }
@@ -7591,34 +7592,26 @@ function updateFab(view, siteId){
   _fabContext.view = view;
   _fabContext.siteId = siteId || null;
 
-  // 1) Vue chantier (detail) → plus de FAB. L'ajout média se fait via la
-  //    zone d'import en haut du panneau Média (cf. #cloudImportZone).
-  if(view === 'detail' && siteId){
-    fab.style.display = 'none';
-    fab.onclick = null;
-    return;
-  }
+  const show = () => document.body.classList.add('fab-visible');
+  const hide = () => document.body.classList.remove('fab-visible');
 
+  // 1) Vue chantier (detail) → pas de FAB.
+  if(view === 'detail' && siteId){
+    hide(); fab.onclick = null; return;
+  }
   // 2) Liste des chantiers → créer un nouveau chantier
   if(view === 'chantiers'){
-    fab.style.display = 'block';
+    show();
     fab.textContent = '+';
     fab.title = 'Nouveau chantier';
     fab.dataset.label = 'Nouveau chantier';
     fab.onclick = () => { setupAddSiteModal(); openModal('addSite'); };
     return;
   }
-
-  // 3) Stock : l'action est gérée par son propre render (renderStock
-  //    réassigne fab.onclick). On assure la visibilité par défaut.
-  if(view === 'stock'){
-    fab.style.display = 'block';
-    return;
-  }
-
-  // 4) Toute autre vue → FAB masqué, aucune action
-  fab.style.display = 'none';
-  fab.onclick = null;
+  // 3) Stock : action gérée par renderStock (réassigne onclick)
+  if(view === 'stock'){ show(); return; }
+  // 4) Toute autre vue → FAB masqué
+  hide(); fab.onclick = null;
 }
 
 /* ═══ MODULE — FabRouter  (fin) ═══ */
@@ -8324,10 +8317,40 @@ function _galerieResolveSelected(){
   return out;
 }
 
-/* Export : télécharge les photos sélectionnées (séquentiel, pas de ZIP local). */
+/* Export : PC → choisit UN dossier et y écrit toutes les photos.
+   Sinon → téléchargement séquentiel classique. */
 async function galerieExportSelection(){
   const sel = _galerieResolveSelected();
   if(!sel.length) return;
+
+  const _fname = (site, media, i) =>
+    (site.name ? site.name.replace(/[^\w-]+/g,'_') + '_' : '')
+    + (media.name || ('photo_'+(i+1)))
+    + ((media.name && media.name.includes('.')) ? '' : '.jpg');
+
+  // Chemin optimal : File System Access API (Chrome desktop) → 1 seul dossier
+  if(window.showDirectoryPicker){
+    let dir;
+    try{ dir = await window.showDirectoryPicker(); }
+    catch(e){ return; } // annulé par l'utilisateur
+    showToast(`Export de ${sel.length} photo${sel.length>1?'s':''}…`);
+    let ok = 0;
+    for(let i=0;i<sel.length;i++){
+      const { site, media } = sel[i];
+      try{
+        const resp = await fetch(media.url);
+        const blob = await resp.blob();
+        const fh = await dir.getFileHandle(_fname(site, media, i), { create:true });
+        const ws = await fh.createWritable();
+        await ws.write(blob); await ws.close();
+        ok++;
+      }catch(e){ /* on continue */ }
+    }
+    showToast(`✅ ${ok} photo${ok>1?'s':''} exportée${ok>1?'s':''}`);
+    return;
+  }
+
+  // Fallback : téléchargement séquentiel (mobile / navigateurs sans l'API)
   showToast(`Téléchargement de ${sel.length} photo${sel.length>1?'s':''}…`);
   for(let i=0;i<sel.length;i++){
     const { site, media } = sel[i];
@@ -8336,11 +8359,10 @@ async function galerieExportSelection(){
       const blob = await resp.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      const ext = (media.name && media.name.includes('.')) ? '' : '.jpg';
-      a.download = (site.name ? site.name.replace(/[^\w-]+/g,'_') + '_' : '') + (media.name || ('photo_'+(i+1))) + ext;
+      a.download = _fname(site, media, i);
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(a.href);
-      await new Promise(r => setTimeout(r, 350)); // évite le blocage des téléchargements successifs
+      await new Promise(r => setTimeout(r, 350));
     }catch(e){ /* on continue */ }
   }
   showToast('✅ Téléchargement terminé');
@@ -11945,7 +11967,7 @@ function openPhotosFolder(siteId){
   document.getElementById('photosGalleryRoot').style.display = 'none';
   document.getElementById('photosFolderView').style.display = 'block';
   document.getElementById('photosFolderTitle').textContent = site.name;
-  document.getElementById('fabBtn').style.display = 'none';
+  document.body.classList.remove('fab-visible');
 
   renderPhotosFolderGrid();
 }
@@ -12718,7 +12740,7 @@ function openZincEditor(profileId){
 
   document.getElementById('zincFolderView').style.display = 'none';
   document.getElementById('zincEditorView').style.display = 'block';
-  document.getElementById('fabBtn').style.display = 'none';
+  document.body.classList.remove('fab-visible');
 
   renderZincEditor();
 }
@@ -17035,7 +17057,7 @@ function renderStock(){
 
   const fab = document.getElementById('fabBtn');
   if(!readOnly){
-    fab.style.display = 'block';
+    document.body.classList.add('fab-visible');
     fab.textContent = '+';
     // Mode "De prêt" → menu avec scanner QR ou ajout manuel
     if(currentStockCategory === 'pret'){
@@ -17066,7 +17088,7 @@ function renderStock(){
       fab.onclick = () => openAddStockModal();
     }
   } else {
-    fab.style.display = 'none';
+    document.body.classList.remove('fab-visible');
   }
 
   const isOutillage = (currentStockCategory === 'outillage');
@@ -24239,7 +24261,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.65.0';
+const APP_VERSION = '2.65.2';
 
 const CHANGELOG = [
   {
@@ -27076,7 +27098,7 @@ function _renderDepotMachinesArrow(){ /* accordéon Machines ouvert par défaut 
 function _setupDepotFAB(){
   const fab = document.getElementById('fabBtn');
   if(!fab) return;
-  fab.style.display = 'block';
+  document.body.classList.add('fab-visible');
   fab.textContent   = '+';
   fab.title         = 'Dépôt';
   fab.dataset.label = 'Dépôt';
