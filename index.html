@@ -7638,6 +7638,7 @@ function toggleParametres(){
 }
 
 function goTo(viewName, siteId){
+  try{ history.pushState({rwoodView:viewName, siteId:siteId||null}, ''); }catch(e){}
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
   if(viewName === 'magasin'){ // MODULE — Magasin : pull immédiat à l'ouverture
@@ -7810,20 +7811,18 @@ function setDetailTab(tab){
   document.querySelectorAll('#detailMediaPanel .detail-tab').forEach(t => t.classList.toggle('active', t.id === 'detailTab-' + tab));
   closeJournalPlusMenu();
   if(currentDetailSite){
+    const _sid = currentDetailSite; // capture : évite d'afficher un ancien chantier
     if(tab === 'cloud')  {
-      renderCloudMedia(currentDetailSite);
-      renderWorkerReceivedMedia(currentDetailSite);
-      // Correctif premier affichage : au tout premier rendu, le panneau vient
-      // de passer visible et certaines mesures de layout échouent. On refait
-      // un rendu au tick suivant, une fois l'affichage appliqué par le navigateur.
+      renderCloudMedia(_sid);
+      renderWorkerReceivedMedia(_sid);
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        if(currentDetailSite){
-          try{ renderCloudMedia(currentDetailSite); }catch(e){}
-          try{ renderWorkerReceivedMedia(currentDetailSite); }catch(e){}
+        if(currentDetailSite === _sid){
+          try{ renderCloudMedia(_sid); }catch(e){}
+          try{ renderWorkerReceivedMedia(_sid); }catch(e){}
         }
       }));
     }
-    if(tab === 'cumul')  { renderPatronCumul(currentDetailSite); }
+    if(tab === 'cumul')  { renderPatronCumul(_sid); }
   }
 }
 
@@ -11485,6 +11484,9 @@ async function renderWorkerReceivedMedia(siteId){
     if(expBtn) expBtn.style.display = 'none';
     if(sndBtn) sndBtn.style.display = 'none';
     await pullWorkerMedia();
+    // Après l'await : si l'utilisateur a changé de chantier, on abandonne
+    // ce rendu pour ne pas afficher les infos de l'ancien chantier.
+    if(currentDetailSite !== siteId) return;
     const received = (window._workerReceivedMedia || []).filter(m => m.siteName === (data.sites.find(s=>s.id===siteId)||{}).name || m.siteId === siteId);
     if(!section || !list) return;
     if(!received.length){
@@ -24322,7 +24324,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.67.0';
+const APP_VERSION = '2.68.0';
 
 const CHANGELOG = [
   {
@@ -33565,7 +33567,43 @@ function simpleModeBackToDash(){
   if(backBtn) backBtn.style.display = 'none';
 }
 
-/* Logo header : appui simple = retour menu ; 8 appuis = mode dev. */
+/* Bouton retour physique Android : navigue en arrière dans l'app
+   au lieu de fermer la PWA. */
+let _backHandlerInit = false;
+function _initBackHandler(){
+  if(_backHandlerInit) return;
+  _backHandlerInit = true;
+  history.pushState({rwoodRoot:true}, '');
+  window.addEventListener('popstate', () => {
+    // Si une modale est ouverte → la fermer d'abord
+    const openModal = document.querySelector('.modal-overlay.open');
+    if(openModal){
+      openModal.classList.remove('open');
+      history.pushState({}, '');
+      return;
+    }
+    const active = document.querySelector('.view.active');
+    const viewId = active ? active.id.replace('view-','') : '';
+    // Vue détail → retour à la liste chantiers (ou dashboard si mode simple)
+    if(viewId === 'detail'){
+      if(typeof simpleModeIsActive === 'function' && simpleModeIsActive()) simpleModeBackToDash();
+      else goTo('chantiers');
+      return;
+    }
+    // Mode simple, sur une vue ≠ dashboard → retour dashboard
+    if(typeof simpleModeIsActive === 'function' && simpleModeIsActive() && viewId !== 'simpleDash'){
+      simpleModeBackToDash();
+      return;
+    }
+    // Sur une vue de nav ≠ chantiers → retour chantiers
+    if(viewId && viewId !== 'chantiers' && viewId !== 'simpleDash'){
+      goTo('chantiers');
+      return;
+    }
+    // Racine (chantiers / dashboard) → on ré-empile pour ne pas quitter
+    history.pushState({rwoodRoot:true}, '');
+  });
+}
 let _logoTapCount = 0, _logoTapTimer = null;
 function logoTap(){
   _logoTapCount++;
@@ -33588,6 +33626,7 @@ function logoTap(){
 /* Au démarrage : si mode simple activé, démarrer dessus + popup 1ère fois. */
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
+    _initBackHandler();
     simpleModeApply();
     if(simpleModeIsActive()){
       simpleModeRenderDash();
