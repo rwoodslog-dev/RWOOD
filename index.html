@@ -3814,7 +3814,7 @@
     <section class="view" id="view-quincaillerie">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
         <h2 style="margin:0;flex:1;">🔩 Quincaillerie</h2>
-        <button class="btn btn-outline btn-sm" onclick="qcPrintAllLabels()" title="Imprimer toutes les étiquettes">🖨 Tout imprimer</button>
+        <button class="btn btn-outline btn-sm" onclick="qcOpenPrintPicker()" title="Imprimer une planche de QR">🖨 Imprimer les QR</button>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px;">
         <button class="btn btn-primary btn-sm" style="flex:1;" onclick="qcOpenArticleModal()">+ Nouvel article</button>
@@ -7738,10 +7738,12 @@ function qcSaveArticle(articleId){
     if(a) Object.assign(a, fields);
   } else {
     // Création : UUID technique + QR (le QR encode UNIQUEMENT cet UUID)
+    if(!Array.isArray(data.qcArticles)) data.qcArticles = [];
     data.qcArticles.push({ id:_qcUUID(), ...fields });
   }
-  _qcSaveData(); qcDebouncedPush();
+  _qcSaveData(); if(typeof qcDebouncedPush==='function') qcDebouncedPush();
   closeModal('qcArticle');
+  const modalEl = document.getElementById('modal-qcArticle'); if(modalEl) modalEl.remove();
   renderQuincaillerie();
   showToast(articleId?'Article enregistré':'Article créé — QR prêt à imprimer');
 }
@@ -7790,9 +7792,41 @@ async function qcPrintLabel(articleId){
   doc.save(`qr-${(a.designation||'article').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
 }
 
-/* Planche de TOUTES les étiquettes : grille 2 colonnes sur A4. */
-async function qcPrintAllLabels(){
-  const arts = data.qcArticles||[];
+/* Ouvre un menu de sélection des articles à imprimer sur une planche. */
+function qcOpenPrintPicker(){
+  const arts = (data.qcArticles||[]).slice().sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
+  if(!arts.length){ showToast('Aucun article'); return; }
+  const html = `
+    <div class="modal-overlay open" id="modal-qcPrint" style="background:rgba(0,0,0,.75);">
+      <div class="modal-content" style="background:var(--bg-elev);">
+        <div class="modal-header"><h2>Imprimer les QR</h2><button class="modal-close" onclick="closeModal('qcPrint')">×</button></div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button class="btn btn-outline btn-sm" style="flex:1;" onclick="qcPrintPickerAll(true)">Tout cocher</button>
+          <button class="btn btn-outline btn-sm" style="flex:1;" onclick="qcPrintPickerAll(false)">Tout décocher</button>
+        </div>
+        <div style="max-height:44vh;overflow:auto;margin-bottom:12px;">
+          ${arts.map(a=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--line);cursor:pointer;">
+            <input type="checkbox" class="qcPrintChk" value="${a.id}" checked>
+            <span>${escapeHtml(a.designation||'—')}</span></label>`).join('')}
+        </div>
+        <button class="btn btn-primary btn-block" onclick="qcPrintSelectedLabels()">🖨 Générer la planche PDF</button>
+      </div>
+    </div>`;
+  const old=document.getElementById('modal-qcPrint'); if(old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+function qcPrintPickerAll(state){ document.querySelectorAll('.qcPrintChk').forEach(c=>c.checked=state); }
+async function qcPrintSelectedLabels(){
+  const ids = Array.from(document.querySelectorAll('.qcPrintChk:checked')).map(c=>c.value);
+  if(!ids.length){ showToast('Coche au moins un article'); return; }
+  closeModal('qcPrint');
+  const modalEl=document.getElementById('modal-qcPrint'); if(modalEl) modalEl.remove();
+  await _qcPrintPlanche(ids);
+}
+
+/* Planche PDF pour une liste d'ids : grille 2 colonnes, QR + nom. */
+async function _qcPrintPlanche(ids){
+  const arts = (data.qcArticles||[]).filter(a=>ids.includes(a.id));
   if(!arts.length){ showToast('Aucun article'); return; }
   showToast('Génération de la planche…');
   await _qcEnsurePdfLib();
@@ -7815,6 +7849,11 @@ async function qcPrintAllLabels(){
     col++; if(col>=cols){ col=0; y+=cellH; }
   }
   doc.save('etiquettes-quincaillerie.pdf');
+}
+
+/* Planche de TOUTES les étiquettes : grille 2 colonnes sur A4. */
+async function qcPrintAllLabels(){
+  await _qcPrintPlanche((data.qcArticles||[]).map(a=>a.id));
 }
 
 /* Ajustement rapide du stock depuis la gestion (entrée/sortie/correction). */
@@ -24911,7 +24950,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.75.0';
+const APP_VERSION = '2.75.1';
 
 const CHANGELOG = [
   {
