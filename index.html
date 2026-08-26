@@ -3360,8 +3360,8 @@
         <button class="install-btn" id="installBtn" onclick="installApp()" title="Installer l'application">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;"><path d="M12 4v11"/><path d="M7.5 11l4.5 4.5L16.5 11"/><path d="M5 19h14"/></svg>
         </button>
-        <button class="install-btn" id="themeToggleBtn" onclick="toggleThemeFromHeader()" title="Changer de thème">
-          <span id="themeToggleIcon">🌙</span>
+        <button class="install-btn" id="qcScanHeaderBtn" onclick="qcOpenScanFromHeader()" title="Scanner un QR quincaillerie">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3"/><path d="M21 14v7h-7"/><path d="M17 21v-4"/></svg>
         </button>
         <button class="install-btn" onclick="toggleParametres()" title="Paramètres">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3.6a7.6 7.6 0 0 0-1.7-1l-.4-2.4h-4l-.4 2.4a7.6 7.6 0 0 0-1.7 1l-2.3-.6-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-.6a7.6 7.6 0 0 0 1.7 1l.4 2.4h4l.4-2.4a7.6 7.6 0 0 0 1.7-1l2.3.6 2-3.4z"/></svg>
@@ -7582,8 +7582,6 @@ function startQcPolling(){
   if(_qcPollTimer) return;
   _qcPollTimer = setInterval(async () => {
     if(!navigator.onLine || document.visibilityState !== 'visible') return;
-    const v = document.querySelector('#view-quincaillerie.active, #view-qcScan.active');
-    if(!v) return;
     try{
       const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(QC_SYNC_KEY)+'&select=updated_at', { headers:{'Prefer':''} });
       if(!res.ok) return;
@@ -7592,7 +7590,8 @@ function startQcPolling(){
       const remoteTs = new Date(rows[0].updated_at).getTime();
       if(remoteTs > _qcLastRemoteTs + 2000){
         await qcPullFromSupabase();
-        if(typeof renderQuincaillerie === 'function') renderQuincaillerie();
+        const v = document.querySelector('#view-quincaillerie.active, #view-qcScan.active');
+        if(v && typeof renderQuincaillerie === 'function') renderQuincaillerie();
       }
     }catch(e){}
   }, 6000);
@@ -7782,13 +7781,15 @@ async function qcPrintLabel(articleId){
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if(!jsPDFLib){ showToast('PDF indisponible'); return; }
   const qr = await _qcQrDataUrl(a.id, 300);
-  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:[105,74] }); // A7 paysage-ish
-  const w=105, qs=45;
-  if(qr){ try{ doc.addImage(qr,'PNG',(w-qs)/2,8,qs,qs); }catch(e){} }
+  const doc = new jsPDFLib({ orientation:'landscape', unit:'mm', format:[105,74] });
+  const w = doc.internal.pageSize.getWidth();   // largeur réelle de la page
+  const h = doc.internal.pageSize.getHeight();
+  const qs = 40;
+  if(qr){ try{ doc.addImage(qr,'PNG',(w-qs)/2,6,qs,qs); }catch(e){} }
   doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  doc.text(a.designation||'', w/2, 60, {align:'center', maxWidth:w-10});
+  doc.text(a.designation||'', w/2, qs+13, {align:'center', maxWidth:w-10});
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
-  if(a.uniteConditionnement) doc.text(a.uniteConditionnement, w/2, 67, {align:'center'});
+  if(a.uniteConditionnement) doc.text(a.uniteConditionnement, w/2, qs+20, {align:'center', maxWidth:w-10});
   doc.save(`qr-${(a.designation||'article').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
 }
 
@@ -7833,27 +7834,117 @@ async function _qcPrintPlanche(ids){
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if(!jsPDFLib){ showToast('PDF indisponible'); return; }
   const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
-  const pageW=210, pageH=297, margin=10, cols=2, cellW=(pageW-margin*2)/cols, cellH=62, qs=34;
+  const pageW=210, pageH=297, margin=6;
+  const qs=30;                                  // QR 3x3 cm
+  const cols=4;                                 // densité max
+  const cellW=(pageW-margin*2)/cols;            // ~49,5 mm
+  const cellH=qs+8;                             // QR + nom seul
   let col=0, y=margin;
   for(let i=0;i<arts.length;i++){
     const a=arts[i];
-    const x=margin+col*cellW;
     if(y+cellH>pageH-margin){ doc.addPage(); y=margin; col=0; }
-    const qr=await _qcQrDataUrl(a.id, 256);
-    if(qr){ try{ doc.addImage(qr,'PNG',x+(cellW-qs)/2,y+4,qs,qs); }catch(e){} }
-    doc.setFont('helvetica','bold'); doc.setFontSize(10);
-    doc.text(a.designation||'', x+cellW/2, y+qs+10, {align:'center', maxWidth:cellW-8});
-    doc.setFont('helvetica','normal'); doc.setFontSize(8);
-    if(a.uniteConditionnement) doc.text(a.uniteConditionnement, x+cellW/2, y+qs+15, {align:'center', maxWidth:cellW-8});
-    doc.setDrawColor(210); doc.rect(x+2, y+2, cellW-4, cellH-4);
+    const x=margin+col*cellW;
+    const qr=await _qcQrDataUrl(a.id, 300);
+    if(qr){ try{ doc.addImage(qr,'PNG',x+(cellW-qs)/2,y,qs,qs); }catch(e){} }
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text(a.designation||'', x+cellW/2, y+qs+5, {align:'center', maxWidth:cellW-2});
     col++; if(col>=cols){ col=0; y+=cellH; }
   }
   doc.save('etiquettes-quincaillerie.pdf');
 }
 
-/* Planche de TOUTES les étiquettes : grille 2 colonnes sur A4. */
+/* Planche de TOUTES les étiquettes : grille sur A4. */
 async function qcPrintAllLabels(){
   await _qcPrintPlanche((data.qcArticles||[]).map(a=>a.id));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE — Quincaillerie : SCANNER QR (caméra) accessible à tous
+// ═══════════════════════════════════════════════════════════════════
+let _qcScanStream = null, _qcScanRAF = null;
+async function _qcEnsureJsQR(){
+  if(typeof jsQR !== 'undefined') return;
+  await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+}
+async function qcOpenScanFromHeader(){
+  await _qcEnsureJsQR();
+  if(typeof jsQR === 'undefined'){ showToast('Scanner indisponible'); return; }
+  // Overlay caméra
+  const old=document.getElementById('qcScanOverlay'); if(old) old.remove();
+  const ov=document.createElement('div');
+  ov.id='qcScanOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:9999;background:#000;display:flex;flex-direction:column;';
+  ov.innerHTML=`
+    <div style="position:relative;flex:1;overflow:hidden;">
+      <video id="qcScanVideo" playsinline autoplay muted style="width:100%;height:100%;object-fit:cover;"></video>
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+        <div style="width:65vw;max-width:280px;aspect-ratio:1;border:3px solid #E8AC3D;border-radius:16px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);"></div>
+      </div>
+      <div style="position:absolute;top:0;left:0;right:0;padding:16px;text-align:center;color:#fff;font-weight:700;background:linear-gradient(rgba(0,0,0,.6),transparent);">Vise un QR quincaillerie</div>
+    </div>
+    <button onclick="qcCloseScan()" style="padding:16px;background:#1a1a1a;color:#fff;border:none;font-size:16px;font-weight:700;">✕ Fermer</button>`;
+  document.body.appendChild(ov);
+  try{
+    _qcScanStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } });
+    const video=document.getElementById('qcScanVideo');
+    video.srcObject=_qcScanStream; await video.play();
+    const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d');
+    const tick=()=>{
+      if(!document.getElementById('qcScanOverlay')) return;
+      if(video.readyState===video.HAVE_ENOUGH_DATA){
+        canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+        ctx.drawImage(video,0,0,canvas.width,canvas.height);
+        const img=ctx.getImageData(0,0,canvas.width,canvas.height);
+        const code=jsQR(img.data, img.width, img.height);
+        if(code && code.data){
+          const art=_qcArticle(code.data.trim());
+          if(art){ qcCloseScan(); qcOpenPriseModal(art.id); return; }
+        }
+      }
+      _qcScanRAF=requestAnimationFrame(tick);
+    };
+    _qcScanRAF=requestAnimationFrame(tick);
+  }catch(e){ showToast("Impossible d'accéder à la caméra"); qcCloseScan(); }
+}
+function qcCloseScan(){
+  if(_qcScanRAF) cancelAnimationFrame(_qcScanRAF);
+  if(_qcScanStream){ _qcScanStream.getTracks().forEach(t=>t.stop()); _qcScanStream=null; }
+  const ov=document.getElementById('qcScanOverlay'); if(ov) ov.remove();
+}
+
+/* Modale prise / pose après scan (tous rôles). */
+function qcOpenPriseModal(articleId){
+  const a=_qcArticle(articleId); if(!a) return;
+  const isSignal = a.modeSuivi==='signal_epuisement';
+  const html=`
+    <div class="modal-overlay open" id="modal-qcPrise" style="background:rgba(0,0,0,.8);">
+      <div class="modal-content" style="background:var(--bg-elev);">
+        <div class="modal-header"><h2>${escapeHtml(a.designation||'')}</h2><button class="modal-close" onclick="closeModal('qcPrise')">×</button></div>
+        <div class="hint" style="margin-bottom:12px;">Stock actuel : <strong style="color:var(--ink);font-size:16px;">${parseInt(a.stockActuel,10)||0}</strong> ${escapeHtml(a.uniteConditionnement||'')}</div>
+        ${isSignal ? `
+          <button class="btn btn-primary btn-block" style="margin-bottom:8px;" onclick="qcScanApply('${a.id}',1,'prise')">🔴 Boîte vide / presque vide (−1)</button>
+          <button class="btn btn-outline btn-block" onclick="qcScanApply('${a.id}',1,'retour')">➕ Retour d'une boîte (+1)</button>
+        ` : `
+          <div class="field" style="margin-bottom:10px;"><label>Quantité</label><input type="number" id="qcPriseQty" min="1" value="1"></div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary btn-block" onclick="qcScanApply('${a.id}',null,'prise')">➖ Je prends</button>
+            <button class="btn btn-outline btn-block" onclick="qcScanApply('${a.id}',null,'retour')">➕ Je pose</button>
+          </div>
+        `}
+      </div>
+    </div>`;
+  const old=document.getElementById('modal-qcPrise'); if(old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+function qcScanApply(articleId, fixedQty, type){
+  let q = fixedQty;
+  if(q===null){ const el=document.getElementById('qcPriseQty'); q=parseInt(el&&el.value,10)||0; }
+  if(qcAjouterMouvement(articleId, q, type)){
+    closeModal('qcPrise'); const m=document.getElementById('modal-qcPrise'); if(m) m.remove();
+    const a=_qcArticle(articleId);
+    showToast(`✅ ${type==='prise'?'Pris':'Reposé'} · stock : ${a?a.stockActuel:''}`);
+    if(typeof renderQuincaillerie==='function') renderQuincaillerie();
+  } else showToast('Quantité invalide');
 }
 
 /* Ajustement rapide du stock depuis la gestion (entrée/sortie/correction). */
@@ -24950,7 +25041,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.75.4';
+const APP_VERSION = '2.76.0';
 
 const CHANGELOG = [
   {
@@ -33761,6 +33852,13 @@ function _magasinStartPolling(){
   }, 4000);
 }
 document.addEventListener('DOMContentLoaded', () => setTimeout(_magasinStartPolling, 2200));
+// Quincaillerie : pull au démarrage + polling, pour voir le stock à jour partout
+document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+  if(typeof qcPullFromSupabase==='function'){
+    qcPullFromSupabase().then(ok => { if(ok && typeof renderQuincaillerie==='function'){ const v=document.getElementById('view-quincaillerie'); if(v&&v.classList.contains('active')) renderQuincaillerie(); } });
+  }
+  if(typeof startQcPolling==='function') startQcPolling();
+}, 2400));
 /* ═══ MODULE — Magasin (JS)  ·  fin ═══ */
 
 /* ═══════════════════════════════════════════════════════════════════
