@@ -19877,17 +19877,17 @@ async function printComptableMonthPDF(workerKey, dateFrom, dateTo, selectedWeeks
   const periodSlug = effectiveDateFrom.toISOString().slice(0,7);
 
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
   const margin = 14;
-  const colW = pageW - margin * 2;
   const dayLabels = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
   const _fmt = d => String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
 
   for(let wi = 0; wi < targets.length; wi++){
     const aw = targets[wi];
-    if(wi > 0) doc.addPage();
+    // Un document PDF SÉPARÉ par ouvrier (PDF dissociés)
+    const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const colW = pageW - margin * 2;
 
     // Calculer le total sur la plage sélectionnée uniquement
     let periodTotal = 0;
@@ -19986,7 +19986,12 @@ async function printComptableMonthPDF(workerKey, dateFrom, dateTo, selectedWeeks
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Signature de l\'ouvrier :', margin, signatureY);
     const localWorker = (data.workers||[]).find(w=>w.id===aw.workerId||w.name===aw.name);
-    const sigDataUrl = localWorker && localWorker.signature ? localWorker.signature : null;
+    // La signature peut venir des données synchronisées de l'ouvrier (device)
+    // ou, à défaut, du worker local.
+    const deviceWorker = (aw.device && aw.device.workers || []).find(w => w.id === aw.workerId);
+    const sigDataUrl = (deviceWorker && deviceWorker.signature)
+      || (localWorker && localWorker.signature)
+      || null;
     if(sigDataUrl && sigDataUrl.startsWith('data:image')){
       try{ doc.addImage(sigDataUrl,'PNG',pageW-margin-55,signatureY-6,55,22); }catch(e){}
     }
@@ -19997,14 +20002,16 @@ async function printComptableMonthPDF(workerKey, dateFrom, dateTo, selectedWeeks
     doc.setTextColor(0,0,0);
     doc.setFontSize(9);
     doc.text('Mérignac, le ____/____/________', margin, signatureY+16);
-  }
 
-  const label = targets.length===1
-    ? targets[0].name.replace(/[^a-z0-9]+/gi,'-')
-    : 'equipe';
-  const fname = 'fiches-heures-'+label+'-'+periodSlug+'.pdf';
-  const blob = doc.output('blob');
-  await saveBlobToDevice(blob, fname, 'application/pdf', ['.pdf']);
+    // Sauvegarde du PDF de CET ouvrier (fichier dissocié)
+    const wLabel = aw.name.replace(/[^a-z0-9]+/gi,'-');
+    const wFname = 'fiche-heures-'+wLabel+'-'+periodSlug+'.pdf';
+    const wBlob = doc.output('blob');
+    await saveBlobToDevice(wBlob, wFname, 'application/pdf', ['.pdf']);
+    // Petit délai entre deux téléchargements pour éviter le blocage navigateur
+    if(wi < targets.length - 1) await new Promise(r => setTimeout(r, 400));
+  }
+  showToast(`✅ ${targets.length} PDF généré${targets.length>1?'s':''}`);
 }
 
 
@@ -24492,7 +24499,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.69.2';
+const APP_VERSION = '2.70.0';
 
 const CHANGELOG = [
   {
