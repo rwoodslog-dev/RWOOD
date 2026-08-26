@@ -19822,6 +19822,143 @@ function syncPDFWeeksFromDates(){
   });
 }
 
+/* MODULE — Tableau salaire mensuel (.xlsx) au format de la secrétaire.
+   Colonnes = salariés, lignes = rubriques. Rempli avec les données RWOOD ;
+   cases inconnues laissées vides pour la comptable. */
+async function generateSalaryXlsx(){
+  const selectedWorkers = _pdfWorkerCandidates.filter((_,i)=>{ const cb=document.getElementById('pdfCheck_'+i); return cb&&cb.checked; });
+  if(!selectedWorkers.length){ showToast('Aucun ouvrier sélectionné'); return; }
+  const allWeeks = _getPDFMonthWeeks();
+  const selectedWeeks = allWeeks.filter((_,i)=>{ const cb=document.getElementById('pdfWeekCheck_'+i); return cb&&cb.checked; });
+  if(!selectedWeeks.length){ showToast('Sélectionne au moins une semaine'); return; }
+
+  if(typeof XLSX === 'undefined'){
+    showToast('Chargement du moteur Excel…');
+    await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+  }
+  if(typeof XLSX === 'undefined'){ showToast('Excel indisponible'); return; }
+
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const frDate = s => { if(!s) return ''; const d=new Date(s+'T00:00:00'); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; };
+
+  // Résoudre les ouvriers sélectionnés → {name, workerId, device}
+  const selectedKeys = new Set(selectedWorkers.map(s=>s.key));
+  const workers = [];
+  (_comptableLiveData||[]).forEach(device=>{
+    (device.workers||[]).forEach(w=>{
+      if(selectedKeys.has(_workerKey(device.deviceId,w.id))) workers.push({ name:w.name, workerId:w.id, device });
+    });
+  });
+  workers.sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+  if(!workers.length){ showToast('Ouvriers introuvables'); return; }
+
+  const weekKeys = selectedWeeks.map(w=>iso(w.monday));
+
+  // Calcule les données d'un ouvrier
+  function computeWorker(w){
+    const att = (w.device && w.device.attendance) || {};
+    const sites = (w.device && w.device.sites) || [];
+    const perWeekHours = weekKeys.map(()=>0);
+    const zones = {'1A':0,'1B':0,'2':0,'3':0,'4':0,'5':0};
+    let paniers = 0;
+    const cp = [], css = [], absAutre = [];
+    weekKeys.forEach((wk,wi)=>{
+      const monday = new Date(wk+'T00:00:00');
+      for(let i=0;i<7;i++){
+        const d=new Date(monday); d.setDate(d.getDate()+i); const k=iso(d);
+        const ad=att[k]; const e=ad&&ad.workers&&ad.workers[w.workerId]; if(!e) continue;
+        const tj=e.typeJournee||'normal';
+        if(tj==='cp'){ cp.push(k); continue; }
+        if(tj==='css'){ css.push(k); continue; }
+        if(tj!=='normal'){ absAutre.push({date:k, motif:(TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].label)||tj}); continue; }
+        const h=parseFloat(e.hours)||0; perWeekHours[wi]+=h;
+        if(e.panier) paniers++;
+        const site=sites.find(s=>s.id===ad.siteId);
+        const zov=e.zoneOverride;
+        let zone = (e.customSite&&e.customSite.zone) || (zov&&zov!=='auto'&&zov!=='none'?zov:(zov==='none'?null:(site&&site.trajetZone)));
+        if(zone && zones[zone]!==undefined) zones[zone]++;
+      }
+    });
+    const totalMois = perWeekHours.reduce((a,b)=>a+b,0);
+    const heuresSup = Math.max(0, totalMois - 35*weekKeys.length);
+    // regrouper CP et CSS en périodes (première/dernière date consécutive)
+    const groupPeriods = arr => { if(!arr.length) return []; arr.sort(); const p=[]; let s=arr[0],prev=arr[0]; for(let i=1;i<arr.length;i++){ const d1=new Date(prev),d2=new Date(arr[i]); if((d2-d1)/86400000>1){ p.push([s,prev]); s=arr[i]; } prev=arr[i]; } p.push([s,prev]); return p; };
+    return { perWeekHours, totalMois, heuresSup, paniers, zones, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
+  }
+  const wd = workers.map(computeWorker);
+
+  // Construire la grille (AOA). Colonne 0 = libellés, puis 1 colonne/ouvrier.
+  const nW = workers.length;
+  const emptyRow = lbl => [lbl, ...Array(nW).fill('')];
+  const rows = [];
+  const monthLabel = selectedWeeks[0].monday.toLocaleDateString('fr-FR',{month:'long',year:'numeric'}).toUpperCase();
+
+  // En-tête
+  rows.push([monthLabel, ...workers.map(w=>w.name)]);
+  rows.push(['', ...workers.map(()=>'')]); // ligne statut (vide, à compléter)
+
+  rows.push(['Modification de statut :']);
+  rows.push(emptyRow('nouveau coefficient'));
+  rows.push(emptyRow('nouveau libellé du poste'));
+  rows.push(emptyRow('nouveau taux horaire'));
+
+  rows.push(['Heures sup. au-delà des 35 Heures :']);
+  selectedWeeks.forEach((wk,wi)=>{
+    rows.push([`S${wk.weekNum}`, ...wd.map(d=> d.perWeekHours[wi]||'' )]);
+  });
+  rows.push(emptyRow('REGUL'));
+  rows.push(['TOTAL DU MOIS', ...wd.map(d=> d.totalMois||0 )]);
+  rows.push(emptyRow('Solde antérieur'));
+  rows.push(emptyRow('TOTAL'));
+  rows.push(emptyRow('A réserver'));
+  rows.push(emptyRow('Pris récupération'));
+  rows.push(emptyRow('Régularisation M-1 trop perçu'));
+  rows.push(['Heures supplémentaires à payer', ...wd.map(d=> d.heuresSup||0 )]);
+
+  rows.push(['Absences ou congés sans solde :']);
+  for(let p=0;p<3;p++){
+    rows.push(['date du 1er jour d\'absence', ...wd.map(d=> d.cssP[p]?frDate(d.cssP[p][0]):(d.absAutre[p]?frDate(d.absAutre[p].date):'') )]);
+    rows.push(['date du dernier jour d\'absence', ...wd.map(d=> d.cssP[p]?frDate(d.cssP[p][1]):(d.absAutre[p]?frDate(d.absAutre[p].date):'') )]);
+    rows.push(['motif', ...wd.map(d=> d.cssP[p]?'CSS':(d.absAutre[p]?d.absAutre[p].motif:'') )]);
+  }
+
+  rows.push(['Congés payés :']);
+  for(let p=0;p<2;p++){
+    rows.push(['date du 1er jour de congés', ...wd.map(d=> d.cpP[p]?frDate(d.cpP[p][0]):'' )]);
+    rows.push(['date du dernier jour de congés (inclus)', ...wd.map(d=> d.cpP[p]?frDate(d.cpP[p][1]):'' )]);
+  }
+
+  rows.push(['Prime à verser :']);
+  rows.push(emptyRow('Montant PRIME EXCEPTIONNELLE'));
+  rows.push(emptyRow('Préciser si "brut" ou "net"'));
+  rows.push(emptyRow('Type de prime'));
+
+  rows.push(['Petits déplacements :']);
+  rows.push(['Nombre de paniers', ...wd.map(d=> d.paniers||'' )]);
+  ['1A','1B','2','3','4','5'].forEach(z=>{
+    rows.push([`Nombre de trajet zone ${z}`, ...wd.map(d=> d.zones[z]||'' )]);
+  });
+
+  rows.push(['Grands déplacements :']);
+  rows.push(emptyRow('Nombre de repas (midi + soir)'));
+  rows.push(emptyRow('Nombre de nuits'));
+  rows.push(emptyRow('Nombre d\'allers et retours dans le mois'));
+  rows.push(emptyRow('Durée d\'un aller du domicile au lieu chantier'));
+  rows.push(emptyRow('Acompte versé'));
+
+  // Générer la feuille
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:38}, ...workers.map(()=>({wch:16}))];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Salaire');
+  const monthSlug = `${selectedWeeks[0].monday.getFullYear()}-${String(selectedWeeks[0].monday.getMonth()+1).padStart(2,'0')}`;
+  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  await saveBlobToDevice(blob, `tableau-salaire-${monthSlug}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']);
+  closeModal('pdfWorkerSelector');
+  showToast('✅ Tableau salaire généré');
+}
+
 async function generatePDFFromSelection(){
   // Ouvriers sélectionnés
   const selectedWorkers = _pdfWorkerCandidates.filter((_,i)=>{
@@ -24411,7 +24548,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.71.0';
+const APP_VERSION = '2.72.0';
 
 const CHANGELOG = [
   {
@@ -35464,6 +35601,9 @@ async function comptaEditEnsurePulled(){
 
       <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="generatePDFFromSelection()">
         🖨 Générer le PDF
+      </button>
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generateSalaryXlsx()">
+        📊 Générer le tableau salaire (Excel)
       </button>
     </div>
   </div>
