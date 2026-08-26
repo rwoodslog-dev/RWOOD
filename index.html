@@ -3810,6 +3810,27 @@
       <div id="stockList"></div>
     </section>
 
+    <!-- VUE QUINCAILLERIE (gestion — conducteur/patron) -->
+    <section class="view" id="view-quincaillerie">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <h2 style="margin:0;flex:1;">🔩 Quincaillerie</h2>
+        <button class="btn btn-outline btn-sm" onclick="qcPrintAllLabels()" title="Imprimer toutes les étiquettes">🖨 Tout imprimer</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-primary btn-sm" style="flex:1;" onclick="qcOpenArticleModal()">+ Nouvel article</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="goTo('qcScan')">📷 Scanner</button>
+      </div>
+      <div id="qcArticlesList"></div>
+    </section>
+
+    <!-- VUE SCAN QUINCAILLERIE (tous les rôles) -->
+    <section class="view" id="view-qcScan">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <h2 style="margin:0;flex:1;">📷 Scanner quincaillerie</h2>
+      </div>
+      <div id="qcScanContent"></div>
+    </section>
+
     <!-- VUE PARAMÈTRES -->
     <section class="view" id="view-parametres">
 
@@ -7486,7 +7507,342 @@ async function loadData(){
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MODULE — SyncSubscriptions : helpers de gestion (Livraison 1)
+// MODULE — Quincaillerie : helpers (rôles, UUID, accès)
+// ═══════════════════════════════════════════════════════════════════
+function _qcUUID(){
+  if(crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);});
+}
+function _qcMyRole(){ return (data.settings && data.settings.myProfile && data.settings.myProfile.role) || 'ouvrier'; }
+function _qcMyId(){ return (data.settings && data.settings.auth && data.settings.auth.authId) || (data.settings && data.settings.myProfile && data.settings.myProfile.workerId) || null; }
+/* Gestion (créer articles, QR, seuils, alertes, commandes) : conducteur + patron. */
+function qcCanManage(){ const r=_qcMyRole(); return r==='conducteur' || r==='patron'; }
+/* Scan (prendre stock, signaler boîte vide) : tous les rôles. */
+function qcCanScan(){ return true; }
+function _qcArticle(id){ return (data.qcArticles||[]).find(a=>a.id===id) || null; }
+function _qcFournisseur(id){ return (data.qcFournisseurs||[]).find(f=>f.id===id) || null; }
+/* Articles en alerte (stock <= seuil). */
+function qcArticlesEnAlerte(){ return (data.qcArticles||[]).filter(a => (parseInt(a.stockActuel,10)||0) <= (parseInt(a.seuilAlerte,10)||0)); }
+
+function _qcSaveData(){ if(typeof saveData==='function') saveData(); }
+
+// ── Sync temps réel de la quincaillerie (clé fixe partagée, comme le dépôt) ──
+const QC_SYNC_KEY = 'company_quincaillerie_v1';
+let _qcLastRemoteTs = 0, _qcPushTimer = null, _qcPollTimer = null;
+
+function qcDebouncedPush(){ clearTimeout(_qcPushTimer); _qcPushTimer = setTimeout(()=>qcPushToSupabase(), 500); }
+
+async function qcPushToSupabase(){
+  if(!navigator.onLine) return;
+  if(typeof supaFetch !== 'function') return;
+  const payload = {
+    user_id: QC_SYNC_KEY,
+    updated_at: new Date().toISOString(),
+    data: JSON.stringify({
+      articles:     data.qcArticles||[],
+      fournisseurs: data.qcFournisseurs||[],
+      mouvements:   (data.qcMouvements||[]).slice(-500), // borne le volume
+      commandes:    data.qcCommandes||[]
+    })
+  };
+  try{
+    if(typeof showSyncStatus==='function') showSyncStatus('syncing');
+    const res = await supaFetch('/rest/v1/rwood_sync', {
+      method:'POST',
+      headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if(res.ok){ _qcLastRemoteTs = Date.now(); if(typeof showSyncStatus==='function') showSyncStatus('ok'); }
+    else if(typeof showSyncStatus==='function') showSyncStatus('error');
+  }catch(e){ if(typeof showSyncStatus==='function') showSyncStatus('offline'); }
+}
+
+async function qcPullFromSupabase(){
+  if(!navigator.onLine || typeof supaFetch !== 'function') return false;
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(QC_SYNC_KEY)+'&select=data,updated_at', { headers:{'Prefer':''} });
+    if(!res.ok) return false;
+    const rows = await res.json();
+    if(!rows || !rows.length) return false;
+    const remoteTs = new Date(rows[0].updated_at).getTime();
+    const remote = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    if(!remote) return false;
+    data.qcArticles     = remote.articles || [];
+    data.qcFournisseurs = remote.fournisseurs || [];
+    data.qcMouvements   = remote.mouvements || [];
+    data.qcCommandes    = remote.commandes || [];
+    _qcSaveData();
+    _qcLastRemoteTs = remoteTs;
+    return true;
+  }catch(e){ return false; }
+}
+
+/* Polling léger : rafraîchit le stock quand une vue quincaillerie est affichée. */
+function startQcPolling(){
+  if(_qcPollTimer) return;
+  _qcPollTimer = setInterval(async () => {
+    if(!navigator.onLine || document.visibilityState !== 'visible') return;
+    const v = document.querySelector('#view-quincaillerie.active, #view-qcScan.active');
+    if(!v) return;
+    try{
+      const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(QC_SYNC_KEY)+'&select=updated_at', { headers:{'Prefer':''} });
+      if(!res.ok) return;
+      const rows = await res.json();
+      if(!rows || !rows.length) return;
+      const remoteTs = new Date(rows[0].updated_at).getTime();
+      if(remoteTs > _qcLastRemoteTs + 2000){
+        await qcPullFromSupabase();
+        if(typeof renderQuincaillerie === 'function') renderQuincaillerie();
+      }
+    }catch(e){}
+  }, 6000);
+}
+
+/* Enregistre un mouvement de stock (sortie/prise, retour, réappro, ajustement)
+   et pousse la synchro en direct.
+   type: 'prise' (sortie) | 'retour' (entrée) | 'reappro' | 'ajust' */
+function qcAjouterMouvement(articleId, quantite, type){
+  const art = _qcArticle(articleId);
+  if(!art) return false;
+  const q = parseInt(quantite,10) || 0;
+  if(q <= 0) return false;
+  const stock = parseInt(art.stockActuel,10) || 0;
+  // Sens : prise = sortie (-), retour/reappro = entrée (+)
+  if(type === 'prise'){ art.stockActuel = Math.max(0, stock - q); }
+  else if(type === 'retour' || type === 'reappro'){ art.stockActuel = stock + q; }
+  else if(type === 'ajust'){ art.stockActuel = q; }
+  (data.qcMouvements = data.qcMouvements || []).push({
+    id: _qcUUID(), articleId, ouvrierId: _qcMyId(),
+    quantite: q, type, date: new Date().toISOString()
+  });
+  _qcSaveData();
+  qcDebouncedPush();
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE — Quincaillerie : écran de GESTION (conducteur / patron)
+// ═══════════════════════════════════════════════════════════════════
+function renderQuincaillerie(){
+  const list = document.getElementById('qcArticlesList');
+  if(!list) return;
+  if(!qcCanManage()){
+    list.innerHTML = `<div class="card"><div class="hint">Accès réservé au conducteur de travaux et au patron.</div></div>`;
+    return;
+  }
+  const arts = (data.qcArticles||[]).slice().sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
+  if(!arts.length){
+    list.innerHTML = `<div class="card"><div class="hint">Aucun article. Clique « + Nouvel article » pour commencer.</div></div>`;
+    return;
+  }
+  list.innerHTML = arts.map(a=>{
+    const stock = parseInt(a.stockActuel,10)||0;
+    const seuil = parseInt(a.seuilAlerte,10)||0;
+    const alerte = stock <= seuil;
+    const four = _qcFournisseur(a.fournisseurId);
+    const modeLabel = a.modeSuivi==='signal_epuisement' ? '🔴 Boîte vide' : '🔢 Comptage';
+    return `<div class="card" style="margin-bottom:10px;${alerte?'border:1.5px solid #E0794A;':''}">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="flex:1;">
+          <div style="font-weight:800;font-size:15px;">${escapeHtml(a.designation||'—')}</div>
+          <div class="hint" style="margin-top:2px;">${escapeHtml(a.uniteConditionnement||'')} · ${modeLabel}${four?' · '+escapeHtml(four.nom):''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-weight:800;font-size:18px;color:${alerte?'#E0794A':'var(--ink)'};">${stock}</div>
+          <div class="hint" style="font-size:10px;">seuil ${seuil}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="qcOpenArticleModal('${a.id}')">✏️ Éditer</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="qcPrintLabel('${a.id}')">🖨 Imprimer QR</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" onclick="qcQuickStock('${a.id}')">📦 Stock</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* Modale création / édition d'article. Génère l'UUID + QR à la création. */
+function qcOpenArticleModal(articleId){
+  if(!qcCanManage()){ showToast('Accès réservé conducteur/patron'); return; }
+  const a = articleId ? _qcArticle(articleId) : null;
+  const fours = data.qcFournisseurs||[];
+  const html = `
+    <div class="modal-overlay open" id="modal-qcArticle" style="background:rgba(0,0,0,.75);">
+      <div class="modal-content" style="background:var(--bg-elev);">
+        <div class="modal-header"><h2>${a?'Éditer':'Nouvel'} article</h2><button class="modal-close" onclick="closeModal('qcArticle')">×</button></div>
+        <div class="field" style="margin-bottom:10px;"><label>Désignation</label>
+          <input type="text" id="qcArtDesignation" value="${a?escapeHtml(a.designation||''):''}" placeholder="Ex : Vis TF 4x40 inox"></div>
+        <div class="field" style="margin-bottom:10px;"><label>Unité de conditionnement</label>
+          <input type="text" id="qcArtUnite" value="${a?escapeHtml(a.uniteConditionnement||''):''}" placeholder="Ex : boîte de 200"></div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <div class="field" style="flex:1;"><label>Stock actuel</label>
+            <input type="number" id="qcArtStock" min="0" value="${a?(parseInt(a.stockActuel,10)||0):0}"></div>
+          <div class="field" style="flex:1;"><label>Seuil d'alerte</label>
+            <input type="number" id="qcArtSeuil" min="0" value="${a?(parseInt(a.seuilAlerte,10)||0):0}"></div>
+        </div>
+        <div class="field" style="margin-bottom:10px;"><label>Mode de suivi</label>
+          <select id="qcArtMode">
+            <option value="comptage_prise" ${a&&a.modeSuivi==='comptage_prise'?'selected':''}>🔢 Comptage (saisie qté à chaque prise)</option>
+            <option value="signal_epuisement" ${a&&a.modeSuivi==='signal_epuisement'?'selected':''}>🔴 Signal boîte vide (1 bouton)</option>
+          </select>
+          <div class="hint" style="margin-top:4px;">« Boîte vide » pour écrous/rondelles pris à l'unité. Mets un seuil plus haut pour compenser.</div>
+        </div>
+        <div class="field" style="margin-bottom:10px;"><label>Fournisseur</label>
+          <select id="qcArtFournisseur">
+            <option value="">— Aucun —</option>
+            ${fours.map(f=>`<option value="${f.id}" ${a&&a.fournisseurId===f.id?'selected':''}>${escapeHtml(f.nom)}</option>`).join('')}
+          </select>
+          <button type="button" class="btn btn-outline btn-sm" style="margin-top:6px;width:100%;" onclick="qcAddFournisseurPrompt()">+ Ajouter un fournisseur</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <div class="field" style="flex:2;"><label>Réf. fournisseur</label>
+            <input type="text" id="qcArtRef" value="${a?escapeHtml(a.refFournisseur||''):''}"></div>
+          <div class="field" style="flex:1;"><label>Prix unit. €</label>
+            <input type="number" id="qcArtPrix" step="0.01" min="0" value="${a?(a.prixUnitaire||''):''}"></div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="qcSaveArticle(${a?`'${a.id}'`:'null'})">${a?'Enregistrer':'Créer + générer le QR'}</button>
+        ${a?`<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="qcPrintLabel('${a.id}')">🖨 Imprimer le QR</button>`:''}
+      </div>
+    </div>`;
+  const old=document.getElementById('modal-qcArticle'); if(old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function qcAddFournisseurPrompt(){
+  const nom = prompt('Nom du fournisseur :');
+  if(!nom || !nom.trim()) return;
+  const f = { id:_qcUUID(), nom:nom.trim(), contact:'' };
+  (data.qcFournisseurs = data.qcFournisseurs||[]).push(f);
+  _qcSaveData(); qcDebouncedPush();
+  // Rouvre la modale pour rafraîchir la liste (en conservant les saisies serait mieux, mais simple ici)
+  showToast('Fournisseur ajouté');
+  const sel = document.getElementById('qcArtFournisseur');
+  if(sel){ const o=document.createElement('option'); o.value=f.id; o.textContent=f.nom; o.selected=true; sel.appendChild(o); }
+}
+
+function qcSaveArticle(articleId){
+  const designation = (document.getElementById('qcArtDesignation').value||'').trim();
+  if(!designation){ showToast('Donne une désignation'); return; }
+  const fields = {
+    designation,
+    uniteConditionnement: (document.getElementById('qcArtUnite').value||'').trim(),
+    stockActuel: parseInt(document.getElementById('qcArtStock').value,10)||0,
+    seuilAlerte: parseInt(document.getElementById('qcArtSeuil').value,10)||0,
+    modeSuivi: document.getElementById('qcArtMode').value,
+    fournisseurId: document.getElementById('qcArtFournisseur').value||'',
+    refFournisseur: (document.getElementById('qcArtRef').value||'').trim(),
+    prixUnitaire: parseFloat(document.getElementById('qcArtPrix').value)||0
+  };
+  if(articleId){
+    const a = _qcArticle(articleId);
+    if(a) Object.assign(a, fields);
+  } else {
+    // Création : UUID technique + QR (le QR encode UNIQUEMENT cet UUID)
+    data.qcArticles.push({ id:_qcUUID(), ...fields });
+  }
+  _qcSaveData(); qcDebouncedPush();
+  closeModal('qcArticle');
+  renderQuincaillerie();
+  showToast(articleId?'Article enregistré':'Article créé — QR prêt à imprimer');
+}
+
+/* Génère un dataURL PNG de QR encodant UNIQUEMENT l'UUID de l'article. */
+async function _qcQrDataUrl(uuid, size){
+  size = size || 256;
+  await _qcEnsureQrLib();
+  return new Promise(resolve=>{
+    const tmp = document.createElement('div');
+    tmp.style.position='fixed'; tmp.style.left='-9999px'; document.body.appendChild(tmp);
+    try{
+      new QRCode(tmp, { text: uuid, width:size, height:size, correctLevel: QRCode.CorrectLevel.M });
+      setTimeout(()=>{
+        const img = tmp.querySelector('img'); const cv = tmp.querySelector('canvas');
+        let url = img ? img.src : (cv ? cv.toDataURL('image/png') : null);
+        tmp.remove(); resolve(url);
+      }, 120);
+    }catch(e){ tmp.remove(); resolve(null); }
+  });
+}
+async function _qcEnsureQrLib(){
+  if(typeof QRCode !== 'undefined') return;
+  await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+}
+async function _qcEnsurePdfLib(){
+  if(typeof window.jspdf !== 'undefined' || typeof window.jsPDF !== 'undefined') return;
+  await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+}
+
+/* Étiquette d'UN article : QR + nom lisible dessous, PDF A6. */
+async function qcPrintLabel(articleId){
+  const a = _qcArticle(articleId); if(!a) return;
+  showToast('Génération de l\'étiquette…');
+  await _qcEnsurePdfLib();
+  const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!jsPDFLib){ showToast('PDF indisponible'); return; }
+  const qr = await _qcQrDataUrl(a.id, 300);
+  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:[105,74] }); // A7 paysage-ish
+  const w=105, qs=45;
+  if(qr){ try{ doc.addImage(qr,'PNG',(w-qs)/2,8,qs,qs); }catch(e){} }
+  doc.setFont('helvetica','bold'); doc.setFontSize(13);
+  doc.text(a.designation||'', w/2, 60, {align:'center', maxWidth:w-10});
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  if(a.uniteConditionnement) doc.text(a.uniteConditionnement, w/2, 67, {align:'center'});
+  doc.save(`qr-${(a.designation||'article').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+}
+
+/* Planche de TOUTES les étiquettes : grille 2 colonnes sur A4. */
+async function qcPrintAllLabels(){
+  const arts = data.qcArticles||[];
+  if(!arts.length){ showToast('Aucun article'); return; }
+  showToast('Génération de la planche…');
+  await _qcEnsurePdfLib();
+  const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if(!jsPDFLib){ showToast('PDF indisponible'); return; }
+  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
+  const pageW=210, pageH=297, margin=10, cols=2, cellW=(pageW-margin*2)/cols, cellH=62, qs=34;
+  let col=0, y=margin;
+  for(let i=0;i<arts.length;i++){
+    const a=arts[i];
+    const x=margin+col*cellW;
+    if(y+cellH>pageH-margin){ doc.addPage(); y=margin; col=0; }
+    const qr=await _qcQrDataUrl(a.id, 256);
+    if(qr){ try{ doc.addImage(qr,'PNG',x+(cellW-qs)/2,y+4,qs,qs); }catch(e){} }
+    doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text(a.designation||'', x+cellW/2, y+qs+10, {align:'center', maxWidth:cellW-8});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    if(a.uniteConditionnement) doc.text(a.uniteConditionnement, x+cellW/2, y+qs+15, {align:'center', maxWidth:cellW-8});
+    doc.setDrawColor(210); doc.rect(x+2, y+2, cellW-4, cellH-4);
+    col++; if(col>=cols){ col=0; y+=cellH; }
+  }
+  doc.save('etiquettes-quincaillerie.pdf');
+}
+
+/* Ajustement rapide du stock depuis la gestion (entrée/sortie/correction). */
+function qcQuickStock(articleId){
+  const a=_qcArticle(articleId); if(!a) return;
+  const html=`
+    <div class="modal-overlay open" id="modal-qcStock" style="background:rgba(0,0,0,.75);">
+      <div class="modal-content" style="background:var(--bg-elev);">
+        <div class="modal-header"><h2>${escapeHtml(a.designation||'')}</h2><button class="modal-close" onclick="closeModal('qcStock')">×</button></div>
+        <div class="hint" style="margin-bottom:10px;">Stock actuel : <strong style="color:var(--ink);">${parseInt(a.stockActuel,10)||0}</strong></div>
+        <div class="field" style="margin-bottom:10px;"><label>Quantité</label><input type="number" id="qcStockQty" min="1" value="1"></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-outline btn-block" onclick="qcApplyQuickStock('${a.id}','retour')">➕ Retour au stock</button>
+          <button class="btn btn-outline btn-block" onclick="qcApplyQuickStock('${a.id}','prise')">➖ Sortie</button>
+        </div>
+        <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="qcApplyQuickStock('${a.id}','ajust')">✏️ Fixer le stock à cette valeur</button>
+      </div>
+    </div>`;
+  const old=document.getElementById('modal-qcStock'); if(old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+function qcApplyQuickStock(articleId, type){
+  const q=parseInt(document.getElementById('qcStockQty').value,10)||0;
+  if(qcAjouterMouvement(articleId, q, type)){
+    closeModal('qcStock'); renderQuincaillerie();
+    showToast('Stock mis à jour');
+  } else showToast('Quantité invalide');
+}
 // Gèrent uniquement le tableau data.settings.syncedSites. Pas de purge
 // ni de pull ici (ce sera les livraisons suivantes).
 // ═══════════════════════════════════════════════════════════════════
@@ -7561,6 +7917,11 @@ function seedData(){
   if(!data.payslips)      data.payslips = [];
   if(!data.trash)         data.trash = [];
   if(!data.trucks)        data.trucks = [];
+  // MODULE — Quincaillerie (Livraison 1 : schéma de données)
+  if(!data.qcArticles)     data.qcArticles = [];      // {id, designation, uniteConditionnement, seuilAlerte, stockActuel, modeSuivi:'comptage_prise'|'signal_epuisement', fournisseurId, refFournisseur, prixUnitaire}
+  if(!data.qcFournisseurs) data.qcFournisseurs = [];  // {id, nom, contact}
+  if(!data.qcMouvements)   data.qcMouvements = [];     // {id, articleId, ouvrierId, quantite, type:'prise'|'reappro'|'ajust', date}
+  if(!data.qcCommandes)    data.qcCommandes = [];      // {id, dateCreation, statut:'brouillon'|'validee'|'envoyee'|'recue', lignes:[{id, articleId, quantiteCommandee}]}
   if(!data.settings)      data.settings = {};
   if(!data.settings.auth) data.settings.auth = {};
   if(!data.settings.myProfile) data.settings.myProfile = {};
@@ -7733,6 +8094,8 @@ function goTo(viewName, siteId){
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
   if(viewName === 'stock') renderStock();
+  if(viewName === 'quincaillerie'){ renderQuincaillerie(); if(typeof startQcPolling==='function') startQcPolling(); if(typeof qcPullFromSupabase==='function') qcPullFromSupabase().then(()=>renderQuincaillerie()); }
+  if(viewName === 'qcScan'){ if(typeof renderQcScan==='function') renderQcScan(); if(typeof startQcPolling==='function') startQcPolling(); }
   if(viewName === 'parametres') renderParametres();
   if(viewName === 'contacts') renderContacts();
   if(viewName === 'itineraires') renderItineraries();
@@ -24548,7 +24911,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.72.0';
+const APP_VERSION = '2.75.0';
 
 const CHANGELOG = [
   {
@@ -33653,6 +34016,7 @@ const SIMPLE_ALL_TILES = [
   { view:'zinc', img:'icons/zinc.png', icon:'🔧', label:'Zinc' },
   { view:'zone-chantier', img:'icons/zone.png', icon:'🗾', label:'Zone' },
   { view:'magasin', img:'icons/magasin.png', icon:'🛒', label:'Magasin' },
+  { view:'quincaillerie', img:'icons/stock.png', icon:'🔩', label:'Quincaillerie' },
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
 ];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
