@@ -16102,53 +16102,64 @@ function renderRecapPerso(){
     + `<button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="openRecapPdfModal()">📄 Générer un PDF mensuel</button>`;
 }
 
-/* MODULE — Récap PDF mensuel (1 page : logo + 4 tableaux semaine + signature) */
+/* MODULE — Récap PDF mensuel (tableaux façon fiches d'heures + signature) */
 function openRecapPdfModal(){
-  const today = new Date();
+  const mondayOf = d => { const x=new Date(d); const dow=(x.getDay()+6)%7; x.setDate(x.getDate()-dow); x.setHours(0,0,0,0); return x; };
   const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const fmt = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  // 12 dernières semaines proposées
+  let m = mondayOf(new Date());
+  const weeksOpts = [];
+  for(let i=0;i<12;i++){ const sun=new Date(m); sun.setDate(sun.getDate()+6); weeksOpts.push({key:iso(m), wn:getISOWeekNumber(m), label:`S${getISOWeekNumber(m)} · ${fmt(m)} → ${fmt(sun)}`}); m.setDate(m.getDate()-7); }
+
+  const savedSig = data.settings && data.settings.signature;
   const html = `
     <div class="modal-overlay open" id="modal-recapPdf">
       <div class="modal-content">
-        <div class="modal-header"><h2>Récap PDF mensuel</h2><button class="modal-close" onclick="closeModal('recapPdf')">×</button></div>
-        <div class="field" style="margin-bottom:10px;">
-          <label>Type de période</label>
-          <select id="recapPdfMode" onchange="_recapPdfModeChange()">
-            <option value="weeks">Par semaines</option>
-            <option value="range">Par plage de dates</option>
-          </select>
+        <div class="modal-header"><h2>Récap PDF</h2><button class="modal-close" onclick="closeModal('recapPdf')">×</button></div>
+        <div class="field" style="margin-bottom:8px;"><label>Semaines à inclure (coche autant que tu veux)</label></div>
+        <div style="max-height:34vh;overflow:auto;margin-bottom:12px;">
+          ${weeksOpts.map((w,i)=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--line);cursor:pointer;">
+            <input type="checkbox" class="recapWeekChk" value="${w.key}" ${i<4?'checked':''}> <span>${w.label}</span></label>`).join('')}
         </div>
-        <div id="recapPdfWeeksBlock">
-          <div class="field" style="margin-bottom:10px;">
-            <label>Nombre de semaines (à partir de la plus récente)</label>
-            <select id="recapPdfWeeks">
-              <option value="1">1 semaine</option><option value="2">2 semaines</option>
-              <option value="3">3 semaines</option><option value="4" selected>4 semaines</option>
-            </select>
-          </div>
+        <div class="field" style="margin-bottom:6px;"><label>Signature du salarié (obligatoire)</label></div>
+        <canvas id="recapSigCanvas" width="300" height="120" style="width:100%;height:120px;background:#fff;border:1.5px solid var(--line);border-radius:8px;touch-action:none;"></canvas>
+        <div style="display:flex;gap:8px;margin:8px 0 14px;">
+          <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_recapSigClear()">Effacer</button>
+          ${savedSig?`<button class="btn btn-outline btn-sm" style="flex:1;" onclick="_recapSigUseSaved()">Utiliser ma signature enregistrée</button>`:''}
         </div>
-        <div id="recapPdfRangeBlock" style="display:none;">
-          <div class="field" style="margin-bottom:8px;"><label>Du</label><input type="date" id="recapPdfDebut" value="${iso(first)}"></div>
-          <div class="field" style="margin-bottom:10px;"><label>Au</label><input type="date" id="recapPdfFin" value="${iso(today)}"></div>
-        </div>
-        <button class="btn btn-primary btn-block" onclick="generateRecapPdf()">Générer le PDF</button>
+        <button class="btn btn-primary btn-block" onclick="generateRecapPdf()">📄 Signer et générer le PDF</button>
       </div>
     </div>`;
-  const old = document.getElementById('modal-recapPdf'); if(old) old.remove();
+  const old=document.getElementById('modal-recapPdf'); if(old) old.remove();
   document.body.insertAdjacentHTML('beforeend', html);
+  _recapSigInit();
 }
-function _recapPdfModeChange(){
-  const mode = document.getElementById('recapPdfMode').value;
-  document.getElementById('recapPdfWeeksBlock').style.display = mode==='weeks' ? 'block' : 'none';
-  document.getElementById('recapPdfRangeBlock').style.display = mode==='range' ? 'block' : 'none';
+
+let _recapSigData = null;
+function _recapSigInit(){
+  const c = document.getElementById('recapSigCanvas'); if(!c) return;
+  const ctx = c.getContext('2d'); ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.strokeStyle='#111';
+  let drawing=false, last=null;
+  const pos = e => { const r=c.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return {x:(t.clientX-r.left)*(c.width/r.width), y:(t.clientY-r.top)*(c.height/r.height)}; };
+  const start = e => { drawing=true; last=pos(e); e.preventDefault(); };
+  const move = e => { if(!drawing)return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; _recapSigData=c.toDataURL('image/png'); e.preventDefault(); };
+  const end = () => { drawing=false; };
+  c.addEventListener('mousedown',start); c.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+  c.addEventListener('touchstart',start); c.addEventListener('touchmove',move); c.addEventListener('touchend',end);
 }
+function _recapSigClear(){ const c=document.getElementById('recapSigCanvas'); if(c){ c.getContext('2d').clearRect(0,0,c.width,c.height); } _recapSigData=null; }
+function _recapSigUseSaved(){ _recapSigData = (data.settings && data.settings.signature) || null; if(_recapSigData){ const c=document.getElementById('recapSigCanvas'); const ctx=c.getContext('2d'); const img=new Image(); img.onload=()=>{ ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height); }; img.src=_recapSigData; showToast('Signature enregistrée chargée'); } }
 
 async function generateRecapPdf(){
   const profile = data.settings.myProfile || {};
   const workerId = profile.workerId;
   if(!workerId){ showToast('Profil ouvrier non associé'); return; }
 
-  // jsPDF
+  const checked = Array.from(document.querySelectorAll('.recapWeekChk:checked')).map(c=>c.value);
+  if(!checked.length){ showToast('Coche au moins une semaine'); return; }
+  if(!_recapSigData){ showToast('Signe avant de générer'); return; }
+
   if(typeof window.jspdf === 'undefined' && typeof window.jsPDF === 'undefined'){
     showToast('Chargement du moteur PDF…');
     await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
@@ -16156,105 +16167,94 @@ async function generateRecapPdf(){
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if(!jsPDFLib){ showToast('PDF indisponible'); return; }
 
-  // Déterminer les 4 semaines à afficher (lundi→dimanche)
-  const mode = document.getElementById('recapPdfMode').value;
-  const mondayOf = d => { const x=new Date(d); const dow=(x.getDay()+6)%7; x.setDate(x.getDate()-dow); x.setHours(0,0,0,0); return x; };
   const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  let weeks = []; // [{monday:Date}]
-  if(mode === 'range'){
-    const deb = new Date(document.getElementById('recapPdfDebut').value + 'T00:00:00');
-    const fin = new Date(document.getElementById('recapPdfFin').value + 'T00:00:00');
-    let m = mondayOf(deb);
-    while(m <= fin && weeks.length < 4){ weeks.push({monday:new Date(m)}); m.setDate(m.getDate()+7); }
-  } else {
-    const n = parseInt(document.getElementById('recapPdfWeeks').value) || 4;
-    let m = mondayOf(new Date());
-    for(let i=0;i<n;i++){ weeks.unshift({monday:new Date(m)}); m.setDate(m.getDate()-7); }
-  }
-  while(weeks.length < 4) weeks.push(null); // garde 4 emplacements
-  weeks = weeks.slice(0,4);
+  const fmt = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  const dayLabels = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  const weekKeys = checked.sort();
 
-  const jourNoms = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
-  const doc = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
-  const pageW=210, pageH=297, margin=12;
-  let y = margin;
+  const doc = new jsPDFLib({ orientation:'landscape', unit:'mm', format:'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 10;
 
-  // Logo
+  // Logo + titre
   const logo = data.settings && data.settings.companyLogo;
-  if(logo){ try{ const p=doc.getImageProperties(logo); let w=22,h=(p.height/p.width)*w; if(h>16){h=16;w=(p.width/p.height)*h;} doc.addImage(logo,'PNG',margin,y,w,h); }catch(e){} }
+  let textLeft = margin;
+  if(logo){ try{ const p=doc.getImageProperties(logo); let w=24,h=(p.height/p.width)*w; if(h>16){h=16;w=(p.width/p.height)*h;} doc.addImage(logo,'PNG',margin,6,w,h); textLeft=margin+w+4; }catch(e){} }
   doc.setFont('helvetica','bold'); doc.setFontSize(15);
-  doc.text('Récapitulatif mensuel d\'heures', margin+26, y+6);
+  doc.text("Récapitulatif d'heures", textLeft, 13);
   doc.setFont('helvetica','normal'); doc.setFontSize(10);
-  doc.text(`${profile.firstName||''} ${profile.lastName||''}`.trim() || 'Salarié', margin+26, y+12);
-  y += 22;
+  doc.text(`${profile.firstName||''} ${profile.lastName||''}`.trim()||'Salarié', textLeft, 20);
 
-  // 4 tableaux (2 colonnes × 2 lignes)
-  const gap=6, tblW=(pageW - margin*2 - gap)/2, tblH=88;
-  const positions = [[margin,y],[margin+tblW+gap,y],[margin,y+tblH+gap],[margin+tblW+gap,y+tblH+gap]];
+  // Tableaux semaine par semaine (empilés), 1 page
+  const colLabelW = 24;
+  const colW = (pageW - margin*2 - colLabelW) / 7;
+  const rows = ['Chantier','Heures','Panier','Trajet','Tâche'];
+  const rowH = 6;
+  const tblH = rowH * (rows.length+1);
+  let y = 26;
   let grandTotal = 0;
 
-  weeks.forEach((wk, idx) => {
-    const [tx, ty] = positions[idx];
-    doc.setDrawColor(180); doc.setLineWidth(0.2);
-    // Titre semaine
+  weekKeys.forEach(wkKey => {
+    if(y + tblH + 10 > pageH - 24){ return; } // reste sur 1 page
+    const monday = new Date(wkKey + 'T00:00:00');
+    const days=[]; for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(d.getDate()+i); days.push(d); }
+    const wn = getISOWeekNumber(monday);
     doc.setFont('helvetica','bold'); doc.setFontSize(9);
-    let title = 'Semaine —';
-    let rows = [];
-    let wkTotal = 0;
-    if(wk){
-      const wn = getISOWeekNumber(wk.monday);
-      const sun = new Date(wk.monday); sun.setDate(sun.getDate()+6);
-      title = `S${wn} · ${wk.monday.getDate()}/${wk.monday.getMonth()+1} → ${sun.getDate()}/${sun.getMonth()+1}`;
-      for(let d=0; d<7; d++){
-        const day = new Date(wk.monday); day.setDate(day.getDate()+d);
-        const k = iso(day);
-        const att = data.attendance && data.attendance[k];
-        const e = att && att.workers && att.workers[workerId];
-        let val = '—';
-        if(e){
-          const tj = e.typeJournee||'normal';
-          if(tj!=='normal'){ val = (TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].short)||'Abs'; }
-          else if(e.hours){ const h=parseFloat(e.hours)||0; val = h? h.toString().replace('.',',')+'h':'—'; wkTotal+=h; }
-        }
-        rows.push([jourNoms[d]+' '+day.getDate(), val]);
-      }
-    } else {
-      for(let d=0; d<7; d++) rows.push([jourNoms[d], '—']);
-    }
-    grandTotal += wkTotal;
-    doc.text(title, tx+2, ty+5);
-    // Cadre
-    doc.rect(tx, ty, tblW, tblH);
-    // Lignes
-    doc.setFont('helvetica','normal'); doc.setFontSize(9);
-    let ry = ty+11;
-    rows.forEach(r => {
-      doc.text(r[0], tx+3, ry);
-      doc.text(r[1], tx+tblW-3, ry, {align:'right'});
-      doc.setDrawColor(230); doc.line(tx+2, ry+2, tx+tblW-2, ry+2); doc.setDrawColor(180);
-      ry += 9;
+    doc.text(`Semaine ${wn} — du ${fmt(days[0])} au ${fmt(days[6])}`, margin, y-1);
+
+    // header
+    doc.setFontSize(7.5); doc.setFillColor(232,224,208);
+    doc.rect(margin, y, colLabelW, rowH, 'F'); doc.rect(margin, y, colLabelW, rowH);
+    days.forEach((d,i)=>{ const x=margin+colLabelW+i*colW; doc.setFillColor(232,224,208); doc.rect(x,y,colW,rowH,'F'); doc.rect(x,y,colW,rowH); doc.text(`${dayLabels[i]} ${fmt(d)}`, x+colW/2, y+4, {align:'center'}); });
+
+    // cells
+    let wkTotal=0;
+    const cells = days.map(d=>{
+      const k=iso(d); const ad=data.attendance&&data.attendance[k]; const e=ad&&ad.workers&&ad.workers[workerId];
+      const site = ad ? data.sites.find(s=>s.id===ad.siteId) : null;
+      if(!e) return {empty:true};
+      const tj=e.typeJournee||'normal';
+      if(tj!=='normal') return {abs:(TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].short)||'Abs'};
+      const h=parseFloat(e.hours)||0; wkTotal+=h;
+      let trajet='—'; const zov=e.zoneOverride;
+      const zone = (zov&&zov!=='auto'&&zov!=='none')?zov:(zov==='none'?null:(site&&site.trajetZone));
+      if(zone&&zone!=='GD'){ const r=getTrajetRates(zone); if(r) trajet=`Z${r.zone}/${r.trajet.toFixed(2).replace('.',',')}`; }
+      return {empty:false, site:(e.customSite&&e.customSite.name)||(site?site.name:'—'), hours:(e.hours||'0')+'h', panier:e.panier?'Oui':'Non', trajet, task:e.task||'—'};
     });
-    // Total semaine
-    doc.setFont('helvetica','bold'); doc.setFontSize(9);
-    doc.text('Total', tx+3, ry+2);
-    doc.text(wkTotal ? wkTotal.toString().replace('.',',')+' h' : '0 h', tx+tblW-3, ry+2, {align:'right'});
+    grandTotal += wkTotal;
+
+    doc.setFont('helvetica','normal');
+    rows.forEach((label,ri)=>{
+      const ry=y+rowH*(ri+1);
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.rect(margin,ry,colLabelW,rowH); doc.text(label, margin+1.5, ry+4);
+      doc.setFont('helvetica','normal');
+      days.forEach((d,i)=>{ const x=margin+colLabelW+i*colW; const c=cells[i]; doc.rect(x,ry,colW,rowH);
+        let v='—';
+        if(c.abs){ v = ri===0? c.abs : (ri===1?'—':''); }
+        else if(!c.empty){ v = label==='Chantier'?c.site : label==='Heures'?c.hours : label==='Panier'?c.panier : label==='Trajet'?c.trajet : c.task; }
+        const max = label==='Tâche'?18:12; if(v.length>max) v=v.slice(0,max-1)+'…';
+        doc.setFontSize(7); doc.text(String(v), x+1.5, ry+4);
+      });
+    });
+    // total semaine
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text(`Total : ${wkTotal.toString().replace('.',',')} h`, pageW-margin, y+tblH+4, {align:'right'});
+    y += tblH + 10;
   });
 
-  // Total général + signature
-  let sy = y + tblH*2 + gap + 12;
+  // Total + signature
   doc.setFont('helvetica','bold'); doc.setFontSize(11);
-  doc.text(`Total période : ${grandTotal.toString().replace('.',',')} h`, margin, sy);
-
-  sy += 14;
+  doc.text(`Total période : ${grandTotal.toString().replace('.',',')} h`, margin, Math.min(y+2, pageH-22));
+  const sigY = pageH - 30;
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
-  doc.text('Signature du salarié :', margin, sy);
-  doc.setDrawColor(120); doc.rect(margin, sy+3, 80, 26);
-
+  doc.text('Signature du salarié :', pageW - margin - 60, sigY);
+  try{ doc.addImage(_recapSigData, 'PNG', pageW - margin - 60, sigY+2, 55, 22); }catch(e){}
   doc.setFontSize(8); doc.setTextColor(150);
   doc.text(`Généré le ${new Date().toLocaleDateString('fr-FR')} · RWOOD`, margin, pageH-8);
 
-  const fname = `recap_${(profile.lastName||'salarie')}_${iso(new Date())}.pdf`;
-  doc.save(fname);
+  doc.save(`recap_${(profile.lastName||'salarie')}_${iso(new Date())}.pdf`);
   closeModal('recapPdf');
   showToast('✅ PDF généré');
 }
@@ -24489,7 +24489,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.69.0';
+const APP_VERSION = '2.69.1';
 
 const CHANGELOG = [
   {
