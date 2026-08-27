@@ -20400,6 +20400,8 @@ async function generateSalaryXlsx(){
     const att = (w.device && w.device.attendance) || {};
     const sites = (w.device && w.device.sites) || [];
     const perWeekHours = weekKeys.map(()=>0);
+    const perWeekWorked = weekKeys.map(()=>false); // au moins un jour pointé (normal) dans la semaine
+    const perWeekAbs = weekKeys.map(()=>({})); // {type: nbJours} des jours d'absence (cp/css/maladie/...)
     const zones = {'1A':0,'1B':0,'2':0,'3':0,'4':0,'5':0};
     let paniers = 0;
     const cp = [], css = [], absAutre = [];
@@ -20409,10 +20411,11 @@ async function generateSalaryXlsx(){
         const d=new Date(monday); d.setDate(d.getDate()+i); const k=iso(d);
         const ad=att[k]; const e=ad&&ad.workers&&ad.workers[w.workerId]; if(!e) continue;
         const tj=e.typeJournee||'normal';
+        if(tj!=='normal'){ perWeekAbs[wi][tj]=(perWeekAbs[wi][tj]||0)+1; }
         if(tj==='cp'){ cp.push(k); continue; }
         if(tj==='css'){ css.push(k); continue; }
         if(tj!=='normal'){ absAutre.push({date:k, motif:(TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].label)||tj}); continue; }
-        const h=parseFloat(e.hours)||0; perWeekHours[wi]+=h;
+        const h=parseFloat(e.hours)||0; perWeekHours[wi]+=h; perWeekWorked[wi]=true;
         if(e.panier) paniers++;
         const site=sites.find(s=>s.id===ad.siteId);
         const zov=e.zoneOverride;
@@ -20421,10 +20424,11 @@ async function generateSalaryXlsx(){
       }
     });
     const totalMois = perWeekHours.reduce((a,b)=>a+b,0);
-    const heuresSup = Math.max(0, totalMois - 35*weekKeys.length);
+    // Heures sup à payer = somme des écarts (heures-35) des semaines travaillées (cohérent avec les cases hebdo affichées)
+    const heuresSup = perWeekHours.reduce((a,h,i)=> a + (perWeekWorked[i] ? (h - 35) : 0), 0);
     // regrouper CP et CSS en périodes (première/dernière date consécutive)
     const groupPeriods = arr => { if(!arr.length) return []; arr.sort(); const p=[]; let s=arr[0],prev=arr[0]; for(let i=1;i<arr.length;i++){ const d1=new Date(prev),d2=new Date(arr[i]); if((d2-d1)/86400000>1){ p.push([s,prev]); s=arr[i]; } prev=arr[i]; } p.push([s,prev]); return p; };
-    return { perWeekHours, totalMois, heuresSup, paniers, zones, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
+    return { perWeekHours, perWeekWorked, perWeekAbs, totalMois, heuresSup, paniers, zones, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
   }
   const wd = workers.map(computeWorker);
 
@@ -20486,8 +20490,26 @@ async function generateSalaryXlsx(){
     if(!col){ unmatched.push(w.name); return; } // salarié absent du modèle → laissé vide pour la comptable
     matched++;
     const d = wd[idx];
-    // Heures par semaine (max 4 lignes du modèle)
-    selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) setVal(col, weekRows[wi], d.perWeekHours[wi]||''); });
+    // Heures SUP par semaine (au-delà de 35h) : 38h→3, 35h→0, 32h→-3.
+    // Si la semaine n'a AUCUN jour travaillé mais des jours d'absence → motif (CP/CSS/Maladie...).
+    // Semaine sans aucun pointage → vide.
+    selectedWeeks.forEach((wk,wi)=>{
+      if(wi>=weekRows.length) return;
+      if(d.perWeekWorked[wi]){
+        setVal(col, weekRows[wi], (d.perWeekHours[wi]||0) - 35);
+      } else {
+        const abs = d.perWeekAbs[wi] || {};
+        const types = Object.keys(abs);
+        if(types.length === 1){
+          const t = types[0];
+          setVal(col, weekRows[wi], (TYPE_JOURNEE[t] && TYPE_JOURNEE[t].short) || t);
+        } else if(types.length > 1){
+          // semaine complète mais plusieurs motifs différents → à vérifier manuellement
+          setVal(col, weekRows[wi], '⚠️ vérifier');
+        }
+        // sinon : rien pointé → laissé vide
+      }
+    });
     // Totaux
     setVal(col, 16, d.totalMois||0);        // TOTAL DU MOIS
     setVal(col, 22, d.heuresSup||0);         // Heures supplémentaires à payer
@@ -25123,7 +25145,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.78.2';
+const APP_VERSION = '2.78.6';
 
 const CHANGELOG = [
   {
