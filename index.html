@@ -19870,7 +19870,10 @@ function _computeWorkerWeekData(aw, offset){
       if(ov){ entry = ov.entry; ed = ov.ed; }
     }
     const h = entry ? parseFloat(entry.hours||0) : 0;
-    weekTotal += h;
+    const tj = entry ? (entry.typeJournee || 'normal') : 'normal';
+    const isAbsence = tj !== 'normal';
+    // Total : uniquement les heures des journées normales de travail
+    if(!isAbsence) weekTotal += h;
     // Résolution du nom du chantier : d'abord dans l'appareil de l'ouvrier,
     // sinon dans la liste OFFICIELLE globale (le chantier corrigé par la
     // comptable vient de data.sites, pas forcément de device.sites → sinon
@@ -19882,21 +19885,40 @@ function _computeWorkerWeekData(aw, offset){
     }
     // Nom : priorité au nom propre stocké dans le calque comptable
     const _ovName = (ed && ed.siteName) ? ed.siteName : (site ? site.name : '');
+    // Couleur du chantier (chantier libre → couleur bois)
+    const custom = entry && entry.customSite;
+    const siteColor = custom ? 'var(--wood)' : (site ? site.color : null);
+    // Trajet : chantier libre > override par jour > zone du chantier
+    let trajetRates = null;
+    if(!isAbsence){
+      const zov = entry && entry.zoneOverride;
+      let zone = (custom && custom.zone) ? custom.zone
+               : (zov && zov!=='auto' && zov!=='none') ? zov
+               : (zov==='none') ? null
+               : (site && site.trajetZone);
+      if(zone && zone!=='GD' && typeof getTrajetRates==='function'){ trajetRates = getTrajetRates(zone); }
+    }
+    // hasContent : le jour a-t-il quelque chose à afficher ?
+    const hasContent = !!entry && (h>0 || isAbsence || (entry.task) || entry.panier);
     return {
       date: d, dateKey: dKey,
       label: dayFullLabels[i], h,
       task: entry ? (entry.task||'') : '',
       panier: entry ? !!entry.panier : false,
-      typeJournee: entry ? (entry.typeJournee || 'normal') : 'normal',
+      typeJournee: tj,
+      isAbsence,
+      hasContent,
       siteId: ed ? (ed.siteId||'') : '',
-      siteName: _ovName,
+      siteName: (custom && custom.name) ? custom.name : _ovName,
+      siteColor,
+      trajetRates,
       zone: site ? (site.trajetZone||'') : '',
       workerId: aw.workerId,
       deviceId: device.deviceId || aw.device.deviceId,
       workerKey: aw.key
     };
   });
-  return { monday, days, weekNum, year, weekTotal, dayRows: dayRows.filter(r=>r.h>0) };
+  return { monday, days, weekNum, year, weekTotal, dayRows };
 }
 
 const _monthNamesShort = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
@@ -20091,6 +20113,23 @@ function _renderComptableWorkerWeek(aw){
 
   const offset = _getWorkerWeekOffset(aw.key);
   const { days, weekNum, year, weekTotal, dayRows } = _computeWorkerWeekData(aw, offset);
+  const dayLabelsShort = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  const fmtShort = d => String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0');
+  const editEnabled = (typeof comptaEditEnabled==='function' && comptaEditEnabled());
+
+  // Case d'absence colorée (CP / CSS / Chômage / Maladie / Férié)
+  const absCell = (r) => {
+    const info = (typeof TYPE_JOURNEE!=='undefined' && TYPE_JOURNEE[r.typeJournee]) || {color:'#888',emoji:'',short:'Abs'};
+    return `<td style="text-align:center;font-size:11px;font-weight:700;color:${info.color};background:${info.color}18;">${info.emoji} ${info.short}</td>`;
+  };
+  const rowSite = dayRows.map(r => !r.hasContent ? `<td class="empty-cell">—</td>` : r.isAbsence ? absCell(r)
+      : `<td class="site-cell" style="${r.siteColor ? `background:${colorWithAlpha(r.siteColor,0.2)};border-left:3px solid ${r.siteColor};` : ''}">${r.siteName ? escapeHtml(r.siteName) : '—'}</td>`).join('');
+  const rowHours = dayRows.map(r => (!r.hasContent || r.isAbsence) ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
+  const rowPanier = dayRows.map(r => (!r.hasContent || r.isAbsence) ? `<td class="empty-cell">—</td>` : `<td>${r.panier ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;"><path d="M4.5 12.5l4.5 4.5L19.5 6"/></svg>' : '—'}</td>`).join('');
+  const hasAnyTrajet = dayRows.some(r=>r.trajetRates);
+  const rowTrajet = dayRows.map(r => (!r.hasContent || r.isAbsence || !r.trajetRates) ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${r.trajetRates.trajet.toFixed(2).replace('.',',')}</td>`).join('');
+  const rowTask = dayRows.map(r => (!r.hasContent || r.isAbsence) ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
+  const rowEdit = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button></td>`).join('') : '';
 
   return modeSwitch + `
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
@@ -20106,22 +20145,22 @@ function _renderComptableWorkerWeek(aw){
       <button class="week-nav-btn" onclick="event.stopPropagation(); changeComptableWorkerWeek('${aw.key}',1)">→</button>
     </div>
     ${offset !== 0 ? `<div style="text-align:center;margin-bottom:10px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); resetComptableWorkerWeek('${aw.key}')">Revenir à cette semaine</button></div>` : ''}
-    ${dayRows.length ? dayRows.map(r => `
-      <div style="padding:8px 0;border-top:1px solid var(--line);">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <span style="font-weight:700;font-size:13px;">${r.label} ${_formatDayDate(r.date)}${(typeof typeJourneeBadge==='function') ? typeJourneeBadge(r.typeJournee) : ''}</span>
-          <span style="display:flex;align-items:center;gap:8px;">
-            <span style="font-weight:800;color:var(--wood);font-size:13px;">${r.h}h</span>
-            ${(typeof comptaEditEnabled==='function' && comptaEditEnabled()) ? `<button onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" style="background:none;border:1px solid var(--wood);color:var(--wood);border-radius:7px;padding:4px 7px;cursor:pointer;font-size:12px;">✏️</button>` : ''}
-          </span>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;font-size:11px;color:var(--ink-soft);">
-          ${r.siteName ? `<span>🏗 ${escapeHtml(r.siteName)}${r.zone ? ' · Zone ' + escapeHtml(r.zone) : ''}</span>` : `<span style="font-style:italic;">Chantier non renseigné</span>`}
-          ${r.task ? `<span>🔧 ${escapeHtml(r.task)}</span>` : ''}
-          ${r.panier ? `<span>🍽 Panier</span>` : ''}
-        </div>
-      </div>
-    `).join('') : `<div class="hint" style="text-align:center;padding:14px 0;">Aucune heure cette semaine</div>`}
+    <div class="timesheet-table-wrap">
+      <table class="timesheet">
+        <thead>
+          <tr><th></th>${days.map((d,i)=>`<th>${dayLabelsShort[i]}<br>${fmtShort(d)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          <tr><td class="row-label">Chantier</td>${rowSite}</tr>
+          <tr><td class="row-label">Heures</td>${rowHours}</tr>
+          <tr><td class="row-label">Panier</td>${rowPanier}</tr>
+          ${hasAnyTrajet ? `<tr><td class="row-label">Trajet</td>${rowTrajet}</tr>` : ''}
+          <tr><td class="row-label">Tâche</td>${rowTask}</tr>
+          ${editEnabled ? `<tr><td class="row-label">Corriger</td>${rowEdit}</tr>` : ''}
+        </tbody>
+      </table>
+    </div>
+    <div class="timesheet-total">Total semaine : ${weekTotal}h</div>
   `;
 }
 
@@ -25145,7 +25184,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.78.7';
+const APP_VERSION = '2.79.0';
 
 const CHANGELOG = [
   {
