@@ -7535,6 +7535,10 @@ function qcDebouncedPush(){ clearTimeout(_qcPushTimer); _qcPushTimer = setTimeou
 async function qcPushToSupabase(){
   if(!navigator.onLine) return;
   if(typeof supaFetch !== 'function') return;
+  // Sécurité : ne pas écraser le distant avec un état totalement vide
+  const nArt = (data.qcArticles||[]).length;
+  const nMov = (data.qcMouvements||[]).length;
+  if(nArt === 0 && nMov === 0) return;
   const payload = {
     user_id: QC_SYNC_KEY,
     updated_at: new Date().toISOString(),
@@ -7567,10 +7571,19 @@ async function qcPullFromSupabase(){
     const remoteTs = new Date(rows[0].updated_at).getTime();
     const remote = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
     if(!remote) return false;
-    data.qcArticles     = remote.articles || [];
-    data.qcFournisseurs = remote.fournisseurs || [];
-    data.qcMouvements   = remote.mouvements || [];
-    data.qcCommandes    = remote.commandes || [];
+    // Merge par id : le distant fait autorité pour les articles connus,
+    // on conserve les articles locaux non encore poussés.
+    const mergeById = (localArr, remoteArr) => {
+      const map = {};
+      (localArr||[]).forEach(x=>{ if(x&&x.id) map[x.id]=x; });
+      (remoteArr||[]).forEach(x=>{ if(x&&x.id) map[x.id]=x; }); // distant écrase local pour même id
+      return Object.values(map);
+    };
+    data.qcArticles     = mergeById(data.qcArticles, remote.articles);
+    data.qcFournisseurs = mergeById(data.qcFournisseurs, remote.fournisseurs);
+    data.qcCommandes    = mergeById(data.qcCommandes, remote.commandes);
+    // Mouvements : union par id
+    data.qcMouvements   = mergeById(data.qcMouvements, remote.mouvements);
     _qcSaveData();
     _qcLastRemoteTs = remoteTs;
     return true;
@@ -7863,12 +7876,26 @@ async function qcPrintAllLabels(){
 // ═══════════════════════════════════════════════════════════════════
 let _qcScanStream = null, _qcScanRAF = null;
 async function _qcEnsureJsQR(){
-  if(typeof jsQR !== 'undefined') return;
-  await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+  if(typeof jsQR !== 'undefined') return true;
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js',
+    'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
+  ];
+  for(const url of urls){
+    const ok = await new Promise(res=>{
+      const s=document.createElement('script'); s.src=url;
+      s.onload=()=>res(true); s.onerror=()=>res(false);
+      document.head.appendChild(s);
+    });
+    if(ok && typeof jsQR !== 'undefined') return true;
+  }
+  return typeof jsQR !== 'undefined';
 }
 async function qcOpenScanFromHeader(){
-  await _qcEnsureJsQR();
-  if(typeof jsQR === 'undefined'){ showToast('Scanner indisponible'); return; }
+  showToast('Ouverture du scanner…');
+  const ready = await _qcEnsureJsQR();
+  if(!ready){ showToast('Scanner indisponible (vérifie ta connexion)'); return; }
   // Overlay caméra
   const old=document.getElementById('qcScanOverlay'); if(old) old.remove();
   const ov=document.createElement('div');
@@ -8224,7 +8251,16 @@ function goTo(viewName, siteId){
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
   if(viewName === 'stock') renderStock();
-  if(viewName === 'quincaillerie'){ renderQuincaillerie(); if(typeof startQcPolling==='function') startQcPolling(); if(typeof qcPullFromSupabase==='function') qcPullFromSupabase().then(()=>renderQuincaillerie()); }
+  if(viewName === 'quincaillerie'){
+    // Ouvrier / chef → scan direct ; conducteur / patron → gestion
+    if(!qcCanManage()){
+      if(typeof qcOpenScanFromHeader==='function') setTimeout(qcOpenScanFromHeader, 100);
+    } else {
+      renderQuincaillerie();
+      if(typeof startQcPolling==='function') startQcPolling();
+      if(typeof qcPullFromSupabase==='function') qcPullFromSupabase().then(()=>renderQuincaillerie());
+    }
+  }
   if(viewName === 'qcScan'){ if(typeof renderQcScan==='function') renderQcScan(); if(typeof startQcPolling==='function') startQcPolling(); }
   if(viewName === 'parametres') renderParametres();
   if(viewName === 'contacts') renderContacts();
@@ -25041,7 +25077,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.76.0';
+const APP_VERSION = '2.76.1';
 
 const CHANGELOG = [
   {
