@@ -20416,72 +20416,82 @@ async function generateSalaryXlsx(){
   }
   const wd = workers.map(computeWorker);
 
-  // Construire la grille (AOA). Colonne 0 = libellés, puis 1 colonne/ouvrier.
-  const nW = workers.length;
-  const emptyRow = lbl => [lbl, ...Array(nW).fill('')];
-  const rows = [];
-  const monthLabel = selectedWeeks[0].monday.toLocaleDateString('fr-FR',{month:'long',year:'numeric'}).toUpperCase();
+  // ── Remplir le MODÈLE (préserve la mise en forme) ──
+  // Charger le modèle .xlsx depuis le repo
+  let templateBuf;
+  try{
+    const resp = await fetch('modele_salaire.xlsx');
+    if(!resp.ok) throw new Error('modele introuvable');
+    templateBuf = await resp.arrayBuffer();
+  }catch(e){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
 
-  // En-tête
-  rows.push([monthLabel, ...workers.map(w=>w.name)]);
-  rows.push(['', ...workers.map(()=>'')]); // ligne statut (vide, à compléter)
+  const wb = XLSX.read(templateBuf, { type:'array', cellStyles:true });
+  const ws = wb.Sheets['TABLEAUSALAIRE'] || wb.Sheets[wb.SheetNames[0]];
 
-  rows.push(['Modification de statut :']);
-  rows.push(emptyRow('nouveau coefficient'));
-  rows.push(emptyRow('nouveau libellé du poste'));
-  rows.push(emptyRow('nouveau taux horaire'));
-
-  rows.push(['Heures sup. au-delà des 35 Heures :']);
-  selectedWeeks.forEach((wk,wi)=>{
-    rows.push([`S${wk.weekNum}`, ...wd.map(d=> d.perWeekHours[wi]||'' )]);
-  });
-  rows.push(emptyRow('REGUL'));
-  rows.push(['TOTAL DU MOIS', ...wd.map(d=> d.totalMois||0 )]);
-  rows.push(emptyRow('Solde antérieur'));
-  rows.push(emptyRow('TOTAL'));
-  rows.push(emptyRow('A réserver'));
-  rows.push(emptyRow('Pris récupération'));
-  rows.push(emptyRow('Régularisation M-1 trop perçu'));
-  rows.push(['Heures supplémentaires à payer', ...wd.map(d=> d.heuresSup||0 )]);
-
-  rows.push(['Absences ou congés sans solde :']);
-  for(let p=0;p<3;p++){
-    rows.push(['date du 1er jour d\'absence', ...wd.map(d=> d.cssP[p]?frDate(d.cssP[p][0]):(d.absAutre[p]?frDate(d.absAutre[p].date):'') )]);
-    rows.push(['date du dernier jour d\'absence', ...wd.map(d=> d.cssP[p]?frDate(d.cssP[p][1]):(d.absAutre[p]?frDate(d.absAutre[p].date):'') )]);
-    rows.push(['motif', ...wd.map(d=> d.cssP[p]?'CSS':(d.absAutre[p]?d.absAutre[p].motif:'') )]);
+  // Correspondance nom RWOOD → colonne du modèle (normalisée)
+  const norm = s => (s||'').toString().toUpperCase().replace(/\s+/g,' ').trim();
+  const colByName = {
+    'BEIGNON VALENTIN':'C','BERRY LOUIS':'D','LARBRE MATHIEU':'E','PIECHACZECK RÉMI':'F','PIECHACZEK RÉMI':'F',
+    'BOURDON PIERRE':'G','DE PIERREPONT GUILLAUME':'H','JEGARD PAUL':'I','NACIRI MARWANN':'J',
+    'FREYSSAC CLEMENT':'K','MAGNE JULIEN':'L','HERNANDEZ ROMAIN':'M','DEJOUHANNET BAPTISTE':'N',
+    'NOEL WILLIAM':'O','LE BOUTEILLER ALBAN':'P','ELLEAU YANIS':'Q','MARCELLI DAVID':'R','LAUBEUF THIMOTE':'S'
+  };
+  // Colonnes du modèle → nom normalisé (secours par correspondance souple)
+  function resolveCol(name){
+    const n = norm(name);
+    if(colByName[n]) return colByName[n];
+    // correspondance souple : tous les mots du nom RWOOD présents dans un nom modèle
+    const words = n.split(' ').filter(Boolean);
+    for(const [modelName,col] of Object.entries(colByName)){
+      const mn = norm(modelName);
+      if(words.length && words.every(w=>mn.includes(w))) return col;
+    }
+    return null;
   }
 
-  rows.push(['Congés payés :']);
-  for(let p=0;p<2;p++){
-    rows.push(['date du 1er jour de congés', ...wd.map(d=> d.cpP[p]?frDate(d.cpP[p][0]):'' )]);
-    rows.push(['date du dernier jour de congés (inclus)', ...wd.map(d=> d.cpP[p]?frDate(d.cpP[p][1]):'' )]);
-  }
+  const setCell = (col,row,val) => {
+    if(val===''||val===null||val===undefined) return;
+    const ref = col+row;
+    if(ws[ref]) { ws[ref].v = val; ws[ref].t = (typeof val==='number')?'n':'s'; delete ws[ref].w; delete ws[ref].f; }
+    else ws[ref] = { v:val, t:(typeof val==='number')?'n':'s' };
+  };
 
-  rows.push(['Prime à verser :']);
-  rows.push(emptyRow('Montant PRIME EXCEPTIONNELLE'));
-  rows.push(emptyRow('Préciser si "brut" ou "net"'));
-  rows.push(emptyRow('Type de prime'));
+  // Lignes de semaines dans le modèle : L8..L11 = num semaine (jusqu'à 4). On mappe par ordre.
+  const weekRows = [8,9,10,11];
 
-  rows.push(['Petits déplacements :']);
-  rows.push(['Nombre de paniers', ...wd.map(d=> d.paniers||'' )]);
-  ['1A','1B','2','3','4','5'].forEach(z=>{
-    rows.push([`Nombre de trajet zone ${z}`, ...wd.map(d=> d.zones[z]||'' )]);
+  workers.forEach((w,idx)=>{
+    const col = resolveCol(w.name);
+    if(!col) return; // salarié absent du modèle → laissé vide pour la comptable
+    const d = wd[idx];
+    // Heures sup par semaine (max 4 lignes du modèle)
+    selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) setCell(col, weekRows[wi], d.perWeekHours[wi]||''); });
+    // Totaux
+    setCell(col, 16, d.totalMois||0);        // TOTAL DU MOIS
+    setCell(col, 22, d.heuresSup||0);         // Heures supplémentaires à payer
+    // CSS (congés sans solde) : 3 périodes possibles (L25/26/27, 29/30/31, 32/33/34)
+    const cssRows = [[25,26,27],[29,30,31],[32,33,34]];
+    d.cssP.forEach((per,pi)=>{ if(pi<3){ setCell(col,cssRows[pi][0],frDate(per[0])); setCell(col,cssRows[pi][1],frDate(per[1])); setCell(col,cssRows[pi][2],'CSS'); } });
+    // Congés payés : 2 périodes (L36/37, L38/39)
+    const cpRows = [[36,37],[38,39]];
+    d.cpP.forEach((per,pi)=>{ if(pi<2){ setCell(col,cpRows[pi][0],frDate(per[0])); setCell(col,cpRows[pi][1],frDate(per[1])); } });
+    // Paniers (L46)
+    setCell(col, 46, d.paniers||'');
+    // Trajets par zone : 1A=L47, 1B=L49, 2=L51, 3=L53, 4=L55, 5=L57
+    setCell(col, 47, d.zones['1A']||'');
+    setCell(col, 49, d.zones['1B']||'');
+    setCell(col, 51, d.zones['2']||'');
+    setCell(col, 53, d.zones['3']||'');
+    setCell(col, 55, d.zones['4']||'');
+    setCell(col, 57, d.zones['5']||'');
   });
 
-  rows.push(['Grands déplacements :']);
-  rows.push(emptyRow('Nombre de repas (midi + soir)'));
-  rows.push(emptyRow('Nombre de nuits'));
-  rows.push(emptyRow('Nombre d\'allers et retours dans le mois'));
-  rows.push(emptyRow('Durée d\'un aller du domicile au lieu chantier'));
-  rows.push(emptyRow('Acompte versé'));
+  // Titre du mois (A1) + numéros de semaine (A8..A11)
+  const monthName = selectedWeeks[0].monday.toLocaleDateString('fr-FR',{month:'long'}).toUpperCase();
+  if(ws['A1']){ ws['A1'].v = monthName; delete ws['A1'].w; }
+  selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length){ const ref='A'+weekRows[wi]; if(ws[ref]){ ws[ref].v=wk.weekNum; delete ws[ref].w; } } });
 
-  // Générer la feuille
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{wch:38}, ...workers.map(()=>({wch:16}))];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Salaire');
   const monthSlug = `${selectedWeeks[0].monday.getFullYear()}-${String(selectedWeeks[0].monday.getMonth()+1).padStart(2,'0')}`;
-  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const out = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   await saveBlobToDevice(blob, `tableau-salaire-${monthSlug}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']);
   closeModal('pdfWorkerSelector');
@@ -25077,7 +25087,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.76.1';
+const APP_VERSION = '2.77.0';
 
 const CHANGELOG = [
   {
