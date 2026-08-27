@@ -20361,11 +20361,12 @@ async function generateSalaryXlsx(){
   const selectedWeeks = allWeeks.filter((_,i)=>{ const cb=document.getElementById('pdfWeekCheck_'+i); return cb&&cb.checked; });
   if(!selectedWeeks.length){ showToast('Sélectionne au moins une semaine'); return; }
 
-  if(typeof XLSX === 'undefined'){
+  // Moteur Excel : ExcelJS (préserve styles/couleurs/fusions du modèle, contrairement à SheetJS Community)
+  if(typeof ExcelJS === 'undefined'){
     showToast('Chargement du moteur Excel…');
-    await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
+    await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); }).catch(()=>{});
   }
-  if(typeof XLSX === 'undefined'){ showToast('Excel indisponible'); return; }
+  if(typeof ExcelJS === 'undefined'){ showToast('Excel indisponible (vérifie ta connexion)'); return; }
 
   const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const frDate = s => { if(!s) return ''; const d=new Date(s+'T00:00:00'); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; };
@@ -20416,7 +20417,7 @@ async function generateSalaryXlsx(){
   }
   const wd = workers.map(computeWorker);
 
-  // ── Remplir le MODÈLE (préserve la mise en forme) ──
+  // ── Remplir le MODÈLE avec ExcelJS (COPIE DU MODÈLE + DONNÉES, styles préservés) ──
   // Charger le modèle .xlsx depuis le repo
   let templateBuf;
   try{
@@ -20425,77 +20426,97 @@ async function generateSalaryXlsx(){
     templateBuf = await resp.arrayBuffer();
   }catch(e){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
 
-  const wb = XLSX.read(templateBuf, { type:'array', cellStyles:true });
-  const ws = wb.Sheets['TABLEAUSALAIRE'] || wb.Sheets[wb.SheetNames[0]];
+  const wb = new ExcelJS.Workbook();
+  try{ await wb.xlsx.load(templateBuf); }
+  catch(e){ showToast('Modèle illisible'); return; }
+  const ws = wb.getWorksheet('TABLEAUSALAIRE') || wb.worksheets[0];
+  if(!ws){ showToast('Feuille TABLEAUSALAIRE introuvable'); return; }
 
-  // Correspondance nom RWOOD → colonne du modèle (normalisée)
-  const norm = s => (s||'').toString().toUpperCase().replace(/\s+/g,' ').trim();
+  // Correspondance nom RWOOD → colonne du modèle (normalisée, sans accents)
+  const norm = s => (s||'').toString().toUpperCase()
+                      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+                      .replace(/\s+/g,' ').trim();
   const colByName = {
-    'BEIGNON VALENTIN':'C','BERRY LOUIS':'D','LARBRE MATHIEU':'E','PIECHACZECK RÉMI':'F','PIECHACZEK RÉMI':'F',
-    'BOURDON PIERRE':'G','DE PIERREPONT GUILLAUME':'H','JEGARD PAUL':'I','NACIRI MARWANN':'J',
+    'BEIGNON VALENTIN':'C','BERRY LOUIS':'D','LARBRE MATHIEU':'E','PIECHACZECK REMI':'F','PIECHACZEK REMI':'F',
+    'BOURDON PIERRE':'G','DE PIERREPONT GUILLAUME':'H','JEGARD PAUL':'I','NACIRI MARWANN':'J','NACIRI MARWAN':'J',
     'FREYSSAC CLEMENT':'K','MAGNE JULIEN':'L','HERNANDEZ ROMAIN':'M','DEJOUHANNET BAPTISTE':'N',
     'NOEL WILLIAM':'O','LE BOUTEILLER ALBAN':'P','ELLEAU YANIS':'Q','MARCELLI DAVID':'R','LAUBEUF THIMOTE':'S'
   };
+  // pré-normaliser les clés du modèle une fois
+  const normModel = Object.entries(colByName).map(([k,col])=>[norm(k),col]);
   // Colonnes du modèle → nom normalisé (secours par correspondance souple)
   function resolveCol(name){
     const n = norm(name);
-    if(colByName[n]) return colByName[n];
+    for(const [mn,col] of normModel){ if(mn===n) return col; }
     // correspondance souple : tous les mots du nom RWOOD présents dans un nom modèle
     const words = n.split(' ').filter(Boolean);
-    for(const [modelName,col] of Object.entries(colByName)){
-      const mn = norm(modelName);
+    for(const [mn,col] of normModel){
       if(words.length && words.every(w=>mn.includes(w))) return col;
     }
     return null;
   }
 
-  const setCell = (col,row,val) => {
+  // Écrit une valeur SANS toucher au style de la cellule (ExcelJS conserve le style existant).
+  // Les dates sont écrites comme vraies dates → le format mm-dd-yy du modèle s'applique.
+  const setVal = (col,row,val) => {
     if(val===''||val===null||val===undefined) return;
-    const ref = col+row;
-    if(ws[ref]) { ws[ref].v = val; ws[ref].t = (typeof val==='number')?'n':'s'; delete ws[ref].w; delete ws[ref].f; }
-    else ws[ref] = { v:val, t:(typeof val==='number')?'n':'s' };
+    ws.getCell(col+row).value = val;
   };
+  // Date locale (jamais toISOString : évite le décalage d'un jour en UTC+1/+2)
+  const toDate = s => { if(!s) return null; const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
 
-  // Lignes de semaines dans le modèle : L8..L11 = num semaine (jusqu'à 4). On mappe par ordre.
+  // Lignes de semaines dans le modèle : L8..L11 (jusqu'à 4 semaines). Mappées par ordre.
   const weekRows = [8,9,10,11];
+  let matched = 0;
+  const unmatched = [];
 
   workers.forEach((w,idx)=>{
     const col = resolveCol(w.name);
-    if(!col) return; // salarié absent du modèle → laissé vide pour la comptable
+    if(!col){ unmatched.push(w.name); return; } // salarié absent du modèle → laissé vide pour la comptable
+    matched++;
     const d = wd[idx];
-    // Heures sup par semaine (max 4 lignes du modèle)
-    selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) setCell(col, weekRows[wi], d.perWeekHours[wi]||''); });
+    // Heures par semaine (max 4 lignes du modèle)
+    selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) setVal(col, weekRows[wi], d.perWeekHours[wi]||''); });
     // Totaux
-    setCell(col, 16, d.totalMois||0);        // TOTAL DU MOIS
-    setCell(col, 22, d.heuresSup||0);         // Heures supplémentaires à payer
+    setVal(col, 16, d.totalMois||0);        // TOTAL DU MOIS
+    setVal(col, 22, d.heuresSup||0);         // Heures supplémentaires à payer
     // CSS (congés sans solde) : 3 périodes possibles (L25/26/27, 29/30/31, 32/33/34)
     const cssRows = [[25,26,27],[29,30,31],[32,33,34]];
-    d.cssP.forEach((per,pi)=>{ if(pi<3){ setCell(col,cssRows[pi][0],frDate(per[0])); setCell(col,cssRows[pi][1],frDate(per[1])); setCell(col,cssRows[pi][2],'CSS'); } });
+    d.cssP.forEach((per,pi)=>{ if(pi<3){ setVal(col,cssRows[pi][0],toDate(per[0])); setVal(col,cssRows[pi][1],toDate(per[1])); setVal(col,cssRows[pi][2],'CSS'); } });
     // Congés payés : 2 périodes (L36/37, L38/39)
     const cpRows = [[36,37],[38,39]];
-    d.cpP.forEach((per,pi)=>{ if(pi<2){ setCell(col,cpRows[pi][0],frDate(per[0])); setCell(col,cpRows[pi][1],frDate(per[1])); } });
+    d.cpP.forEach((per,pi)=>{ if(pi<2){ setVal(col,cpRows[pi][0],toDate(per[0])); setVal(col,cpRows[pi][1],toDate(per[1])); } });
+    // Autres absences (L25/26/27, 29/30/31, 32/33/34 si CSS n'a pas déjà tout pris) — motif texte
+    // (on remplit après CSS : périodes libres restantes)
+    let freeSlot = d.cssP.length;
+    d.absAutre.forEach(a=>{ if(freeSlot<3){ const r=cssRows[freeSlot]; setVal(col,r[0],toDate(a.date)); setVal(col,r[1],toDate(a.date)); setVal(col,r[2],a.motif); freeSlot++; } });
     // Paniers (L46)
-    setCell(col, 46, d.paniers||'');
+    setVal(col, 46, d.paniers||'');
     // Trajets par zone : 1A=L47, 1B=L49, 2=L51, 3=L53, 4=L55, 5=L57
-    setCell(col, 47, d.zones['1A']||'');
-    setCell(col, 49, d.zones['1B']||'');
-    setCell(col, 51, d.zones['2']||'');
-    setCell(col, 53, d.zones['3']||'');
-    setCell(col, 55, d.zones['4']||'');
-    setCell(col, 57, d.zones['5']||'');
+    setVal(col, 47, d.zones['1A']||'');
+    setVal(col, 49, d.zones['1B']||'');
+    setVal(col, 51, d.zones['2']||'');
+    setVal(col, 53, d.zones['3']||'');
+    setVal(col, 55, d.zones['4']||'');
+    setVal(col, 57, d.zones['5']||'');
   });
 
-  // Titre du mois (A1) + numéros de semaine (A8..A11)
+  // Titre du mois (A1) — forcer le format texte pour ne pas hériter d'un format date
   const monthName = selectedWeeks[0].monday.toLocaleDateString('fr-FR',{month:'long'}).toUpperCase();
-  if(ws['A1']){ ws['A1'].v = monthName; delete ws['A1'].w; }
-  selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length){ const ref='A'+weekRows[wi]; if(ws[ref]){ ws[ref].v=wk.weekNum; delete ws[ref].w; } } });
+  const a1 = ws.getCell('A1'); a1.value = monthName; a1.numFmt = '@';
+  // Numéros de semaine (A8..A11)
+  selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) ws.getCell('A'+weekRows[wi]).value = wk.weekNum; });
 
   const monthSlug = `${selectedWeeks[0].monday.getFullYear()}-${String(selectedWeeks[0].monday.getMonth()+1).padStart(2,'0')}`;
-  const out = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
+  const out = await wb.xlsx.writeBuffer();
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   await saveBlobToDevice(blob, `tableau-salaire-${monthSlug}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']);
   closeModal('pdfWorkerSelector');
-  showToast('✅ Tableau salaire généré');
+  if(unmatched.length){
+    showToast(`✅ ${matched} salarié(s) rempli(s). Non trouvés dans le modèle : ${unmatched.join(', ')}`);
+  } else {
+    showToast('✅ Tableau salaire généré');
+  }
 }
 
 async function generatePDFFromSelection(){
@@ -25087,7 +25108,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.77.0';
+const APP_VERSION = '2.78.0';
 
 const CHANGELOG = [
   {
