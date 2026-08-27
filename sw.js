@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v520';
+const CACHE_NAME = 'rwood-cache-v521';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -27,6 +27,8 @@ const ASSETS = [
   './icons/bulle-gyrophare.png',
   './icons/bulle-ampoule.png',
   './icons/bulle-cone.png',
+  './exceljs.min.js',
+  './modele_salaire.xlsx',
 ];
 
 self.addEventListener('install', (event) => {
