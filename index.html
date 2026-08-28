@@ -790,7 +790,10 @@
     display: none; align-items: center; justify-content: center;
     transition: transform 0.18s ease;
   }
-  body.fab-visible:not(.on-simple-dash) .fab{ display:flex; }
+  /* Le FAB n'est autorisé que sur les vues Chantiers et Stock (verrou final,
+     indépendant du JS : impossible qu'il apparaisse sur une autre tuile). */
+  body.fab-visible:not(.on-simple-dash)[data-view="chantiers"] .fab,
+  body.fab-visible:not(.on-simple-dash)[data-view="stock"] .fab{ display:flex; }
   .fab:active{ transform: scale(0.91); }
   @media (min-width: 481px) and (max-width: 859px){
     .fab{ right: calc(50% - 240px + 16px); }
@@ -8113,6 +8116,9 @@ function updateFab(view, siteId){
   const show = () => document.body.classList.add('fab-visible');
   const hide = () => document.body.classList.remove('fab-visible');
 
+  // Comptable : ne crée ni chantier ni stock → jamais de FAB, quelle que soit la vue.
+  const _prof = (data.settings && data.settings.myProfile) || {};
+  if(_prof.role === 'comptable'){ hide(); fab.onclick = null; return; }
   // 1) Vue chantier (detail) → pas de FAB.
   if(view === 'detail' && siteId){
     hide(); fab.onclick = null; return;
@@ -8244,6 +8250,8 @@ function goTo(viewName, siteId){
   }
   // Classe pour masquer le FAB uniquement sur le dashboard de tuiles
   document.body.classList.toggle('on-simple-dash', viewName === 'simpleDash');
+  // Vue active exposée sur le body → le CSS n'autorise le FAB que sur chantiers/stock
+  document.body.dataset.view = viewName;
 
   // FAB : décision centralisée par le routeur unique (voir MODULE FabRouter)
   updateFab(viewName, null);
@@ -16499,11 +16507,14 @@ function renderHeures(){
   const isComptable = profile.role === 'comptable';
   const pointageTab = document.querySelector('#heuresModeTabs .chip[data-mode="pointage"]');
   const paieTab = document.querySelector('#heuresModeTabs .chip[data-mode="paie"]');
+  const recapTab = document.querySelector('#heuresModeTabs .chip[data-mode="recap"]');
   const tabCompta = document.getElementById('tabComptaPaie');
   const isComptaRole = profile.role === 'comptable' || profile.role === 'patron';
-  if(tabCompta) tabCompta.style.display = isComptaRole ? '' : 'none';
+  // Comptable : seul l'onglet "Fiches d'heures" est visible (pas Pointage, Récap ni Compta Paie)
+  if(tabCompta) tabCompta.style.display = (isComptaRole && !isComptable) ? '' : 'none';
   if(pointageTab) pointageTab.style.display = isComptable ? 'none' : 'inline-block';
   if(paieTab) paieTab.style.display = isComptable ? 'none' : 'inline-block';
+  if(recapTab) recapTab.style.display = isComptable ? 'none' : 'inline-block';
   if(isComptable && currentHeuresMode !== 'fiches') currentHeuresMode = 'fiches';
   setHeuresMode(currentHeuresMode);
 }
@@ -21153,6 +21164,7 @@ function getDateOfISOWeek(week, year){
   if(profile.role === 'comptable'){
     goTo('heures');
   } else {
+    document.body.dataset.view = 'chantiers'; // écran d'accueil : nécessaire pour que le CSS autorise le FAB
     renderSites();
     updateFab('chantiers', null); // écran d'accueil : FAB = Nouveau chantier
   }
@@ -23103,6 +23115,7 @@ function applyComptableNavRestrictions(){
   });
 
   if(isComptable){
+    document.body.classList.remove('fab-visible'); // le comptable n'a pas de FAB (pas de création chantier)
     const activeBtn = document.querySelector('nav.bottom .nav-btn.active');
     const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires'];
     if(activeBtn && !allowedViews.includes(activeBtn.dataset.view)) goTo('heures');
@@ -25198,7 +25211,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.79.2';
+const APP_VERSION = '2.79.4';
 
 const CHANGELOG = [
   {
