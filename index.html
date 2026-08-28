@@ -4346,6 +4346,7 @@
         <div class="chip" data-mode="pythagore" onclick="setCalcMode('pythagore')">Pythagore</div>
         <div class="chip" data-mode="repartition" onclick="setCalcMode('repartition')">Répartition</div>
         <div class="chip" data-mode="simple" onclick="setCalcMode('simple')">Calculatrice</div>
+        <div class="chip" data-mode="decoupe" onclick="setCalcMode('decoupe')">Découpe</div>
       </div>
 
       <div class="chip-row" id="calcUnitTabs" style="margin-bottom:14px;">
@@ -4492,6 +4493,46 @@
             <button class="simple-calc-btn eq" onclick="simpleCalcInput('=')">=</button>
           </div>
         </div>
+      </div>
+
+      <!-- DÉCOUPE (optimisation de plan de coupe) -->
+      <div class="calc-mode" id="calcMode-decoupe" style="display:none;">
+        <div class="card">
+          <div class="hint">Optimise le débit de barres (chevrons, pannes, pièces zinc…). Longueurs en mètres. Renseigne le stock, le besoin, puis calcule le plan de coupe.</div>
+          <div class="field" style="margin-top:10px;margin-bottom:8px;">
+            <label>Trait de scie / perte par coupe (mm)</label>
+            <input type="number" id="decoupeKerf" value="3" min="0" step="1" placeholder="Ex : 3">
+          </div>
+        </div>
+
+        <!-- STOCK -->
+        <div class="card">
+          <div class="section-title" style="margin-top:0;">📦 Stock disponible</div>
+          <div class="row-actions" style="margin-top:8px;align-items:center;">
+            <input type="number" id="decoupeStockLen" placeholder="Longueur (m) ex: 4.00" step="0.01" style="flex:2;padding:11px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;">
+            <input type="number" id="decoupeStockQty" placeholder="Nb" min="1" step="1" style="flex:1;padding:11px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;">
+            <button class="btn btn-primary" onclick="decoupeAddStock()">+</button>
+          </div>
+          <div id="decoupeStockList" style="margin-top:10px;"></div>
+        </div>
+
+        <!-- BESOIN -->
+        <div class="card">
+          <div class="section-title" style="margin-top:0;">✂️ Besoin à débiter</div>
+          <div class="row-actions" style="margin-top:8px;align-items:center;">
+            <input type="number" id="decoupeNeedLen" placeholder="Longueur (m) ex: 1.26" step="0.01" style="flex:2;padding:11px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;">
+            <input type="number" id="decoupeNeedQty" placeholder="Nb" min="1" step="1" style="flex:1;padding:11px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;">
+            <button class="btn btn-primary" onclick="decoupeAddNeed()">+</button>
+          </div>
+          <div id="decoupeNeedList" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="row-actions">
+          <button class="btn btn-primary" style="flex:2;" onclick="decoupeCompute()">🧮 Calculer le plan de coupe</button>
+          <button class="btn btn-outline" onclick="decoupeReset()">Vider</button>
+        </div>
+
+        <div id="decoupeResult" style="margin-top:12px;"></div>
       </div>
     </section>
 
@@ -23847,6 +23888,153 @@ let cumulValues = [];
 let currentCalcMode = 'cumul';
 let currentCalcUnit = 'mm';
 
+/* ═══════════════════════════════════════════════════════════════════
+   OUTIL DÉCOUPE — optimisation de plan de coupe (bin-packing FFD)
+   Longueurs saisies en mètres, converties en mm en interne (précision).
+   ═══════════════════════════════════════════════════════════════════ */
+let _decoupeStock = []; // [{len(m), qty}]
+let _decoupeNeed  = []; // [{len(m), qty}]
+
+function decoupeAddStock(){
+  const l = parseFloat((document.getElementById('decoupeStockLen').value||'').replace(',','.'));
+  const q = parseInt(document.getElementById('decoupeStockQty').value,10);
+  if(!l || l<=0){ showToast('Longueur stock invalide'); return; }
+  if(!q || q<=0){ showToast('Quantité invalide'); return; }
+  _decoupeStock.push({ len:l, qty:q });
+  document.getElementById('decoupeStockLen').value='';
+  document.getElementById('decoupeStockQty').value='';
+  _decoupeRenderLists();
+}
+function decoupeAddNeed(){
+  const l = parseFloat((document.getElementById('decoupeNeedLen').value||'').replace(',','.'));
+  const q = parseInt(document.getElementById('decoupeNeedQty').value,10);
+  if(!l || l<=0){ showToast('Longueur besoin invalide'); return; }
+  if(!q || q<=0){ showToast('Quantité invalide'); return; }
+  _decoupeNeed.push({ len:l, qty:q });
+  document.getElementById('decoupeNeedLen').value='';
+  document.getElementById('decoupeNeedQty').value='';
+  _decoupeRenderLists();
+}
+function decoupeDelStock(i){ _decoupeStock.splice(i,1); _decoupeRenderLists(); }
+function decoupeDelNeed(i){ _decoupeNeed.splice(i,1); _decoupeRenderLists(); }
+function decoupeReset(){ _decoupeStock=[]; _decoupeNeed=[]; _decoupeRenderLists(); const r=document.getElementById('decoupeResult'); if(r) r.innerHTML=''; }
+
+function _fmtM(m){ return m.toFixed(2).replace('.',',') + ' m'; }
+
+function _decoupeRenderLists(){
+  const sEl = document.getElementById('decoupeStockList');
+  const nEl = document.getElementById('decoupeNeedList');
+  if(sEl){
+    sEl.innerHTML = _decoupeStock.length
+      ? _decoupeStock.map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--line);">
+          <span><strong>${s.qty}</strong> × ${_fmtM(s.len)}</span>
+          <button class="btn btn-outline btn-sm" onclick="decoupeDelStock(${i})">✕</button></div>`).join('')
+      : '<div class="hint">Aucune barre en stock.</div>';
+  }
+  if(nEl){
+    nEl.innerHTML = _decoupeNeed.length
+      ? _decoupeNeed.map((n,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--line);">
+          <span><strong>${n.qty}</strong> × ${_fmtM(n.len)}</span>
+          <button class="btn btn-outline btn-sm" onclick="decoupeDelNeed(${i})">✕</button></div>`).join('')
+      : '<div class="hint">Aucune pièce à débiter.</div>';
+  }
+}
+
+function decoupeCompute(){
+  const resEl = document.getElementById('decoupeResult');
+  if(!_decoupeStock.length){ showToast('Ajoute au moins une barre en stock'); return; }
+  if(!_decoupeNeed.length){ showToast('Ajoute au moins une pièce à débiter'); return; }
+
+  const kerf = (parseFloat(document.getElementById('decoupeKerf').value)||0) / 1000; // mm → m
+
+  // Barres disponibles, triées par longueur décroissante
+  let bars = [];
+  _decoupeStock.forEach(s => { for(let i=0;i<s.qty;i++) bars.push(s.len); });
+  bars.sort((a,b)=>b-a);
+
+  // Pièces à couper, triées par longueur décroissante (First-Fit Decreasing)
+  let pieces = [];
+  _decoupeNeed.forEach(n => { for(let i=0;i<n.qty;i++) pieces.push(n.len); });
+  pieces.sort((a,b)=>b-a);
+
+  // Vérif : une pièce dépasse la plus grande barre ?
+  const maxBar = bars[0];
+  const tooLong = pieces.filter(p => p > maxBar + 1e-9);
+  if(tooLong.length){
+    resEl.innerHTML = `<div class="card" style="border:1px solid var(--danger);"><div style="color:var(--danger);font-weight:700;">⚠️ ${tooLong.length} pièce(s) plus longue(s) que la plus grande barre (${_fmtM(maxBar)}). Découpe impossible pour : ${[...new Set(tooLong)].map(_fmtM).join(', ')}.</div></div>`;
+    return;
+  }
+
+  // FFD : chaque pièce va dans la première barre ouverte où elle rentre (reste - kerf),
+  // sinon on ouvre une nouvelle barre (la plus grande dispo qui la contient).
+  const usedBars = []; // {len, cuts:[], rest}
+  let barIdx = 0;
+  const cutLen = (p, isFirstOnBar) => p + (isFirstOnBar ? 0 : kerf); // trait de scie entre pièces
+
+  pieces.forEach(p => {
+    // chercher une barre ouverte où la pièce rentre
+    let placed = false;
+    for(const b of usedBars){
+      const need = p + kerf; // il y a déjà au moins une pièce → kerf
+      if(b.rest >= need - 1e-9){ b.cuts.push(p); b.rest -= need; placed = true; break; }
+    }
+    if(!placed){
+      // ouvrir une nouvelle barre : la plus grande dispo qui contient la pièce
+      let chosen = -1;
+      for(let i=barIdx;i<bars.length;i++){ if(bars[i] >= p - 1e-9){ chosen = i; break; } }
+      if(chosen === -1){
+        // aucune barre entière dispo : marquer non plaçable
+        usedBars.push({ len:0, cuts:[p], rest:0, overflow:true });
+        return;
+      }
+      // retirer la barre du stock dispo
+      const barLen = bars[chosen];
+      bars.splice(chosen,1);
+      usedBars.push({ len:barLen, cuts:[p], rest: barLen - p });
+    }
+  });
+
+  // Regrouper les coupes identiques par barre pour un affichage lisible
+  const barsHtml = usedBars.map((b,idx)=>{
+    if(b.overflow){
+      return `<div class="card" style="border:1px solid var(--danger);margin-bottom:8px;"><strong style="color:var(--danger);">Pièce non plaçable :</strong> ${_fmtM(b.cuts[0])} — plus assez de barres en stock.</div>`;
+    }
+    const counts = {};
+    b.cuts.forEach(c => { const k=c.toFixed(3); counts[k]=(counts[k]||0)+1; });
+    const detail = Object.entries(counts)
+      .sort((a,b)=>parseFloat(b[0])-parseFloat(a[0]))
+      .map(([k,n]) => `${n} × ${_fmtM(parseFloat(k))}`).join(' + ');
+    const usedLen = b.cuts.reduce((a,c)=>a+c,0) + Math.max(0,(b.cuts.length-1))*kerf;
+    const chute = b.len - usedLen;
+    const chutePct = b.len>0 ? (chute/b.len*100) : 0;
+    const chuteColor = chutePct < 8 ? 'var(--green)' : chutePct < 20 ? 'var(--wood)' : 'var(--danger)';
+    return `
+      <div class="card" style="margin-bottom:8px;">
+        <div style="font-weight:800;font-size:14px;margin-bottom:4px;">Barre ${idx+1} — ${_fmtM(b.len)}</div>
+        <div style="font-size:13.5px;line-height:1.5;">✂️ Découper : <strong>${detail}</strong></div>
+        <div class="meta" style="margin-top:6px;color:${chuteColor};font-weight:700;">Chute : ${_fmtM(chute)} (${chutePct.toFixed(1)}%)</div>
+      </div>`;
+  }).join('');
+
+  // Récap global
+  const realBars = usedBars.filter(b=>!b.overflow);
+  const totalBarsLen = realBars.reduce((a,b)=>a+b.len,0);
+  const totalChute = realBars.reduce((a,b)=>{
+    const used = b.cuts.reduce((x,c)=>x+c,0) + Math.max(0,(b.cuts.length-1))*kerf;
+    return a + (b.len - used);
+  }, 0);
+  const chuteGlobalPct = totalBarsLen>0 ? (totalChute/totalBarsLen*100) : 0;
+  const totalStock = _decoupeStock.reduce((a,s)=>a+s.qty,0);
+
+  resEl.innerHTML = `
+    <div class="card calc-result-card" style="margin-bottom:10px;">
+      <div class="calc-result-label">Barres utilisées</div>
+      <div class="calc-result-value">${realBars.length} / ${totalStock}</div>
+      <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute)} (${chuteGlobalPct.toFixed(1)}%)</div>
+    </div>
+    ${barsHtml}`;
+}
+
 function renderCalcul(){
   const profile = (data.settings && data.settings.myProfile) || { workerId: null, role: 'chef' };
   const isComptable = profile.role === 'comptable';
@@ -23869,6 +24057,9 @@ function setCalcMode(mode){
   document.querySelectorAll('.calc-mode').forEach(el=>{
     el.style.display = (el.id === 'calcMode-' + mode) ? 'block' : 'none';
   });
+  // La barre d'unité mm/cm ne concerne pas l'outil Découpe (qui travaille en mètres)
+  const unitTabs = document.getElementById('calcUnitTabs');
+  if(unitTabs) unitTabs.style.display = (mode === 'decoupe' || mode === 'simple') ? 'none' : 'flex';
 }
 
 function setCalcUnit(unit){
@@ -25313,7 +25504,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.85.0';
+const APP_VERSION = '2.86.0';
 
 const CHANGELOG = [
   {
