@@ -3664,18 +3664,18 @@
         </div>
         <div id="pointageCustomBlock" style="display:none;background:var(--bg-elev);border:1.5px solid var(--wood-dark);border-radius:12px;padding:12px;margin-top:10px;">
           <div class="field" style="margin-bottom:10px;">
-            <label>Nom du chantier (dépannage)</label>
+            <label>Nom du chantier / client (obligatoire)</label>
             <input type="text" id="pointageCustomName" placeholder="Ex : Dépannage Dupont" oninput="_pointageSaveCustom()">
           </div>
           <div class="field" style="margin-bottom:8px;">
-            <label>Zone de trajet</label>
+            <label>Zone de trajet (zone ou adresse obligatoire)</label>
             <select id="pointageCustomZone" onchange="_pointageSaveCustom()"></select>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <input type="text" id="pointageCustomAddr" placeholder="Adresse (facultatif)" style="flex:1;">
+            <input type="text" id="pointageCustomAddr" placeholder="Adresse (ou choisis une zone)" style="flex:1;">
             <button type="button" class="btn btn-outline" style="white-space:nowrap;padding:0 14px;" onclick="_pointageCalcZone()">Calculer</button>
           </div>
-          <div class="hint" id="pointageCustomHint" style="margin-top:6px;">Choisis la zone, ou tape une adresse et clique « Calculer ». Ce chantier n'apparaît pas dans l'onglet Chantiers.</div>
+          <div class="hint" id="pointageCustomHint" style="margin-top:6px;">Nom + (zone ou adresse) requis. Ce chantier n'apparaît pas dans l'onglet Chantiers.</div>
         </div>
 
         <div class="section-title">Transport</div>
@@ -16846,8 +16846,10 @@ function _pointageSaveCustom(){
   const today = data.attendance[dateKey];
   const name = (document.getElementById('pointageCustomName').value||'').trim();
   const zone = document.getElementById('pointageCustomZone').value||'';
-  if(name || zone){
-    today.customSite = { name, zone };
+  const addrEl = document.getElementById('pointageCustomAddr');
+  const addr = addrEl ? (addrEl.value||'').trim() : '';
+  if(name || zone || addr){
+    today.customSite = { name, zone, address: addr };
     today.siteId = null;
   }
   saveData();
@@ -16911,6 +16913,8 @@ function renderPointage(){
   const nEl = document.getElementById('pointageCustomName');
   const zEl = document.getElementById('pointageCustomZone');
   if(nEl) nEl.value = cs.name || '';
+  const aEl = document.getElementById('pointageCustomAddr');
+  if(aEl){ aEl.value = cs.address || ''; aEl.oninput = _pointageSaveCustom; }
   if(zEl){
     zEl.innerHTML = '<option value="">— Choisir la zone —</option>' +
       ZONES_TRAJET.map(z=>`<option value="${z}"${cs.zone===z?' selected':''}>Zone ${z}</option>`).join('');
@@ -17088,6 +17092,16 @@ function typeJourneeIsAbsence(type){
 function validatePointageDay(){
   const dateKey = currentPointageDate;
   const day = data.attendance[dateKey];
+  // Chantier libre (dépannage) : nom ET (zone OU adresse) obligatoires
+  // pour simplifier le traitement comptable/secrétariat.
+  if(day && day.customSite && !day.siteId){
+    const cs = day.customSite;
+    const name = (cs.name||'').trim();
+    const zone = (cs.zone||'').trim();
+    const addr = (cs.address||'').trim();
+    if(!name){ showToast('⚠️ Renseigne le nom du chantier / client (dépannage)'); return; }
+    if(!zone && !addr){ showToast('⚠️ Renseigne la zone OU l\'adresse du dépannage'); return; }
+  }
   if(day) day.validated = true;
   saveData();
   pushPointageToSupabase(); // push immediat a la validation
@@ -25209,7 +25223,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.82.0';
+const APP_VERSION = '2.83.0';
 
 const CHANGELOG = [
   {
@@ -30705,8 +30719,10 @@ async function pushPointageToSupabase(){
   const myWorkerId = profile.workerId || null;
 
   // RÈGLE STRICTE : n'envoyer QUE son propre ouvrier + ses propres pointages.
+  // On inclut la signature (pour injection auto sur le récap PDF comptable).
+  const _mySig = (data.settings && data.settings.signature) || null;
   const myWorkers = myWorkerId
-    ? (data.workers||[]).filter(w => w.id === myWorkerId).map(w => ({ id:w.id, name:w.name }))
+    ? (data.workers||[]).filter(w => w.id === myWorkerId).map(w => ({ id:w.id, name:w.name, signature: w.signature || _mySig || '' }))
     : [];
 
   // Filtrer l'attendance : garder uniquement les jours où MON ouvrier a pointé
