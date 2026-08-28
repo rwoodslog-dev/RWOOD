@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v535';
+const CACHE_NAME = 'rwood-cache-v536';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
