@@ -5867,6 +5867,23 @@
   </div>
 </div>
 
+<!-- MODAL : Signature obligatoire à la validation de la fiche du jour -->
+<div class="modal-overlay" id="modal-pointageSign">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>✍️ Signature du jour</h2>
+      <button class="modal-close" onclick="closeModal('pointageSign')">×</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px;">Signe pour valider ta fiche. Ta signature sera jointe au récap mensuel de la comptabilité.</div>
+    <canvas id="pointageSignCanvas" width="300" height="120" style="width:100%;height:120px;background:#fff;border:1.5px solid var(--line);border-radius:8px;touch-action:none;"></canvas>
+    <div style="display:flex;gap:8px;margin:10px 0 6px;">
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_pointageSignClear()">Effacer</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" id="pointageSignUseSavedBtn" onclick="_pointageSignUseSaved()">Ma signature enregistrée</button>
+    </div>
+    <button class="btn btn-primary btn-block" style="margin-top:8px;" onclick="_pointageSignConfirm()">✅ Signer et valider la fiche</button>
+  </div>
+</div>
+
 <!-- MODAL : Liste stock manquant pour SMS -->
 <div class="modal-overlay" id="modal-missingStock">
   <div class="modal">
@@ -17102,7 +17119,63 @@ function validatePointageDay(){
     if(!name){ showToast('⚠️ Renseigne le nom du chantier / client (dépannage)'); return; }
     if(!zone && !addr){ showToast('⚠️ Renseigne la zone OU l\'adresse du dépannage'); return; }
   }
-  if(day) day.validated = true;
+  // Signature obligatoire : on la demande au moment de valider.
+  _openPointageSignModal();
+}
+
+/* Signature à la validation de la fiche du jour */
+let _pointageSignData = null;
+function _openPointageSignModal(){
+  _pointageSignData = null;
+  openModal('pointageSign');
+  // Masquer le bouton "signature enregistrée" s'il n'y en a pas
+  const saved = (data.settings && data.settings.signature) || null;
+  const btn = document.getElementById('pointageSignUseSavedBtn');
+  if(btn) btn.style.display = saved ? '' : 'none';
+  setTimeout(_pointageSignInit, 50);
+}
+function _pointageSignInit(){
+  const c = document.getElementById('pointageSignCanvas'); if(!c) return;
+  const ctx = c.getContext('2d'); ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.strokeStyle='#111';
+  ctx.clearRect(0,0,c.width,c.height);
+  let drawing=false, last=null;
+  const pos = e => { const r=c.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return {x:(t.clientX-r.left)*(c.width/r.width), y:(t.clientY-r.top)*(c.height/r.height)}; };
+  const start = e => { drawing=true; last=pos(e); e.preventDefault(); };
+  const move = e => { if(!drawing)return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; _pointageSignData=c.toDataURL('image/png'); e.preventDefault(); };
+  const end = () => { drawing=false; };
+  c.onmousedown=start; c.onmousemove=move; window.addEventListener('mouseup',end);
+  c.ontouchstart=start; c.ontouchmove=move; c.ontouchend=end;
+}
+function _pointageSignClear(){ const c=document.getElementById('pointageSignCanvas'); if(c){ c.getContext('2d').clearRect(0,0,c.width,c.height); } _pointageSignData=null; }
+function _pointageSignUseSaved(){
+  const saved = (data.settings && data.settings.signature) || null;
+  if(!saved){ showToast('Aucune signature enregistrée'); return; }
+  _pointageSignData = saved;
+  const c=document.getElementById('pointageSignCanvas'); if(!c) return;
+  const ctx=c.getContext('2d'); const img=new Image();
+  img.onload=()=>{ ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height); };
+  img.src=saved;
+}
+function _pointageSignConfirm(){
+  if(!_pointageSignData){ showToast('✍️ Signe avant de valider'); return; }
+  // Mémoriser la signature : sur le profil (réutilisable) et sur l'ouvrier lié
+  const profile = (data.settings && data.settings.myProfile) || {};
+  if(data.settings) data.settings.signature = _pointageSignData;
+  if(profile.workerId){
+    const w = (data.workers||[]).find(x => x.id === profile.workerId);
+    if(w) w.signature = _pointageSignData;
+  }
+  closeModal('pointageSign');
+  _pointageDoValidate(_pointageSignData);
+}
+
+function _pointageDoValidate(signature){
+  const dateKey = currentPointageDate;
+  const day = data.attendance[dateKey];
+  if(day){
+    day.validated = true;
+    day.signature = signature || null; // signature du jour (traçabilité)
+  }
   saveData();
   pushPointageToSupabase(); // push immediat a la validation
 
@@ -20165,7 +20238,24 @@ function _renderComptableWorkerWeek(aw){
   const rowTask = dayRows.map(r => (!r.hasContent || r.isAbsence) ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
   const rowEdit = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button></td>`).join('') : '';
 
-  return modeSwitch + `
+  // Bloc signature de l'ouvrier (côté comptable) : affiche la signature si présente,
+  // sinon un bouton pour demander la signature via alerte.
+  const _wSig = ((aw.device && aw.device.workers) || []).find(w => w.id === aw.workerId);
+  const _sigImg = _wSig && _wSig.signature ? _wSig.signature : '';
+  const _sigBlock = `
+    <div class="card" style="margin-bottom:12px;padding:12px 14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:13px;">✍️ Signature</span>
+        ${_sigImg
+          ? `<span style="font-size:12px;color:var(--green);font-weight:700;">✅ Signée</span>`
+          : `<span style="font-size:12px;color:var(--danger);font-weight:700;">⚠️ Manquante</span>`}
+      </div>
+      ${_sigImg
+        ? `<img src="${_sigImg}" alt="Signature" style="margin-top:8px;max-height:80px;max-width:100%;background:#fff;border:1px solid var(--line);border-radius:8px;padding:4px;">`
+        : `<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="event.stopPropagation(); comptaRequestSignature('${aw.device.deviceId}','${escapeHtml(aw.name)}')">📣 Demander la signature à l'ouvrier</button>`}
+    </div>`;
+
+  return modeSwitch + _sigBlock + `
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
       <span style="font-weight:800;font-size:16px;">${escapeHtml(aw.name)}</span>
       <span style="font-weight:800;color:var(--wood);font-size:16px;">${weekTotal}h <span style="font-weight:500;font-size:11px;color:var(--ink-soft);">cette semaine</span></span>
@@ -25223,7 +25313,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.83.0';
+const APP_VERSION = '2.85.0';
 
 const CHANGELOG = [
   {
@@ -31324,13 +31414,14 @@ async function _saveAlerts(alerts){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
     alerts.push({
       id: uid(),
       text: text.trim(),
+      kind: kind || 'info',                   // 'info' | 'signature'
       recipientType: recipientType,           // 'all' | 'device'
       recipientDeviceId: recipientDeviceId || null,
       recipientName: recipientName || null,    // pour affichage dans l'historique comptable
@@ -31342,6 +31433,15 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName){
   } catch(e){
     return false;
   }
+}
+
+/* Comptable : demander la signature à un ouvrier (alerte ciblée type 'signature') */
+async function comptaRequestSignature(deviceId, workerName){
+  const ok = await sendAlert(
+    'La comptabilité te demande de signer ta fiche d\'heures. Touche « Signer maintenant » pour enregistrer ta signature.',
+    'device', deviceId, workerName, 'signature'
+  );
+  showToast(ok ? '📣 Demande de signature envoyée à ' + workerName : 'Échec de l\'envoi');
 }
 
 /* Supprimer une alerte de l'historique (cote comptable) */
@@ -33398,7 +33498,9 @@ function _renderAlertInboxList(){
     <div class="card" style="margin-bottom:8px;" id="alertInboxItem-${a.id}">
       <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
       <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>
-      <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_clearAlert('${a.id}')">Lever alerte</button>
+      ${a.kind === 'signature'
+        ? `<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer maintenant</button>`
+        : `<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_clearAlert('${a.id}')">Lever alerte</button>`}
     </div>
   `).join('');
 }
@@ -33413,6 +33515,41 @@ async function _clearAlert(alertId){
   _renderAlertInboxList();
   _updateAlertBubbleFromCache();
   showToast('Alerte levee');
+}
+
+/* Ouvrier : répondre à une demande de signature (alerte comptable) */
+let _signAlertId = null;
+function _openSignatureFromAlert(alertId){
+  _signAlertId = alertId;
+  closeModal('alertInbox');
+  _pointageSignData = null;
+  openModal('pointageSign');
+  const saved = (data.settings && data.settings.signature) || null;
+  const btn = document.getElementById('pointageSignUseSavedBtn');
+  if(btn) btn.style.display = saved ? '' : 'none';
+  // Basculer le bouton de confirmation vers le mode "alerte"
+  const confirmBtn = document.querySelector('#modal-pointageSign .btn-primary.btn-block');
+  if(confirmBtn){ confirmBtn.setAttribute('onclick','_signatureFromAlertConfirm()'); confirmBtn.textContent = '✅ Enregistrer ma signature'; }
+  setTimeout(_pointageSignInit, 50);
+}
+async function _signatureFromAlertConfirm(){
+  if(!_pointageSignData){ showToast('✍️ Signe avant de valider'); return; }
+  const profile = (data.settings && data.settings.myProfile) || {};
+  if(data.settings) data.settings.signature = _pointageSignData;
+  if(profile.workerId){
+    const w = (data.workers||[]).find(x => x.id === profile.workerId);
+    if(w) w.signature = _pointageSignData;
+  }
+  saveData();
+  // Pousser la signature vers la comptable (mise à jour auto)
+  try{ if(typeof pushPointageToSupabase === 'function') await pushPointageToSupabase(); }catch(e){}
+  // Lever l'alerte
+  if(_signAlertId){ try{ await _clearAlert(_signAlertId); }catch(e){} _signAlertId = null; }
+  // Restaurer le bouton par défaut de la modale
+  const confirmBtn = document.querySelector('#modal-pointageSign .btn-primary.btn-block');
+  if(confirmBtn){ confirmBtn.setAttribute('onclick','_pointageSignConfirm()'); confirmBtn.textContent = '✅ Signer et valider la fiche'; }
+  closeModal('pointageSign');
+  showToast('✅ Signature enregistrée et envoyée');
 }
 
 function _updateAlertBubbleFromCache(){
