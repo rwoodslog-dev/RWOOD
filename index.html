@@ -3503,8 +3503,6 @@
           onclick="setDetailMain('info')" id="btnMainInfo">ℹ️ Info</button>
         <button class="btn btn-primary" style="flex:1;font-weight:800;"
           onclick="setDetailMain('media')" id="btnMainMedia">📎 Médias</button>
-        <button class="btn btn-outline" style="flex:1;font-weight:800;"
-          onclick="setDetailMain('synchro')" id="btnMainSynchro">🔄 Synchro</button>
         <button class="btn btn-outline" id="btnMainCumul" style="display:none;flex:1;font-weight:800;"
           onclick="setDetailMain('cumul')">📊 Récap</button>
       </div>
@@ -3545,6 +3543,14 @@
               </div>
             </label>
           </div>
+
+          <!-- Message affiché quand le chantier n'est PAS synchronisé -->
+          <div id="cloudSyncOffMsg" class="card" style="display:none;padding:18px 16px;text-align:center;color:var(--ink-soft);">
+            🔒 Active « Synchroniser ce chantier » ci-dessus pour afficher les photos, documents et pliages.
+          </div>
+
+          <!-- Contenu média : masqué tant que le chantier n'est pas synchronisé -->
+          <div id="cloudMediaContent">
 
           <!-- Zone d'import média (drop-zone) : tout en haut, au-dessus des sections.
                Ouvre le menu d'ajout (Fichier/PDF, Photo, Galerie, Pliage zinc).
@@ -3611,6 +3617,7 @@
             <div class="section-title">📥 Reçus du chef</div>
             <div id="workerReceivedMediaList"></div>
           </div>
+          </div><!-- /cloudMediaContent -->
         </div>
 
         <!-- Sous-onglet ZINC fusionné dans Média : conteneur legacy conservé
@@ -8442,14 +8449,10 @@ function renderSites(){
   const navAlertes = document.getElementById('navBtnAlertesConducteur');
   if(navAlertes) navAlertes.style.display = (isConducteur || isPatronRole) ? '' : 'none';
 
-  // Conducteur ET patron : dashboard conducteur
-  dashboard.style.display = isConducteur ? 'block' : 'none';
-  container.style.display = isConducteur ? 'none' : 'block';
-
-  if(isConducteur){
-    renderConducteurDashboard();
-    return;
-  }
+  // Visuel unifié : tous les rôles voient la même liste de bulles de chantiers.
+  // (Le dashboard conducteur séparé est désactivé au profit du rendu commun.)
+  dashboard.style.display = 'none';
+  container.style.display = 'block';
 
   if(data.sites.length === 0){
     container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M5 21V5"/><path d="M5 5l14 4"/><path d="M19 9v3"/><path d="M19 12l-3 2"/><path d="M2 21h10"/></svg></div><h3>Aucun chantier</h3><p>Touche le bouton + pour créer ton premier chantier.</p></div>`;
@@ -8498,12 +8501,6 @@ function renderSites(){
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${site.progress}%"></div></div>
       <div class="progress-label"><span>Avancement</span><span>${site.progress}%</span></div>
-      ${(myRole === 'conducteur' || myRole === 'patron') && site.shared ? `
-        <div class="meta" style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
-          <span>${site.assignedChefName ? '👷 ' + userLabelHtml({name: site.assignedChefName, authId: site.assignedChefAuthId||''}, 'chef') : 'Aucun chef assigné'}</span>
-          <button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); assignChefToSite('${site.id}')">${site.assignedChefName ? 'Réassigner' : 'Assigner'}</button>
-        </div>
-      ` : ''}
     </div>
   `).join('');
   _sitesFilterRestoreFocus();
@@ -8559,29 +8556,22 @@ function _sitesApplyFilters(sites){
       if(!hay.includes(q)) return false;
     }
     if(_sitesFilter.zone && String(s.trajetZone||'') !== _sitesFilter.zone) return false;
-    if(_sitesFilter.chef && (s.assignedChefName||'') !== _sitesFilter.chef) return false;
     return true;
   });
 }
 
-/* Barre HTML : recherche + 2 selects, alimentés dynamiquement. */
+/* Barre HTML : recherche + select zone, alimenté dynamiquement. */
 function _sitesFilterBarHtml(sites){
   const zones = _sitesFilterZones(sites);
-  const chefs = _sitesFilterChefs(sites);
   const zoneOpts = '<option value="">Toutes les zones</option>'
     + zones.map(z => `<option value="${escapeHtml(z)}"${_sitesFilter.zone===z?' selected':''}>Zone ${escapeHtml(z)}</option>`).join('');
-  const chefOpts = '<option value="">Toutes les assignations</option>'
-    + chefs.map(c => `<option value="${escapeHtml(c)}"${_sitesFilter.chef===c?' selected':''}>${escapeHtml(c)}</option>`).join('');
-  // Les selects zone/chef ne s'affichent que s'il y a matière à filtrer
   const showZone = zones.length > 0;
-  const showChef = chefs.length > 0;
   return `
     <div class="sites-filter-bar">
       <input type="text" id="search-chantiers" class="sites-filter-search" placeholder="🔍 Rechercher un chantier..."
         value="${escapeHtml(_sitesFilter.text)}" oninput="_sitesFilterOnText(this.value)">
-      ${(showZone || showChef) ? `<div class="sites-filter-selects">
-        ${showZone ? `<select id="filter-zone" onchange="_sitesFilterOnZone(this.value)">${zoneOpts}</select>` : ''}
-        ${showChef ? `<select id="filter-assignation" onchange="_sitesFilterOnChef(this.value)">${chefOpts}</select>` : ''}
+      ${showZone ? `<div class="sites-filter-selects">
+        <select id="filter-zone" onchange="_sitesFilterOnZone(this.value)">${zoneOpts}</select>
       </div>` : ''}
     </div>`;
 }
@@ -9335,18 +9325,6 @@ function renderDetail(siteId){
       <label>Date de fin prévue (optionnel)</label>
       <input type="date" value="${site.dueDate || ''}" onchange="updateSiteField('${site.id}','dueDate',this.value)">
     </div>
-    ${isConducteurDetail ? `
-    <div class="field" style="margin-top:12px; margin-bottom:0;">
-      <label style="display:flex;align-items:center;justify-content:space-between;">
-        🏗 Équipe sur ce chantier
-        <span style="font-size:11px;color:var(--ink-soft);">Sélection rapide</span>
-      </label>
-      <div id="siteTeamNameQuickPick" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;"></div>
-      ${site.teamName ? `<div style="margin-top:6px;font-size:12px;color:var(--wood);">✅ Actuellement : <strong>${escapeHtml(site.teamName)}</strong></div>` : '<div style="margin-top:6px;font-size:12px;color:var(--ink-soft);">Aucune équipe sélectionnée</div>'}
-    </div>` : site.teamName ? `
-    <div style="margin-top:10px;padding:8px 10px;background:rgba(232,172,61,0.12);border-radius:8px;font-size:13px;">
-      🏗 Équipe : <strong>${escapeHtml(site.teamName)}</strong>
-    </div>` : ''}
     ${isConducteurDetail && site.shared && site.syncLive ? `
     <div style="margin-top:10px; padding:8px 12px; background:rgba(79,174,108,0.12); border-radius:9px; border:1px solid var(--green); font-size:12.5px; color:var(--green); font-weight:700;">
       ✅ Synchro équipe active — les modifications sont envoyées en temps réel
@@ -9364,8 +9342,6 @@ function renderDetail(siteId){
     </div>
     <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="exportSiteFiche('${site.id}')"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M12 14V4"/><path d="M8 8l4-4 4 4"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg> Partager la fiche chantier</button>
   `;
-  renderSiteAssignedWorkersChips(site);
-  if(isConducteurDetail) setTimeout(()=>renderSiteTeamNameQuickPick(siteId), 0);
 
   document.getElementById('detailProgress').innerHTML = `
     <div class="progress-track"><div class="progress-fill" style="width:${site.progress}%"></div></div>
@@ -15856,6 +15832,8 @@ function toggleSiteSync(){
     showToast('Synchronisation activée pour ce chantier');
   }
   renderSiteSyncToggle(siteId);
+  // Réafficher/masquer les médias selon le nouvel état
+  if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId);
 }
 
 function renderCloudMedia(siteId){
@@ -15869,6 +15847,15 @@ function renderCloudMedia(siteId){
   // Toggle de synchro : rendu dans un try isolé pour ne jamais bloquer
   // l'affichage des médias en cas d'erreur.
   try{ if(typeof renderSiteSyncToggle === 'function') renderSiteSyncToggle(siteId); }catch(e){}
+
+  // Gate médias : si le chantier n'est PAS synchronisé, on masque tout le
+  // contenu (photos, documents, pliages) et on affiche un message.
+  const _synced = (typeof isSiteSynced === 'function') ? isSiteSynced(siteId) : true;
+  const _content = document.getElementById('cloudMediaContent');
+  const _offMsg  = document.getElementById('cloudSyncOffMsg');
+  if(_content) _content.style.display = _synced ? 'block' : 'none';
+  if(_offMsg)  _offMsg.style.display  = _synced ? 'none'  : 'block';
+  if(!_synced) return; // rien d'autre à rendre tant que non synchronisé
 
   const sendWrap = document.getElementById('btnSendToWorkerWrap');
   if(sendWrap) sendWrap.style.display = (role==='chef'||role==='conducteur'||role==='patron') ? '' : 'none';
@@ -25222,7 +25209,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.79.9';
+const APP_VERSION = '2.82.0';
 
 const CHANGELOG = [
   {
@@ -30513,7 +30500,7 @@ function assignTeamToSiteFromPicker(idx){
   }
   saveData();
   closeModal('teamPicker');
-  renderConducteurDashboard();
+  renderSites();
   showToast('🏗 ' + candidate.label + ' assignée à ' + site.name);
 }
 
@@ -30524,7 +30511,7 @@ function assignTeamToSite(teamName){
   site.teamName = teamName;
   saveData();
   closeModal('teamPicker');
-  renderConducteurDashboard();
+  renderSites();
   showToast('🏗 ' + teamName + ' assignée à ' + site.name);
 }
 
@@ -30534,7 +30521,7 @@ function clearTeamFromSite(){
   delete site.teamName;
   saveData();
   closeModal('teamPicker');
-  renderConducteurDashboard();
+  renderSites();
   showToast('Équipe retirée');
 }
 
