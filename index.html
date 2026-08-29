@@ -3656,6 +3656,9 @@
 
     <!-- VUE CHANTIERS -->
     <section class="view active" id="view-chantiers">
+      <!-- MODULE — PCDashboard : bandeau Chantier actif (desktop uniquement, ≥860px).
+           Rempli dynamiquement par renderChantierActifBanner(). -->
+      <div id="chantierActifBanner"></div>
       <div class="view-heading" style="display:flex;align-items:center;justify-content:space-between;">
         <span>Chantiers en cours</span>
         <button id="chefSyncBtn" style="display:none; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink-soft); font-size:12px; padding:4px 10px; cursor:pointer;"
@@ -5186,10 +5189,6 @@
          MODULE — SimpleMode · Dashboard 4 boutons (style CarPlay)
          ═══════════════════════════════════════════════════════════════ -->
     <section class="view" id="view-simpleDash">
-      <!-- MODULE — PCDashboard : bandeau Chantier actif (desktop uniquement, ≥860px).
-           Rempli dynamiquement par renderChantierActifBanner(). -->
-      <div id="chantierActifBanner"></div>
-
       <div class="simple-dash" id="simpleDashGrid">
         <!-- Rempli dynamiquement par simpleModeRenderDash() -->
       </div>
@@ -8506,6 +8505,12 @@ function goTo(viewName, siteId){
   try{ history.pushState({rwoodView:viewName, siteId:siteId||null}, ''); }catch(e){}
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
+  // MODULE — PCDashboard : sur PC, l'accueil affiche directement le contenu réel
+  // du chantier (bandeau + liste), plus la grille de tuiles séparée.
+  if(viewName === 'simpleDash' && typeof simpleModeIsActive === 'function' && simpleModeIsActive()
+     && !document.body.classList.contains('pc-mode') && window.matchMedia('(min-width:860px)').matches){
+    goTo('chantiers'); return;
+  }
   if(viewName === 'magasin'){ // MODULE — Magasin : pull immédiat à l'ouverture
     setTimeout(() => magasinPull().then(ok => { if(ok) magasinRender(); }), 50);
   }
@@ -8580,10 +8585,11 @@ function goTo(viewName, siteId){
   }
   const navBtn = document.querySelector(`.nav-btn[data-view="${viewName}"]`);
   if(navBtn) navBtn.classList.add('active');
-  // MODULE — PCDashboard : garde la sidebar desktop synchronisée avec la vue active.
+  // MODULE — PCDashboard : garde la sidebar + le bandeau chantier actif synchronisés.
   document.querySelectorAll('#pcSidebarNav .nav-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === viewName);
   });
+  if(viewName === 'chantiers' && typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
 
   pageTitleEl.textContent = titles[viewName][0];
   pageSubEl.textContent = titles[viewName][1];
@@ -8759,6 +8765,8 @@ function toggleFavSite(id){
 function renderSites(){
   const container = document.getElementById('chantiersList');
   const dashboard = document.getElementById('conducteurDashboard');
+  // MODULE — PCDashboard : garde le bandeau chantier actif à jour (ajout/suppression de chantier).
+  if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
   // FAB "Nouveau chantier" : dans view-chantiers, visibilité gérée par CSS.
   // Ici on attache juste l'action.
   const _fab = document.getElementById('fabBtn');
@@ -35481,10 +35489,6 @@ function renderPcSidebarNav(){
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
   if(!canDev) tiles = tiles.filter(v => v !== 'dev');
 
-  const homeBtn = `<button class="nav-btn" data-view="simpleDash" onclick="simpleModeBackToDash()">
-      <span class="ico">🏠</span><span class="lbl">Accueil</span>
-    </button>`;
-
   const tileBtns = tiles.map(viewId => {
     const def = SIMPLE_ALL_TILES.find(t => t.view === viewId);
     const icon = def ? def.icon : '📁';
@@ -35498,7 +35502,7 @@ function renderPcSidebarNav(){
     </button>`;
   }).join('');
 
-  nav.innerHTML = homeBtn + tileBtns;
+  nav.innerHTML = tileBtns;
 
   // Applique l'état actif courant (même logique que goTo() pour nav.bottom).
   const activeView = document.querySelector('.view.active');
