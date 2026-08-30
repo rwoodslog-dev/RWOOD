@@ -2890,6 +2890,25 @@
     }
   }
 
+  /* ── Bulle persistante de rappel J-1 (événements Alerte du lendemain) ──
+     Reste affichée tant que l'utilisateur ne supprime pas chaque ligne. ── */
+  #eventReminderBubble{
+    display:none;
+    position:fixed !important; top:calc(env(safe-area-inset-top,0px) + 118px); right:14px;
+    max-width:240px; background:var(--card); border:1px solid var(--red);
+    border-radius:12px; box-shadow:0 3px 12px rgba(0,0,0,0.35);
+    padding:8px 10px; z-index:599; font-size:12px;
+  }
+  .event-reminder-title{ font-weight:800; color:var(--red); margin-bottom:4px; font-size:12px; }
+  .event-reminder-item{ display:flex; align-items:center; gap:6px; padding:4px 0; border-top:1px solid var(--line); }
+  .event-reminder-item:first-of-type{ border-top:none; }
+  .event-reminder-emoji{ flex-shrink:0; }
+  .event-reminder-text{ flex:1; color:var(--ink); line-height:1.3; }
+  .event-reminder-close{ background:none; border:none; color:var(--red); font-size:16px; font-weight:800; cursor:pointer; padding:0 2px; flex-shrink:0; }
+  @media (min-width: 860px){
+    #eventReminderBubble{ top:60px; right:132px; }
+  }
+
   /* ═══════════════════════════════════════════════════════════════
      MODULE — LayoutPC : format PC opt-in (activé seulement si
      body.pc-mode présent → coché dans Paramètres › Affichage).
@@ -5268,6 +5287,22 @@
       <div id="alertesMemberList"></div>
     </section>
 
+    <!-- ═══════════════════════════════════════════════════════════════
+         MODULE — Alerte / Événements (début) · tuile d'envoi réservée
+         Conducteur / Patron / Comptable. Formulaire structuré (type,
+         chantier, date/heure, note, destinataires multiples) → notif
+         pop-up + bouton agenda côté destinataire, rappel J-1 persistant.
+         ═══════════════════════════════════════════════════════════════ -->
+    <section class="view" id="view-alerte">
+      <div class="view-heading">🚨 Alerte</div>
+      <button class="btn btn-primary btn-block" style="margin-bottom:16px;" onclick="openEventFormModal()">
+        ➕ Envoyer un événement
+      </button>
+      <div class="view-heading" style="font-size:14px;margin-bottom:8px;">Historique des envois</div>
+      <div id="alerteHistoryList"></div>
+    </section>
+    <!-- MODULE — Alerte / Événements (fin) -->
+
 
     <!-- ═══════════════════════════════════════════════════════════════
          MODULE — Magasin (début)  ·  onglet 100% isolé
@@ -6427,6 +6462,49 @@
   </div>
 </div>
 
+<!-- MODAL : Envoyer un événement (tuile Alerte) — même structure que "liste à faire" -->
+<div class="modal-overlay" id="modal-eventForm">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>📢 Envoyer un événement</h2>
+      <button class="modal-close" onclick="closeModal('eventForm')">×</button>
+    </div>
+    <div class="field">
+      <label>Style d'événement</label>
+      <select id="eventType">
+        <option value="livraison">🚚 Livraison</option>
+        <option value="reunion">🗓️ Réunion</option>
+        <option value="rdv_camion">🚛 Rendez-vous camion</option>
+        <option value="objectif_delai">⏳ Objectif délais</option>
+        <option value="autre">📌 Autre</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Chantier concerné</label>
+      <select id="eventSite"></select>
+    </div>
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="eventDate">
+    </div>
+    <div class="field">
+      <label>Heure</label>
+      <input type="time" id="eventTime">
+    </div>
+    <div class="field">
+      <label>Note (optionnel)</label>
+      <textarea id="eventNote" placeholder="Détails complémentaires..."></textarea>
+    </div>
+    <div class="field">
+      <label>Destinataire(s)</label>
+      <div id="eventRecipientsList" style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:8px;"></div>
+    </div>
+    <div class="row-actions">
+      <button class="btn btn-primary" onclick="sendEventForm()">Envoyer</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL : Itinéraire -->
 <div class="modal-overlay" id="modal-itinerary">
   <div class="modal">
@@ -7251,6 +7329,8 @@ async function initRwoodStorage(){
   setTimeout(()=> checkForConductorAlerts(), 6000);
   setTimeout(()=> pullAgendaEventsFromConducteur(), 6500); // chef : events agenda depuis conducteur
   setTimeout(()=> pullSitesFromChefs(), 6500);             // conducteur : chantiers depuis chefs
+  setTimeout(()=> checkForNewEvents(), 7000);              // tous : notif événement Alerte reçu
+  setTimeout(()=> checkForEventReminders(), 7300);         // tous : bulle rappel J-1
   _fetchUsersRegistry().then(users => { window._usersRegistryCache = users; });
   // Démarrer le polling sync : pour les conducteurs qui ont des chantiers syncLive,
   // ET pour les chefs qui doivent recevoir de nouveaux chantiers
@@ -8742,7 +8822,8 @@ function goTo(viewName, siteId){
     notes:       ['Listes à faire', 'Consulte, coche et gère tes tâches'],
     suivi:       ['Suivi analytique', 'Cumul des heures par chantier'],
     detail:      [null, null],
-    simpleDash:  ['Mode Simple', 'Dashboard tactile']
+    simpleDash:  ['Mode Simple', 'Dashboard tactile'],
+    alerte:      ['Alerte', "Envoyer un événement à l'équipe"]
   };
 
   const pageTitleEl = document.getElementById('pageTitle');
@@ -8850,6 +8931,7 @@ function goTo(viewName, siteId){
     suiviRefresh(false);
   }
   if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
+  if(viewName === 'alerte') renderAlerteView();
 
   // Recharger les photos après chaque changement de vue
   // (le MutationObserver gère les nouvelles images, hydrateMediaElements couvre les existantes)
@@ -32898,6 +32980,290 @@ function openSendNoteToChef(siteId){
   showToast('Note envoyée au chef');
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   ALERTE / ÉVÉNEMENTS — communication structurée entre Conducteur de
+   travaux, Patron, Comptable (envoi) et TOUS les utilisateurs (réception :
+   chef d'équipe, ouvrier, etc.). Même pattern que ALERTES CONDUCTEUR →
+   CHEF D'ÉQUIPE ci-dessus : une clé Supabase dédiée par destinataire
+   (ciblage par authId), mais ici accessible depuis n'importe quel rôle
+   émetteur et vers n'importe quel(s) destinataire(s).
+   ═══════════════════════════════════════════════════════════════════ */
+const EVENT_SYNC_PREFIX = 'company_events_'; // + authId du destinataire
+
+const EVENT_TYPES = [
+  { id:'livraison',      emoji:'🚚', label:'Livraison' },
+  { id:'reunion',        emoji:'🗓️', label:'Réunion' },
+  { id:'rdv_camion',     emoji:'🚛', label:'Rendez-vous camion' },
+  { id:'objectif_delai', emoji:'⏳', label:'Objectif délais' },
+  { id:'autre',          emoji:'📌', label:'Autre' },
+];
+function eventTypeInfo(typeId){
+  return EVENT_TYPES.find(t => t.id === typeId) || EVENT_TYPES[EVENT_TYPES.length - 1];
+}
+
+/* Rôles autorisés à envoyer un événement (tuile "Alerte" d'envoi). */
+function canSendAlerte(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return role === 'conducteur' || role === 'patron' || role === 'comptable';
+}
+
+async function _fetchEventsForUser(authId){
+  try{
+    const key = EVENT_SYNC_PREFIX + authId;
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.events) || [];
+  } catch(e){ return []; }
+}
+
+async function _saveEventsForUser(authId, events){
+  const key = EVENT_SYNC_PREFIX + authId;
+  await supaFetch('/rest/v1/rwood_sync', {
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ events }) })
+  });
+}
+
+/* Envoie un événement structuré à une liste de destinataires (authIds). */
+async function sendEventToRecipients(eventData, recipientAuthIds){
+  for(const authId of recipientAuthIds){
+    try{
+      const events = await _fetchEventsForUser(authId);
+      events.push(Object.assign({}, eventData, { id: uid() }));
+      await _saveEventsForUser(authId, events);
+    } catch(e){ /* silencieux */ }
+  }
+}
+
+/* ── Vue "Alerte" (tuile d'envoi) : bouton + historique local ──────── */
+function renderAlerteView(){
+  const list = document.getElementById('alerteHistoryList');
+  if(!list) return;
+  const sent = (data.settings && data.settings.sentEvents) || [];
+  if(!sent.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">Aucun événement envoyé pour le moment.</div>';
+    return;
+  }
+  list.innerHTML = sent.slice().reverse().map(ev => {
+    const info = eventTypeInfo(ev.type);
+    const d = new Date(ev.date + 'T00:00:00');
+    const dateLabel = d.toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'});
+    return `<div class="card" style="margin-bottom:10px;">
+      <div style="font-weight:700;font-size:14px;">${info.emoji} ${escapeHtml(info.label)}</div>
+      <div style="font-size:13px;color:var(--ink-soft);margin-top:2px;">${escapeHtml(ev.siteName||'Sans chantier')} · ${dateLabel}${ev.time ? ' à '+ev.time : ''}</div>
+      ${ev.note ? `<div style="font-size:13px;margin-top:6px;">${escapeHtml(ev.note)}</div>` : ''}
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Envoyé à : ${escapeHtml((ev.recipientNames||[]).join(', '))}</div>
+    </div>`;
+  }).join('');
+}
+
+function openEventFormModal(){
+  document.getElementById('eventType').value = 'livraison';
+  const siteSelect = document.getElementById('eventSite');
+  siteSelect.innerHTML = `<option value="">Sans chantier</option>` + data.sites.map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+  siteSelect.value = '';
+  document.getElementById('eventDate').value = dateKeyOf(new Date());
+  document.getElementById('eventTime').value = '';
+  document.getElementById('eventNote').value = '';
+  renderEventRecipientsList();
+  openModal('eventForm');
+}
+
+let _eventRecipientsCache = [];
+async function renderEventRecipientsList(){
+  const el = document.getElementById('eventRecipientsList');
+  if(!el) return;
+  el.innerHTML = '<div class="hint" style="text-align:center;padding:10px;">⏳ Chargement…</div>';
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  const users = await _fetchUsersRegistry();
+  const roleLabel = { chef:"Chef d'équipe", ouvrier:'Ouvrier', conducteur:'Conducteur', comptable:'Comptable', patron:'Patron' };
+  const roleEmoji = { chef:'👷', ouvrier:'🔧', conducteur:'🏗️', comptable:'📊', patron:'👑' };
+  _eventRecipientsCache = users
+    .filter(u => u.authId && u.name && u.authId !== myAuthId)
+    .filter(u => { const id = (u.authId||'').toLowerCase(); return !id.endsWith('.test') && !id.endsWith('.dupont'); });
+  if(!_eventRecipientsCache.length){
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:10px;">Aucun autre membre trouvé.</div>';
+    return;
+  }
+  el.innerHTML = _eventRecipientsCache.map((u, idx) => `
+    <label style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;">
+      <input type="checkbox" class="event-recipient-cb" data-idx="${idx}" style="width:18px;height:18px;accent-color:var(--wood);">
+      <span>${roleEmoji[u.role]||'👤'}</span>
+      <span style="font-size:14px;font-weight:600;flex:1;">${escapeHtml(u.name)}</span>
+      <span style="font-size:11px;color:var(--ink-soft);">${roleLabel[u.role]||u.role||''}</span>
+    </label>`).join('');
+}
+
+async function sendEventForm(){
+  const type = document.getElementById('eventType').value;
+  const siteId = document.getElementById('eventSite').value || null;
+  const site = siteId ? data.sites.find(s => s.id === siteId) : null;
+  const date = document.getElementById('eventDate').value;
+  const time = document.getElementById('eventTime').value || '';
+  const note = document.getElementById('eventNote').value.trim();
+
+  const checked = Array.from(document.querySelectorAll('.event-recipient-cb:checked'))
+    .map(cb => _eventRecipientsCache[Number(cb.dataset.idx)]).filter(Boolean);
+
+  if(!date){ showToast('Renseigne une date'); return; }
+  if(!checked.length){ showToast('Sélectionne au moins un destinataire'); return; }
+
+  const info = eventTypeInfo(type);
+  const senderName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' + ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+  const senderRole = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+
+  const eventData = {
+    type, typeLabel: info.label, typeEmoji: info.emoji,
+    siteId, siteName: site ? site.name : '',
+    date, time, note,
+    senderName: senderName.trim(), senderRole,
+    createdAt: new Date().toISOString(),
+    acknowledged: false, addedToAgenda: false, reminderDismissed: false
+  };
+
+  const recipientAuthIds = checked.map(u => u.authId);
+  await sendEventToRecipients(eventData, recipientAuthIds);
+
+  // Historique local (pour l'expéditeur — pas synchronisé, juste un rappel visuel).
+  if(!data.settings.sentEvents) data.settings.sentEvents = [];
+  data.settings.sentEvents.push(Object.assign({}, eventData, { id: uid(), recipientNames: checked.map(u=>u.name) }));
+  saveData();
+
+  closeModal('eventForm');
+  renderAlerteView();
+  showToast('Événement envoyé (' + checked.length + ' destinataire' + (checked.length>1?'s':'') + ')');
+}
+
+/* ── Réception : notification pop-up à l'ouverture de l'application ── */
+async function checkForNewEvents(){
+  if(!navigator.onLine) return;
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!myAuthId) return;
+  try{
+    const events = await _fetchEventsForUser(myAuthId);
+    const pending = events.filter(e => !e.acknowledged);
+    if(!pending.length) return;
+    showEventPopup(pending[0], myAuthId);
+  } catch(e){ /* silencieux */ }
+}
+
+function showEventPopup(event, myAuthId){
+  const existing = document.getElementById('modal-eventNotif');
+  if(existing) existing.remove();
+
+  const d = new Date(event.date + 'T00:00:00');
+  const dateLabel = d.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.id = 'modal-eventNotif';
+  div.style.cssText = 'display:flex;z-index:700;';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>${event.typeEmoji||'📢'} ${escapeHtml(event.typeLabel||'Événement')}</h2>
+      </div>
+      <div class="card" style="margin-bottom:14px; border-left:3px solid var(--wood);">
+        <div style="font-size:13px;color:var(--ink-soft);">Envoyé par ${escapeHtml(event.senderName||'')}</div>
+        <div style="font-size:14px;font-weight:700;margin-top:6px;">${escapeHtml(event.siteName || 'Sans chantier')}</div>
+        <div style="font-size:14px;margin-top:4px;">🗓️ ${dateLabel}${event.time ? ' à ' + event.time : ''}</div>
+        ${event.note ? `<div style="font-size:14px;line-height:1.5;margin-top:8px;">${escapeHtml(event.note)}</div>` : ''}
+      </div>
+      <button class="btn btn-primary btn-block" style="margin-bottom:8px;"
+        onclick="addEventToAgenda('${event.id}','${myAuthId}')">
+        📅 Ajouter à l'agenda
+      </button>
+      <button class="btn btn-outline btn-block" style="color:var(--ink-soft);"
+        onclick="dismissEventPopup('${event.id}','${myAuthId}')">
+        Fermer
+      </button>
+    </div>`;
+  document.body.appendChild(div);
+  div.classList.add('open');
+  _playAlertSound();
+}
+
+async function addEventToAgenda(eventId, myAuthId){
+  try{
+    const events = await _fetchEventsForUser(myAuthId);
+    const ev = events.find(e => e.id === eventId);
+    if(ev){
+      if(!data.tasks) data.tasks = [];
+      const taskId = 'evt_' + eventId;
+      const already = data.tasks.find(t => t.id === taskId);
+      if(!already){
+        const label = ((ev.typeEmoji||'') + ' ' + (ev.typeLabel||'Événement') + (ev.siteName ? ' — '+ev.siteName : '') + (ev.note ? ' : '+ev.note : '')).trim();
+        data.tasks.push({ id: taskId, date: ev.date, siteId: ev.siteId || null, text: label });
+        saveData();
+        if(typeof renderAgenda === 'function') renderAgenda();
+      }
+      ev.acknowledged = true;
+      ev.addedToAgenda = true;
+      await _saveEventsForUser(myAuthId, events);
+    }
+  } catch(e){ /* silencieux */ }
+  const m = document.getElementById('modal-eventNotif'); if(m) m.remove();
+  showToast("Ajouté à l'agenda");
+  setTimeout(() => checkForNewEvents(), 300);
+}
+
+async function dismissEventPopup(eventId, myAuthId){
+  try{
+    const events = await _fetchEventsForUser(myAuthId);
+    const ev = events.find(e => e.id === eventId);
+    if(ev) ev.acknowledged = true;
+    await _saveEventsForUser(myAuthId, events);
+  } catch(e){ /* silencieux */ }
+  const m = document.getElementById('modal-eventNotif'); if(m) m.remove();
+  setTimeout(() => checkForNewEvents(), 300);
+}
+
+/* ── Bulle persistante J-1 : rappel du lendemain, reste affichée tant
+   que l'utilisateur ne supprime pas chaque ligne individuellement. ── */
+window._eventReminderCache = [];
+async function checkForEventReminders(){
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!myAuthId) return;
+  try{
+    const events = await _fetchEventsForUser(myAuthId);
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowKey = dateKeyOf(tomorrow);
+    window._eventReminderCache = events.filter(e => e.date === tomorrowKey && !e.reminderDismissed);
+    renderEventReminderBubble();
+  } catch(e){ /* silencieux */ }
+}
+
+function renderEventReminderBubble(){
+  const bubble = document.getElementById('eventReminderBubble');
+  if(!bubble) return;
+  const due = window._eventReminderCache || [];
+  if(!due.length){ bubble.style.display = 'none'; bubble.innerHTML = ''; return; }
+  bubble.style.display = 'block';
+  bubble.innerHTML = `<div class="event-reminder-title">📅 Demain</div>` + due.map(ev => `
+    <div class="event-reminder-item">
+      <span class="event-reminder-emoji">${ev.typeEmoji||'📌'}</span>
+      <span class="event-reminder-text">${escapeHtml(ev.typeLabel||'Événement')}${ev.siteName ? ' · '+escapeHtml(ev.siteName) : ''}${ev.time ? ' · '+ev.time : ''}</span>
+      <button class="event-reminder-close" onclick="dismissEventReminder('${ev.id}')" title="Supprimer">×</button>
+    </div>`).join('');
+}
+
+async function dismissEventReminder(eventId){
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!myAuthId) return;
+  try{
+    const events = await _fetchEventsForUser(myAuthId);
+    const ev = events.find(e => e.id === eventId);
+    if(ev) ev.reminderDismissed = true;
+    await _saveEventsForUser(myAuthId, events);
+  } catch(e){ /* silencieux */ }
+  window._eventReminderCache = (window._eventReminderCache||[]).filter(e => e.id !== eventId);
+  renderEventReminderBubble();
+}
+
 
 const SHARED_SITES_KEY   = 'company_shared_sites';
 const DELETED_SITES_KEY  = 'company_deleted_sites'; // tombstone — IDs définitivement supprimés
@@ -34764,6 +35130,8 @@ document.addEventListener('visibilitychange', function(){
     checkForConductorAlerts();
     pullAgendaEventsFromConducteur();
     pullSitesFromChefs();
+    checkForNewEvents();
+    checkForEventReminders();
   }
 });
 
@@ -35773,6 +36141,7 @@ const SIMPLE_ALL_TILES = [
   { view:'magasin', img:'icons/magasin.png', icon:'🛒', label:'Magasin' },
   { view:'quincaillerie', img:'icons/quincaillerie.png', icon:'🔩', label:'Quincaillerie' },
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
+  { view:'alerte', img:'icons/alerte.png', icon:'🚨', label:'Alerte' },
 ];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
 
@@ -35832,6 +36201,10 @@ function simpleModeRenderDash(){
   // La tuile Dev n'est visible que pour un utilisateur is_dev (garde stricte).
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
   if(!canDev) tiles = tiles.filter(v => v !== 'dev');
+  // La tuile Alerte (envoi d'événements) n'est visible que pour
+  // Conducteur / Patron / Comptable — voir canSendAlerte().
+  const canAlerte = (typeof canSendAlerte === 'function') && canSendAlerte();
+  if(!canAlerte) tiles = tiles.filter(v => v !== 'alerte');
   const n = tiles.length;
   // Adapter les colonnes : 1→1col, 2→2col, 3→3col, 4+→2col (scroll si > 6)
   grid.classList.remove('cols-1','cols-3');
@@ -35875,6 +36248,8 @@ function renderPcSidebarNav(){
   let tiles = _simpleGetTiles();
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
   if(!canDev) tiles = tiles.filter(v => v !== 'dev');
+  const canAlerte = (typeof canSendAlerte === 'function') && canSendAlerte();
+  if(!canAlerte) tiles = tiles.filter(v => v !== 'alerte');
 
   const tileBtns = tiles.map(viewId => {
     const def = SIMPLE_ALL_TILES.find(t => t.view === viewId);
@@ -36179,7 +36554,9 @@ function simpleModeRenderConfig(){
   // (Paramètres) que pour un utilisateur is_dev — même garde que sur le
   // dashboard/la sidebar (voir simpleModeRenderDash / renderPcSidebarNav).
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
-  const catalog = canDev ? SIMPLE_ALL_TILES : SIMPLE_ALL_TILES.filter(t => t.view !== 'dev');
+  const canAlerte = (typeof canSendAlerte === 'function') && canSendAlerte();
+  let catalog = canDev ? SIMPLE_ALL_TILES : SIMPLE_ALL_TILES.filter(t => t.view !== 'dev');
+  if(!canAlerte) catalog = catalog.filter(t => t.view !== 'alerte');
   list.innerHTML = catalog.map(t => {
     const on = selected.includes(t.view);
     const iconHtml = t.img
@@ -37848,6 +38225,8 @@ async function comptaEditEnsurePulled(){
   📢
   <span id="alertBubbleBadge" style="display:none;"></span>
 </div>
+<!-- Bulle persistante de rappel J-1 (événements Alerte du lendemain) -->
+<div id="eventReminderBubble"></div>
 <div id="pinnedNoteBubble" style="display:none;position:fixed;" onclick="togglePinnedNotePopup(event)">
   <span id="pinnedBubbleEmoji">⚠️</span>
   <span id="pinnedNoteBadge"></span>
