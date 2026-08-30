@@ -17633,9 +17633,8 @@ function renderHeures(){
   const paieTab = document.querySelector('#heuresModeTabs .chip[data-mode="paie"]');
   const recapTab = document.querySelector('#heuresModeTabs .chip[data-mode="recap"]');
   const tabCompta = document.getElementById('tabComptaPaie');
-  const isComptaRole = profile.role === 'comptable' || profile.role === 'patron';
-  // Comptable : seul l'onglet "Fiches d'heures" est visible (pas Pointage, Récap ni Compta Paie)
-  if(tabCompta) tabCompta.style.display = (isComptaRole && !isComptable) ? '' : 'none';
+  // Onglet "Compta Paie" retiré de la tuile Heures (y compris en mode patron)
+  if(tabCompta) tabCompta.style.display = 'none';
   if(pointageTab) pointageTab.style.display = isComptable ? 'none' : 'inline-block';
   if(paieTab) paieTab.style.display = isComptable ? 'none' : 'inline-block';
   if(recapTab) recapTab.style.display = isComptable ? 'none' : 'inline-block';
@@ -36243,6 +36242,49 @@ const SIMPLE_ALL_TILES = [
 ];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
 
+/* Paires de tuiles "associées" : dès que les deux tuiles d'une paire sont
+   sélectionnées, elles sont automatiquement regroupées côte à côte (grille
+   tactile téléphone) / l'une après l'autre (barre latérale PC). Les tuiles
+   qui ne font pas partie d'une paire (ou dont le partenaire n'est pas
+   sélectionné) conservent entre elles l'ordre dans lequel elles ont été
+   sélectionnées. Quincaillerie n'a pas de partenaire (tuile solo). */
+const SIMPLE_TILE_PAIRS = {
+  chantiers: 'heures', heures: 'chantiers',
+  notes: 'agenda', agenda: 'notes',
+  itineraires: 'zone-chantier', 'zone-chantier': 'itineraires',
+  contacts: 'galerie', galerie: 'contacts',
+  couverture: 'zinc', zinc: 'couverture',
+  magasin: 'stock', stock: 'magasin',
+  alerte: 'suivi', suivi: 'alerte',
+  calcul: 'dev', dev: 'calcul',
+};
+/* Réordonne un tableau de tuiles sélectionnées pour que chaque paire
+   associée (voir SIMPLE_TILE_PAIRS) se retrouve adjacente. Les paires
+   complètes (les 2 tuiles sélectionnées) sont regroupées en premier, dans
+   l'ordre où leur première tuile a été sélectionnée — ce qui garantit
+   qu'elles occupent toujours une même ligne complète de la grille 2
+   colonnes du téléphone (paire à un index pair = jamais coupée entre deux
+   lignes). Les tuiles seules (sans partenaire sélectionné) suivent,
+   conservant entre elles l'ordre dans lequel elles ont été sélectionnées. */
+function _simpleSortTilesForPairing(tiles){
+  const present = new Set(tiles);
+  const placed = new Set();
+  const pairsOut = [];
+  const singlesOut = [];
+  tiles.forEach(v => {
+    if(placed.has(v)) return;
+    const partner = SIMPLE_TILE_PAIRS[v];
+    if(partner && present.has(partner) && !placed.has(partner)){
+      pairsOut.push(v, partner);
+      placed.add(v); placed.add(partner);
+    } else {
+      singlesOut.push(v);
+      placed.add(v);
+    }
+  });
+  return pairsOut.concat(singlesOut);
+}
+
 function simpleModeIsActive(){
   // MODULE — LayoutLock : toujours actif, verrouillé (voir accordéon Mode
   // dans Paramètres — la bascule y est remplacée par une mention "verrouillé").
@@ -36265,6 +36307,15 @@ function _simpleGetTiles(){
   if(sel.includes('scanner')){
     sel = sel.filter(v => v !== 'scanner');
     if(data.settings){ data.settings.simpleTiles = sel.slice(); saveData(); }
+  }
+  // Tri automatique : regroupe les tuiles associées (voir SIMPLE_TILE_PAIRS)
+  // côte à côte, sans changer l'ordre relatif des autres tuiles entre elles.
+  const sorted = _simpleSortTilesForPairing(sel);
+  if(sorted.join('|') !== sel.join('|')){
+    sel = sorted;
+    if(data.settings){ data.settings.simpleTiles = sel.slice(); saveData(); }
+  } else {
+    sel = sorted;
   }
   return sel;
 }
