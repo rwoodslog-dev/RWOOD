@@ -2350,10 +2350,13 @@
       display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
       margin: -28px -32px 22px; padding: 16px 32px;
       position: sticky; top: 0; z-index: 4;
-      background: rgba(17,13,9,0.88); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      /* MODULE — PerfHeader : fond opaque au lieu d'un backdrop-filter flouté.
+         Le blur derrière un élément sticky force le navigateur à recomposer
+         le flou à chaque frame de scroll → saccades sur PC (grosses listes).
+         Un fond uni --bg-elev donne un rendu quasi identique sans ce coût. */
+      background: var(--bg-elev);
       border-bottom: 1px solid var(--line);
     }
-    body.theme-light .page-title{ background: rgba(245,237,227,0.9); }
     .page-title h2{
       font-family: 'Arial Narrow', Arial, sans-serif;
       font-size: 19px;
@@ -22697,10 +22700,20 @@ function populateHourSelect(elementId, selectedMinutes, onChange){
     };
 
     let scrollTimeout;
+    // MODULE — PerfWheel : updateSelected() lit offsetTop/offsetHeight (layout
+    // forcé) sur chaque item de la colonne. Appelé brut sur "scroll" ça tourne
+    // à chaque évènement natif (très fréquent pendant l'inertie) → saccades.
+    // On ne garde qu'un seul passage par frame via requestAnimationFrame.
+    let _wheelRaf = null;
     const handleScroll = () => {
       clearTimeout(scrollTimeout);
-      updateSelected(hourCol);
-      updateSelected(minuteCol);
+      if(_wheelRaf === null){
+        _wheelRaf = requestAnimationFrame(() => {
+          _wheelRaf = null;
+          updateSelected(hourCol);
+          updateSelected(minuteCol);
+        });
+      }
       scrollTimeout = setTimeout(()=>{
         const h = updateSelected(hourCol);
         const m = updateSelected(minuteCol);
@@ -35861,8 +35874,11 @@ function _pcSyncBannerToView(viewName){
   // ancien) à chaque changement d'onglet s'il restera caché. Sur PC en
   // revanche il est visible sur (quasi) tous les onglets, donc toujours
   // reconstruit pour rester synchronisé avec le chantier actif choisi.
+  // Exception 'chantiers' : renderSites() (appelé juste après par goTo())
+  // reconstruit déjà le bandeau lui-même — éviter de le construire deux
+  // fois de suite au même clic de menu.
   const isDesktop = window.matchMedia('(min-width:860px)').matches;
-  if(isDesktop || viewName === 'simpleDash') renderChantierActifBanner();
+  if((isDesktop || viewName === 'simpleDash') && viewName !== 'chantiers') renderChantierActifBanner();
 }
 
 /* ── Chantier actif : lecture/écriture du choix courant ─────────────── */
