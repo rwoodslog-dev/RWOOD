@@ -25305,69 +25305,16 @@ function _isoWeekNumber(date){
   firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
   return 1 + Math.round((d - firstThursday) / (7 * 24 * 3600 * 1000));
 }
-/* Chantier pointé un jour donné : nom + couleur (ou chantier libre "dépannage"). */
-/* Rassemble, pour un jour donné, TOUTES les entrées de pointage disponibles :
-   celles de l'appareil local (data.attendance) + celles de toute l'équipe si
-   la vue comptable/patron a déjà chargé _comptableLiveData. Une entrée =
-   { siteId, customSiteName, workerName, task, hours }. Évite de ne voir
-   qu'un seul ouvrier quand plusieurs pointent chacun sur leur téléphone. */
-function _agendaDayEntries(dateKey){
-  const entries = [];
-
-  // 1) Données locales (mon propre appareil)
-  const localDay = data.attendance && data.attendance[dateKey];
-  if(localDay){
-    const localSiteId = localDay.siteId || null;
-    const localCustomName = (localDay.customSite && localDay.customSite.name) || null;
-    Object.entries(localDay.workers || {}).forEach(([workerId, w]) => {
-      if(!w) return;
-      const worker = (data.workers||[]).find(x => x.id === workerId);
-      entries.push({
-        siteId: localSiteId, customSiteName: localCustomName,
-        workerName: worker ? worker.name : null,
-        task: w.task || '', hours: parseFloat(w.hours||0)
-      });
-    });
-  }
-
-  // 2) Données de toute l'équipe (si la vue comptable a déjà synchronisé)
-  if(typeof _comptableLiveData !== 'undefined' && Array.isArray(_comptableLiveData)){
-    _comptableLiveData.forEach(device => {
-      const d = device.attendance && device.attendance[dateKey];
-      if(!d) return;
-      const dSiteId = d.siteId || null;
-      const dCustomName = (d.customSite && d.customSite.name) || null;
-      Object.entries(d.workers || {}).forEach(([workerId, w]) => {
-        if(!w) return;
-        const worker = (device.workers||[]).find(x => x.id === workerId);
-        // Éviter le doublon si l'appareil local est aussi remonté dans _comptableLiveData
-        entries.push({
-          siteId: dSiteId, customSiteName: dCustomName,
-          workerName: worker ? worker.name : (device.ownerName || null),
-          task: w.task || '', hours: parseFloat(w.hours||0)
-        });
-      });
-    });
-  }
-
-  // Dédoublonner (même ouvrier + même chantier + mêmes heures = probablement la même entrée)
-  const seen = new Set();
-  return entries.filter(e => {
-    const key = (e.workerName||'') + '|' + (e.siteId||e.customSiteName||'') + '|' + e.hours;
-    if(seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-}
+/* Chantier pointé un jour donné (données locales) : nom + couleur
+   (ou chantier libre "dépannage"). Utilisé pour le nom + liseré des cases. */
 function _agendaDaySite(dateKey){
-  const entries = _agendaDayEntries(dateKey);
-  if(!entries.length) return null;
-  // Chantier principal du jour = celui du premier pointage trouvé (le cas
-  // multi-chantiers le même jour reste marginal ; le bloc détail liste
-  // ensuite chaque chantier séparément avec ses propres ouvriers).
-  const first = entries[0];
-  if(first.customSiteName) return { name: first.customSiteName, color: 'var(--wood)' };
-  if(first.siteId){
-    const site = (data.sites||[]).find(s => s.id === first.siteId);
+  const day = data.attendance && data.attendance[dateKey];
+  if(!day) return null;
+  if(day.customSite && day.customSite.name){
+    return { name: day.customSite.name, color: 'var(--wood)' };
+  }
+  if(day.siteId){
+    const site = (data.sites||[]).find(s => s.id === day.siteId);
     if(site) return { name: site.name, color: site.color || 'var(--wood)' };
   }
   return null;
@@ -25402,24 +25349,7 @@ function _agendaDayCellHtml(d, month, todayKey){
   `;
 }
 
-let _agendaTeamDataLoading = false;
-/* Charge les pointages de toute l'équipe pour enrichir l'Agenda (chantier +
-   tous les ouvriers présents), pour les rôles qui y ont accès. Ne relance
-   pas si déjà en cours ou déjà chargé récemment. */
-function _agendaEnsureTeamData(){
-  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const allowed = role === 'comptable' || role === 'patron' || role === 'conducteur';
-  if(!allowed || _agendaTeamDataLoading) return;
-  if(_comptableLiveData) return; // déjà chargé (par cette vue ou par les Fiches d'heures)
-  _agendaTeamDataLoading = true;
-  pullAllPointagesForComptable().then(rows => {
-    _agendaTeamDataLoading = false;
-    if(rows){ _comptableLiveData = rows; renderAgenda(); }
-  }).catch(()=>{ _agendaTeamDataLoading = false; });
-}
-
 function renderAgenda(){
-  _agendaEnsureTeamData(); // charge les pointages de l'équipe si le rôle y a accès (comptable/patron/conducteur)
   if(agendaMode === 'semaine'){ renderAgendaWeekView(); return; }
   if(agendaMode === 'annee'){ renderAgendaYearView(); return; }
 
@@ -25563,15 +25493,12 @@ function renderAgendaDayTasks(){
   const tasks = data.tasks.filter(t=>t.date===agendaSelectedDate);
   const container = document.getElementById('agendaDayTasks');
 
-  // Bloc "Chantier du jour" : chantier pointé, tâche(s) exécutée(s), ouvriers présents.
-  const pointageBlockHtml = _agendaPointageBlockHtml(agendaSelectedDate);
-
   if(tasks.length === 0){
-    container.innerHTML = pointageBlockHtml + `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9.5h18"/><path d="M8 3v4M16 3v4"/></svg></div><h3>Aucune tâche</h3><p>Ajoute une tâche pour ce jour.</p></div>`;
+    container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9.5h18"/><path d="M8 3v4M16 3v4"/></svg></div><h3>Aucune tâche</h3><p>Ajoute une tâche pour ce jour.</p></div>`;
     return;
   }
 
-  container.innerHTML = pointageBlockHtml + tasks.map(t=>{
+  container.innerHTML = tasks.map(t=>{
     const site = data.sites.find(s=>s.id===t.siteId);
     const color = site && site.color ? site.color : 'var(--line)';
     const bg = color.startsWith('var(') ? 'var(--bg-elev)' : cardTintBackground(color);
@@ -25582,52 +25509,6 @@ function renderAgendaDayTasks(){
         <div class="task-text">${escapeHtml(t.text)}</div>
       </div>
     `;
-  }).join('');
-}
-
-/* Bloc "Chantier du jour" affiché au clic sur une case : chantier pointé,
-   tâche(s) exécutée(s) et ouvriers présents ce jour-là (d'après le pointage réel). */
-function _agendaPointageBlockHtml(dateKey){
-  const entries = _agendaDayEntries(dateKey);
-  if(!entries.length) return '';
-
-  // Grouper les entrées par chantier (siteId ou nom du chantier libre)
-  const groups = {};
-  entries.forEach(e => {
-    const gKey = e.siteId || ('custom:' + (e.customSiteName||'?'));
-    if(!groups[gKey]) groups[gKey] = { siteId:e.siteId, customSiteName:e.customSiteName, entries:[] };
-    groups[gKey].entries.push(e);
-  });
-
-  return Object.values(groups).map(g => {
-    let siteName = g.customSiteName;
-    let siteColor = 'var(--wood)';
-    if(!siteName && g.siteId){
-      const site = (data.sites||[]).find(s => s.id === g.siteId);
-      if(site){ siteName = site.name; siteColor = site.color || 'var(--wood)'; }
-    }
-    if(!siteName) siteName = 'Chantier';
-
-    const tasksSet = new Set();
-    g.entries.forEach(e => { if(e.task) tasksSet.add(e.task); });
-
-    // Tous les ouvriers présents (heures > 0), sans doublon de nom.
-    const presentNames = [...new Set(
-      g.entries.filter(e => e.hours > 0 && e.workerName).map(e => e.workerName)
-    )];
-
-    return `
-    <div class="card" style="margin-bottom:10px; border-left:4px solid ${siteColor};">
-      <div style="font-weight:800;font-size:15px;">${escapeHtml(siteName)}</div>
-      ${tasksSet.size ? `<div style="font-size:13px;margin-top:6px;">🔨 ${[...tasksSet].map(escapeHtml).join(', ')}</div>` : ''}
-      ${presentNames.length ? `
-        <div style="margin-top:8px;">
-          <div style="font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">👷 Ouvriers présents (${presentNames.length})</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;">
-            ${presentNames.map(n=>`<span style="font-size:12px;background:var(--bg-elev);border:1px solid var(--line);border-radius:999px;padding:4px 10px;">${escapeHtml(n)}</span>`).join('')}
-          </div>
-        </div>` : ''}
-    </div>`;
   }).join('');
 }
 
@@ -26631,7 +26512,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.92.1';
+const APP_VERSION = '2.92.2';
 
 const CHANGELOG = [
   {
