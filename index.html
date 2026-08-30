@@ -25306,14 +25306,68 @@ function _isoWeekNumber(date){
   return 1 + Math.round((d - firstThursday) / (7 * 24 * 3600 * 1000));
 }
 /* Chantier pointé un jour donné : nom + couleur (ou chantier libre "dépannage"). */
-function _agendaDaySite(dateKey){
-  const day = data.attendance && data.attendance[dateKey];
-  if(!day) return null;
-  if(day.customSite && day.customSite.name){
-    return { name: day.customSite.name, color: 'var(--wood)' };
+/* Rassemble, pour un jour donné, TOUTES les entrées de pointage disponibles :
+   celles de l'appareil local (data.attendance) + celles de toute l'équipe si
+   la vue comptable/patron a déjà chargé _comptableLiveData. Une entrée =
+   { siteId, customSiteName, workerName, task, hours }. Évite de ne voir
+   qu'un seul ouvrier quand plusieurs pointent chacun sur leur téléphone. */
+function _agendaDayEntries(dateKey){
+  const entries = [];
+
+  // 1) Données locales (mon propre appareil)
+  const localDay = data.attendance && data.attendance[dateKey];
+  if(localDay){
+    const localSiteId = localDay.siteId || null;
+    const localCustomName = (localDay.customSite && localDay.customSite.name) || null;
+    Object.entries(localDay.workers || {}).forEach(([workerId, w]) => {
+      if(!w) return;
+      const worker = (data.workers||[]).find(x => x.id === workerId);
+      entries.push({
+        siteId: localSiteId, customSiteName: localCustomName,
+        workerName: worker ? worker.name : null,
+        task: w.task || '', hours: parseFloat(w.hours||0)
+      });
+    });
   }
-  if(day.siteId){
-    const site = (data.sites||[]).find(s => s.id === day.siteId);
+
+  // 2) Données de toute l'équipe (si la vue comptable a déjà synchronisé)
+  if(typeof _comptableLiveData !== 'undefined' && Array.isArray(_comptableLiveData)){
+    _comptableLiveData.forEach(device => {
+      const d = device.attendance && device.attendance[dateKey];
+      if(!d) return;
+      const dSiteId = d.siteId || null;
+      const dCustomName = (d.customSite && d.customSite.name) || null;
+      Object.entries(d.workers || {}).forEach(([workerId, w]) => {
+        if(!w) return;
+        const worker = (device.workers||[]).find(x => x.id === workerId);
+        // Éviter le doublon si l'appareil local est aussi remonté dans _comptableLiveData
+        entries.push({
+          siteId: dSiteId, customSiteName: dCustomName,
+          workerName: worker ? worker.name : (device.ownerName || null),
+          task: w.task || '', hours: parseFloat(w.hours||0)
+        });
+      });
+    });
+  }
+
+  // Dédoublonner (même ouvrier + même chantier + mêmes heures = probablement la même entrée)
+  const seen = new Set();
+  return entries.filter(e => {
+    const key = (e.workerName||'') + '|' + (e.siteId||e.customSiteName||'') + '|' + e.hours;
+    if(seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+function _agendaDaySite(dateKey){
+  const entries = _agendaDayEntries(dateKey);
+  if(!entries.length) return null;
+  // Chantier principal du jour = celui du premier pointage trouvé (le cas
+  // multi-chantiers le même jour reste marginal ; le bloc détail liste
+  // ensuite chaque chantier séparément avec ses propres ouvriers).
+  const first = entries[0];
+  if(first.customSiteName) return { name: first.customSiteName, color: 'var(--wood)' };
+  if(first.siteId){
+    const site = (data.sites||[]).find(s => s.id === first.siteId);
     if(site) return { name: site.name, color: site.color || 'var(--wood)' };
   }
   return null;
@@ -25348,7 +25402,24 @@ function _agendaDayCellHtml(d, month, todayKey){
   `;
 }
 
+let _agendaTeamDataLoading = false;
+/* Charge les pointages de toute l'équipe pour enrichir l'Agenda (chantier +
+   tous les ouvriers présents), pour les rôles qui y ont accès. Ne relance
+   pas si déjà en cours ou déjà chargé récemment. */
+function _agendaEnsureTeamData(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const allowed = role === 'comptable' || role === 'patron' || role === 'conducteur';
+  if(!allowed || _agendaTeamDataLoading) return;
+  if(_comptableLiveData) return; // déjà chargé (par cette vue ou par les Fiches d'heures)
+  _agendaTeamDataLoading = true;
+  pullAllPointagesForComptable().then(rows => {
+    _agendaTeamDataLoading = false;
+    if(rows){ _comptableLiveData = rows; renderAgenda(); }
+  }).catch(()=>{ _agendaTeamDataLoading = false; });
+}
+
 function renderAgenda(){
+  _agendaEnsureTeamData(); // charge les pointages de l'équipe si le rôle y a accès (comptable/patron/conducteur)
   if(agendaMode === 'semaine'){ renderAgendaWeekView(); return; }
   if(agendaMode === 'annee'){ renderAgendaYearView(); return; }
 
@@ -25517,38 +25588,47 @@ function renderAgendaDayTasks(){
 /* Bloc "Chantier du jour" affiché au clic sur une case : chantier pointé,
    tâche(s) exécutée(s) et ouvriers présents ce jour-là (d'après le pointage réel). */
 function _agendaPointageBlockHtml(dateKey){
-  const day = data.attendance && data.attendance[dateKey];
-  if(!day) return '';
+  const entries = _agendaDayEntries(dateKey);
+  if(!entries.length) return '';
 
-  const site = _agendaDaySite(dateKey);
-  const workersEntries = Object.entries(day.workers || {});
-  if(!site && !workersEntries.length) return '';
+  // Grouper les entrées par chantier (siteId ou nom du chantier libre)
+  const groups = {};
+  entries.forEach(e => {
+    const gKey = e.siteId || ('custom:' + (e.customSiteName||'?'));
+    if(!groups[gKey]) groups[gKey] = { siteId:e.siteId, customSiteName:e.customSiteName, entries:[] };
+    groups[gKey].entries.push(e);
+  });
 
-  // Tâches exécutées : union des tâches saisies par chaque ouvrier ce jour-là.
-  const tasksSet = new Set();
-  workersEntries.forEach(([, w]) => { if(w && w.task) tasksSet.add(w.task); });
+  return Object.values(groups).map(g => {
+    let siteName = g.customSiteName;
+    let siteColor = 'var(--wood)';
+    if(!siteName && g.siteId){
+      const site = (data.sites||[]).find(s => s.id === g.siteId);
+      if(site){ siteName = site.name; siteColor = site.color || 'var(--wood)'; }
+    }
+    if(!siteName) siteName = 'Chantier';
 
-  // Ouvriers présents : ceux avec des heures saisies (>0) ce jour-là.
-  const presentNames = workersEntries
-    .filter(([, w]) => w && parseFloat(w.hours||0) > 0)
-    .map(([workerId]) => {
-      const worker = (data.workers||[]).find(x => x.id === workerId);
-      return worker ? worker.name : null;
-    })
-    .filter(Boolean);
+    const tasksSet = new Set();
+    g.entries.forEach(e => { if(e.task) tasksSet.add(e.task); });
 
-  return `
-    <div class="card" style="margin-bottom:10px; ${site ? 'border-left:4px solid '+site.color+';' : ''}">
-      ${site ? `<div style="font-weight:800;font-size:15px;">${escapeHtml(site.name)}</div>` : ''}
+    // Tous les ouvriers présents (heures > 0), sans doublon de nom.
+    const presentNames = [...new Set(
+      g.entries.filter(e => e.hours > 0 && e.workerName).map(e => e.workerName)
+    )];
+
+    return `
+    <div class="card" style="margin-bottom:10px; border-left:4px solid ${siteColor};">
+      <div style="font-weight:800;font-size:15px;">${escapeHtml(siteName)}</div>
       ${tasksSet.size ? `<div style="font-size:13px;margin-top:6px;">🔨 ${[...tasksSet].map(escapeHtml).join(', ')}</div>` : ''}
       ${presentNames.length ? `
         <div style="margin-top:8px;">
-          <div style="font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">👷 Ouvriers présents</div>
+          <div style="font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">👷 Ouvriers présents (${presentNames.length})</div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;">
             ${presentNames.map(n=>`<span style="font-size:12px;background:var(--bg-elev);border:1px solid var(--line);border-radius:999px;padding:4px 10px;">${escapeHtml(n)}</span>`).join('')}
           </div>
         </div>` : ''}
     </div>`;
+  }).join('');
 }
 
 let editingTaskId = null;
@@ -26551,7 +26631,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.92.0';
+const APP_VERSION = '2.92.1';
 
 const CHANGELOG = [
   {
