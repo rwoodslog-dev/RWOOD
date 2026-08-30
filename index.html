@@ -1433,7 +1433,6 @@
     font-size: 8.5px; font-weight: 800; line-height: 1.1;
     margin-top: 2px; max-width: 100%;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    padding: 1px 3px; border-radius: 4px;
   }
   .calendar-day-dots{
     display:flex;
@@ -1446,6 +1445,32 @@
     width:6px; height:6px;
     border-radius:50%;
   }
+
+  /* Vue Année : grille de 12 mini-calendriers */
+  .agenda-year-grid{
+    display:grid; grid-template-columns:repeat(2,1fr); gap:12px;
+    margin-bottom:16px;
+  }
+  .agenda-year-month{
+    background:var(--card); border:1.5px solid var(--line); border-radius:12px;
+    padding:10px; cursor:pointer;
+  }
+  .agenda-year-month:hover{ border-color:var(--wood); }
+  .agenda-year-month-title{
+    font-size:13px; font-weight:800; text-align:center; margin-bottom:6px;
+  }
+  .agenda-year-weekdays{
+    display:grid; grid-template-columns:repeat(7,1fr);
+    font-size:8px; color:var(--ink-soft); text-align:center; margin-bottom:2px;
+  }
+  .agenda-year-days{
+    display:grid; grid-template-columns:repeat(7,1fr); gap:1px;
+  }
+  .agenda-year-day{
+    font-size:9px; text-align:center; padding:2px 0; color:var(--ink);
+  }
+  .agenda-year-day.other{ visibility:hidden; }
+  .agenda-year-day.today{ background:var(--wood); color:#1a1208; border-radius:4px; font-weight:800; }
 
   /* AGENDA TASK LIST */
   .task-card{
@@ -4838,6 +4863,7 @@
       <div class="chip-row" id="agendaModeTabs" style="margin-bottom:12px;">
         <div class="chip selected" data-amode="mois" onclick="setAgendaMode('mois')">Mois</div>
         <div class="chip" data-amode="semaine" onclick="setAgendaMode('semaine')">Semaine</div>
+        <div class="chip" data-amode="annee" onclick="setAgendaMode('annee')">Année</div>
       </div>
       <div class="card">
         <div class="week-nav">
@@ -25255,7 +25281,8 @@ function simpleCalcInput(key){
 /* ============ AGENDA ============ */
 let agendaMonthOffset = 0; // 0 = mois courant
 let agendaWeekOffset = 0;  // 0 = semaine courante (mode "semaine")
-let agendaMode = 'mois';   // 'mois' | 'semaine'
+let agendaYearOffset = 0;  // 0 = année courante (mode "annee")
+let agendaMode = 'mois';   // 'mois' | 'semaine' | 'annee'
 
 function setAgendaMode(mode){
   agendaMode = mode;
@@ -25264,6 +25291,7 @@ function setAgendaMode(mode){
 }
 function changeAgendaMonth(delta){
   if(agendaMode === 'semaine'){ agendaWeekOffset += delta; }
+  else if(agendaMode === 'annee'){ agendaYearOffset += delta; }
   else { agendaMonthOffset += delta; }
   renderAgenda();
 }
@@ -25307,7 +25335,7 @@ function _agendaDayCellHtml(d, month, todayKey){
   const siteClass = pointedSite ? 'has-site' : '';
   const siteStyle = pointedSite ? `border-left-color:${pointedSite.color};` : '';
   const siteNameHtml = pointedSite
-    ? `<span class="calendar-day-sitename" style="background:${pointedSite.color};color:#1a1208;" title="${escapeHtml(pointedSite.name)}">${escapeHtml(pointedSite.name)}</span>`
+    ? `<span class="calendar-day-sitename" style="color:var(--ink-soft);" title="${escapeHtml(pointedSite.name)}">${escapeHtml(pointedSite.name)}</span>`
     : '';
 
   return `
@@ -25322,6 +25350,7 @@ function _agendaDayCellHtml(d, month, todayKey){
 
 function renderAgenda(){
   if(agendaMode === 'semaine'){ renderAgendaWeekView(); return; }
+  if(agendaMode === 'annee'){ renderAgendaYearView(); return; }
 
   document.getElementById('agendaPrevBtn').style.display = '';
   document.getElementById('agendaNextBtn').style.display = '';
@@ -25395,6 +25424,59 @@ function renderAgendaWeekView(){
   document.getElementById('agendaCalendarGrid').innerHTML = html;
   renderAgendaDayTasks();
 }
+
+/* Vue "Année" : 12 mini-calendriers cliquables, un point par jour pointé. */
+function renderAgendaYearView(){
+  document.getElementById('agendaPrevBtn').style.display = '';
+  document.getElementById('agendaNextBtn').style.display = '';
+
+  const now = new Date();
+  const year = now.getFullYear() + agendaYearOffset;
+  document.getElementById('agendaMonthTitle').textContent = `Année ${year}`;
+
+  const monthNames = ['Janv.','Févr.','Mars','Avril','Mai','Juin','Juil.','Août','Sept.','Oct.','Nov.','Déc.'];
+  const todayKey = dateKeyOf(now);
+  const dayLabelsShort = ['L','M','M','J','V','S','D'];
+
+  let yhtml = '<div class="agenda-year-grid">';
+  for(let m=0; m<12; m++){
+    const firstOfMonth = new Date(year, m, 1);
+    const startDay = (firstOfMonth.getDay() + 6) % 7;
+    const gridStart = new Date(firstOfMonth);
+    gridStart.setDate(gridStart.getDate() - startDay);
+
+    let miniDays = '';
+    for(let i=0;i<42;i++){
+      const d = new Date(gridStart); d.setDate(d.getDate()+i);
+      if(i >= 35 && d.getMonth() !== m) break;
+      const key = dateKeyOf(d);
+      const isOtherMonth = d.getMonth() !== m;
+      const isToday = key === todayKey;
+      const pointedSite = !isOtherMonth ? _agendaDaySite(key) : null;
+      miniDays += `<span class="agenda-year-day ${isOtherMonth?'other':''} ${isToday?'today':''}"
+        ${pointedSite ? `style="border-bottom:2px solid ${pointedSite.color};" title="${escapeHtml(pointedSite.name)}"` : ''}
+        >${isOtherMonth?'':d.getDate()}</span>`;
+    }
+
+    yhtml += `
+      <div class="agenda-year-month" onclick="agendaGoToMonth(${m}, ${year})">
+        <div class="agenda-year-month-title">${monthNames[m]}</div>
+        <div class="agenda-year-weekdays">${dayLabelsShort.map(x=>`<span>${x}</span>`).join('')}</div>
+        <div class="agenda-year-days">${miniDays}</div>
+      </div>`;
+  }
+  yhtml += '</div>';
+
+  document.getElementById('agendaCalendarGrid').innerHTML = yhtml;
+  renderAgendaDayTasks();
+}
+function agendaGoToMonth(monthIndex, year){
+  const now = new Date();
+  agendaMonthOffset = (year - now.getFullYear()) * 12 + (monthIndex - now.getMonth());
+  agendaMode = 'mois';
+  document.querySelectorAll('#agendaModeTabs .chip').forEach(c=>c.classList.toggle('selected', c.dataset.amode==='mois'));
+  renderAgenda();
+}
 let agendaSelectedDate = null; // dateKey string, défaut = aujourd'hui
 
 function selectAgendaDate(dateKey){
@@ -25410,12 +25492,15 @@ function renderAgendaDayTasks(){
   const tasks = data.tasks.filter(t=>t.date===agendaSelectedDate);
   const container = document.getElementById('agendaDayTasks');
 
+  // Bloc "Chantier du jour" : chantier pointé, tâche(s) exécutée(s), ouvriers présents.
+  const pointageBlockHtml = _agendaPointageBlockHtml(agendaSelectedDate);
+
   if(tasks.length === 0){
-    container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9.5h18"/><path d="M8 3v4M16 3v4"/></svg></div><h3>Aucune tâche</h3><p>Ajoute une tâche pour ce jour.</p></div>`;
+    container.innerHTML = pointageBlockHtml + `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9.5h18"/><path d="M8 3v4M16 3v4"/></svg></div><h3>Aucune tâche</h3><p>Ajoute une tâche pour ce jour.</p></div>`;
     return;
   }
 
-  container.innerHTML = tasks.map(t=>{
+  container.innerHTML = pointageBlockHtml + tasks.map(t=>{
     const site = data.sites.find(s=>s.id===t.siteId);
     const color = site && site.color ? site.color : 'var(--line)';
     const bg = color.startsWith('var(') ? 'var(--bg-elev)' : cardTintBackground(color);
@@ -25427,6 +25512,43 @@ function renderAgendaDayTasks(){
       </div>
     `;
   }).join('');
+}
+
+/* Bloc "Chantier du jour" affiché au clic sur une case : chantier pointé,
+   tâche(s) exécutée(s) et ouvriers présents ce jour-là (d'après le pointage réel). */
+function _agendaPointageBlockHtml(dateKey){
+  const day = data.attendance && data.attendance[dateKey];
+  if(!day) return '';
+
+  const site = _agendaDaySite(dateKey);
+  const workersEntries = Object.entries(day.workers || {});
+  if(!site && !workersEntries.length) return '';
+
+  // Tâches exécutées : union des tâches saisies par chaque ouvrier ce jour-là.
+  const tasksSet = new Set();
+  workersEntries.forEach(([, w]) => { if(w && w.task) tasksSet.add(w.task); });
+
+  // Ouvriers présents : ceux avec des heures saisies (>0) ce jour-là.
+  const presentNames = workersEntries
+    .filter(([, w]) => w && parseFloat(w.hours||0) > 0)
+    .map(([workerId]) => {
+      const worker = (data.workers||[]).find(x => x.id === workerId);
+      return worker ? worker.name : null;
+    })
+    .filter(Boolean);
+
+  return `
+    <div class="card" style="margin-bottom:10px; ${site ? 'border-left:4px solid '+site.color+';' : ''}">
+      ${site ? `<div style="font-weight:800;font-size:15px;">${escapeHtml(site.name)}</div>` : ''}
+      ${tasksSet.size ? `<div style="font-size:13px;margin-top:6px;">🔨 ${[...tasksSet].map(escapeHtml).join(', ')}</div>` : ''}
+      ${presentNames.length ? `
+        <div style="margin-top:8px;">
+          <div style="font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">👷 Ouvriers présents</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            ${presentNames.map(n=>`<span style="font-size:12px;background:var(--bg-elev);border:1px solid var(--line);border-radius:999px;padding:4px 10px;">${escapeHtml(n)}</span>`).join('')}
+          </div>
+        </div>` : ''}
+    </div>`;
 }
 
 let editingTaskId = null;
@@ -26429,7 +26551,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.91.0';
+const APP_VERSION = '2.92.0';
 
 const CHANGELOG = [
   {
