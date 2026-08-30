@@ -1387,7 +1387,7 @@
   /* AGENDA CALENDAR */
   .calendar-grid{
     display:grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: 28px repeat(7, 1fr);
     gap: 4px;
     margin-bottom: 16px;
   }
@@ -1399,6 +1399,12 @@
     color: var(--ink-soft);
     font-weight: 800;
     padding-bottom: 4px;
+  }
+  .calendar-weeknum-head{ /* case vide au-dessus de la colonne semaine */ }
+  .calendar-weeknum{
+    display:flex; align-items:center; justify-content:center;
+    font-size: 10px; font-weight: 800; color: var(--ink-soft);
+    opacity: .75;
   }
   .calendar-day{
     aspect-ratio: 1;
@@ -1415,10 +1421,20 @@
     font-size: 12.5px;
     font-weight:700;
     color: var(--ink);
+    overflow: hidden;
   }
   .calendar-day.other-month{ opacity: 0.3; }
   .calendar-day.today{ border-color: var(--wood); box-shadow: 0 0 0 1px var(--wood); }
   .calendar-day.selected{ background: var(--bg-elev); border-color: var(--wood); }
+  /* Jour pointé sur un chantier : liseré + nom du chantier dans la case,
+     couleur du chantier concerné. */
+  .calendar-day.has-site{ border-left-width: 4px; }
+  .calendar-day-sitename{
+    font-size: 8.5px; font-weight: 800; line-height: 1.1;
+    margin-top: 2px; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 1px 3px; border-radius: 4px;
+  }
   .calendar-day-dots{
     display:flex;
     flex-wrap:wrap;
@@ -4819,13 +4835,17 @@
 
     <!-- VUE AGENDA -->
     <section class="view" id="view-agenda">
+      <div class="chip-row" id="agendaModeTabs" style="margin-bottom:12px;">
+        <div class="chip selected" data-amode="mois" onclick="setAgendaMode('mois')">Mois</div>
+        <div class="chip" data-amode="semaine" onclick="setAgendaMode('semaine')">Semaine</div>
+      </div>
       <div class="card">
         <div class="week-nav">
-          <button class="week-nav-btn" onclick="changeAgendaMonth(-1)">←</button>
+          <button class="week-nav-btn" onclick="changeAgendaMonth(-1)" id="agendaPrevBtn">←</button>
           <div style="text-align:center; flex:1;">
             <div class="week-title" id="agendaMonthTitle">Mois</div>
           </div>
-          <button class="week-nav-btn" onclick="changeAgendaMonth(1)">→</button>
+          <button class="week-nav-btn" onclick="changeAgendaMonth(1)" id="agendaNextBtn">→</button>
         </div>
       </div>
 
@@ -25234,15 +25254,78 @@ function simpleCalcInput(key){
 
 /* ============ AGENDA ============ */
 let agendaMonthOffset = 0; // 0 = mois courant
-let agendaSelectedDate = null; // dateKey string, défaut = aujourd'hui
+let agendaWeekOffset = 0;  // 0 = semaine courante (mode "semaine")
+let agendaMode = 'mois';   // 'mois' | 'semaine'
 
-function changeAgendaMonth(delta){
-  agendaMonthOffset += delta;
-  agendaSelectedDate = null;
+function setAgendaMode(mode){
+  agendaMode = mode;
+  document.querySelectorAll('#agendaModeTabs .chip').forEach(c=>c.classList.toggle('selected', c.dataset.amode===mode));
   renderAgenda();
+}
+function changeAgendaMonth(delta){
+  if(agendaMode === 'semaine'){ agendaWeekOffset += delta; }
+  else { agendaMonthOffset += delta; }
+  renderAgenda();
+}
+/* Numéro de semaine ISO-8601 (lundi=premier jour, semaine 1 = celle du 1er jeudi de l'année) */
+function _isoWeekNumber(date){
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7; // lundi=0
+  d.setUTCDate(d.getUTCDate() - dayNum + 3); // jeudi de cette semaine
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
+  return 1 + Math.round((d - firstThursday) / (7 * 24 * 3600 * 1000));
+}
+/* Chantier pointé un jour donné : nom + couleur (ou chantier libre "dépannage"). */
+function _agendaDaySite(dateKey){
+  const day = data.attendance && data.attendance[dateKey];
+  if(!day) return null;
+  if(day.customSite && day.customSite.name){
+    return { name: day.customSite.name, color: 'var(--wood)' };
+  }
+  if(day.siteId){
+    const site = (data.sites||[]).find(s => s.id === day.siteId);
+    if(site) return { name: site.name, color: site.color || 'var(--wood)' };
+  }
+  return null;
+}
+function _agendaDayCellHtml(d, month, todayKey){
+  const key = dateKeyOf(d);
+  const isOtherMonth = (month !== null) && d.getMonth() !== month;
+  const isToday = key === todayKey;
+  const isSelected = key === agendaSelectedDate;
+
+  const dayTasks = data.tasks.filter(t=>t.date===key);
+  const dots = dayTasks.slice(0,4).map(t=>{
+    const site = data.sites.find(s=>s.id===t.siteId);
+    const color = site && site.color ? site.color : 'var(--ink-soft)';
+    return `<span class="calendar-day-dot" style="background:${color};"></span>`;
+  }).join('');
+
+  const pointedSite = _agendaDaySite(key);
+  const siteClass = pointedSite ? 'has-site' : '';
+  const siteStyle = pointedSite ? `border-left-color:${pointedSite.color};` : '';
+  const siteNameHtml = pointedSite
+    ? `<span class="calendar-day-sitename" style="background:${pointedSite.color};color:#1a1208;" title="${escapeHtml(pointedSite.name)}">${escapeHtml(pointedSite.name)}</span>`
+    : '';
+
+  return `
+    <div class="calendar-day ${isOtherMonth?'other-month':''} ${isToday?'today':''} ${isSelected?'selected':''} ${siteClass}"
+      style="${siteStyle}" onclick="selectAgendaDate('${key}')">
+      <span>${d.getDate()}</span>
+      ${siteNameHtml}
+      <div class="calendar-day-dots">${dots}</div>
+    </div>
+  `;
 }
 
 function renderAgenda(){
+  if(agendaMode === 'semaine'){ renderAgendaWeekView(); return; }
+
+  document.getElementById('agendaPrevBtn').style.display = '';
+  document.getElementById('agendaNextBtn').style.display = '';
+
   const now = new Date();
   const viewDate = new Date(now.getFullYear(), now.getMonth() + agendaMonthOffset, 1);
   const year = viewDate.getFullYear();
@@ -25261,29 +25344,18 @@ function renderAgenda(){
   if(!agendaSelectedDate) agendaSelectedDate = todayKey;
 
   const dayLabels = ['L','M','M','J','V','S','D'];
-  let html = dayLabels.map(d=>`<div class="calendar-weekday">${d}</div>`).join('');
+  let html = '<div class="calendar-weeknum-head"></div>' + dayLabels.map(d=>`<div class="calendar-weekday">${d}</div>`).join('');
 
   for(let i=0;i<42;i++){
     const d = new Date(gridStart);
     d.setDate(d.getDate()+i);
-    const key = dateKeyOf(d);
-    const isOtherMonth = d.getMonth() !== month;
-    const isToday = key === todayKey;
-    const isSelected = key === agendaSelectedDate;
 
-    const dayTasks = data.tasks.filter(t=>t.date===key);
-    const dots = dayTasks.slice(0,4).map(t=>{
-      const site = data.sites.find(s=>s.id===t.siteId);
-      const color = site && site.color ? site.color : 'var(--ink-soft)';
-      return `<span class="calendar-day-dot" style="background:${color};"></span>`;
-    }).join('');
+    // Numéro de semaine en tête de chaque ligne (tous les 7 jours)
+    if(i % 7 === 0){
+      html += `<div class="calendar-weeknum">S${_isoWeekNumber(d)}</div>`;
+    }
 
-    html += `
-      <div class="calendar-day ${isOtherMonth?'other-month':''} ${isToday?'today':''} ${isSelected?'selected':''}" onclick="selectAgendaDate('${key}')">
-        <span>${d.getDate()}</span>
-        <div class="calendar-day-dots">${dots}</div>
-      </div>
-    `;
+    html += _agendaDayCellHtml(d, month, todayKey);
 
     // Si on dépasse le mois suivant et qu'on a déjà fini la semaine du dernier jour du mois, on arrête tôt
     if(i >= 34 && d.getMonth() !== month && (i+1) % 7 === 0) break;
@@ -25292,6 +25364,38 @@ function renderAgenda(){
   document.getElementById('agendaCalendarGrid').innerHTML = html;
   renderAgendaDayTasks();
 }
+
+/* Vue "Semaine" : une seule semaine à la fois, navigable sur toute l'année. */
+function renderAgendaWeekView(){
+  document.getElementById('agendaPrevBtn').style.display = '';
+  document.getElementById('agendaNextBtn').style.display = '';
+
+  const now = new Date();
+  const todayKey = dateKeyOf(now);
+  if(!agendaSelectedDate) agendaSelectedDate = todayKey;
+
+  // Lundi de la semaine courante + décalage en semaines
+  const monday = new Date(now);
+  const dow = (monday.getDay() + 6) % 7;
+  monday.setDate(monday.getDate() - dow + agendaWeekOffset * 7);
+
+  const weekNum = _isoWeekNumber(monday);
+  const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+  const fmt = d => d.toLocaleDateString('fr-FR', {day:'numeric', month:'short'});
+  document.getElementById('agendaMonthTitle').textContent = `Semaine ${weekNum} — ${fmt(monday)} au ${fmt(sunday)} ${sunday.getFullYear()}`;
+
+  const dayLabels = ['L','M','M','J','V','S','D'];
+  let html = '<div class="calendar-weeknum-head"></div>' + dayLabels.map(d=>`<div class="calendar-weekday">${d}</div>`).join('');
+  html += `<div class="calendar-weeknum">S${weekNum}</div>`;
+  for(let i=0;i<7;i++){
+    const d = new Date(monday); d.setDate(d.getDate()+i);
+    html += _agendaDayCellHtml(d, null, todayKey);
+  }
+
+  document.getElementById('agendaCalendarGrid').innerHTML = html;
+  renderAgendaDayTasks();
+}
+let agendaSelectedDate = null; // dateKey string, défaut = aujourd'hui
 
 function selectAgendaDate(dateKey){
   agendaSelectedDate = dateKey;
@@ -26325,7 +26429,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.90.2';
+const APP_VERSION = '2.91.0';
 
 const CHANGELOG = [
   {
