@@ -11361,7 +11361,28 @@ function openAlerteComposeGroup(){
       <div class="hint" style="margin-bottom:12px;">
         Destinataires : <strong>${names.map(escapeHtml).join(', ')}</strong>. Chacun verra l'alerte dans sa tuile Alertes.
       </div>
-      <div class="section-title">Modèles rapides</div>
+
+      <div class="section-title" style="margin-top:0;">Type d'alerte</div>
+      <div class="chip-row" id="alerteTypeRow" style="margin-bottom:14px;">
+        <div class="chip selected" data-type="info" onclick="_setAlerteComposeType('info')">💬 Message</div>
+        <div class="chip" data-type="signature" onclick="_setAlerteComposeType('signature')">✍️ Signature</div>
+        <div class="chip" data-type="heures" onclick="_setAlerteComposeType('heures')">⏱ Envoi d'heures</div>
+        <div class="chip" data-type="evenement" onclick="_setAlerteComposeType('evenement')">📅 Événement</div>
+      </div>
+
+      <!-- Champs propres à "Événement" (masqués sauf si type sélectionné) -->
+      <div id="alerteEventFields" style="display:none;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:10px;">
+          <label>Chantier concerné (optionnel)</label>
+          <select id="alerteEventSite"><option value="">— Aucun —</option>${(data.sites||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}</select>
+        </div>
+        <div class="field">
+          <label>Date de l'événement</label>
+          <input type="date" id="alerteEventDate">
+        </div>
+      </div>
+
+      <div class="section-title" id="alerteTemplateTitle">Modèles rapides</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;" id="alerteTemplateChips"></div>
       <div class="section-title">Message</div>
       <textarea id="alerteComposeText"
@@ -11370,21 +11391,53 @@ function openAlerteComposeGroup(){
       <button class="btn btn-primary btn-block" id="alerteComposeSend">🚀 Envoyer l'alerte</button>
     </div>`;
   document.body.appendChild(div);
+  _alerteComposeType = 'info';
 
   document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
+  _renderAlerteTemplateChips('info');
 
+  document.getElementById('alerteComposeSend').addEventListener('click', () => {
+    sendAlerteToMembers(authIds, names);
+  });
+}
+
+/* Bascule le type d'alerte dans la modale de composition : affiche les
+   champs propres (date d'événement) et adapte les modèles de message. */
+let _alerteComposeType = 'info';
+function _setAlerteComposeType(type){
+  _alerteComposeType = type;
+  document.querySelectorAll('#alerteTypeRow .chip').forEach(c => c.classList.toggle('selected', c.dataset.type === type));
+  const eventFields = document.getElementById('alerteEventFields');
+  if(eventFields) eventFields.style.display = (type === 'evenement') ? 'block' : 'none';
+  _renderAlerteTemplateChips(type);
+}
+function _renderAlerteTemplateChips(type){
   const chipsContainer = document.getElementById('alerteTemplateChips');
-  _ALERTE_TEMPLATES.forEach(t => {
+  const title = document.getElementById('alerteTemplateTitle');
+  if(!chipsContainer) return;
+  chipsContainer.innerHTML = '';
+
+  let templates = _ALERTE_TEMPLATES;
+  if(type === 'signature'){
+    templates = ['La comptabilité te demande de signer ta fiche d\'heures.'];
+    if(title) title.textContent = 'Modèle';
+  } else if(type === 'heures'){
+    templates = ['Merci de transmettre tes heures de la semaine dès que possible.', 'Il manque tes heures d\'hier, merci de les envoyer.'];
+    if(title) title.textContent = 'Modèles rapides';
+  } else if(type === 'evenement'){
+    templates = ['Livraison de matériaux prévue.', 'Réunion de chantier prévue.', 'Intervention technique prévue.'];
+    if(title) title.textContent = 'Modèles rapides';
+  } else {
+    if(title) title.textContent = 'Modèles rapides';
+  }
+
+  templates.forEach(t => {
     const btn = document.createElement('button');
     btn.className = 'chip';
     btn.style.fontSize = '12px';
     btn.textContent = t;
     btn.addEventListener('click', () => _applyAlerteTemplate(t));
     chipsContainer.appendChild(btn);
-  });
-
-  document.getElementById('alerteComposeSend').addEventListener('click', () => {
-    sendAlerteToMembers(authIds, names);
   });
 }
 
@@ -11410,6 +11463,16 @@ async function sendAlerteToMembers(authIds, names){
   const text = textEl ? textEl.value.trim() : '';
   if(!text){ showToast('Écris un message'); return; }
 
+  const type = _alerteComposeType || 'info';
+  let eventData = null;
+  if(type === 'evenement'){
+    const dateEl = document.getElementById('alerteEventDate');
+    const siteEl = document.getElementById('alerteEventSite');
+    const eventDate = dateEl ? dateEl.value : '';
+    if(!eventDate){ showToast('Choisis une date pour l\'événement'); return; }
+    eventData = { date: eventDate, siteId: siteEl && siteEl.value ? siteEl.value : null };
+  }
+
   const p = data.settings && data.settings.myProfile;
   const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
     || (data.settings && data.settings.teamName) || 'La direction';
@@ -11428,9 +11491,17 @@ async function sendAlerteToMembers(authIds, names){
     return;
   }
 
+  let alertText = senderName + ' : ' + text;
+  if(type === 'evenement' && eventData){
+    const d = new Date(eventData.date + 'T00:00:00');
+    const dateLabel = d.toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'});
+    const site = eventData.siteId ? (data.sites||[]).find(s=>s.id===eventData.siteId) : null;
+    alertText = `📅 ${senderName} : ${text} — ${dateLabel}${site ? ' (' + site.name + ')' : ''}`;
+  }
+
   const ok = await sendAlert(
-    senderName + ' : ' + text,
-    'devices', null, names.join(', '), 'info', null, null, deviceIds
+    alertText,
+    'devices', null, names.join(', '), type, null, null, deviceIds, eventData
   );
 
   const modal = document.getElementById('modal-alerteCompose');
@@ -26918,7 +26989,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '3.3.0';
+const APP_VERSION = '3.4.0';
 
 const CHANGELOG = [
   {
@@ -32800,6 +32871,7 @@ function _renderDevTabAlertTest(list){
         <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('info')">💬 Info</button>
         <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('photo')">📸 Photo</button>
         <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('signature')">✍️ Signature</button>
+        <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('heures')">⏱ Envoi d'heures</button>
         <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('evenement')">📅 Événement</button>
       </div>
     </div>
@@ -32833,10 +32905,20 @@ async function _devSendTestAlert(type){
       'La comptabilité te demande de signer ta fiche d\'heures. Touche « Signer maintenant » pour enregistrer ta signature.',
       'device', myId, myName, 'signature'
     );
-  } else if(type === 'evenement'){
+  } else if(type === 'heures'){
     ok = await sendAlert(
-      '📅 Nouvel événement ajouté à l\'agenda : Livraison matériaux — demain 8h.',
-      'device', myId, myName, 'info'
+      'Merci de transmettre tes heures dès que possible.',
+      'device', myId, myName, 'heures'
+    );
+  } else if(type === 'evenement'){
+    const siteSel = document.getElementById('devAlertTestSite');
+    const site = siteSel ? (data.sites||[]).find(s=>s.id===siteSel.value) : null;
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+    const eventDate = tomorrow.toISOString().slice(0,10);
+    const dateLabel = tomorrow.toLocaleDateString('fr-FR', {day:'numeric', month:'long'});
+    ok = await sendAlert(
+      `📅 Livraison matériaux — ${dateLabel}${site ? ' (' + site.name + ')' : ''}`,
+      'device', myId, myName, 'evenement', null, null, null, { date: eventDate, siteId: site ? site.id : null }
     );
   } else {
     ok = await sendAlert(
@@ -33097,20 +33179,22 @@ async function _saveAlerts(alerts){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
     alerts.push({
       id: uid(),
       text: text.trim(),
-      kind: kind || 'info',                   // 'info' | 'signature' | 'photo'
+      kind: kind || 'info',                   // 'info' | 'signature' | 'photo' | 'heures' | 'evenement'
       recipientType: recipientType,           // 'all' | 'device' | 'roles' | 'devices'
       recipientDeviceId: recipientDeviceId || null,
       recipientDeviceIds: recipientDeviceIds || null, // ex: ['dev_abc','dev_xyz'] — alerte groupée nominative
       recipientRoles: recipientRoles || null,  // ex: ['conducteur','patron']
       recipientName: recipientName || null,    // pour affichage dans l'historique comptable
       siteId: siteId || null,                  // pour le bouton "Visionner" (alertes type 'photo')
+      eventDate: (eventData && eventData.date) || null,     // pour les alertes type 'evenement'
+      eventSiteId: (eventData && eventData.siteId) || null, // chantier lié à l'événement (optionnel)
       senderName: (data.settings && data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || null,
       createdAt: new Date().toISOString(),
       readBy: []
@@ -35147,6 +35231,12 @@ async function checkForNewAlerts(){
   if(!navigator.onLine) return;
   const profile = (data.settings && data.settings.myProfile) || {};
 
+  // Rappel J-1 : vérifie les événements ajoutés à l'agenda via une alerte
+  // et génère un rappel local si l'un d'eux a lieu demain (une seule fois).
+  if(typeof _checkAgendaReminders === 'function'){
+    try{ await _checkAgendaReminders(); }catch(e){ /* silencieux */ }
+  }
+
   try{
     const all = await _fetchAlerts();
     let mine = _filterAlertsForMe(all);
@@ -35180,6 +35270,41 @@ async function checkForNewAlerts(){
 }
 
 let _myAlertsCache = [];
+
+/* Rappel J-1 : parcourt les tâches d'agenda ajoutées depuis une alerte
+   événement (fromAlertId) et dont la date tombe demain. Envoie une alerte
+   locale à soi-même (kind='rappel') si ce n'est pas déjà fait, pour que le
+   rappel apparaisse dans la tuile Alertes + bulle flottante + son, comme
+   n'importe quelle alerte reçue. Ne s'exécute qu'une fois par tâche grâce à
+   data.settings.remindersSent (liste d'ids de tâches déjà notifiées). */
+async function _checkAgendaReminders(){
+  if(!data.tasks || !data.tasks.length) return;
+
+  const now = new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowKey = tomorrow.getFullYear() + '-' + String(tomorrow.getMonth()+1).padStart(2,'0') + '-' + String(tomorrow.getDate()).padStart(2,'0');
+
+  if(!data.settings) data.settings = {};
+  if(!data.settings.remindersSent) data.settings.remindersSent = [];
+
+  const dueTomorrow = data.tasks.filter(t =>
+    t.date === tomorrowKey &&
+    t.fromAlertId && // seulement les événements ajoutés depuis une alerte
+    !data.settings.remindersSent.includes(t.id)
+  );
+  if(!dueTomorrow.length) return;
+
+  const myId = getDeviceSyncId();
+  for(const t of dueTomorrow){
+    const site = t.siteId ? (data.sites||[]).find(s=>s.id===t.siteId) : null;
+    await sendAlert(
+      `⏰ Rappel : ${t.text}${site ? ' — ' + site.name : ''} — demain`,
+      'device', myId, null, 'rappel'
+    );
+    data.settings.remindersSent.push(t.id);
+  }
+  saveData();
+}
 
 /* "Ouverture de l'application" = retour au premier plan, pas seulement le tout premier
    chargement. On re-verifie les alertes a chaque fois que l'app redevient visible. */
@@ -35234,6 +35359,13 @@ function _renderAlertesHistoList(){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button> ` + actionHtml;
     } else if(a.kind === 'photo'){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
+    } else if(a.kind === 'heures'){
+      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Envoyer mes heures</button> ` + actionHtml;
+    } else if(a.kind === 'evenement'){
+      const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
+      actionHtml = (alreadyAdded
+        ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
+        : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`) + ' ' + actionHtml;
     }
     return `
       <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
@@ -35247,6 +35379,55 @@ function _renderAlertesHistoList(){
         <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
       </div>`;
   }).join('');
+}
+
+/* Ouvrier/chef : répondre à une demande d'envoi d'heures → ouvre directement
+   la vue Heures/Pointage pour compléter et envoyer sa fiche. */
+function _openHeuresFromAlert(alertId){
+  goTo('heures');
+  if(typeof setHeuresMode === 'function') setHeuresMode('pointage');
+  if(typeof _clearAlert === 'function') _clearAlert(alertId);
+  else if(typeof markAlertRead === 'function') markAlertRead(alertId);
+}
+
+/* Ouvrier/chef : ajoute l'événement reçu par alerte à son agenda personnel
+   (data.tasks), et mémorise qu'il l'a fait pour ne pas dupliquer l'action
+   ni la reproposer. Le rappel J-1 est géré séparément (voir _checkAgendaReminders). */
+function _addEventToAgendaFromAlert(alertId){
+  const alert = (_myAlertsCache||[]).find(a => a.id === alertId);
+  if(!alert || !alert.eventDate) return;
+
+  if(!data.tasks) data.tasks = [];
+  data.tasks.push({
+    id: uid(),
+    date: alert.eventDate,
+    siteId: alert.eventSiteId || null,
+    text: alert.text,
+    createdAt: new Date().toISOString(),
+    fromAlertId: alertId // pour le rappel J-1 (voir _checkAgendaReminders)
+  });
+  saveData();
+
+  // Marque localement que CE device a déjà ajouté l'événement (affiche
+  // "✅ Ajouté" au lieu du bouton si on revient sur l'inbox).
+  const myId = getDeviceSyncId();
+  if(!alert.addedToAgendaBy) alert.addedToAgendaBy = [];
+  if(!alert.addedToAgendaBy.includes(myId)) alert.addedToAgendaBy.push(myId);
+  // Persiste ce marquage côté serveur pour rester cohérent après un refresh.
+  (async () => {
+    try{
+      const alerts = await _fetchAlerts();
+      const a = alerts.find(x => x.id === alertId);
+      if(a){
+        if(!a.addedToAgendaBy) a.addedToAgendaBy = [];
+        if(!a.addedToAgendaBy.includes(myId)) a.addedToAgendaBy.push(myId);
+        await _saveAlerts(alerts);
+      }
+    }catch(e){ /* silencieux */ }
+  })();
+
+  showToast('✅ Événement ajouté à ton agenda');
+  _renderAlertesHistoList();
 }
 
 /* Supprime une alerte de MON historique perso (sans la retirer pour les
