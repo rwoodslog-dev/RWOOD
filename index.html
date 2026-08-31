@@ -3272,6 +3272,14 @@
   .simple-tile:active .simple-tile-icon{ transform:scale(1.06); }
   .simple-tile-img{ width:62px; height:62px; object-fit:contain; display:block; filter:drop-shadow(0 4px 8px rgba(0,0,0,.45)); }
   .simple-tile-label{ font-size:16px; font-weight:800; color:var(--ink); letter-spacing:.2px; position:relative; z-index:1; text-shadow:0 1px 2px rgba(0,0,0,.4); }
+  .simple-tile-badge{
+    position:absolute; top:8px; right:8px; z-index:2;
+    background:#E05555; color:#fff;
+    font-size:11px; font-weight:800;
+    border-radius:20px; padding:1px 6px;
+    min-width:18px; text-align:center;
+    border:2px solid var(--bg);
+  }
   /* MODULE — DA Premium tuiles · fin */
   body.theme-light .simple-tile{
     background:linear-gradient(158deg, #ffffff 0%, #f7efe3 100%);
@@ -3458,6 +3466,11 @@
     #pcSidebarNav button.nav-btn.active::before{
       content:''; position:absolute; left:0; top:7px; bottom:7px; width:3px;
       border-radius:0 3px 3px 0; background:var(--wood);
+    }
+    .pc-nav-badge{
+      margin-left:auto; background:#E05555; color:#fff; font-size:10.5px; font-weight:800;
+      border-radius:20px; padding:1px 6px; min-width:16px; text-align:center;
+      border:2px solid var(--bg); flex-shrink:0;
     }
 
     /* ── Bandeau Chantier actif : fond dégradé PC uniquement (voir plus haut
@@ -8673,6 +8686,11 @@ function goTo(viewName, siteId){
   try{ history.pushState({rwoodView:viewName, siteId:siteId||null}, ''); }catch(e){}
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
+  // Badge de notif (Chantier/Galerie) : marquer comme vu dès qu'on navigue dessus,
+  // quel que soit le chemin emprunté (tuile, sidebar PC, nav classique).
+  if(typeof DASH_BADGE_VIEWS !== 'undefined' && DASH_BADGE_VIEWS.includes(viewName)){
+    if(typeof _dashMarkSeen === 'function') _dashMarkSeen(viewName);
+  }
   // MODULE — PCDashboard : sur PC, l'accueil affiche directement le contenu réel
   // du chantier (bandeau + liste), plus la grille de tuiles séparée.
   if(viewName === 'simpleDash' && typeof simpleModeIsActive === 'function' && simpleModeIsActive()
@@ -9827,7 +9845,8 @@ function _buildSiteFromForm(status){
     name, address, status,
     progress: 0,
     stockNeeds: {}, stockTaken: {},
-    ownerDeviceId: getDeviceSyncId()
+    ownerDeviceId: getDeviceSyncId(),
+    createdAt: new Date().toISOString()
   };
 
   if(isConducteur){
@@ -26750,7 +26769,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.95.3';
+const APP_VERSION = '2.96.0';
 
 const CHANGELOG = [
   {
@@ -32926,7 +32945,7 @@ async function _saveAlerts(alerts){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
@@ -32934,11 +32953,13 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       id: uid(),
       text: text.trim(),
       kind: kind || 'info',                   // 'info' | 'signature' | 'photo'
-      recipientType: recipientType,           // 'all' | 'device' | 'roles'
+      recipientType: recipientType,           // 'all' | 'device' | 'roles' | 'devices'
       recipientDeviceId: recipientDeviceId || null,
+      recipientDeviceIds: recipientDeviceIds || null, // ex: ['dev_abc','dev_xyz'] — alerte groupée nominative
       recipientRoles: recipientRoles || null,  // ex: ['conducteur','patron']
       recipientName: recipientName || null,    // pour affichage dans l'historique comptable
       siteId: siteId || null,                  // pour le bouton "Visionner" (alertes type 'photo')
+      senderName: (data.settings && data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || null,
       createdAt: new Date().toISOString(),
       readBy: []
     });
@@ -32988,6 +33009,7 @@ function _filterAlertsForMe(alerts){
   return alerts.filter(a =>
     a.recipientType === 'all' ||
     a.recipientDeviceId === myId ||
+    (a.recipientType === 'devices' && Array.isArray(a.recipientDeviceIds) && a.recipientDeviceIds.includes(myId)) ||
     (a.recipientType === 'roles' && Array.isArray(a.recipientRoles) && a.recipientRoles.includes(myRole))
   );
 }
@@ -36015,6 +36037,45 @@ const SIMPLE_ALL_TILES = [
   { view:'quincaillerie', img:'icons/quincaillerie.png', icon:'🔩', label:'Quincaillerie' },
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
 ];
+/* ═══════════════════════════════════════════════════════════════════
+   BADGES DE NOTIFICATION SUR LES TUILES DU DASHBOARD
+   Compte les éléments créés depuis la dernière visite de chaque tuile
+   (rond rouge avec chiffre, même principe que le badge alertes).
+   Persistance : data.settings.dashLastSeen = { chantiers: iso, galerie: iso }
+   ═══════════════════════════════════════════════════════════════════ */
+function _dashLastSeen(viewId){
+  const ls = (data.settings && data.settings.dashLastSeen) || {};
+  return ls[viewId] || null;
+}
+function _dashMarkSeen(viewId){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.dashLastSeen) data.settings.dashLastSeen = {};
+  data.settings.dashLastSeen[viewId] = new Date().toISOString();
+  saveData();
+}
+/* Compte les nouveautés pour une tuile donnée depuis sa dernière visite. */
+function _dashUnseenCount(viewId){
+  const since = _dashLastSeen(viewId);
+  const sinceTime = since ? new Date(since).getTime() : 0;
+
+  if(viewId === 'chantiers'){
+    // Nouveaux chantiers créés (par n'importe qui, visibles localement)
+    return (data.sites||[]).filter(s => s.createdAt && new Date(s.createdAt).getTime() > sinceTime).length;
+  }
+  if(viewId === 'galerie'){
+    // Nouvelles photos ajoutées, tous chantiers confondus
+    let n = 0;
+    (data.sites||[]).forEach(s => {
+      (s.sharedMedia||[]).forEach(m => {
+        const isPhoto = m.type==='photo' || (m.mimeType||'').startsWith('image/');
+        if(isPhoto && m.uploadedAt && new Date(m.uploadedAt).getTime() > sinceTime) n++;
+      });
+    });
+    return n;
+  }
+  return 0;
+}
+const DASH_BADGE_VIEWS = ['chantiers', 'galerie'];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
 
 function simpleModeIsActive(){
@@ -36096,7 +36157,10 @@ function simpleModeRenderDash(){
     const iconHtml = (def && def.img)
       ? `<img src="${encodeURI(def.img)}" alt="" class="simple-tile-img" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${icon}'}))">`
       : icon;
-    return `<button class="simple-tile" onclick="simpleModeOpen('${viewId}')">
+    const unseen = DASH_BADGE_VIEWS.includes(viewId) ? _dashUnseenCount(viewId) : 0;
+    const badgeHtml = unseen > 0 ? `<span class="simple-tile-badge">${unseen > 9 ? '9+' : unseen}</span>` : '';
+    return `<button class="simple-tile" onclick="simpleModeOpen('${viewId}')" style="position:relative;">
+      ${badgeHtml}
       <span class="simple-tile-icon">${iconHtml}</span>
       <span class="simple-tile-label">${escapeHtml(label)}</span>
     </button>`;
@@ -36133,8 +36197,10 @@ function renderPcSidebarNav(){
       ? `<img src="${encodeURI(def.img)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${icon}'}))">`
       : icon;
     const isDev = viewId === 'dev';
+    const unseen = DASH_BADGE_VIEWS.includes(viewId) ? _dashUnseenCount(viewId) : 0;
+    const badgeHtml = unseen > 0 ? `<span class="pc-nav-badge">${unseen > 9 ? '9+' : unseen}</span>` : '';
     return `<button class="nav-btn" ${isDev ? '' : `data-view="${viewId}"`} onclick="simpleModeOpen('${viewId}')">
-      <span class="ico">${iconHtml}</span><span class="lbl">${escapeHtml(label)}</span>
+      <span class="ico">${iconHtml}</span><span class="lbl">${escapeHtml(label)}</span>${badgeHtml}
     </button>`;
   }).join('');
 
