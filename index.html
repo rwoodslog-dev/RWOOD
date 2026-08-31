@@ -26896,7 +26896,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.99.2';
+const APP_VERSION = '2.99.3';
 
 const CHANGELOG = [
   {
@@ -36521,6 +36521,13 @@ function _dashDragPointerDown(e){
   const grid = tile.closest('#simpleDashGrid');
   if(!grid) return;
 
+  // Empêche la capture implicite du pointeur par le bouton (comportement par
+  // défaut des navigateurs sur pointerdown) : sans ça, document.elementFromPoint
+  // peut ne plus détecter correctement la tuile survolée pendant le glisser.
+  if(e.target.releasePointerCapture && e.pointerId != null){
+    try{ e.target.releasePointerCapture(e.pointerId); }catch(err){}
+  }
+
   _dashDragState = {
     grid, tileEl: tile,
     startX: e.clientX, startY: e.clientY,
@@ -36552,7 +36559,25 @@ function _dashDragPointerMove(e){
   tileEl.style.pointerEvents = '';
   const target = under && under.closest && under.closest('.simple-tile');
   if(target && target !== tileEl){
+    // Position naturelle AVANT le swap (transform neutralisé le temps de la
+    // mesure, pour lire la vraie position de la cellule de grille — sinon la
+    // mesure inclurait le translate déjà appliqué et fausserait le calcul).
+    const prevTransform = tileEl.style.transform;
+    tileEl.style.transform = 'none';
+    const beforeRect = tileEl.getBoundingClientRect();
+
     _dashSwapTiles(tileEl, target);
+
+    // La tuile a changé de cellule : sa position naturelle a bougé. On
+    // compense ce déplacement dans startX/startY pour que le translate
+    // affiché reste au même endroit à l'écran (sous le doigt), au lieu de
+    // "sauter" à la position de la nouvelle cellule.
+    const afterRect = tileEl.getBoundingClientRect(); // toujours transform:none ici
+    const shiftX = afterRect.left - beforeRect.left;
+    const shiftY = afterRect.top - beforeRect.top;
+    _dashDragState.startX += shiftX;
+    _dashDragState.startY += shiftY;
+    tileEl.style.transform = `translate(${e.clientX - _dashDragState.startX}px, ${e.clientY - _dashDragState.startY}px) scale(1.06)`;
   }
 }
 
