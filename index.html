@@ -26654,7 +26654,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.93.1';
+const APP_VERSION = '2.94.0';
 
 const CHANGELOG = [
   {
@@ -32518,16 +32518,89 @@ function submitDevCode(){
 /* Recupere la liste des comptes synchronises (memes donnees que pour la comptable) */
 let _devCurrentTab = 'comptes'; // 'comptes' | 'pointages' | 'machines'
 
+/* ── Onglet Dev : Test alertes — simule l'envoi d'une alerte à SOI-MÊME
+   (le compte dev courant) pour voir son rendu réel dans l'inbox. ── */
+function _renderDevTabAlertTest(list){
+  const sites = (data.sites||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'','fr'));
+  const siteOptions = sites.map(s=>`<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+
+  list.innerHTML = `
+    <div class="hint" style="margin-bottom:12px;">Envoie une alerte de test sur CE compte, pour voir exactement le rendu qu'aura un utilisateur dans son inbox (bouton "Alertes" en haut de l'app).</div>
+
+    <div class="card" style="margin-bottom:12px;">
+      <div class="section-title" style="margin-top:0;">Choisis le type d'alerte à envoyer</div>
+      <div class="row-actions" style="flex-wrap:wrap;gap:8px;">
+        <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('info')">💬 Info</button>
+        <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('photo')">📸 Photo</button>
+        <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('signature')">✍️ Signature</button>
+        <button class="btn btn-outline" style="flex:1;min-width:120px;" onclick="_devSendTestAlert('evenement')">📅 Événement</button>
+      </div>
+    </div>
+
+    ${sites.length ? `
+    <div class="field" style="margin-bottom:12px;">
+      <label>Chantier utilisé pour l'alerte "Photo" (bouton Visionner)</label>
+      <select id="devAlertTestSite">${siteOptions}</select>
+    </div>` : `<div class="hint" style="margin-bottom:12px;">⚠️ Aucun chantier disponible — l'alerte "Photo" sera envoyée sans chantier lié.</div>`}
+
+    <div class="hint" id="devAlertTestResult"></div>
+  `;
+}
+
+async function _devSendTestAlert(type){
+  const myId = getDeviceSyncId();
+  const myName = 'Dev (test)';
+  const resultEl = document.getElementById('devAlertTestResult');
+  let ok = false;
+
+  if(type === 'photo'){
+    const siteSel = document.getElementById('devAlertTestSite');
+    const site = siteSel ? (data.sites||[]).find(s=>s.id===siteSel.value) : null;
+    const dateLabel = new Date().toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric'});
+    ok = await sendAlert(
+      `📸 Photo ajoutée à ${site ? site.name : 'un chantier'} par ${myName} le ${dateLabel}`,
+      'device', myId, myName, 'photo', null, site ? site.id : null
+    );
+  } else if(type === 'signature'){
+    ok = await sendAlert(
+      'La comptabilité te demande de signer ta fiche d\'heures. Touche « Signer maintenant » pour enregistrer ta signature.',
+      'device', myId, myName, 'signature'
+    );
+  } else if(type === 'evenement'){
+    ok = await sendAlert(
+      '📅 Nouvel événement ajouté à l\'agenda : Livraison matériaux — demain 8h.',
+      'device', myId, myName, 'info'
+    );
+  } else {
+    ok = await sendAlert(
+      'Ceci est une alerte de test envoyée depuis le Mode Développeur.',
+      'device', myId, myName, 'info'
+    );
+  }
+
+  if(resultEl){
+    resultEl.innerHTML = ok
+      ? '✅ Alerte envoyée. Ouvre la bulle "Alertes" en haut de l\'app pour voir le rendu.'
+      : '❌ Échec de l\'envoi (vérifie ta connexion).';
+  }
+  showToast(ok ? '✅ Alerte de test envoyée' : '❌ Échec de l\'envoi');
+
+  // Rafraîchit immédiatement la bulle d'alertes si elle est visible
+  if(ok && typeof checkForNewAlerts === 'function'){ try{ checkForNewAlerts(); }catch(e){} }
+}
+
 function switchDevTab(tab){
   _devCurrentTab = tab;
   const btnC = document.getElementById('devTabComptes');
   const btnP = document.getElementById('devTabPointages');
   const btnM = document.getElementById('devTabMachines');
   const btnCh = document.getElementById('devTabChantiers');
+  const btnA = document.getElementById('devTabAlertes');
   if(btnC){ btnC.className = tab==='comptes' ? 'btn btn-primary' : 'btn btn-outline'; btnC.style.flex='1'; btnC.style.fontSize='12px'; }
   if(btnP){ btnP.className = tab==='pointages' ? 'btn btn-primary' : 'btn btn-outline'; btnP.style.flex='1'; btnP.style.fontSize='12px'; }
   if(btnM){ btnM.className = tab==='machines' ? 'btn btn-primary' : 'btn btn-outline'; btnM.style.flex='1'; btnM.style.fontSize='12px'; }
   if(btnCh){ btnCh.className = tab==='chantiers' ? 'btn btn-primary' : 'btn btn-outline'; btnCh.style.flex='1'; btnCh.style.fontSize='12px'; }
+  if(btnA){ btnA.className = tab==='alertes' ? 'btn btn-primary' : 'btn btn-outline'; btnA.style.flex='1'; btnA.style.fontSize='12px'; }
   refreshDevPanel();
 }
 
@@ -32543,6 +32616,8 @@ async function refreshDevPanel(){
     await magasinRenderDevList(list); // MODULE — Magasin
   } else if(_devCurrentTab === 'chantiers'){
     await devChantiersRender(list); // MODULE — DevChantiers
+  } else if(_devCurrentTab === 'alertes'){
+    _renderDevTabAlertTest(list);
   } else {
     await _renderDevTabPointages(list);
   }
@@ -38172,11 +38247,14 @@ async function comptaEditEnsurePulled(){
     </div>
 
     <!-- Onglets Comptes / Pointages / Machines -->
-    <div style="display:flex; gap:6px; margin-bottom:12px;">
+    <div style="display:flex; gap:6px; margin-bottom:6px;">
       <button id="devTabComptes" class="btn btn-primary" style="flex:1;font-size:12px;" onclick="switchDevTab('comptes')">👥 Comptes</button>
       <button id="devTabPointages" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('pointages')">⏱ Pointages</button>
       <button id="devTabMachines" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('machines')">⚙️ Machines</button>
+    </div>
+    <div style="display:flex; gap:6px; margin-bottom:12px;">
       <button id="devTabChantiers" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('chantiers')">🏗 Chantiers</button>
+      <button id="devTabAlertes" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('alertes')">🔔 Test alertes</button>
     </div>
     <div style="margin-bottom:12px;">
       <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
