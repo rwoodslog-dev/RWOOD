@@ -3160,7 +3160,8 @@
     position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,.92);
     display:none; flex-direction:column; align-items:center; justify-content:center; padding:20px; gap:14px;
   }
-  #galerieLightbox img{ max-width:100%; max-height:82vh; object-fit:contain; border-radius:8px; }
+  #galerieLightbox img{ max-width:100%; max-height:82vh; object-fit:contain; border-radius:8px; touch-action:none; transition:transform 0.05s linear; }
+  .galerie-lb-imgwrap{ overflow:hidden; max-width:100%; max-height:82vh; display:flex; align-items:center; justify-content:center; }
   .galerie-lb-cap{ color:#fff; font-size:13px; text-align:center; opacity:.85; }
   .galerie-lb-close{
     position:fixed; top:16px; right:16px; z-index:1002;
@@ -9486,6 +9487,96 @@ function galerieOpenLightbox(index){
   _galerieRenderLightbox();
   lb.style.display = 'flex';
 }
+
+/* ── Zoom / pan par pincement dédié au lightbox galerie (indépendant du
+   zoom de la visionneuse photoFullscreen, même principe : pincement à
+   deux doigts, double-tap pour zoomer/dézoomer, glisser pour déplacer). ── */
+let _galerieLbZoom = { scale:1, x:0, y:0, startDist:0, startScale:1, lastX:0, lastY:0, panning:false };
+
+function _resetGalerieLbZoom(){
+  _galerieLbZoom = { scale:1, x:0, y:0, startDist:0, startScale:1, lastX:0, lastY:0, panning:false };
+  const img = document.getElementById('galerieLbImg');
+  if(img) img.style.transform = 'translate(0px,0px) scale(1)';
+}
+function _applyGalerieLbZoom(){
+  const img = document.getElementById('galerieLbImg');
+  if(img) img.style.transform = 'translate(' + _galerieLbZoom.x + 'px,' + _galerieLbZoom.y + 'px) scale(' + _galerieLbZoom.scale + ')';
+}
+function _galerieLbClampPan(){
+  const img = document.getElementById('galerieLbImg');
+  if(!img) return;
+  const rect = img.getBoundingClientRect();
+  const maxX = (rect.width * (_galerieLbZoom.scale - 1)) / 2 + 100;
+  const maxY = (rect.height * (_galerieLbZoom.scale - 1)) / 2 + 100;
+  _galerieLbZoom.x = Math.max(-maxX, Math.min(maxX, _galerieLbZoom.x));
+  _galerieLbZoom.y = Math.max(-maxY, Math.min(maxY, _galerieLbZoom.y));
+}
+function _galerieLbDist(t1, t2){ return Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY); }
+
+function _setupGalerieLbZoom(){
+  const img = document.getElementById('galerieLbImg');
+  if(!img) return;
+
+  let lastTap = 0;
+  img.addEventListener('touchend', function(e){
+    if(e.touches.length > 0) return;
+    const now = Date.now();
+    if(now - lastTap < 300 && !_galerieLbZoom.panning){
+      if(_galerieLbZoom.scale > 1){
+        _resetGalerieLbZoom();
+      } else {
+        const t = e.changedTouches[0];
+        const rect = img.getBoundingClientRect();
+        _galerieLbZoom.scale = 2.5;
+        _galerieLbZoom.x = -(t.clientX - rect.left - rect.width/2) * 1.5;
+        _galerieLbZoom.y = -(t.clientY - rect.top - rect.height/2) * 1.5;
+        _galerieLbClampPan();
+        _applyGalerieLbZoom();
+      }
+      e.preventDefault(); e.stopPropagation();
+    }
+    lastTap = now;
+  });
+
+  img.addEventListener('touchstart', function(e){
+    if(e.touches.length === 2){
+      _galerieLbZoom.startDist = _galerieLbDist(e.touches[0], e.touches[1]);
+      _galerieLbZoom.startScale = _galerieLbZoom.scale;
+      e.preventDefault(); e.stopPropagation();
+    } else if(e.touches.length === 1 && _galerieLbZoom.scale > 1){
+      _galerieLbZoom.panning = true;
+      _galerieLbZoom.lastX = e.touches[0].clientX;
+      _galerieLbZoom.lastY = e.touches[0].clientY;
+    }
+  }, {passive:false});
+
+  img.addEventListener('touchmove', function(e){
+    if(e.touches.length === 2){
+      const d = _galerieLbDist(e.touches[0], e.touches[1]);
+      let newScale = _galerieLbZoom.startScale * (d / _galerieLbZoom.startDist);
+      newScale = Math.max(1, Math.min(newScale, 5));
+      _galerieLbZoom.scale = newScale;
+      if(newScale <= 1){ _galerieLbZoom.x = 0; _galerieLbZoom.y = 0; }
+      _galerieLbClampPan();
+      _applyGalerieLbZoom();
+      e.preventDefault(); e.stopPropagation();
+    } else if(e.touches.length === 1 && _galerieLbZoom.panning){
+      const dx = e.touches[0].clientX - _galerieLbZoom.lastX;
+      const dy = e.touches[0].clientY - _galerieLbZoom.lastY;
+      _galerieLbZoom.x += dx;
+      _galerieLbZoom.y += dy;
+      _galerieLbZoom.lastX = e.touches[0].clientX;
+      _galerieLbZoom.lastY = e.touches[0].clientY;
+      _galerieLbClampPan();
+      _applyGalerieLbZoom();
+      e.preventDefault(); e.stopPropagation();
+    }
+  }, {passive:false});
+
+  img.addEventListener('touchend', function(e){
+    if(e.touches.length === 0) _galerieLbZoom.panning = false;
+  });
+}
 function _galerieRenderLightbox(){
   const lb = document.getElementById('galerieLightbox');
   if(!lb) return;
@@ -9500,10 +9591,12 @@ function _galerieRenderLightbox(){
   lb.innerHTML = `
     <button class="galerie-lb-close" onclick="event.stopPropagation(); document.getElementById('galerieLightbox').style.display='none';">✕</button>
     ${hasPrev ? `<button class="galerie-lb-arrow galerie-lb-arrow-left" onclick="event.stopPropagation(); galerieLightboxPrev();">‹</button>` : ''}
-    <img src="${escapeHtml(m.url)}" alt="photo">
+    <div class="galerie-lb-imgwrap"><img id="galerieLbImg" src="${escapeHtml(m.url)}" alt="photo"></div>
     ${hasNext ? `<button class="galerie-lb-arrow galerie-lb-arrow-right" onclick="event.stopPropagation(); galerieLightboxNext();">›</button>` : ''}
     <div class="galerie-lb-cap">${escapeHtml(caption)} <span style="opacity:.6;">(${_galerieLbIndex+1}/${photos.length})</span></div>
   `;
+  _resetGalerieLbZoom();
+  _setupGalerieLbZoom();
 }
 function galerieLightboxPrev(){
   if(_galerieLbIndex > 0){ _galerieLbIndex--; _galerieRenderLightbox(); }
@@ -26654,7 +26747,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.94.1';
+const APP_VERSION = '2.94.2';
 
 const CHANGELOG = [
   {
