@@ -3230,6 +3230,18 @@
   }
   .galerie-folder-name{ padding:9px 11px 2px; font-weight:700; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .galerie-folder-zone{ padding:0 11px 10px; font-size:12px; color:var(--ink-soft); }
+  .galerie-folder-badge{
+    position:absolute; top:8px; right:8px; z-index:2;
+    background:#E05555; color:#fff; font-size:11px; font-weight:800;
+    border-radius:20px; padding:1px 6px; min-width:18px; text-align:center;
+    border:2px solid var(--bg);
+  }
+  .site-card-badge{
+    position:absolute; top:12px; right:12px; z-index:2;
+    background:#E05555; color:#fff; font-size:11px; font-weight:800;
+    border-radius:20px; padding:1px 6px; min-width:18px; text-align:center;
+    border:2px solid var(--bg);
+  }
   .galerie-folder-head{
     display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;
   }
@@ -5220,26 +5232,29 @@
 
     <!-- ═══ VUE DÉPÔT ═══ -->
     <!-- VUE ALERTES CONDUCTEUR -->
-    <!-- VUE RÉCAP PATRON -->
+    <!-- VUE ALERTES (accessible à tous — envoi réservé conducteur/patron/comptable) -->
     <section class="view" id="view-alertes-conducteur">
-      <div class="view-heading">🔔 Envoyer une alerte</div>
+      <div class="view-heading">🔔 Alertes</div>
 
-      <!-- Barre de recherche -->
-      <div style="margin-bottom:12px;">
-        <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
-          oninput="renderAlertesConducteurList()"
-          style="width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; color:var(--ink); font-size:14px;">
+      <!-- Section ENVOI : visible uniquement conducteur / patron / comptable -->
+      <div id="alertesSendSection" style="display:none;">
+        <div class="section-title" style="margin-top:0;">Envoyer une alerte</div>
+        <div style="margin-bottom:12px;">
+          <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
+            oninput="renderAlertesConducteurList()"
+            style="width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; color:var(--ink); font-size:14px;">
+        </div>
+        <div class="chip-row" style="margin-bottom:14px;">
+          <div class="chip selected" id="alerteFilterAll"   onclick="setAlerteFilter('all')">Tous</div>
+          <div class="chip"          id="alerteFilterChef"  onclick="setAlerteFilter('chef')">Chefs</div>
+          <div class="chip"          id="alerteFilterOuvrier" onclick="setAlerteFilter('ouvrier')">Ouvriers</div>
+        </div>
+        <div id="alertesMemberList"></div>
       </div>
 
-      <!-- Filtres rapides -->
-      <div class="chip-row" style="margin-bottom:14px;">
-        <div class="chip selected" id="alerteFilterAll"   onclick="setAlerteFilter('all')">Tous</div>
-        <div class="chip"          id="alerteFilterChef"  onclick="setAlerteFilter('chef')">Chefs</div>
-        <div class="chip"          id="alerteFilterOuvrier" onclick="setAlerteFilter('ouvrier')">Ouvriers</div>
-      </div>
-
-      <!-- Liste des membres -->
-      <div id="alertesMemberList"></div>
+      <!-- Section HISTORIQUE : visible pour tous les rôles -->
+      <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
+      <div id="alertesHistoList"></div>
     </section>
 
 
@@ -8691,6 +8706,11 @@ function goTo(viewName, siteId){
   if(typeof DASH_BADGE_VIEWS !== 'undefined' && DASH_BADGE_VIEWS.includes(viewName)){
     if(typeof _dashMarkSeen === 'function') _dashMarkSeen(viewName);
   }
+  // Badge par-chantier : ouvrir le détail d'UN chantier marque ses propres
+  // nouveautés (documents/événements) comme vues, sans toucher aux autres.
+  if(viewName === 'detail' && siteId && typeof _dashMarkSiteSeen === 'function'){
+    _dashMarkSiteSeen('chantiers', siteId);
+  }
   // MODULE — PCDashboard : sur PC, l'accueil affiche directement le contenu réel
   // du chantier (bandeau + liste), plus la grille de tuiles séparée.
   if(viewName === 'simpleDash' && typeof simpleModeIsActive === 'function' && simpleModeIsActive()
@@ -8838,7 +8858,7 @@ function goTo(viewName, siteId){
     if(!suiviCanAccess()){ goTo('chantiers'); return; }
     suiviRefresh(false);
   }
-  if(viewName === 'alertes-conducteur') renderAlertesConducteurList();
+  if(viewName === 'alertes-conducteur') renderAlertesTuile();
 
   // Recharger les photos après chaque changement de vue
   // (le MutationObserver gère les nouvelles images, hydrateMediaElements couvre les existantes)
@@ -8974,7 +8994,7 @@ function renderSites(){
   if(syncBtn) syncBtn.style.display = isChefRole ? '' : 'none';
 
   const navAlertes = document.getElementById('navBtnAlertesConducteur');
-  if(navAlertes) navAlertes.style.display = (isConducteur || isPatronRole) ? '' : 'none';
+  if(navAlertes) navAlertes.style.display = ''; // accessible à tous (envoi restreint dans la vue)
 
   // Visuel unifié : tous les rôles voient la même liste de bulles de chantiers.
   // (Le dashboard conducteur séparé est désactivé au profit du rendu commun.)
@@ -9011,8 +9031,12 @@ function renderSites(){
     return;
   }
 
-  container.innerHTML = filterBarHtml + visible.map(site => `
-    <div class="card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}" onclick="goTo('detail', '${site.id}')">
+  container.innerHTML = filterBarHtml + visible.map(site => {
+    const newCount = _dashSiteUnseenChantier(site.id);
+    const cardBadgeHtml = newCount > 0 ? `<span class="site-card-badge">${newCount > 9 ? '9+' : newCount}</span>` : '';
+    return `
+    <div class="card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}position:relative;" onclick="goTo('detail', '${site.id}')">
+      ${cardBadgeHtml}
       <div class="card-row">
         <div>
           <h3>${escapeHtml(site.name)}</h3>
@@ -9029,7 +9053,8 @@ function renderSites(){
       <div class="progress-track"><div class="progress-fill" style="width:${site.progress}%"></div></div>
       <div class="progress-label"><span>Avancement</span><span>${site.progress}%</span></div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   _sitesFilterRestoreFocus();
 }
 
@@ -9208,8 +9233,11 @@ function _galerieRenderFolders(root){
       ${groups.map(g => {
         // Vignette de couverture : la photo la plus récente (une seule image chargée)
         const cover = g.photos[0];
+        const newCount = _dashSiteUnseenPhotos(g.site.id);
+        const badgeHtml = newCount > 0 ? `<span class="galerie-folder-badge">${newCount > 9 ? '9+' : newCount}</span>` : '';
         return `
-        <div class="galerie-folder" onclick="galerieOpenFolder('${g.site.id}')">
+        <div class="galerie-folder" onclick="galerieOpenFolder('${g.site.id}')" style="position:relative;">
+          ${badgeHtml}
           <div class="galerie-folder-thumb">
             ${cover ? `<img src="${escapeHtml(cover.url)}" loading="lazy" alt="">` : '📁'}
             <span class="galerie-folder-count">${g.photos.length}</span>
@@ -9344,6 +9372,8 @@ function galerieOpenFolder(siteId){
   if(btn) btn.textContent = 'Sélectionner';
   const root = document.getElementById('galerieContent');
   if(root){ root.scrollTop = 0; _galerieRenderFolder(root, siteId); }
+  // Badge par-chantier : ouvrir ce dossier marque ses nouvelles photos comme vues.
+  if(typeof _dashMarkSiteSeen === 'function') _dashMarkSiteSeen('galerie', siteId);
 }
 
 /* Revient à la liste des dossiers. */
@@ -11173,6 +11203,8 @@ function setAlerteFilter(filter){
   renderAlertesConducteurList();
 }
 
+let _alerteSelectedAuthIds = new Set();
+
 async function renderAlertesConducteurList(){
   const el = document.getElementById('alertesMemberList');
   if(!el) return;
@@ -11201,26 +11233,53 @@ async function renderAlertesConducteurList(){
     return;
   }
 
-  el.innerHTML = _alerteMembersCache.map((u, idx) => `
+  el.innerHTML = _alerteMembersCache.map((u, idx) => {
+    const checked = _alerteSelectedAuthIds.has(u.authId);
+    return `
     <div class="card" data-alerte-idx="${idx}"
-      style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;">
+      style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;${checked?'border-color:var(--wood);':''}">
+      <div style="width:22px;height:22px;border-radius:6px;border:1.5px solid ${checked?'var(--wood)':'var(--line)'};background:${checked?'var(--wood)':'transparent'};flex-shrink:0;display:flex;align-items:center;justify-content:center;">
+        ${checked ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#1a140d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>' : ''}
+      </div>
       <div style="width:38px;height:38px;border-radius:50%;background:${roleColor[u.role]||'var(--line)'};display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">${roleEmoji[u.role]||'👤'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;font-size:14px;">${escapeHtml(u.name)}</div>
         <div style="font-size:11px;color:${roleColor[u.role]||'var(--ink-soft)'};font-weight:600;">${roleLabel[u.role]||u.role||''}</div>
-        <div style="font-size:10px;color:var(--ink-soft);font-family:monospace;">${escapeHtml(u.authId)}</div>
       </div>
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--ink-soft)" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
-  // Délégation d'événements — pas d'onclick inline
+  // Sélection multiple : cocher/décocher au clic
   el.querySelectorAll('[data-alerte-idx]').forEach(card => {
     card.addEventListener('click', () => {
       const idx = parseInt(card.dataset.alerteIdx);
       const member = _alerteMembersCache[idx];
-      if(member) openAlerteCompose(member.authId, member.name);
+      if(!member) return;
+      if(_alerteSelectedAuthIds.has(member.authId)) _alerteSelectedAuthIds.delete(member.authId);
+      else _alerteSelectedAuthIds.add(member.authId);
+      renderAlertesConducteurList();
+      _updateAlerteSelectionBar();
     });
   });
+  _updateAlerteSelectionBar();
+}
+
+/* Barre flottante "X sélectionné(s) — Composer l'alerte" */
+function _updateAlerteSelectionBar(){
+  let bar = document.getElementById('alerteSelectionBar');
+  const n = _alerteSelectedAuthIds.size;
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'alerteSelectionBar';
+    bar.style.cssText = 'position:fixed;left:16px;right:16px;bottom:calc(var(--nav-h,64px) + 16px);z-index:150;display:none;';
+    document.body.appendChild(bar);
+  }
+  if(n === 0){ bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  bar.innerHTML = `
+    <button class="btn btn-primary btn-block" style="box-shadow:0 6px 20px rgba(0,0,0,.4);" onclick="openAlerteComposeGroup()">
+      🔔 Composer pour ${n} personne${n>1?'s':''}
+    </button>`;
 }
 
 const _ALERTE_TEMPLATES = [
@@ -11237,7 +11296,14 @@ function _applyAlerteTemplate(text){
   if(ta) ta.value = text;
 }
 
-function openAlerteCompose(authId, name){
+function openAlerteComposeGroup(){
+  const authIds = [..._alerteSelectedAuthIds];
+  if(!authIds.length){ showToast('Sélectionne au moins un destinataire'); return; }
+  const names = authIds.map(id => {
+    const m = _alerteMembersCache.find(u => u.authId === id);
+    return m ? m.name : id;
+  });
+
   const ex = document.getElementById('modal-alerteCompose');
   if(ex) ex.remove();
 
@@ -11247,11 +11313,11 @@ function openAlerteCompose(authId, name){
   div.innerHTML = `
     <div class="modal">
       <div class="modal-header">
-        <h2>🔔 Alerte pour ${escapeHtml(name)}</h2>
+        <h2>🔔 Alerte — ${names.length} destinataire${names.length>1?'s':''}</h2>
         <button class="modal-close" id="alerteComposeClose">×</button>
       </div>
       <div class="hint" style="margin-bottom:12px;">
-        Apparaîtra en popup sur l'app de <strong>${escapeHtml(name)}</strong> à sa prochaine ouverture.
+        Destinataires : <strong>${names.map(escapeHtml).join(', ')}</strong>. Chacun verra l'alerte dans sa tuile Alertes.
       </div>
       <div class="section-title">Modèles rapides</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;" id="alerteTemplateChips"></div>
@@ -11263,10 +11329,8 @@ function openAlerteCompose(authId, name){
     </div>`;
   document.body.appendChild(div);
 
-  // Bouton fermer
   document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
 
-  // Chips modèles — addEventListener propre
   const chipsContainer = document.getElementById('alerteTemplateChips');
   _ALERTE_TEMPLATES.forEach(t => {
     const btn = document.createElement('button');
@@ -11277,45 +11341,68 @@ function openAlerteCompose(authId, name){
     chipsContainer.appendChild(btn);
   });
 
-  // Bouton envoyer
   document.getElementById('alerteComposeSend').addEventListener('click', () => {
-    sendAlerteToMember(authId, name);
+    sendAlerteToMembers(authIds, names);
   });
 }
 
-async function sendAlerteToMember(recipientAuthId, recipientName){
+/* Résout un authId en deviceId réel, via les données déjà synchronisées de
+   l'équipe (_comptableLiveData, chargées par les Fiches d'heures / l'Agenda /
+   ici même si besoin). Retourne null si la personne n'a pas encore synchronisé. */
+async function _resolveDeviceIdFromAuthId(authId){
+  if(!authId) return null;
+  if(typeof _comptableLiveData === 'undefined' || !_comptableLiveData){
+    if(typeof pullAllPointagesForComptable === 'function'){
+      try{ _comptableLiveData = await pullAllPointagesForComptable(); }catch(e){ return null; }
+    }
+  }
+  const rows = _comptableLiveData || [];
+  const match = rows.find(d => (d.ownerAuthId||'').toLowerCase() === authId.toLowerCase());
+  return match ? (match.ownerDeviceSyncId || match.deviceId) : null;
+}
+
+/* Envoi groupé nominatif : résout chaque authId en deviceId puis envoie UNE
+   alerte partagée par tous les deviceIds résolus (recipientType='devices'). */
+async function sendAlerteToMembers(authIds, names){
   const textEl = document.getElementById('alerteComposeText');
   const text = textEl ? textEl.value.trim() : '';
   if(!text){ showToast('Écris un message'); return; }
 
   const p = data.settings && data.settings.myProfile;
-  const conductorName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
-    || (data.settings && data.settings.teamName) || 'Le conducteur';
-  const alertText = conductorName + ' : ' + text;
+  const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'La direction';
 
-  try{
-    const key = CONDUCTOR_ALERT_PREFIX + recipientAuthId;
-    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
-    let alerts = [];
-    if(res.ok){
-      const rows = await res.json();
-      if(rows && rows.length){
-        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-        alerts = (d && d.alerts) || [];
-      }
-    }
-    alerts.push({ id: uid(), text: alertText, createdAt: new Date().toISOString(), read: false, dismissed: false });
-    await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify({ alerts }) })
-    });
-    const modal = document.getElementById('modal-alerteCompose');
-    if(modal) modal.remove();
-    showToast('✅ Alerte envoyée à ' + recipientName);
-    if(typeof _playAlertSound === 'function') _playAlertSound();
-  } catch(e){
-    showToast('Erreur lors de l\'envoi');
+  showToast('⏳ Envoi en cours…');
+  const deviceIds = [];
+  const unresolved = [];
+  for(let i=0;i<authIds.length;i++){
+    const did = await _resolveDeviceIdFromAuthId(authIds[i]);
+    if(did) deviceIds.push(did);
+    else unresolved.push(names[i]);
+  }
+
+  if(!deviceIds.length){
+    showToast('❌ Aucun destinataire n\'a encore synchronisé son compte (réessaie plus tard)');
+    return;
+  }
+
+  const ok = await sendAlert(
+    senderName + ' : ' + text,
+    'devices', null, names.join(', '), 'info', null, null, deviceIds
+  );
+
+  const modal = document.getElementById('modal-alerteCompose');
+  if(modal) modal.remove();
+  _alerteSelectedAuthIds.clear();
+  _updateAlerteSelectionBar();
+  renderAlertesConducteurList();
+
+  if(ok){
+    showToast(unresolved.length
+      ? `✅ Envoyée à ${deviceIds.length}/${authIds.length} (${unresolved.join(', ')} pas encore synchronisé${unresolved.length>1?'s':''})`
+      : '✅ Alerte envoyée à ' + names.join(', '));
+  } else {
+    showToast('❌ Échec de l\'envoi');
   }
 }
 
@@ -11830,7 +11917,8 @@ function addMaterialOrder(siteId){
       id: uid(),
       date: deliveryDate,
       siteId: siteId,
-      text: 'Livraison : ' + name
+      text: 'Livraison : ' + name,
+      createdAt: new Date().toISOString()
     });
     const d = new Date(deliveryDate + 'T00:00:00');
     const dateLabel = d.toLocaleDateString('fr-FR', {day:'numeric', month:'long'});
@@ -13847,6 +13935,21 @@ function renderTrash(){
   const sorted = [...data.trash].reverse();
 
   container.innerHTML = sorted.map(item=>{
+    if(item.kind === 'alert'){
+      return `
+        <div class="card" style="display:flex; gap:12px; align-items:center;">
+          <div style="width:40px;height:40px;border-radius:10px;background:rgba(224,85,85,0.12);display:flex;align-items:center;justify-content:center;flex-shrink:0;">🔔</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:13px; line-height:1.4;">${escapeHtml(item.alert.text||'')}</div>
+            <div class="hint" style="margin:2px 0 0;">Supprimée le ${item.deletedAt}</div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <button class="btn btn-outline" style="padding:6px 10px; font-size:12px;" onclick="restoreAlertFromTrash('${item.id}')" title="Restaurer"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg> Restaurer</button>
+            <button class="btn btn-outline" style="padding:6px 10px; font-size:12px; color:var(--red); border-color:var(--red);" onclick="permanentlyDeleteAlertFromTrash('${item.id}')" title="Supprimer définitivement"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M5 7h14"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M7 7l1 13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg> Définitif</button>
+          </div>
+        </div>
+      `;
+    }
     const site = data.sites.find(s=>s.id===item.logEntry.siteId);
     return `
       <div class="card" style="display:flex; gap:12px; align-items:center;">
@@ -17237,7 +17340,7 @@ function addEventToAgenda(siteId, ev){
   if(exists){ showToast('Déjà dans l\'agenda'); return; }
 
   const taskId = uid();
-  data.tasks.push({ id: taskId, date: ev.date, siteId: siteId, text: title, time: ev.time || '' });
+  data.tasks.push({ id: taskId, date: ev.date, siteId: siteId, text: title, time: ev.time || '', createdAt: new Date().toISOString() });
 
   if(!data.logs) data.logs = [];
   const d = new Date(ev.date + 'T00:00:00');
@@ -25822,7 +25925,7 @@ function saveTask(){
     taskId = editingTaskId;
   } else {
     taskId = uid();
-    data.tasks.push({id: taskId, date, siteId, text});
+    data.tasks.push({id: taskId, date, siteId, text, createdAt: new Date().toISOString()});
   }
 
   // Si la tâche est liée à un chantier (création ou ajout d'un lien lors d'une modification),
@@ -26769,7 +26872,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.96.0';
+const APP_VERSION = '2.98.0';
 
 const CHANGELOG = [
   {
@@ -32289,6 +32392,8 @@ async function pushPointageToSupabase(){
     data: JSON.stringify({
       ownerName: ownerName,
       ownerRole: profile.role || 'chef',
+      ownerAuthId: (data.settings && data.settings.auth && data.settings.auth.authId) || '',
+      ownerDeviceSyncId: deviceId, // le deviceId "physique" (getDeviceSyncId) — cible réelle des alertes
       workers: myWorkers,
       attendance: myAttendance,
       sites: (data.sites||[]).map(s => ({ id:s.id, name:s.name, address:s.address||'', trajetZone:s.trajetZone||'', color:s.color||'' }))
@@ -32333,6 +32438,7 @@ async function pullAllPointagesForComptable(){
           ownerName:  d.ownerName  || 'Inconnu',
           ownerRole:  d.ownerRole  || 'chef',
           ownerAuthId: d.ownerAuthId || '',
+          ownerDeviceSyncId: d.ownerDeviceSyncId || row.user_id.replace(COMPANY_SYNC_KEY + '_', ''),
           workers:    d.workers    || [],
           attendance: d.attendance || {},
           sites:      d.sites      || []
@@ -32999,6 +33105,26 @@ async function markAlertRead(alertId){
       alert.readBy.push(myId);
       await _saveAlerts(alerts);
     }
+  } catch(e){ /* silencieux */ }
+}
+
+/* Marque TOUTES mes alertes en attente comme lues en une seule opération
+   (appelé à l'ouverture de la tuile Alertes, pour faire disparaître le
+   badge global sans que l'utilisateur ait à ouvrir chaque alerte une à une). */
+async function markAllAlertsRead(){
+  try{
+    const myId = getDeviceSyncId();
+    const alerts = await _fetchAlerts();
+    const mine = _filterAlertsForMe(alerts);
+    let changed = false;
+    mine.forEach(a => { if(!a.readBy.includes(myId)){ a.readBy.push(myId); changed = true; } });
+    if(changed) await _saveAlerts(alerts);
+    // Rafraîchir l'état local (bulle/badge) sans attendre le prochain polling
+    (_myAlertsCache||[]).forEach(a => { if(!a.readBy.includes(myId)) a.readBy.push(myId); });
+    const bubble = document.getElementById('alertBubble');
+    const badge = document.getElementById('alertBubbleBadge');
+    if(bubble) bubble.classList.remove('show');
+    if(badge) badge.style.display = 'none';
   } catch(e){ /* silencieux */ }
 }
 
@@ -34974,15 +35100,21 @@ function _playAlertSound(){
 async function checkForNewAlerts(){
   if(!navigator.onLine) return;
   const profile = (data.settings && data.settings.myProfile) || {};
-  if(profile.role === 'comptable') return; // la comptable n'a pas de bulle entrante
 
   try{
     const all = await _fetchAlerts();
-    const mine = _filterAlertsForMe(all);
+    let mine = _filterAlertsForMe(all);
+    // Exclure les alertes que l'utilisateur a supprimées de son historique local
+    // (elles restent dans "Supprimés récemment" → Paramètres, récupérables).
+    const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
+    if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
     const myId = getDeviceSyncId();
     const unread = mine.filter(a => !a.readBy.includes(myId));
 
     _myAlertsCache = mine;
+    // La comptable n'a pas de bulle flottante ni de son popup (déjà accessible
+    // via sa vue dédiée), mais garde son historique dans la tuile Alertes.
+    if(profile.role === 'comptable') return;
 
     const bubble = document.getElementById('alertBubble');
     const badge = document.getElementById('alertBubbleBadge');
@@ -35016,7 +35148,102 @@ document.addEventListener('visibilitychange', function(){
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   UI ALERTES — comptable (composer/historique) + ouvrier (bulle/inbox)
+   TUILE ALERTES — accessible à tous les rôles.
+   - conducteur / patron / comptable : section envoi + historique reçu.
+   - autres rôles (ouvrier, chef) : historique reçu uniquement (lecture,
+     suppression → récupérable dans Paramètres → Supprimés récemment).
+   - Chaque utilisateur ne voit QUE les alertes qui lui sont destinées
+     (device précis, liste nominative, ou son rôle dans un envoi groupé).
+   ═══════════════════════════════════════════════════════════════════ */
+function renderAlertesTuile(){
+  const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const canSend = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable';
+
+  const sendSection = document.getElementById('alertesSendSection');
+  if(sendSection) sendSection.style.display = canSend ? 'block' : 'none';
+  if(canSend) renderAlertesConducteurList();
+
+  _renderAlertesHistoList();
+
+  // Marquer tout comme lu à l'ouverture de la tuile (fait disparaître le badge global)
+  if(typeof markAllAlertsRead === 'function') markAllAlertsRead();
+}
+
+function _renderAlertesHistoList(){
+  const list = document.getElementById('alertesHistoList');
+  if(!list) return;
+  const myId = getDeviceSyncId();
+  const mine = (_myAlertsCache || []).slice().sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+
+  if(!mine.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte reçue pour le moment.</div>';
+    return;
+  }
+
+  list.innerHTML = mine.map(a => {
+    const isRead = a.readBy && a.readBy.includes(myId);
+    const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+    let actionHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')">🗑 Supprimer</button>`;
+    if(a.kind === 'signature'){
+      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button> ` + actionHtml;
+    } else if(a.kind === 'photo'){
+      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
+    }
+    return `
+      <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
+        <div style="display:flex;align-items:flex-start;gap:8px;">
+          ${!isRead ? '<div style="width:8px;height:8px;border-radius:50%;background:#E05555;flex-shrink:0;margin-top:5px;"></div>' : ''}
+          <div style="flex:1;">
+            <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
+            <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
+          </div>
+        </div>
+        <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
+      </div>`;
+  }).join('');
+}
+
+/* Supprime une alerte de MON historique perso (sans la retirer pour les
+   autres destinataires) → récupérable dans Paramètres → Supprimés récemment. */
+function deleteAlertToTrash(alertId){
+  const alert = (_myAlertsCache||[]).find(a => a.id === alertId);
+  if(!alert) return;
+  ensureTrash();
+  data.trash.push({ id: uid(), kind: 'alert', alert: {...alert}, deletedAt: formatDateTime(new Date()) });
+  // Marquer comme lu ET retirer localement de l'historique affiché (pas de la base partagée)
+  const myId = getDeviceSyncId();
+  if(!(data.settings.dismissedAlertIds)) data.settings.dismissedAlertIds = [];
+  data.settings.dismissedAlertIds.push(alertId);
+  _myAlertsCache = (_myAlertsCache||[]).filter(a => a.id !== alertId);
+  saveData();
+  _renderAlertesHistoList();
+  showToast('🗑 Alerte supprimée');
+}
+function restoreAlertFromTrash(trashId){
+  ensureTrash();
+  const item = data.trash.find(t=>t.id===trashId && t.kind==='alert');
+  if(!item) return;
+  data.settings.dismissedAlertIds = (data.settings.dismissedAlertIds||[]).filter(id => id !== item.alert.id);
+  _myAlertsCache.push(item.alert);
+  data.trash = data.trash.filter(t=>t.id!==trashId);
+  saveData();
+  renderTrash();
+  _renderAlertesHistoList();
+  showToast('Alerte restaurée');
+}
+function permanentlyDeleteAlertFromTrash(trashId){
+  if(!confirm('Supprimer définitivement cette alerte ? Cette action est irréversible.')) return;
+  ensureTrash();
+  data.trash = data.trash.filter(t=>t.id!==trashId);
+  saveData();
+  renderTrash();
+  showToast('Alerte supprimée définitivement');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   UI ALERTES — bulle flottante (popup rapide, indépendante de la tuile) :
+   utile pour voir immédiatement une nouvelle alerte non lue sans changer
+   de vue. La tuile Alertes reste la référence pour l'historique complet.
    ═══════════════════════════════════════════════════════════════════ */
 function openAlertInbox(){
   _renderAlertInboxList();
@@ -36036,12 +36263,15 @@ const SIMPLE_ALL_TILES = [
   { view:'magasin', img:'icons/magasin.png', icon:'🛒', label:'Magasin' },
   { view:'quincaillerie', img:'icons/quincaillerie.png', icon:'🔩', label:'Quincaillerie' },
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
+  { view:'alertes-conducteur', img:'icons/bulle-warning.png', icon:'🔔', label:'Alertes' },
 ];
 /* ═══════════════════════════════════════════════════════════════════
    BADGES DE NOTIFICATION SUR LES TUILES DU DASHBOARD
    Compte les éléments créés depuis la dernière visite de chaque tuile
    (rond rouge avec chiffre, même principe que le badge alertes).
-   Persistance : data.settings.dashLastSeen = { chantiers: iso, galerie: iso }
+   Persistance :
+     data.settings.dashLastSeen        = { chantiers: iso, galerie: iso }        → tuile globale
+     data.settings.dashSiteLastSeen    = { chantiers: {siteId: iso}, galerie: {siteId: iso} } → par chantier
    ═══════════════════════════════════════════════════════════════════ */
 function _dashLastSeen(viewId){
   const ls = (data.settings && data.settings.dashLastSeen) || {};
@@ -36053,14 +36283,67 @@ function _dashMarkSeen(viewId){
   data.settings.dashLastSeen[viewId] = new Date().toISOString();
   saveData();
 }
+/* Dernière visite d'un chantier précis pour une tuile donnée (ex: on a
+   ouvert le détail de Marchal, ou le dossier Guanxi dans la galerie). */
+function _dashSiteLastSeen(viewId, siteId){
+  const ls = (data.settings && data.settings.dashSiteLastSeen && data.settings.dashSiteLastSeen[viewId]) || {};
+  return ls[siteId] || null;
+}
+function _dashMarkSiteSeen(viewId, siteId){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.dashSiteLastSeen) data.settings.dashSiteLastSeen = {};
+  if(!data.settings.dashSiteLastSeen[viewId]) data.settings.dashSiteLastSeen[viewId] = {};
+  data.settings.dashSiteLastSeen[viewId][siteId] = new Date().toISOString();
+  saveData();
+}
+/* Nouveaux documents + nouveaux événements pour UN chantier (badge sur sa
+   carte dans la liste Chantiers). "Document" = tout média non-photo. */
+function _dashSiteUnseenChantier(siteId){
+  const since = _dashSiteLastSeen('chantiers', siteId);
+  const sinceTime = since ? new Date(since).getTime() : 0;
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return 0;
+  let n = 0;
+  (site.sharedMedia||[]).forEach(m => {
+    const isPhoto = m.type==='photo' || (m.mimeType||'').startsWith('image/');
+    if(!isPhoto && m.uploadedAt && new Date(m.uploadedAt).getTime() > sinceTime) n++;
+  });
+  (data.tasks||[]).forEach(t => {
+    if(t.siteId === siteId && t.createdAt && new Date(t.createdAt).getTime() > sinceTime) n++;
+  });
+  return n;
+}
+/* Nouvelles photos pour UN chantier (badge sur son dossier dans la Galerie). */
+function _dashSiteUnseenPhotos(siteId){
+  const since = _dashSiteLastSeen('galerie', siteId);
+  const sinceTime = since ? new Date(since).getTime() : 0;
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return 0;
+  let n = 0;
+  (site.sharedMedia||[]).forEach(m => {
+    const isPhoto = m.type==='photo' || (m.mimeType||'').startsWith('image/');
+    if(isPhoto && m.uploadedAt && new Date(m.uploadedAt).getTime() > sinceTime) n++;
+  });
+  return n;
+}
 /* Compte les nouveautés pour une tuile donnée depuis sa dernière visite. */
 function _dashUnseenCount(viewId){
   const since = _dashLastSeen(viewId);
   const sinceTime = since ? new Date(since).getTime() : 0;
 
   if(viewId === 'chantiers'){
-    // Nouveaux chantiers créés (par n'importe qui, visibles localement)
-    return (data.sites||[]).filter(s => s.createdAt && new Date(s.createdAt).getTime() > sinceTime).length;
+    // Nouveaux chantiers créés + nouveaux documents + nouveaux événements, tous chantiers confondus.
+    let n = (data.sites||[]).filter(s => s.createdAt && new Date(s.createdAt).getTime() > sinceTime).length;
+    (data.sites||[]).forEach(s => {
+      (s.sharedMedia||[]).forEach(m => {
+        const isPhoto = m.type==='photo' || (m.mimeType||'').startsWith('image/');
+        if(!isPhoto && m.uploadedAt && new Date(m.uploadedAt).getTime() > sinceTime) n++;
+      });
+    });
+    (data.tasks||[]).forEach(t => {
+      if(t.createdAt && new Date(t.createdAt).getTime() > sinceTime) n++;
+    });
+    return n;
   }
   if(viewId === 'galerie'){
     // Nouvelles photos ajoutées, tous chantiers confondus
@@ -36073,9 +36356,14 @@ function _dashUnseenCount(viewId){
     });
     return n;
   }
+  if(viewId === 'alertes-conducteur'){
+    // Alertes reçues non lues (pas basé sur la date de visite, mais sur readBy)
+    const myId = getDeviceSyncId();
+    return (_myAlertsCache||[]).filter(a => !a.readBy.includes(myId)).length;
+  }
   return 0;
 }
-const DASH_BADGE_VIEWS = ['chantiers', 'galerie'];
+const DASH_BADGE_VIEWS = ['chantiers', 'galerie', 'alertes-conducteur'];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
 
 function simpleModeIsActive(){
