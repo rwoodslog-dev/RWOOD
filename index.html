@@ -3289,23 +3289,39 @@
   }
   .simple-tile-icon{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .simple-tile-label{ font-size:16px; font-weight:800; color:var(--ink); letter-spacing:.2px; position:relative; z-index:1; text-shadow:0 1px 2px rgba(0,0,0,.4); -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; }
-  /* Mode réorganisation : les tuiles tremblent légèrement (feedback "on peut glisser") */
-  @keyframes dashJiggle{
-    0%,100%{ transform:rotate(-1deg); }
-    50%{ transform:rotate(1deg); }
+  /* Mode réorganisation : la tuile en édition ressort (zoom + liseré doré),
+     les autres s'estompent légèrement pour la mettre en évidence. */
+  .simple-dash.has-reorder-editing .simple-tile:not(.reorder-editing){
+    opacity:0.5;
   }
-  .simple-dash.reorder-mode .simple-tile:not(.dragging){
-    animation:dashJiggle 0.28s ease-in-out infinite;
+  .simple-tile.reorder-editing{
+    transform:scale(1.08);
+    border-color:var(--wood) !important;
+    box-shadow:0 10px 26px rgba(0,0,0,.5), 0 0 0 2px var(--wood);
+    z-index:20;
   }
-  .simple-tile.dragging{
-    transition:none !important;
-    box-shadow:0 12px 30px rgba(0,0,0,.55) !important;
-    opacity:0.92;
-    cursor:grabbing;
+  .dash-reorder-arrow{
+    position:absolute; z-index:21;
+    width:34px; height:34px; border-radius:50%;
+    background:var(--wood); color:#1a140d; border:none;
+    font-size:15px; font-weight:800; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 3px 10px rgba(0,0,0,.4);
+  }
+  .dash-reorder-arrow:active{ transform:scale(0.9); }
+  .dash-arrow-up{ top:-17px; left:50%; margin-left:-17px; }
+  .dash-arrow-down{ bottom:-17px; left:50%; margin-left:-17px; }
+  .dash-arrow-left{ left:-17px; top:50%; margin-top:-17px; }
+  .dash-arrow-right{ right:-17px; top:50%; margin-top:-17px; }
+  .dash-reorder-hint{
+    position:absolute; bottom:-30px; left:50%; transform:translateX(-50%);
+    font-size:10.5px; color:var(--ink-soft); white-space:nowrap;
+    background:var(--bg); padding:3px 9px; border-radius:8px; border:1px solid var(--line);
   }
   .simple-tile{
     touch-action:manipulation;
     -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
+    transition:transform .15s ease, opacity .15s ease;
   }
   .simple-tile-badge{
     position:absolute; top:8px; right:8px; z-index:2;
@@ -26896,7 +26912,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '2.99.3';
+const APP_VERSION = '3.0.0';
 
 const CHANGELOG = [
   {
@@ -36471,15 +36487,28 @@ function simpleModeRenderDash(){
       : icon;
     const unseen = DASH_BADGE_VIEWS.includes(viewId) ? _dashUnseenCount(viewId) : 0;
     const badgeHtml = unseen > 0 ? `<span class="simple-tile-badge">${unseen > 9 ? '9+' : unseen}</span>` : '';
-    return `<button class="simple-tile" data-view-id="${viewId}" data-idx="${idx}" onclick="simpleModeOpen('${viewId}')" style="position:relative;">
+    const isEditing = viewId === _dashReorderTileId;
+    // En édition : pas d'ouverture au clic (le pointerdown gère la validation),
+    // zoom visuel + 4 flèches directionnelles pour déplacer la tuile d'un cran.
+    const arrowsHtml = isEditing ? `
+      <button class="dash-reorder-arrow dash-arrow-up" onclick="event.stopPropagation(); _dashReorderMove('up');">▲</button>
+      <button class="dash-reorder-arrow dash-arrow-down" onclick="event.stopPropagation(); _dashReorderMove('down');">▼</button>
+      <button class="dash-reorder-arrow dash-arrow-left" onclick="event.stopPropagation(); _dashReorderMove('left');">◀</button>
+      <button class="dash-reorder-arrow dash-arrow-right" onclick="event.stopPropagation(); _dashReorderMove('right');">▶</button>
+      <div class="dash-reorder-hint">Touche pour valider</div>
+    ` : '';
+    return `<button class="simple-tile${isEditing?' reorder-editing':''}" data-view-id="${viewId}" data-idx="${idx}"
+      ${isEditing ? '' : `onclick="simpleModeOpen('${viewId}')"`} style="position:relative;">
       ${badgeHtml}
       <span class="simple-tile-icon">${iconHtml}</span>
       <span class="simple-tile-label">${escapeHtml(label)}</span>
+      ${arrowsHtml}
     </button>`;
   }).join('');
 
-  // Réorganisation par appui long + glisser-déposer.
+  // Réorganisation par appui long + flèches directionnelles.
   if(typeof _dashDragInit === 'function') _dashDragInit(grid);
+  grid.classList.toggle('has-reorder-editing', !!_dashReorderTileId);
 
   // MODULE — PCDashboard : sidebar + bandeau chantier actif (desktop uniquement,
   // neutralisé en CSS sur téléphone). Se resynchronise à chaque rendu du dashboard.
@@ -36488,139 +36517,103 @@ function simpleModeRenderDash(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   RÉORGANISATION DES TUILES — appui long puis glisser-déposer.
-   Appui long (≈450ms) sur une tuile → mode réorganisation (tuiles qui
-   tremblent légèrement, comme sur un téléphone). On glisse ensuite la
-   tuile maintenue par-dessus une autre : elles échangent leurs places.
-   Fonctionne au doigt (mobile) et à la souris (PC). Ordre persistant
-   dans data.settings.simpleTiles.
+   RÉORGANISATION DES TUILES — appui long puis flèches directionnelles.
+   Appui long (≈450ms) sur une tuile → elle se met en évidence (zoom +
+   liseré) et 4 flèches apparaissent. Chaque clic sur une flèche échange
+   la tuile avec sa voisine dans cette direction. On revalide en tapant
+   sur la tuile elle-même (ou ailleurs) pour figer la position.
+   Ordre persistant dans data.settings.simpleTiles.
    ═══════════════════════════════════════════════════════════════════ */
-let _dashDragState = null; // {grid, tileEl, longPressTimer, startX, startY}
-let _dashReorderMode = false;
+let _dashReorderTileId = null; // viewId de la tuile actuellement en édition (ou null)
+let _dashLongPressTimer = null;
+let _dashLongPressStart = null; // {x,y} pour annuler si ça bouge trop (scroll)
 
 function _dashDragInit(grid){
   if(!grid || grid.dataset.dragBound) return; // n'attacher les écouteurs qu'une fois par élément
   grid.dataset.dragBound = '1';
 
-  grid.addEventListener('pointerdown', _dashDragPointerDown);
-  document.addEventListener('pointermove', _dashDragPointerMove);
-  document.addEventListener('pointerup', _dashDragPointerUp);
-  document.addEventListener('pointercancel', _dashDragPointerUp);
-  // Empêche le menu contextuel natif (copier l'image, etc.) qui interrompt
-  // le geste d'appui long et bloque la réorganisation. Délégation sur la
-  // grille entière (capte l'event avant qu'il ne remonte, sur toute tuile).
+  grid.addEventListener('pointerdown', _dashReorderPointerDown);
+  grid.addEventListener('pointermove', _dashReorderPointerMove);
+  grid.addEventListener('pointerup', _dashReorderPointerCancel);
+  grid.addEventListener('pointercancel', _dashReorderPointerCancel);
   grid.addEventListener('contextmenu', e => {
     if(e.target.closest('.simple-tile')) e.preventDefault();
   });
-  grid.addEventListener('dragstart', e => e.preventDefault());
+  // Un clic en dehors de la grille (ex: barre du haut) valide aussi la position.
+  document.addEventListener('pointerdown', e => {
+    if(_dashReorderTileId && !e.target.closest('#simpleDashGrid')){
+      _dashReorderCommit();
+    }
+  });
 }
 
-function _dashDragPointerDown(e){
+function _dashReorderPointerDown(e){
+  // Les flèches gèrent leur propre clic (déplacement) ; ne pas interférer.
+  if(e.target.closest && e.target.closest('.dash-reorder-arrow')) return;
+
   const tile = e.target.closest && e.target.closest('.simple-tile');
   if(!tile) return;
-  const grid = tile.closest('#simpleDashGrid');
-  if(!grid) return;
 
-  // Empêche la capture implicite du pointeur par le bouton (comportement par
-  // défaut des navigateurs sur pointerdown) : sans ça, document.elementFromPoint
-  // peut ne plus détecter correctement la tuile survolée pendant le glisser.
-  if(e.target.releasePointerCapture && e.pointerId != null){
-    try{ e.target.releasePointerCapture(e.pointerId); }catch(err){}
+  // Si une autre tuile est déjà en édition, un tap ailleurs la valide (sortie).
+  if(_dashReorderTileId && _dashReorderTileId !== tile.dataset.viewId){
+    _dashReorderCommit();
+    return;
   }
-
-  _dashDragState = {
-    grid, tileEl: tile,
-    startX: e.clientX, startY: e.clientY,
-    longPressTimer: setTimeout(() => _dashEnterReorderMode(grid, tile), 450)
-  };
-}
-
-function _dashDragPointerMove(e){
-  if(!_dashDragState) return;
-  const { startX, startY, longPressTimer, tileEl } = _dashDragState;
-
-  if(!_dashReorderMode){
-    // Annule l'appui long si le doigt bouge trop tôt (= un scroll, pas une réorg)
-    if(Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10){
-      clearTimeout(longPressTimer);
-      _dashDragState = null;
-    }
+  if(_dashReorderTileId === tile.dataset.viewId){
+    // Re-tap sur la tuile déjà en édition → valide et sort du mode.
+    _dashReorderCommit();
     return;
   }
 
-  // Mode réorganisation actif : la tuile suit le doigt/la souris
-  e.preventDefault();
-  tileEl.style.transform = `translate(${e.clientX - startX}px, ${e.clientY - startY}px) scale(1.06)`;
-  tileEl.style.zIndex = '50';
-
-  // Détecter la tuile survolée pour échanger visuellement (feedback en direct)
-  tileEl.style.pointerEvents = 'none';
-  const under = document.elementFromPoint(e.clientX, e.clientY);
-  tileEl.style.pointerEvents = '';
-  const target = under && under.closest && under.closest('.simple-tile');
-  if(target && target !== tileEl){
-    // Position naturelle AVANT le swap (transform neutralisé le temps de la
-    // mesure, pour lire la vraie position de la cellule de grille — sinon la
-    // mesure inclurait le translate déjà appliqué et fausserait le calcul).
-    const prevTransform = tileEl.style.transform;
-    tileEl.style.transform = 'none';
-    const beforeRect = tileEl.getBoundingClientRect();
-
-    _dashSwapTiles(tileEl, target);
-
-    // La tuile a changé de cellule : sa position naturelle a bougé. On
-    // compense ce déplacement dans startX/startY pour que le translate
-    // affiché reste au même endroit à l'écran (sous le doigt), au lieu de
-    // "sauter" à la position de la nouvelle cellule.
-    const afterRect = tileEl.getBoundingClientRect(); // toujours transform:none ici
-    const shiftX = afterRect.left - beforeRect.left;
-    const shiftY = afterRect.top - beforeRect.top;
-    _dashDragState.startX += shiftX;
-    _dashDragState.startY += shiftY;
-    tileEl.style.transform = `translate(${e.clientX - _dashDragState.startX}px, ${e.clientY - _dashDragState.startY}px) scale(1.06)`;
+  _dashLongPressStart = { x: e.clientX, y: e.clientY };
+  _dashLongPressTimer = setTimeout(() => _dashReorderStart(tile), 450);
+}
+function _dashReorderPointerMove(e){
+  if(!_dashLongPressTimer || !_dashLongPressStart) return;
+  if(Math.abs(e.clientX - _dashLongPressStart.x) > 10 || Math.abs(e.clientY - _dashLongPressStart.y) > 10){
+    clearTimeout(_dashLongPressTimer);
+    _dashLongPressTimer = null;
   }
 }
-
-function _dashDragPointerUp(){
-  if(!_dashDragState) return;
-  clearTimeout(_dashDragState.longPressTimer);
-
-  if(_dashReorderMode){
-    _dashExitReorderMode();
-  }
-  _dashDragState = null;
+function _dashReorderPointerCancel(){
+  if(_dashLongPressTimer){ clearTimeout(_dashLongPressTimer); _dashLongPressTimer = null; }
 }
 
-function _dashEnterReorderMode(grid, tileEl){
-  _dashReorderMode = true;
-  grid.classList.add('reorder-mode');
+/* Entre en mode édition pour UNE tuile : zoom + flèches directionnelles. */
+function _dashReorderStart(tile){
+  _dashReorderTileId = tile.dataset.viewId;
   if(navigator.vibrate) navigator.vibrate(30);
-  tileEl.classList.add('dragging');
+  simpleModeRenderDash();
 }
 
-function _dashExitReorderMode(){
-  _dashReorderMode = false;
-  const grid = document.getElementById('simpleDashGrid');
-  if(grid) grid.classList.remove('reorder-mode');
-  document.querySelectorAll('.simple-tile.dragging').forEach(t => {
-    t.classList.remove('dragging');
-    t.style.transform = '';
-    t.style.zIndex = '';
-  });
-  // Persiste le nouvel ordre affiché dans le DOM
+/* Sort du mode édition et sauvegarde la position actuelle. */
+function _dashReorderCommit(){
+  _dashReorderTileId = null;
   _dashSaveTileOrder();
 }
 
-/* Échange les positions DOM de deux tuiles (feedback visuel immédiat). */
-function _dashSwapTiles(a, b){
-  const grid = a.parentElement;
-  if(!grid) return;
-  const aNext = a.nextSibling;
-  const bNext = b.nextSibling;
-  if(aNext === b){ grid.insertBefore(b, a); return; }
-  if(bNext === a){ grid.insertBefore(a, b); return; }
-  grid.insertBefore(a, bNext);
-  grid.insertBefore(b, aNext);
+/* Déplace la tuile en édition d'un cran dans une direction ('up'|'down'|'left'|'right'). */
+function _dashReorderMove(dir){
+  const grid = document.getElementById('simpleDashGrid');
+  if(!grid || !_dashReorderTileId) return;
+  const tiles = [...grid.querySelectorAll('.simple-tile')];
+  const idx = tiles.findIndex(t => t.dataset.viewId === _dashReorderTileId);
+  if(idx === -1) return;
+
+  const cols = grid.classList.contains('cols-1') ? 1 : grid.classList.contains('cols-3') ? 3 : 2;
+  let targetIdx = idx;
+  if(dir === 'left')  targetIdx = idx - 1;
+  if(dir === 'right') targetIdx = idx + 1;
+  if(dir === 'up')    targetIdx = idx - cols;
+  if(dir === 'down')  targetIdx = idx + cols;
+  if(targetIdx < 0 || targetIdx >= tiles.length) return; // hors grille : rien ne bouge
+
+  const order = tiles.map(t => t.dataset.viewId);
+  const tmp = order[idx]; order[idx] = order[targetIdx]; order[targetIdx] = tmp;
+
+  if(!data.settings) data.settings = {};
+  data.settings.simpleTiles = order;
+  simpleModeRenderDash(); // re-rendu immédiat avec la tuile toujours en édition
 }
 
 /* Lit l'ordre actuel des tuiles dans le DOM et le sauvegarde. */
@@ -36633,7 +36626,7 @@ function _dashSaveTileOrder(){
   data.settings.simpleTiles = order;
   saveData();
   showToast('✅ Disposition enregistrée');
-  simpleModeRenderDash(); // re-rendu propre (retire les transforms inline)
+  simpleModeRenderDash();
 }
 
 
