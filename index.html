@@ -7290,6 +7290,11 @@ async function initRwoodStorage(){
   setTimeout(()=> pushPointageToSupabase(), 3000);
   // Verifier si ce compte a ete revoque par le developpeur
   setTimeout(()=> checkDeviceRevocation(), 3500);
+  // Migration ponctuelle : les alertes déjà "levées" avant l'introduction du
+  // compteur "total présent" (voir _clearAlert) n'avaient jamais été
+  // marquées comme définitivement écartées — elles ressurgiraient toutes
+  // d'un coup dans le badge sinon. On les nettoie une seule fois ici.
+  setTimeout(()=> { if(typeof _migrateDismissOldReadAlerts === 'function') _migrateDismissOldReadAlerts(); }, 3800);
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
   setTimeout(()=> pullSharedSites(), 4500);
@@ -27471,7 +27476,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.8.0';
+const APP_VERSION = '4.8.1';
 
 const CHANGELOG = [
   {
@@ -35845,6 +35850,33 @@ function _playAlertSound(){
   } catch(e){ /* silencieux si Web Audio indisponible */ }
 }
 
+/* Migration ponctuelle (une seule fois par appareil) : avant le passage au
+   badge "nombre total présent" (voir _clearAlert), lever une alerte ne
+   l'excluait que via readBy, jamais via dismissedAlertIds. Ces anciennes
+   alertes déjà lues remonteraient donc toutes d'un coup dans le badge à la
+   première vérification post-mise à jour. On les marque ici comme
+   définitivement écartées, une bonne fois pour toutes. */
+async function _migrateDismissOldReadAlerts(){
+  if(!data.settings) data.settings = {};
+  if(data.settings.oldReadAlertsMigrated) return; // déjà fait sur cet appareil
+
+  try{
+    const myId = getDeviceSyncId();
+    const all = await _fetchAlerts();
+    const mine = _filterAlertsForMe(all);
+    const alreadyRead = mine.filter(a => a.readBy && a.readBy.includes(myId));
+
+    if(alreadyRead.length){
+      if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
+      alreadyRead.forEach(a => {
+        if(!data.settings.dismissedAlertIds.includes(a.id)) data.settings.dismissedAlertIds.push(a.id);
+      });
+    }
+    data.settings.oldReadAlertsMigrated = true;
+    saveData();
+  }catch(e){ /* silencieux : on retentera au prochain démarrage si ça échoue */ }
+}
+
 async function checkForNewAlerts(){
   if(!navigator.onLine) return;
   const profile = (data.settings && data.settings.myProfile) || {};
@@ -36540,6 +36572,18 @@ async function _clearAlert(alertId){
   const myId = getDeviceSyncId();
   const alert = _myAlertsCache.find(a=>a.id===alertId);
   if(alert && !alert.readBy.includes(myId)) alert.readBy.push(myId);
+
+  // "Lever" une alerte doit avoir le même effet durable que "Supprimer" sur
+  // le compteur (voir deleteAlertToTrash) : sans ça, elle revient hanter le
+  // badge indéfiniment puisque celui-ci compte désormais le TOTAL présent,
+  // pas seulement le non-lu. On l'exclut donc de la même façon (masquage
+  // local, l'alerte reste récupérable dans Paramètres → Supprimés récemment
+  // si elle a aussi été archivée ailleurs).
+  if(!data.settings) data.settings = {};
+  if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
+  if(!data.settings.dismissedAlertIds.includes(alertId)) data.settings.dismissedAlertIds.push(alertId);
+  _myAlertsCache = (_myAlertsCache||[]).filter(a => a.id !== alertId);
+  saveData();
 
   _renderAlertInboxList();
   _updateAlertBubbleFromCache();
