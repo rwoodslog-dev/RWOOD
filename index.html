@@ -27421,7 +27421,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.3.0';
+const APP_VERSION = '4.4.0';
 
 const CHANGELOG = [
   {
@@ -36394,32 +36394,71 @@ function openAlertInbox(){
   openModal('alertInbox');
 }
 
+/* La bulle flottante Alertesmega affiche maintenant TOUTES les alertes
+   (lues et non lues), avec le même rendu générique par type que
+   "Mes alertes reçues" dans la tuile Alertes — pour que les deux vues
+   soient toujours cohérentes entre elles, comme demandé. */
 function _renderAlertInboxList(){
   const list = document.getElementById('alertInboxList');
+  if(!list) return;
   const myId = getDeviceSyncId();
-  const pending = _myAlertsCache
-    .filter(a => !a.readBy.includes(myId))
-    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+  const all = (_myAlertsCache || []).slice().sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
-  if(!pending.length){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte en attente.</div>';
+  if(!all.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte pour le moment.</div>';
     return;
   }
 
-  list.innerHTML = pending.map(a => `
-    <div class="card" style="margin-bottom:8px;" id="alertInboxItem-${a.id}">
-      <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
-      <div class="meta" style="margin-top:6px;">${new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})}</div>
-      ${a.kind === 'signature'
-        ? `<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer maintenant</button>`
-        : a.kind === 'photo'
-        ? `<div class="row-actions" style="margin-top:10px;">
-             <button class="btn btn-primary" style="flex:1;" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button>
-             <button class="btn btn-outline" onclick="_clearAlert('${a.id}')">Lever</button>
-           </div>`
-        : `<button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_clearAlert('${a.id}')">Lever alerte</button>`}
-    </div>
-  `).join('');
+  list.innerHTML = all.map(a => {
+    const isRead = a.readBy && a.readBy.includes(myId);
+    const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+
+    let closeHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}'); _renderAlertInboxList();">🗑 Supprimer</button>`;
+    let mainActionHtml = '';
+    let cardCloseCross = '';
+
+    if(a.kind === 'signature'){
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button>`;
+      closeHtml = '';
+    } else if(a.kind === 'photo'){
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button>`;
+    } else if(a.kind === 'heures' || a.kind === 'rappel-heures'){
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Envoyer mes heures</button>`;
+    } else if(a.kind === 'evenement'){
+      const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
+      mainActionHtml = alreadyAdded
+        ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
+        : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
+      closeHtml = '';
+      cardCloseCross = `<button onclick="event.stopPropagation(); _clearAlert('${a.id}'); _renderAlertInboxList();" title="Fermer" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;">✕</button>`;
+    } else if(a.kind === 'nouveau-chantier'){
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button>`;
+    } else if(a.kind === 'depannage'){
+      const alreadyAcked = a.depannageAckedBy && a.depannageAckedBy.includes(myId);
+      mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
+        (alreadyAcked
+          ? ` <span class="hint" style="align-self:center;">✅ Dans l'historique</span>`
+          : ` <button class="btn btn-primary btn-sm" onclick="_ackDepannageToHistory('${a.id}'); _renderAlertInboxList();">📋 Ajouter à l'historique</button>`);
+    } else {
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_clearAlert('${a.id}'); _renderAlertInboxList();">Lever alerte</button>`;
+      closeHtml = '';
+    }
+
+    const actionHtml = [mainActionHtml, closeHtml].filter(Boolean).join(' ');
+
+    return `
+      <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}" id="alertInboxItem-${a.id}">
+        <div style="display:flex;align-items:flex-start;gap:8px;">
+          ${!isRead ? '<div style="width:8px;height:8px;border-radius:50%;background:#E05555;flex-shrink:0;margin-top:5px;"></div>' : ''}
+          <div style="flex:1;">
+            <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
+            <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
+          </div>
+          ${cardCloseCross}
+        </div>
+        <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
+      </div>`;
+  }).join('');
 }
 
 async function _clearAlert(alertId){
@@ -40145,7 +40184,7 @@ async function comptaEditEnsurePulled(){
 <div class="modal-overlay" id="modal-alertInbox">
   <div class="modal" style="max-height:88vh;">
     <div class="modal-header">
-      <h2>📢 Message de la comptable</h2>
+      <h2>📢 Alertesmega</h2>
       <button class="modal-close" onclick="closeModal('alertInbox')">×</button>
     </div>
     <div id="alertInboxList"></div>
