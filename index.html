@@ -19011,12 +19011,42 @@ function _pointageDoValidate(signature){
   saveData();
   pushPointageToSupabase(); // push immediat a la validation
 
+  // La journée est validée : les alertes "pense à pointer / envoie tes
+  // heures" n'ont plus lieu d'être — on les retire d'Alertesmega.
+  if(typeof _dismissHoursAlerts === 'function') _dismissHoursAlerts();
+
   const dateLabel = new Date(dateKey + 'T00:00:00').toLocaleDateString('fr-FR', {day:'numeric', month:'long'});
   showToast(`Fiche du ${dateLabel} validée ✅`);
 
   // Repart sur la date du jour pour la prochaine saisie
   currentPointageDate = new Date().toISOString().slice(0,10);
   renderPointage();
+}
+
+/* Retire d'Alertesmega toutes les alertes "pense à pointer" / "envoie tes
+   heures" (kind 'heures' et 'rappel-heures') reçues par CET utilisateur,
+   dès qu'il vient de valider sa fiche du jour — elles n'ont plus lieu
+   d'être. Suppression silencieuse (pas une action utilisateur explicite),
+   même mécanisme que deleteAlertToTrash (masquage local, récupérable dans
+   Paramètres → Supprimés récemment). */
+async function _dismissHoursAlerts(){
+  try{
+    const toRemove = (_myAlertsCache||[]).filter(a => a.kind === 'heures' || a.kind === 'rappel-heures');
+    if(!toRemove.length) return;
+    if(!data.settings) data.settings = {};
+    if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
+    ensureTrash();
+    toRemove.forEach(a => {
+      if(!data.settings.dismissedAlertIds.includes(a.id)){
+        data.settings.dismissedAlertIds.push(a.id);
+        data.trash.push({ id: uid(), kind: 'alert', alert: {...a}, deletedAt: formatDateTime(new Date()) });
+      }
+    });
+    saveData();
+    _myAlertsCache = (_myAlertsCache||[]).filter(a => a.kind !== 'heures' && a.kind !== 'rappel-heures');
+    if(typeof _updateAlertBubbleFromCache === 'function') _updateAlertBubbleFromCache();
+    if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList();
+  }catch(e){ /* silencieux */ }
 }
 
 function renameWorker(workerId, newName){
@@ -27421,7 +27451,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.6.0';
+const APP_VERSION = '4.7.0';
 
 const CHANGELOG = [
   {
@@ -36196,6 +36226,7 @@ let _pendingResendDepannage = null;
 /* Ouvrier/chef : répondre à une demande d'envoi d'heures → ouvre directement
    la vue Heures/Pointage pour compléter et envoyer sa fiche. */
 function _openHeuresFromAlert(alertId){
+  closeModal('alertInbox');
   goTo('heures');
   if(typeof setHeuresMode === 'function') setHeuresMode('pointage');
   if(typeof _clearAlert === 'function') _clearAlert(alertId);
