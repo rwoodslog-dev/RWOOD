@@ -5306,6 +5306,24 @@
         <div id="alertesMemberList"></div>
       </div>
 
+      <!-- Alertesmega : marche/arrêt de la bulle flottante, pour TOUS les rôles -->
+      <div class="card" style="padding:14px 16px;margin-bottom:16px;">
+        <label style="display:flex;align-items:center;gap:14px;cursor:pointer;user-select:none;margin-bottom:0;">
+          <div id="alertesMegaToggle" onclick="toggleAlertesMega(!_alertesMegaEnabled())"
+            style="width:48px; height:28px; border-radius:99px; background:var(--line);
+                   position:relative; flex-shrink:0; transition:background .2s ease; cursor:pointer;">
+            <div id="alertesMegaKnob"
+              style="position:absolute; top:3px; left:3px; width:22px; height:22px;
+                     border-radius:50%; background:#fff; transition:transform .2s ease;
+                     box-shadow:0 1px 4px rgba(0,0,0,0.3);"></div>
+          </div>
+          <div style="flex:1;">
+            <div style="font-size:14px; font-weight:600;">📢 Alertesmega (bulle flottante)</div>
+            <div style="font-size:12px; color:var(--ink-soft); margin-top:2px;">Affiche la bulle de rappel des alertes sur tout l'écran.</div>
+          </div>
+        </label>
+      </div>
+
       <!-- Section HISTORIQUE : visible pour tous les rôles -->
       <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
       <div id="alertesHistoList"></div>
@@ -9979,8 +9997,21 @@ function createSite(){
   if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
   if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300); // MODULE — SyncAllSites : partage immédiat
   if(typeof devSiteAlertRaise === 'function') devSiteAlertRaise(site); // MODULE — DevSiteAlerts
+  if(typeof _alertNewSiteCreated === 'function') _alertNewSiteCreated(site); // Alertesmega
   // Pas de synchro auto à la création simple même côté conducteur : il utilise "Mettre en attente"
   // ou ira dans Synchro Équipe depuis la fiche
+}
+
+/* Alertesmega : prévient TOUT LE MONDE (tous rôles) qu'un nouveau chantier
+   a été créé, avec un raccourci direct vers sa fiche. */
+async function _alertNewSiteCreated(site){
+  if(!site) return;
+  try{
+    await sendAlert(
+      `🏗️ Nouveau chantier créé : ${site.name}`,
+      'all', null, null, 'nouveau-chantier', null, site.id
+    );
+  }catch(e){ /* silencieux */ }
 }
 
 /* Création en mode "brouillon conducteur" : local uniquement, invisible aux chefs */
@@ -23555,25 +23586,10 @@ if('serviceWorker' in navigator){
 
 /* Notification locale (quand l'app est ouverte en premier plan) */
 function sendNotification(title, body, tag){
-  if(!('Notification' in window) || Notification.permission !== 'granted') return;
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.getRegistration().then(reg=>{
-      if(reg && reg.showNotification){
-        reg.showNotification(title, {
-          body, tag,
-          icon:    'icons/icon-192.png',
-          badge:   'icons/icon-192.png',
-          vibrate: [200, 100, 200],
-          data:    { view: tag && tag.includes('agenda') ? 'agenda' :
-                          tag && tag.includes('stock')  ? 'stock'  : 'chantiers' }
-        });
-      } else {
-        new Notification(title, {body, tag, icon:'icons/icon-192.png'});
-      }
-    });
-  } else {
-    new Notification(title, {body, tag, icon:'icons/icon-192.png'});
-  }
+  // Notifications natives désactivées à la demande : plus aucune notification
+  // système (barre de notifications du téléphone) n'est émise. Les réglages
+  // dans Paramètres restent visibles/modifiables mais n'ont plus d'effet.
+  return;
 }
 
 /* Vérifie tous les rappels actifs et envoie les notifications dues.
@@ -26991,7 +27007,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '3.5.1';
+const APP_VERSION = '3.7.0';
 
 const CHANGELOG = [
   {
@@ -35241,6 +35257,11 @@ async function checkForNewAlerts(){
     try{ await _checkAgendaReminders(); }catch(e){ /* silencieux */ }
   }
 
+  // Rappel fiche d'heures : tous les jours à 15h30 + le vendredi à 10h (voir _checkHoursReminders).
+  if(typeof _checkHoursReminders === 'function'){
+    try{ await _checkHoursReminders(); }catch(e){ /* silencieux */ }
+  }
+
   try{
     const all = await _fetchAlerts();
     let mine = _filterAlertsForMe(all);
@@ -35250,27 +35271,55 @@ async function checkForNewAlerts(){
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
     const myId = getDeviceSyncId();
     const unread = mine.filter(a => !a.readBy.includes(myId));
+    const previousUnreadCount = _myAlertsUnreadCount || 0;
 
     _myAlertsCache = mine;
-    // La comptable n'a pas de bulle flottante ni de son popup (déjà accessible
-    // via sa vue dédiée), mais garde son historique dans la tuile Alertes.
-    if(profile.role === 'comptable') return;
+    _myAlertsUnreadCount = unread.length;
 
     const bubble = document.getElementById('alertBubble');
     const badge = document.getElementById('alertBubbleBadge');
     if(!bubble) return;
 
-    if(unread.length > 0){
-      bubble.classList.add('show');
-      if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
-      // Tant que l'alerte n'est pas levee : pop + son a CHAQUE ouverture de l'app
-      // (plus de suppression "deja affichee" — comportement persistant voulu)
-      _playAlertSound();
-    } else {
+    // Alertesmega — activable/désactivable par n'importe quel rôle (voir
+    // Alertes → interrupteur). Par défaut activée pour tout le monde.
+    const alertesMegaOn = _alertesMegaEnabled();
+    if(!alertesMegaOn){
       bubble.classList.remove('show');
+      return;
+    }
+
+    // La bulle reste TOUJOURS visible dès qu'Alertesmega est active — même
+    // sans alerte non lue — comme la bulle "Liste à faire" : c'est un rappel
+    // permanent qui ouvre l'historique complet en un clic (voir openAlertInbox).
+    bubble.classList.add('show');
+
+    if(unread.length > 0){
+      if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
+      // Son joué uniquement si le nombre de non-lus a augmenté depuis la
+      // dernière vérification (évite de rejouer le son en boucle pour les
+      // mêmes alertes déjà signalées).
+      if(unread.length > previousUnreadCount) _playAlertSound();
+    } else {
       if(badge) badge.style.display = 'none';
     }
   } catch(e){ /* silencieux */ }
+}
+
+let _myAlertsUnreadCount = 0;
+
+/* Alertesmega : marche/arrêt personnel, accessible à tous les rôles depuis
+   la tuile Alertes. Activée par défaut. */
+function _alertesMegaEnabled(){
+  if(!data.settings) data.settings = {};
+  return data.settings.alertesMegaEnabled !== false; // true par défaut
+}
+function toggleAlertesMega(on){
+  if(!data.settings) data.settings = {};
+  data.settings.alertesMegaEnabled = !!on;
+  saveData();
+  checkForNewAlerts();
+  if(typeof renderAlertesTuile === 'function') renderAlertesTuile();
+  showToast(on ? '🔔 Alertesmega activée' : '🔕 Alertesmega désactivée');
 }
 
 let _myAlertsCache = [];
@@ -35310,6 +35359,64 @@ async function _checkAgendaReminders(){
   saveData();
 }
 
+/* Alertesmega — rappel fiche d'heures : tous les jours à 15h30 (pense à
+   pointer aujourd'hui) et le vendredi à 10h (pense à envoyer la fiche de
+   la semaine). Ciblé sur ouvrier/chef (ceux qui remplissent des heures).
+   Ne se déclenche qu'une fois par créneau grâce à un horodatage mémorisé
+   (data.settings.hoursReminderLog), même si l'app est ouverte plusieurs
+   fois dans la même fenêtre horaire. */
+async function _checkHoursReminders(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'ouvrier' && role !== 'chef') return;
+
+  if(!data.settings) data.settings = {};
+  if(!data.settings.hoursReminderLog) data.settings.hoursReminderLog = {};
+  const log = data.settings.hoursReminderLog;
+
+  const now = new Date();
+  const todayKey = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+  const myId = getDeviceSyncId();
+  const minutesNow = now.getHours() * 60 + now.getMinutes();
+  let changed = false;
+
+  // Rappel quotidien : 15h30 (930 min), fenêtre de tolérance de 30 min pour
+  // couvrir le cas où l'app n'est pas ouverte pile à l'heure.
+  const dailyKey = 'daily_' + todayKey;
+  if(minutesNow >= 15*60+30 && minutesNow < 16*60 && log[dailyKey] !== true){
+    await sendAlert(
+      '⏱️ Pense à remplir ta fiche d\'heures du jour.',
+      'device', myId, null, 'rappel-heures'
+    );
+    log[dailyKey] = true;
+    changed = true;
+  }
+
+  // Rappel hebdomadaire : vendredi (day===5) à 10h, même fenêtre de tolérance.
+  const weekKey = 'friday_' + _isoWeekKey(now);
+  if(now.getDay() === 5 && minutesNow >= 10*60 && minutesNow < 10*60+30 && log[weekKey] !== true){
+    await sendAlert(
+      '🧾 C\'est vendredi — pense à envoyer ta fiche d\'heures de la semaine à la comptable.',
+      'device', myId, null, 'rappel-heures'
+    );
+    log[weekKey] = true;
+    changed = true;
+  }
+
+  if(changed) saveData();
+}
+
+/* Clé "année-semaineISO" pour ne déclencher le rappel du vendredi qu'une
+   fois par semaine, même si l'app est ouverte plusieurs vendredis matins
+   de suite dans la même fenêtre (10h-10h30). */
+function _isoWeekKey(date){
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return d.getUTCFullYear() + '-W' + weekNo;
+}
+
 /* "Ouverture de l'application" = retour au premier plan, pas seulement le tout premier
    chargement. On re-verifie les alertes a chaque fois que l'app redevient visible. */
 document.addEventListener('visibilitychange', function(){
@@ -35338,6 +35445,13 @@ function renderAlertesTuile(){
   if(sendSection) sendSection.style.display = canSend ? 'block' : 'none';
   if(canSend) renderAlertesConducteurList();
 
+  // Alertesmega : synchroniser le visuel de l'interrupteur avec le réglage.
+  const megaOn = _alertesMegaEnabled();
+  const toggle = document.getElementById('alertesMegaToggle');
+  const knob = document.getElementById('alertesMegaKnob');
+  if(toggle) toggle.style.background = megaOn ? 'var(--wood)' : 'var(--line)';
+  if(knob) knob.style.transform = megaOn ? 'translateX(20px)' : 'translateX(0)';
+
   _renderAlertesHistoList();
 
   // Marquer tout comme lu à l'ouverture de la tuile (fait disparaître le badge global)
@@ -35363,13 +35477,15 @@ function _renderAlertesHistoList(){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button> ` + actionHtml;
     } else if(a.kind === 'photo'){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
-    } else if(a.kind === 'heures'){
+    } else if(a.kind === 'heures' || a.kind === 'rappel-heures'){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Envoyer mes heures</button> ` + actionHtml;
     } else if(a.kind === 'evenement'){
       const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
       actionHtml = (alreadyAdded
         ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
         : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`) + ' ' + actionHtml;
+    } else if(a.kind === 'nouveau-chantier'){
+      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
     }
     return `
       <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
@@ -35527,6 +35643,17 @@ async function _openGalleryFromAlert(alertId, siteId){
   goTo('galerie');
   if(siteId && typeof galerieOpenFolder === 'function'){
     setTimeout(() => galerieOpenFolder(siteId), 50);
+  }
+  try{ await _clearAlert(alertId); }catch(e){}
+}
+
+/* Ouvre la fiche du chantier depuis une alerte "nouveau chantier créé". */
+async function _openSiteFromAlert(alertId, siteId){
+  closeModal('alertInbox');
+  if(siteId){
+    goTo('detail', siteId);
+  } else {
+    goTo('chantiers');
   }
   try{ await _clearAlert(alertId); }catch(e){}
 }
