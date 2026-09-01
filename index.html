@@ -11586,6 +11586,16 @@ function _renderAlerteTemplateChips(type){
    ici même si besoin). Retourne null si la personne n'a pas encore synchronisé. */
 async function _resolveDeviceIdFromAuthId(authId){
   if(!authId) return null;
+
+  // Cas particulier : si je m'envoie une alerte à moi-même, je connais déjà
+  // mon propre deviceId nativement — pas besoin de le chercher dans les
+  // données pullées de l'équipe (qui ne contiennent typiquement que les
+  // AUTRES appareils, jamais fiablement le sien propre).
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(myAuthId && myAuthId.toLowerCase() === authId.toLowerCase()){
+    return getDeviceSyncId();
+  }
+
   if(typeof _comptableLiveData === 'undefined' || !_comptableLiveData){
     if(typeof pullAllPointagesForComptable === 'function'){
       try{ _comptableLiveData = await pullAllPointagesForComptable(); }catch(e){ return null; }
@@ -11677,16 +11687,30 @@ async function sendAlerteToMembers(authIds, names){
 
   const modal = document.getElementById('modal-alerteCompose');
   if(modal) modal.remove();
-  _alerteSelectedAuthIds.clear();
-  _updateAlerteSelectionBar();
   renderAlertesConducteurList();
 
   if(ok){
     showToast(unresolved.length
       ? `✅ Envoyée à ${deviceIds.length}/${authIds.length} (${unresolved.join(', ')} pas encore synchronisé${unresolved.length>1?'s':''})`
       : '✅ Alerte envoyée à ' + names.join(', '));
+
+    // Relance : proposer d'envoyer une nouvelle alerte aux MÊMES destinataires
+    // sans refaire la sélection (ex: 2 dépannages + 1 événement d'affilée).
+    setTimeout(() => {
+      const again = confirm(`✅ Alerte envoyée à ${names.join(', ')}.\n\nEnvoyer une nouvelle alerte à ces mêmes destinataires ?`);
+      if(again){
+        openAlerteComposeGroup(); // _alerteSelectedAuthIds n'a pas été vidée, rouvre avec les mêmes destinataires
+      } else {
+        _alerteSelectedAuthIds.clear();
+        _updateAlerteSelectionBar();
+        renderAlertesConducteurList();
+      }
+    }, 150);
   } else {
     showToast('❌ Échec de l\'envoi');
+    _alerteSelectedAuthIds.clear();
+    _updateAlerteSelectionBar();
+    renderAlertesConducteurList();
   }
 }
 
@@ -27241,7 +27265,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '3.8.1';
+const APP_VERSION = '3.9.1';
 
 const CHANGELOG = [
   {
