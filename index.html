@@ -27421,7 +27421,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.2.0';
+const APP_VERSION = '4.3.0';
 
 const CHANGELOG = [
   {
@@ -36044,23 +36044,47 @@ function _renderAlertesHistoList(){
   const renderCard = (a) => {
     const isRead = a.readBy && a.readBy.includes(myId);
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
-    let actionHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')">🗑 Supprimer</button>`;
+
+    // Bouton de fermeture : par défaut "Supprimer" (comportement générique),
+    // sauf cas particuliers ci-dessous où la fermeture doit être garantie
+    // par une vraie action (signature) ou prendre la forme d'une croix
+    // discrète (événement, à côté du bouton d'action principal).
+    let closeHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')">🗑 Supprimer</button>`;
+    let mainActionHtml = '';
+    let cardCloseCross = '';
+
     if(a.kind === 'signature'){
-      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button> ` + actionHtml;
+      // Obligatoire : pas de moyen de fermer/supprimer tant que non signée.
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')">✍️ Signer</button>`;
+      closeHtml = '';
     } else if(a.kind === 'photo'){
-      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button>`;
     } else if(a.kind === 'heures' || a.kind === 'rappel-heures'){
-      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Envoyer mes heures</button> ` + actionHtml;
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Envoyer mes heures</button>`;
     } else if(a.kind === 'evenement'){
       const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
-      actionHtml = (alreadyAdded
+      mainActionHtml = alreadyAdded
         ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
-        : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`) + ' ' + actionHtml;
+        : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
+      // Croix pour fermer/ignorer (au lieu du bouton Supprimer classique) :
+      // marque comme lu sans effacer, garde l'événement consultable si besoin.
+      closeHtml = '';
+      cardCloseCross = `<button onclick="event.stopPropagation(); _clearAlert('${a.id}'); _renderAlertesHistoList();" title="Fermer" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;">✕</button>`;
     } else if(a.kind === 'nouveau-chantier'){
-      actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button>`;
     } else if(a.kind === 'depannage'){
-      actionHtml = `<button class="btn btn-primary btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button> ` + actionHtml;
+      // Deux actions distinctes : "Détails" ouvre la fiche complète (photos,
+      // checklist, itinéraire) ; "Ajouter à l'historique" confirme la prise
+      // en compte sans faire disparaître la carte de "Mes alertes reçues".
+      const alreadyAcked = a.depannageAckedBy && a.depannageAckedBy.includes(myId);
+      mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
+        (alreadyAcked
+          ? ` <span class="hint" style="align-self:center;">✅ Dans l'historique</span>`
+          : ` <button class="btn btn-primary btn-sm" onclick="_ackDepannageToHistory('${a.id}')">📋 Ajouter à l'historique</button>`);
     }
+
+    const actionHtml = [mainActionHtml, closeHtml].filter(Boolean).join(' ');
+
     return `
       <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
         <div style="display:flex;align-items:flex-start;gap:8px;">
@@ -36069,6 +36093,7 @@ function _renderAlertesHistoList(){
             <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
             <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
           </div>
+          ${cardCloseCross}
         </div>
         <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
       </div>`;
@@ -36407,6 +36432,32 @@ async function _clearAlert(alertId){
   _renderAlertInboxList();
   _updateAlertBubbleFromCache();
   showToast('Alerte levee');
+}
+
+/* Dépannage : "Ajouter à l'historique" — confirme la prise en compte SANS
+   supprimer ni masquer la carte (elle reste visible dans "Mes alertes
+   reçues"). Marque juste readBy + un flag dédié persisté sur l'alerte,
+   affiché ensuite comme "✅ Dans l'historique". */
+async function _ackDepannageToHistory(alertId){
+  try{
+    const myId = getDeviceSyncId();
+    const alerts = await _fetchAlerts();
+    const a = alerts.find(x => x.id === alertId);
+    if(a){
+      if(!a.readBy.includes(myId)) a.readBy.push(myId);
+      if(!a.depannageAckedBy) a.depannageAckedBy = [];
+      if(!a.depannageAckedBy.includes(myId)) a.depannageAckedBy.push(myId);
+      await _saveAlerts(alerts);
+    }
+    const cached = (_myAlertsCache||[]).find(x => x.id === alertId);
+    if(cached){
+      if(!cached.readBy.includes(myId)) cached.readBy.push(myId);
+      if(!cached.depannageAckedBy) cached.depannageAckedBy = [];
+      if(!cached.depannageAckedBy.includes(myId)) cached.depannageAckedBy.push(myId);
+    }
+  }catch(e){ /* silencieux */ }
+  showToast('✅ Ajouté à l\'historique');
+  _renderAlertesHistoList();
 }
 
 /* Conducteur/patron : ouvrir la galerie du chantier depuis une alerte "photo ajoutée" */
