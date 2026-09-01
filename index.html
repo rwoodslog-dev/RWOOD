@@ -11385,6 +11385,47 @@ function _applyAlerteTemplate(text){
   if(ta) ta.value = text;
 }
 
+/* Bascule entre "chantier existant" et "nom libre" pour le champ chantier
+   du dépannage (voir select #alerteDepannageSiteSelect). */
+function _toggleDepannageSiteMode(value){
+  const freeInput = document.getElementById('alerteDepannageSiteFree');
+  if(!freeInput) return;
+  freeInput.style.display = (value === '__libre__') ? 'block' : 'none';
+  if(value === '__libre__') freeInput.focus();
+}
+
+/* Liste libre de quincaillerie/outils à emporter pour un dépannage :
+   l'expéditeur tape chaque article, qui devient une ligne à cocher côté
+   destinataire (voir _renderAlertesHistoList / kind='depannage'). */
+let _depannageTools = [];
+function _addDepannageTool(){
+  const input = document.getElementById('alerteDepannageToolInput');
+  if(!input) return;
+  const val = input.value.trim();
+  if(!val) return;
+  _depannageTools.push(val);
+  input.value = '';
+  _renderDepannageTools();
+}
+function _removeDepannageTool(idx){
+  _depannageTools.splice(idx, 1);
+  _renderDepannageTools();
+}
+function _renderDepannageTools(){
+  const list = document.getElementById('alerteDepannageToolsList');
+  if(!list) return;
+  if(!_depannageTools.length){
+    list.innerHTML = '<div class="hint" style="padding:4px 0;">Aucun article ajouté.</div>';
+    return;
+  }
+  list.innerHTML = _depannageTools.map((tool, idx) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">
+      <span style="flex:1;font-size:13px;">🔧 ${escapeHtml(tool)}</span>
+      <button type="button" onclick="_removeDepannageTool(${idx})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:0 4px;">×</button>
+    </div>
+  `).join('');
+}
+
 function openAlerteComposeGroup(){
   const authIds = [..._alerteSelectedAuthIds];
   if(!authIds.length){ showToast('Sélectionne au moins un destinataire'); return; }
@@ -11392,6 +11433,9 @@ function openAlerteComposeGroup(){
     const m = _alerteMembersCache.find(u => u.authId === id);
     return m ? m.name : id;
   });
+
+  const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const isChefOnly = myRole === 'chef'; // le chef ne peut envoyer que des dépannages
 
   const ex = document.getElementById('modal-alerteCompose');
   if(ex) ex.remove();
@@ -11411,10 +11455,15 @@ function openAlerteComposeGroup(){
 
       <div class="section-title" style="margin-top:0;">Type d'alerte</div>
       <div class="chip-row" id="alerteTypeRow" style="margin-bottom:14px;">
+        ${isChefOnly ? `
+        <div class="chip selected" data-type="depannage" onclick="_setAlerteComposeType('depannage')">🛠️ Dépannage</div>
+        ` : `
         <div class="chip selected" data-type="info" onclick="_setAlerteComposeType('info')">💬 Message</div>
         <div class="chip" data-type="signature" onclick="_setAlerteComposeType('signature')">✍️ Signature</div>
         <div class="chip" data-type="heures" onclick="_setAlerteComposeType('heures')">⏱ Envoi d'heures</div>
         <div class="chip" data-type="evenement" onclick="_setAlerteComposeType('evenement')">📅 Événement</div>
+        <div class="chip" data-type="depannage" onclick="_setAlerteComposeType('depannage')">🛠️ Dépannage</div>
+        `}
       </div>
 
       <!-- Champs propres à "Événement" (masqués sauf si type sélectionné) -->
@@ -11429,19 +11478,54 @@ function openAlerteComposeGroup(){
         </div>
       </div>
 
+      <!-- Champs propres à "Dépannage" (masqués sauf si type sélectionné) -->
+      <div id="alerteDepannageFields" style="display:none;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:10px;">
+          <label>Nom du chantier</label>
+          <select id="alerteDepannageSiteSelect" onchange="_toggleDepannageSiteMode(this.value)">
+            <option value="">— Chantier existant —</option>
+            ${(data.sites||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+            <option value="__libre__">Autre / nom libre…</option>
+          </select>
+          <input type="text" id="alerteDepannageSiteFree" placeholder="Nom du chantier ou du client" style="display:none;margin-top:8px;">
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Adresse de l'intervention</label>
+          <input type="text" id="alerteDepannageAddress" placeholder="Adresse exacte">
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Date</label>
+          <input type="date" id="alerteDepannageDate">
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Quincaillerie à prendre</label>
+          <div id="alerteDepannageToolsList"></div>
+          <div style="display:flex;gap:6px;margin-top:6px;">
+            <input type="text" id="alerteDepannageToolInput" placeholder="Ex : Perceuse, vis 6x80…" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();_addDepannageTool();}">
+            <button type="button" class="btn btn-outline" onclick="_addDepannageTool()">+ Ajouter</button>
+          </div>
+        </div>
+      </div>
+
       <div class="section-title" id="alerteTemplateTitle">Modèles rapides</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;" id="alerteTemplateChips"></div>
-      <div class="section-title">Message</div>
+      <div class="section-title" id="alerteTextLabel">Message</div>
       <textarea id="alerteComposeText"
         placeholder="Ex : Réunion demain à 8h au dépôt…"
         style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-size:14px;resize:vertical;min-height:90px;font-family:inherit;margin-bottom:14px;"></textarea>
       <button class="btn btn-primary btn-block" id="alerteComposeSend">🚀 Envoyer l'alerte</button>
     </div>`;
   document.body.appendChild(div);
-  _alerteComposeType = 'info';
+  _alerteComposeType = isChefOnly ? 'depannage' : 'info';
+  _depannageTools = [];
 
   document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
-  _renderAlerteTemplateChips('info');
+
+  if(isChefOnly){
+    _setAlerteComposeType('depannage');
+  } else {
+    _renderAlerteTemplateChips('info');
+  }
 
   document.getElementById('alerteComposeSend').addEventListener('click', () => {
     sendAlerteToMembers(authIds, names);
@@ -11449,13 +11533,19 @@ function openAlerteComposeGroup(){
 }
 
 /* Bascule le type d'alerte dans la modale de composition : affiche les
-   champs propres (date d'événement) et adapte les modèles de message. */
+   champs propres (date d'événement, champs dépannage) et adapte les
+   modèles de message. */
 let _alerteComposeType = 'info';
 function _setAlerteComposeType(type){
   _alerteComposeType = type;
   document.querySelectorAll('#alerteTypeRow .chip').forEach(c => c.classList.toggle('selected', c.dataset.type === type));
   const eventFields = document.getElementById('alerteEventFields');
   if(eventFields) eventFields.style.display = (type === 'evenement') ? 'block' : 'none';
+  const depannageFields = document.getElementById('alerteDepannageFields');
+  if(depannageFields) depannageFields.style.display = (type === 'depannage') ? 'block' : 'none';
+  const textLabel = document.getElementById('alerteTextLabel');
+  if(textLabel) textLabel.textContent = (type === 'depannage') ? 'Notes (instructions détaillées)' : 'Message';
+  if(type === 'depannage') _renderDepannageTools();
   _renderAlerteTemplateChips(type);
 }
 function _renderAlerteTemplateChips(type){
@@ -11473,6 +11563,9 @@ function _renderAlerteTemplateChips(type){
     if(title) title.textContent = 'Modèles rapides';
   } else if(type === 'evenement'){
     templates = ['Livraison de matériaux prévue.', 'Réunion de chantier prévue.', 'Intervention technique prévue.'];
+    if(title) title.textContent = 'Modèles rapides';
+  } else if(type === 'depannage'){
+    templates = ['Fuite à réparer en urgence.', 'Panne électrique à diagnostiquer.', 'Intervention SAV chez le client.'];
     if(title) title.textContent = 'Modèles rapides';
   } else {
     if(title) title.textContent = 'Modèles rapides';
@@ -11508,7 +11601,7 @@ async function _resolveDeviceIdFromAuthId(authId){
 async function sendAlerteToMembers(authIds, names){
   const textEl = document.getElementById('alerteComposeText');
   const text = textEl ? textEl.value.trim() : '';
-  if(!text){ showToast('Écris un message'); return; }
+  if(!text){ showToast(_alerteComposeType === 'depannage' ? 'Écris les instructions du dépannage' : 'Écris un message'); return; }
 
   const type = _alerteComposeType || 'info';
   let eventData = null;
@@ -11518,6 +11611,32 @@ async function sendAlerteToMembers(authIds, names){
     const eventDate = dateEl ? dateEl.value : '';
     if(!eventDate){ showToast('Choisis une date pour l\'événement'); return; }
     eventData = { date: eventDate, siteId: siteEl && siteEl.value ? siteEl.value : null };
+  }
+
+  let depannageData = null;
+  if(type === 'depannage'){
+    const siteSelect = document.getElementById('alerteDepannageSiteSelect');
+    const siteFree = document.getElementById('alerteDepannageSiteFree');
+    const addressEl = document.getElementById('alerteDepannageAddress');
+    const dateEl = document.getElementById('alerteDepannageDate');
+
+    let siteName = null, depSiteId = null;
+    if(siteSelect && siteSelect.value === '__libre__'){
+      siteName = siteFree ? siteFree.value.trim() : '';
+    } else if(siteSelect && siteSelect.value){
+      depSiteId = siteSelect.value;
+      const s = (data.sites||[]).find(x=>x.id===depSiteId);
+      siteName = s ? s.name : '';
+    }
+    if(!siteName){ showToast('Indique le nom du chantier ou du client'); return; }
+
+    depannageData = {
+      siteName,
+      siteId: depSiteId,
+      address: addressEl ? addressEl.value.trim() : '',
+      date: dateEl ? dateEl.value : '',
+      tools: _depannageTools.slice()
+    };
   }
 
   const p = data.settings && data.settings.myProfile;
@@ -11544,11 +11663,16 @@ async function sendAlerteToMembers(authIds, names){
     const dateLabel = d.toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'});
     const site = eventData.siteId ? (data.sites||[]).find(s=>s.id===eventData.siteId) : null;
     alertText = `📅 ${senderName} : ${text} — ${dateLabel}${site ? ' (' + site.name + ')' : ''}`;
+  } else if(type === 'depannage' && depannageData){
+    const dateLabel = depannageData.date
+      ? new Date(depannageData.date + 'T00:00:00').toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'})
+      : null;
+    alertText = `🛠️ Dépannage — ${depannageData.siteName}${dateLabel ? ' — ' + dateLabel : ''} — assigné par ${senderName}`;
   }
 
   const ok = await sendAlert(
     alertText,
-    'devices', null, names.join(', '), type, null, null, deviceIds, eventData
+    'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData
   );
 
   const modal = document.getElementById('modal-alerteCompose');
@@ -13432,6 +13556,102 @@ function openMediaFabSheet(siteId){
 }
 
 /* ═══ MODULE — MediaFabSheet  (fin) ═══ */
+
+/* Variante du composant "Ajouter un média" pour la fiche Dépannage (Alertesmega) :
+   même sheet visuel (Fichier/PDF, Photo, Galerie), sans le pliage zinc qui
+   n'a pas de sens hors contexte chantier. Les médias sont stockés sur
+   l'alerte elle-même (a.depannageMedia), pas sur site.sharedMedia. */
+function openMediaFabSheetForAlert(alertId){
+  const ex = document.getElementById('mediaFabSheet');
+  if(ex) ex.remove();
+
+  const sheet = document.createElement('div');
+  sheet.id = 'mediaFabSheet';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  sheet.innerHTML = `
+    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter un média au dépannage</div>
+
+      <button class="action-sheet-item" data-act="file">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/></svg></span>
+        Importer un fichier / PDF
+      </button>
+
+      <button class="action-sheet-item" data-act="photo">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></span>
+        Prendre une photo
+      </button>
+
+      <button class="action-sheet-item" data-act="gallery">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-7 7"/></svg></span>
+        Choisir depuis la galerie
+      </button>
+
+      <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
+    </div>`;
+
+  const close = () => sheet.remove();
+  sheet.onclick = e => { if(e.target === sheet) close(); };
+
+  sheet.querySelector('[data-act="file"]').onclick = () => {
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'application/pdf,image/*', multiple: true });
+  };
+  sheet.querySelector('[data-act="photo"]').onclick = () => {
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', capture: 'environment' });
+  };
+  sheet.querySelector('[data-act="gallery"]').onclick = () => {
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', multiple: true });
+  };
+  sheet.querySelector('[data-act="cancel"]').onclick = close;
+
+  document.body.appendChild(sheet);
+}
+
+async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple }){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = accept;
+  if(capture) input.capture = capture;
+  if(multiple) input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if(!files.length) return;
+    showToast('⏳ Envoi en cours…');
+    let done = 0, failed = 0;
+    for(const file of files){
+      try{
+        const url = await uploadFileToSupabase(file, 'depannage_' + alertId);
+        const isImage = (file.type||'').startsWith('image/');
+        await _addDepannageMedia(alertId, { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
+        done++;
+      }catch(e){ failed++; }
+    }
+    showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
+    openDepannageDetail(alertId); // re-render la fiche avec les nouveaux médias
+  };
+  input.click();
+}
+
+/* Ajoute un média à l'alerte dépannage (persisté côté serveur, comme les
+   autres champs de l'alerte) et met à jour le cache local. */
+async function _addDepannageMedia(alertId, media){
+  try{
+    const alerts = await _fetchAlerts();
+    const a = alerts.find(x => x.id === alertId);
+    if(!a) return;
+    if(!a.depannageMedia) a.depannageMedia = [];
+    a.depannageMedia.push(media);
+    await _saveAlerts(alerts);
+    const cached = (_myAlertsCache||[]).find(x => x.id === alertId);
+    if(cached){
+      if(!cached.depannageMedia) cached.depannageMedia = [];
+      cached.depannageMedia.push(media);
+    }
+  }catch(e){ /* silencieux */ }
+}
 
 function triggerSharedMediaUpload(siteId){
   let input = document.getElementById('sharedMediaInput');
@@ -27021,7 +27241,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '3.7.2';
+const APP_VERSION = '3.8.0';
 
 const CHANGELOG = [
   {
@@ -33213,14 +33433,14 @@ async function _saveAlerts(alerts){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
     alerts.push({
       id: uid(),
       text: text.trim(),
-      kind: kind || 'info',                   // 'info' | 'signature' | 'photo' | 'heures' | 'evenement'
+      kind: kind || 'info',                   // 'info' | 'signature' | 'photo' | 'heures' | 'evenement' | 'depannage'
       recipientType: recipientType,           // 'all' | 'device' | 'roles' | 'devices'
       recipientDeviceId: recipientDeviceId || null,
       recipientDeviceIds: recipientDeviceIds || null, // ex: ['dev_abc','dev_xyz'] — alerte groupée nominative
@@ -33229,6 +33449,12 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       siteId: siteId || null,                  // pour le bouton "Visionner" (alertes type 'photo')
       eventDate: (eventData && eventData.date) || null,     // pour les alertes type 'evenement'
       eventSiteId: (eventData && eventData.siteId) || null, // chantier lié à l'événement (optionnel)
+      // Champs propres au type 'depannage' :
+      depannageSiteName: (depannageData && depannageData.siteName) || null,
+      depannageSiteId: (depannageData && depannageData.siteId) || null,
+      depannageAddress: (depannageData && depannageData.address) || null,
+      depannageDate: (depannageData && depannageData.date) || null,
+      depannageTools: (depannageData && depannageData.tools) || null,
       senderName: (data.settings && data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || null,
       createdAt: new Date().toISOString(),
       readBy: []
@@ -35453,7 +35679,9 @@ document.addEventListener('visibilitychange', function(){
    ═══════════════════════════════════════════════════════════════════ */
 function renderAlertesTuile(){
   const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
-  const canSend = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable';
+  const canSendFull = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable';
+  const canSendDepannage = canSendFull || myRole === 'chef';
+  const canSend = canSendFull || canSendDepannage;
 
   const sendSection = document.getElementById('alertesSendSection');
   if(sendSection) sendSection.style.display = canSend ? 'block' : 'none';
@@ -35500,6 +35728,8 @@ function _renderAlertesHistoList(){
         : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`) + ' ' + actionHtml;
     } else if(a.kind === 'nouveau-chantier'){
       actionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')">👁 Visionner</button> ` + actionHtml;
+    } else if(a.kind === 'depannage'){
+      actionHtml = `<button class="btn btn-primary btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button> ` + actionHtml;
     }
     return `
       <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
@@ -35522,6 +35752,117 @@ function _openHeuresFromAlert(alertId){
   if(typeof setHeuresMode === 'function') setHeuresMode('pointage');
   if(typeof _clearAlert === 'function') _clearAlert(alertId);
   else if(typeof markAlertRead === 'function') markAlertRead(alertId);
+}
+
+/* Fiche détaillée d'un dépannage (Alertesmega) : chantier/adresse/date,
+   médias (composant réutilisé du chantier), notes, checklist quincaillerie
+   cochable, et raccourci de pointage sur la fiche d'heures du jour. */
+function openDepannageDetail(alertId){
+  const a = (_myAlertsCache||[]).find(x => x.id === alertId);
+  if(!a) return;
+
+  const ex = document.getElementById('modal-depannageDetail');
+  if(ex) ex.remove();
+
+  const dateLabel = a.depannageDate
+    ? new Date(a.depannageDate + 'T00:00:00').toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'})
+    : 'Date non précisée';
+
+  const media = a.depannageMedia || [];
+  const tools = a.depannageTools || [];
+  const checked = a.depannageToolsChecked || [];
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-depannageDetail';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🛠️ Dépannage</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-depannageDetail').remove()">×</button>
+      </div>
+
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-weight:800;font-size:16px;">${escapeHtml(a.depannageSiteName || 'Chantier non précisé')}</div>
+        <div class="hint" style="margin-top:4px;">📍 ${escapeHtml(a.depannageAddress || 'Adresse non précisée')}</div>
+        <div class="hint" style="margin-top:2px;">📅 ${dateLabel}</div>
+        ${a.senderName ? `<div class="hint" style="margin-top:2px;">Assigné par ${escapeHtml(a.senderName)}</div>` : ''}
+      </div>
+
+      <div class="section-title" style="margin-top:0;">📝 Notes</div>
+      <div class="card" style="margin-bottom:14px;font-size:14px;line-height:1.5;">${escapeHtml((a.text||'').replace(/^.*? : /,''))}</div>
+
+      <div class="section-title">🔧 Quincaillerie à prendre</div>
+      <div id="depannageToolsChecklist" style="margin-bottom:14px;">
+        ${tools.length ? tools.map((tool, idx) => `
+          <label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);cursor:pointer;">
+            <input type="checkbox" ${checked.includes(idx) ? 'checked' : ''} onchange="_toggleDepannageToolChecked('${alertId}', ${idx}, this.checked)" style="width:20px;height:20px;accent-color:var(--wood);">
+            <span style="flex:1;font-size:14px;${checked.includes(idx) ? 'text-decoration:line-through;color:var(--ink-soft);' : ''}">${escapeHtml(tool)}</span>
+          </label>
+        `).join('') : '<div class="hint">Aucun article listé.</div>'}
+      </div>
+
+      <div class="section-title">📎 Médias</div>
+      <div id="depannageMediaGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
+        ${media.length ? media.map(m => `
+          <div style="aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
+            ${m.type === 'photo'
+              ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;cursor:pointer;" onclick="window.open('${escapeHtml(m.url)}','_blank')">`
+              : `<a href="${escapeHtml(m.url)}" target="_blank" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:28px;">📄</a>`}
+          </div>
+        `).join('') : '<div class="hint" style="grid-column:1/-1;">Aucun média pour le moment.</div>'}
+      </div>
+      <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openMediaFabSheetForAlert('${alertId}')">📥 Ajouter un média</button>
+
+      <button class="btn btn-primary btn-block" style="margin-bottom:8px;" onclick="_pointDepannageOnHours('${alertId}')">⏱ Pointer sur ce dépannage</button>
+      <button class="btn btn-outline btn-block" onclick="deleteAlertToTrash('${alertId}'); document.getElementById('modal-depannageDetail').remove();">🗑 Supprimer</button>
+    </div>`;
+  document.body.appendChild(div);
+
+  if(typeof _clearAlert === 'function') _clearAlert(alertId);
+}
+
+/* Coche/décoche un article de la checklist quincaillerie, persisté sur
+   l'alerte pour que l'état survive à la fermeture de la fiche. */
+async function _toggleDepannageToolChecked(alertId, idx, isChecked){
+  try{
+    const alerts = await _fetchAlerts();
+    const a = alerts.find(x => x.id === alertId);
+    if(!a) return;
+    if(!a.depannageToolsChecked) a.depannageToolsChecked = [];
+    if(isChecked && !a.depannageToolsChecked.includes(idx)) a.depannageToolsChecked.push(idx);
+    if(!isChecked) a.depannageToolsChecked = a.depannageToolsChecked.filter(i => i !== idx);
+    await _saveAlerts(alerts);
+    const cached = (_myAlertsCache||[]).find(x => x.id === alertId);
+    if(cached) cached.depannageToolsChecked = a.depannageToolsChecked;
+  }catch(e){ /* silencieux */ }
+}
+
+/* Rattache le dépannage à la fiche d'heures : pré-remplit le "chantier libre"
+   du pointage du jour avec le nom/adresse du dépannage (même mécanisme que
+   la saisie manuelle en pointage, voir _pointageSaveCustom). */
+function _pointDepannageOnHours(alertId){
+  const a = (_myAlertsCache||[]).find(x => x.id === alertId);
+  if(!a) return;
+
+  const dateKey = a.depannageDate || currentPointageDate || new Date().toISOString().slice(0,10);
+  currentPointageDate = dateKey;
+  if(!data.attendance) data.attendance = {};
+  if(!data.attendance[dateKey]) data.attendance[dateKey] = { workers: {} };
+  data.attendance[dateKey].customSite = {
+    name: a.depannageSiteName || 'Dépannage',
+    zone: '',
+    address: a.depannageAddress || ''
+  };
+  data.attendance[dateKey].siteId = null;
+  saveData();
+
+  const modal = document.getElementById('modal-depannageDetail');
+  if(modal) modal.remove();
+  goTo('heures');
+  if(typeof setHeuresMode === 'function') setHeuresMode('pointage');
+  if(typeof renderPointage === 'function') setTimeout(renderPointage, 50);
+  showToast('✅ Dépannage rattaché au pointage du ' + new Date(dateKey+'T00:00:00').toLocaleDateString('fr-FR'));
 }
 
 /* Ouvrier/chef : ajoute l'événement reçu par alerte à son agenda personnel
