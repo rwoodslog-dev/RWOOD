@@ -8952,7 +8952,6 @@ function goTo(viewName, siteId){
     _galerieOpenSiteId = null; _galerieLastCount = -1;
     _galerieCurrentPhotos = [];
     if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
-    if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
     const gsb = document.getElementById('galerieSelectBtn'); if(gsb){ gsb.textContent = 'Sélectionner'; gsb.style.display = ''; }
   }
   if(viewName === 'zinc') renderZincGallery();
@@ -9352,7 +9351,7 @@ function _galerieRenderFolders(root){
         <div class="galerie-folder" onclick="galerieOpenFolder('${g.site.id}')" style="position:relative;">
           ${badgeHtml}
           <div class="galerie-folder-thumb">
-            ${cover ? `<img src="${escapeHtml(cover.url)}" loading="lazy" alt="">` : '📁'}
+            ${cover ? `<img src="${escapeHtml(cover.thumbUrl || cover.url)}" loading="lazy" alt="">` : '📁'}
             <span class="galerie-folder-count">${g.photos.length}</span>
           </div>
           <div class="galerie-folder-name">${escapeHtml(g.site.name)}</div>
@@ -9408,7 +9407,10 @@ function _galerieRenderFolder(root, siteId){
   _galerieSetupSentinel(site);
 }
 
-/* Ajoute un lot de photos au DOM (sans tout reconstruire). */
+/* Ajoute un lot de photos au DOM (sans tout reconstruire). Les vignettes
+   sont maintenant légères (miniatures compressées, voir uploadThumbnailToSupabase)
+   donc chargées immédiatement — plus d'attente "image noire puis apparition
+   en escalier" au scroll, tout le lot s'affiche dès son insertion dans le DOM. */
 function _galerieAppendBatch(site){
   const grid = document.getElementById('galerieGrid');
   if(!grid) return;
@@ -9428,37 +9430,12 @@ function _galerieAppendBatch(site){
     html += `
     <div class="galerie-cell${_galerieSelectMode?' selectable':''}${checked?' selected':''}" onclick="${onclick}">
       ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
-      <img data-src="${escapeHtml(m.url)}" alt="photo" decoding="async" fetchpriority="${i < 6 ? 'high' : 'low'}" class="galerie-lazy">
+      <img src="${escapeHtml(m.thumbUrl || m.url)}" alt="photo" decoding="async" loading="eager" fetchpriority="${i < 12 ? 'high' : 'auto'}" class="galerie-lazy">
       <div class="galerie-cap">${_galerieCaption(m)}</div>
     </div>`;
   }
   grid.insertAdjacentHTML('beforeend', html);
   _galerieRenderedCount = to;
-
-  // Activer le lazy load des images ajoutées
-  _galerieLazyLoad(grid);
-}
-
-/* IntersectionObserver sur chaque image : ne charge que quand elle entre dans le viewport. */
-let _galerieLazyObs = null;
-function _galerieLazyLoad(container){
-  if(!_galerieLazyObs){
-    _galerieLazyObs = new IntersectionObserver((entries)=>{
-      entries.forEach(entry=>{
-        if(entry.isIntersecting){
-          const img = entry.target;
-          if(img.dataset.src && !img.src){
-            img.src = img.dataset.src;
-            img.removeAttribute('data-src');
-          }
-          _galerieLazyObs.unobserve(img);
-        }
-      });
-    }, { rootMargin: '200px 0px' }); // précharge 200px avant le viewport
-  }
-  container.querySelectorAll('img.galerie-lazy[data-src]').forEach(img=>{
-    _galerieLazyObs.observe(img);
-  });
 }
 
 /* Sentinelle en bas de la grille : charge le lot suivant au scroll. */
@@ -9497,7 +9474,6 @@ function galerieCloseFolder(){
   _galerieLastCount = -1; // recalcul du compteur global (dossiers)
   _galerieCurrentPhotos = [];
   if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
-  if(_galerieLazyObs){ _galerieLazyObs.disconnect(); _galerieLazyObs = null; }
   const btn = document.getElementById('galerieSelectBtn');
   if(btn){ btn.textContent = 'Sélectionner'; }
   const root = document.getElementById('galerieContent');
@@ -12554,6 +12530,42 @@ async function uploadFileToSupabase(file, siteId){
   return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
 }
 
+/* Génère une miniature compressée (max 480px, JPEG qualité 70%) à partir
+   d'un fichier image, et l'upload à part de l'original — pour que la
+   galerie affiche des vignettes légères (quelques dizaines de Ko) au lieu
+   de charger la photo en pleine résolution (plusieurs Mo) juste pour un
+   aperçu. L'original reste inchangé et sert au zoom/plein écran. */
+async function uploadThumbnailToSupabase(file, siteId){
+  try{
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result);
+      reader.onerror = () => reject(new Error('Lecture fichier échouée'));
+      reader.readAsDataURL(file);
+    });
+    const compressedDataUrl = await compressImage(dataUrl, { maxDim: 480, quality: 0.7 });
+    const res = await fetch(compressedDataUrl);
+    const thumbBlob = await res.blob();
+
+    const path = `sites/${siteId}/thumbs/${uid()}.jpg`;
+    const uploadRes = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
+      method: 'POST',
+      headers: {
+        'apikey':        SUPA_KEY,
+        'Authorization': 'Bearer ' + SUPA_KEY,
+        'Content-Type':  'image/jpeg',
+        'x-upsert':      'true'
+      },
+      body: thumbBlob
+    });
+    if(!uploadRes.ok) return null; // pas grave : la galerie se rabat sur l'original
+
+    return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
+  }catch(e){
+    return null; // silencieux : la miniature est une optimisation, pas une nécessité
+  }
+}
+
 /* Upload une photo de tuile vers le bucket public partagé et retourne
    son URL (visible par tous, comme les photos de la galerie). Repli sur
    le stockage local si l'upload échoue (hors ligne). */
@@ -12590,9 +12602,16 @@ async function addSharedMediaToSite(siteId, file, opts){
 
   if(!silent) showToast('⬆️ Upload en cours…');
   try{
-    const url     = await uploadFileToSupabase(file, siteId);
     const isPdf   = file.type === 'application/pdf' || file.name.endsWith('.pdf');
     const isImage = file.type.startsWith('image/');
+
+    // Upload de l'original + génération d'une miniature légère en parallèle
+    // pour les images (la galerie affichera la miniature, pas l'original).
+    const [url, thumbUrl] = await Promise.all([
+      uploadFileToSupabase(file, siteId),
+      isImage ? uploadThumbnailToSupabase(file, siteId) : Promise.resolve(null)
+    ]);
+
     const profile = data.settings.myProfile || {};
     const uploader = ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim()
                   || data.settings.teamName || 'Conducteur';
@@ -12602,6 +12621,7 @@ async function addSharedMediaToSite(siteId, file, opts){
       id:          uid(),
       name:        file.name,
       url,
+      thumbUrl:    thumbUrl || null, // miniature légère pour la galerie ; null = repli sur l'original
       type:        isPdf ? 'pdf' : isImage ? 'photo' : 'file',
       mimeType:    file.type,
       uploadedBy:  uploader,
@@ -17744,7 +17764,7 @@ function renderCloudMedia(siteId){
       window._cloudPhotoCache = photos;
       photoListEl.innerHTML = photos.map((m, i) => `
         <div style="position:relative;background:var(--card);border-radius:8px;overflow:hidden;">
-          <img src="${m.url}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;display:block;"
+          <img src="${escapeHtml(m.thumbUrl || m.url)}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;display:block;"
             onerror="this.style.display='none'">
           <div style="display:flex;gap:4px;padding:5px;">
             <button data-pi="${i}" class="cloud-photo-view btn btn-sm"
@@ -27451,7 +27471,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.7.0';
+const APP_VERSION = '4.8.0';
 
 const CHANGELOG = [
   {
