@@ -27421,7 +27421,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.5.0';
+const APP_VERSION = '4.6.0';
 
 const CHANGELOG = [
   {
@@ -33809,16 +33809,20 @@ async function markAllAlertsRead(){
     let changed = false;
     mine.forEach(a => { if(!a.readBy.includes(myId)){ a.readBy.push(myId); changed = true; } });
     if(changed) await _saveAlerts(alerts);
-    // Rafraîchir l'état local (bulle/badge) sans attendre le prochain polling
+    // Rafraîchir l'état local (opacité visuelle des cartes lues) sans
+    // attendre le prochain polling — mais le badge, lui, continue d'afficher
+    // le nombre TOTAL d'alertes présentes : consulter/mettre en historique
+    // ne le fait plus disparaître, seule la suppression le fait baisser.
     (_myAlertsCache||[]).forEach(a => { if(!a.readBy.includes(myId)) a.readBy.push(myId); });
-    _myAlertsUnreadCount = 0;
-    // Alertesmega reste TOUJOURS visible tant que le réglage est activé
-    // (comportement voulu, voir checkForNewAlerts) — seul le badge de
-    // compteur doit disparaître ici, pas la bulle elle-même.
+    const total = (_myAlertsCache||[]).length;
+    _myAlertsUnreadCount = total;
     const bubble = document.getElementById('alertBubble');
     const badge = document.getElementById('alertBubbleBadge');
     if(bubble) bubble.classList.toggle('show', _alertesMegaEnabled());
-    if(badge) badge.style.display = 'none';
+    if(badge){
+      if(total > 0){ badge.textContent = total; badge.style.display = 'block'; }
+      else badge.style.display = 'none';
+    }
   } catch(e){ /* silencieux */ }
 }
 
@@ -35814,11 +35818,14 @@ async function checkForNewAlerts(){
     const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
     const myId = getDeviceSyncId();
-    const unread = mine.filter(a => !a.readBy.includes(myId));
-    const previousUnreadCount = _myAlertsUnreadCount || 0;
+    const previousCount = _myAlertsUnreadCount || 0;
 
     _myAlertsCache = mine;
-    _myAlertsUnreadCount = unread.length;
+    // Le badge affiche le nombre TOTAL d'alertes actuellement présentes dans
+    // Alertesmega — peu importe qu'elles aient déjà été ouvertes/mises en
+    // historique/etc. Il ne diminue que quand une alerte est supprimée, et
+    // remonte dès qu'une nouvelle arrive.
+    _myAlertsUnreadCount = mine.length;
 
     const bubble = document.getElementById('alertBubble');
     const badge = document.getElementById('alertBubbleBadge');
@@ -35833,16 +35840,15 @@ async function checkForNewAlerts(){
     }
 
     // La bulle reste TOUJOURS visible dès qu'Alertesmega est active — même
-    // sans alerte non lue — comme la bulle "Liste à faire" : c'est un rappel
+    // sans alerte — comme la bulle "Liste à faire" : c'est un rappel
     // permanent qui ouvre l'historique complet en un clic (voir openAlertInbox).
     bubble.classList.add('show');
 
-    if(unread.length > 0){
-      if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
-      // Son joué uniquement si le nombre de non-lus a augmenté depuis la
-      // dernière vérification (évite de rejouer le son en boucle pour les
-      // mêmes alertes déjà signalées).
-      if(unread.length > previousUnreadCount) _playAlertSound();
+    if(mine.length > 0){
+      if(badge){ badge.textContent = mine.length; badge.style.display = 'block'; }
+      // Son joué uniquement si le nombre total a augmenté depuis la
+      // dernière vérification (évite de rejouer le son en boucle).
+      if(mine.length > previousCount) _playAlertSound();
     } else {
       if(badge) badge.style.display = 'none';
     }
@@ -36402,6 +36408,11 @@ function permanentlyDeleteAlertFromTrash(trashId){
    ═══════════════════════════════════════════════════════════════════ */
 function openAlertInbox(){
   _renderAlertInboxList();
+  const countEl = document.getElementById('alertInboxCount');
+  if(countEl){
+    const n = (_myAlertsCache||[]).length;
+    countEl.textContent = n > 0 ? `(${n})` : '';
+  }
   openModal('alertInbox');
 }
 
@@ -36567,17 +36578,17 @@ async function _signatureFromAlertConfirm(){
 }
 
 function _updateAlertBubbleFromCache(){
-  const myId = getDeviceSyncId();
-  const unread = _myAlertsCache.filter(a => !a.readBy.includes(myId));
+  const total = (_myAlertsCache||[]).length;
   const bubble = document.getElementById('alertBubble');
   const badge = document.getElementById('alertBubbleBadge');
   if(!bubble) return;
   // Alertesmega reste TOUJOURS visible tant que le réglage est activé
-  // (même règle que checkForNewAlerts/markAllAlertsRead) — seul le badge
-  // de compteur dépend du nombre de non-lus.
+  // (même règle que checkForNewAlerts/markAllAlertsRead) — le badge affiche
+  // le nombre TOTAL d'alertes présentes (pas seulement les non-lues), il ne
+  // baisse que quand une alerte est supprimée.
   bubble.classList.toggle('show', _alertesMegaEnabled());
-  if(unread.length > 0){
-    if(badge){ badge.textContent = unread.length; badge.style.display = 'block'; }
+  if(total > 0){
+    if(badge){ badge.textContent = total; badge.style.display = 'block'; }
   } else {
     if(badge) badge.style.display = 'none';
   }
@@ -40197,7 +40208,7 @@ async function comptaEditEnsurePulled(){
 <div class="modal-overlay" id="modal-alertInbox">
   <div class="modal" style="max-height:88vh;">
     <div class="modal-header">
-      <h2>📢 Alertesmega</h2>
+      <h2><span style="color:#4CAF50;">📢 Alertesmega</span> <span id="alertInboxCount" style="color:#4A90D9;"></span></h2>
       <button class="modal-close" onclick="closeModal('alertInbox')">×</button>
     </div>
     <div id="alertInboxList"></div>
