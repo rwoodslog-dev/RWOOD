@@ -5341,6 +5341,15 @@
       <!-- Section HISTORIQUE : visible pour tous les rôles -->
       <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
       <div id="alertesHistoList"></div>
+
+      <!-- Historique Dépannage : conducteur/patron uniquement — tous les
+           dépannages envoyés à l'équipe, groupés par chantier, permanents
+           même si le destinataire a supprimé son alerte de son côté. -->
+      <div id="depannageHistorySection" style="display:none;margin-top:24px;">
+        <div class="section-title">🛠️ Historique Dépannage</div>
+        <div class="hint" style="margin-bottom:12px;">Tous les dépannages envoyés à l'équipe, classés par chantier.</div>
+        <div id="depannageHistoryList"></div>
+      </div>
     </section>
 
 
@@ -11426,6 +11435,55 @@ function _renderDepannageTools(){
   `).join('');
 }
 
+/* Médias ajoutés par l'EXPÉDITEUR avant l'envoi du dépannage (uploadés tout
+   de suite vers le stockage partagé, mais rattachés à l'alerte seulement à
+   l'envoi — voir sendAlerteToMembers). Distinct de _addDepannageMedia qui
+   gère l'ajout après coup, côté destinataire ou expéditeur, sur une alerte
+   déjà créée. */
+let _depannageComposeMedia = [];
+function _pickDepannageComposeMedia(){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,image/*';
+  input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if(!files.length) return;
+    showToast('⏳ Envoi en cours…');
+    let done = 0, failed = 0;
+    for(const file of files){
+      try{
+        const url = await uploadFileToSupabase(file, 'depannage_compose_' + Date.now());
+        const isImage = (file.type||'').startsWith('image/');
+        _depannageComposeMedia.push({ url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
+        done++;
+      }catch(e){ failed++; }
+    }
+    showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} média(s) ajouté(s)`);
+    _renderDepannageComposeMedia();
+  };
+  input.click();
+}
+function _removeDepannageComposeMedia(idx){
+  _depannageComposeMedia.splice(idx, 1);
+  _renderDepannageComposeMedia();
+}
+function _renderDepannageComposeMedia(){
+  const grid = document.getElementById('alerteDepannageMediaGrid');
+  if(!grid) return;
+  grid.innerHTML = _depannageComposeMedia.map((m, idx) => `
+    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
+      ${m.type === 'photo'
+        ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;">`
+        : `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:24px;">📄</div>`}
+      <button type="button" onclick="_removeDepannageComposeMedia(${idx})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.7);color:#fff;border:none;font-size:13px;cursor:pointer;line-height:1;">×</button>
+    </div>
+  `).join('');
+}
+
 function openAlerteComposeGroup(){
   const authIds = [..._alerteSelectedAuthIds];
   if(!authIds.length){ showToast('Sélectionne au moins un destinataire'); return; }
@@ -11494,6 +11552,11 @@ function openAlerteComposeGroup(){
           <input type="text" id="alerteDepannageAddress" placeholder="Adresse exacte">
         </div>
         <div class="field" style="margin-bottom:10px;">
+          <label>Médias (photos, fichiers)</label>
+          <div id="alerteDepannageMediaGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;"></div>
+          <button type="button" class="btn btn-outline btn-block" onclick="_pickDepannageComposeMedia()">📥 Ajouter un média</button>
+        </div>
+        <div class="field" style="margin-bottom:10px;">
           <label>Date</label>
           <input type="date" id="alerteDepannageDate">
         </div>
@@ -11518,6 +11581,7 @@ function openAlerteComposeGroup(){
   document.body.appendChild(div);
   _alerteComposeType = isChefOnly ? 'depannage' : 'info';
   _depannageTools = [];
+  _depannageComposeMedia = [];
 
   document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
 
@@ -11525,6 +11589,32 @@ function openAlerteComposeGroup(){
     _setAlerteComposeType('depannage');
   } else {
     _renderAlerteTemplateChips('info');
+  }
+
+  // Renvoi d'un dépannage existant (depuis l'Historique Dépannage) : on
+  // force le type et on pré-remplit tous les champs avec les mêmes infos.
+  if(_pendingResendDepannage){
+    const src = _pendingResendDepannage;
+    _pendingResendDepannage = null;
+    _setAlerteComposeType('depannage');
+
+    const siteSelect = document.getElementById('alerteDepannageSiteSelect');
+    const siteFree = document.getElementById('alerteDepannageSiteFree');
+    if(src.depannageSiteId && siteSelect){
+      siteSelect.value = src.depannageSiteId;
+    } else if(siteSelect){
+      siteSelect.value = '__libre__';
+      _toggleDepannageSiteMode('__libre__');
+      if(siteFree) siteFree.value = src.depannageSiteName || '';
+    }
+    const addressEl = document.getElementById('alerteDepannageAddress');
+    if(addressEl) addressEl.value = src.depannageAddress || '';
+    const dateEl = document.getElementById('alerteDepannageDate');
+    if(dateEl) dateEl.value = src.depannageDate || '';
+    _depannageTools = (src.depannageTools || []).slice();
+    _renderDepannageTools();
+    const textarea = document.getElementById('alerteComposeText');
+    if(textarea) textarea.value = (src.text || '').replace(/^.*? : /,'');
   }
 
   document.getElementById('alerteComposeSend').addEventListener('click', () => {
@@ -11645,7 +11735,8 @@ async function sendAlerteToMembers(authIds, names){
       siteId: depSiteId,
       address: addressEl ? addressEl.value.trim() : '',
       date: dateEl ? dateEl.value : '',
-      tools: _depannageTools.slice()
+      tools: _depannageTools.slice(),
+      media: _depannageComposeMedia.slice() // photos/fichiers ajoutés par l'expéditeur avant l'envoi
     };
   }
 
@@ -13585,7 +13676,7 @@ function openMediaFabSheet(siteId){
    même sheet visuel (Fichier/PDF, Photo, Galerie), sans le pliage zinc qui
    n'a pas de sens hors contexte chantier. Les médias sont stockés sur
    l'alerte elle-même (a.depannageMedia), pas sur site.sharedMedia. */
-function openMediaFabSheetForAlert(alertId){
+function openMediaFabSheetForAlert(alertId, fromHistory){
   const ex = document.getElementById('mediaFabSheet');
   if(ex) ex.remove();
 
@@ -13618,20 +13709,20 @@ function openMediaFabSheetForAlert(alertId){
   sheet.onclick = e => { if(e.target === sheet) close(); };
 
   sheet.querySelector('[data-act="file"]').onclick = () => {
-    close(); _mediaFabPickFileForAlert(alertId, { accept: 'application/pdf,image/*', multiple: true });
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'application/pdf,image/*', multiple: true }, fromHistory);
   };
   sheet.querySelector('[data-act="photo"]').onclick = () => {
-    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', capture: 'environment' });
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', capture: 'environment' }, fromHistory);
   };
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
-    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', multiple: true });
+    close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', multiple: true }, fromHistory);
   };
   sheet.querySelector('[data-act="cancel"]').onclick = close;
 
   document.body.appendChild(sheet);
 }
 
-async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple }){
+async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple }, fromHistory){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = accept;
@@ -13654,7 +13745,8 @@ async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple })
       }catch(e){ failed++; }
     }
     showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
-    openDepannageDetail(alertId); // re-render la fiche avec les nouveaux médias
+    if(fromHistory && typeof renderDepannageHistory === 'function') await renderDepannageHistory(); // resynchronise le cache historique
+    openDepannageDetail(alertId, fromHistory); // re-render la fiche avec les nouveaux médias
   };
   input.click();
 }
@@ -13667,12 +13759,14 @@ async function _addDepannageMedia(alertId, media){
     const a = alerts.find(x => x.id === alertId);
     if(!a) return;
     if(!a.depannageMedia) a.depannageMedia = [];
-    a.depannageMedia.push(media);
+    const p = data.settings && data.settings.myProfile;
+    const authorName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim() || null;
+    a.depannageMedia.push({ ...media, addedBy: authorName });
     await _saveAlerts(alerts);
     const cached = (_myAlertsCache||[]).find(x => x.id === alertId);
     if(cached){
       if(!cached.depannageMedia) cached.depannageMedia = [];
-      cached.depannageMedia.push(media);
+      cached.depannageMedia.push({ ...media, addedBy: authorName });
     }
   }catch(e){ /* silencieux */ }
 }
@@ -27265,7 +27359,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '3.9.1';
+const APP_VERSION = '4.0.0';
 
 const CHANGELOG = [
   {
@@ -33461,6 +33555,8 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
+    const _senderName = (data.settings && data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || null;
+    const _depannageMediaTagged = (depannageData && depannageData.media || []).map(m => ({ ...m, addedBy: _senderName }));
     alerts.push({
       id: uid(),
       text: text.trim(),
@@ -33479,7 +33575,8 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       depannageAddress: (depannageData && depannageData.address) || null,
       depannageDate: (depannageData && depannageData.date) || null,
       depannageTools: (depannageData && depannageData.tools) || null,
-      senderName: (data.settings && data.settings.myProfile && (data.settings.myProfile.firstName||'') + ' ' + (data.settings.myProfile.lastName||'')).trim() || null,
+      depannageMedia: _depannageMediaTagged, // médias de l'expéditeur (fusionnés avec ceux du destinataire via _addDepannageMedia)
+      senderName: _senderName,
       createdAt: new Date().toISOString(),
       readBy: []
     });
@@ -35720,6 +35817,12 @@ function renderAlertesTuile(){
 
   _renderAlertesHistoList();
 
+  // Historique Dépannage : visible uniquement conducteur/patron.
+  const canSeeDepannageHistory = myRole === 'conducteur' || myRole === 'patron';
+  const depannageSection = document.getElementById('depannageHistorySection');
+  if(depannageSection) depannageSection.style.display = canSeeDepannageHistory ? 'block' : 'none';
+  if(canSeeDepannageHistory) renderDepannageHistory();
+
   // Marquer tout comme lu à l'ouverture de la tuile (fait disparaître le badge global)
   if(typeof markAllAlertsRead === 'function') markAllAlertsRead();
 }
@@ -35769,6 +35872,72 @@ function _renderAlertesHistoList(){
   }).join('');
 }
 
+/* Historique Dépannage (conducteur/patron) : TOUS les dépannages envoyés à
+   l'équipe, groupés par chantier — permanent, indépendant de la suppression
+   côté destinataire (celle-ci ne masque que son propre affichage local).
+   Utilise _fetchAlerts() directement (pas _filterAlertsForMe) pour voir
+   l'intégralité des dépannages, pas seulement ceux qui m'étaient destinés. */
+let _depannageHistoryCache = [];
+async function renderDepannageHistory(){
+  const list = document.getElementById('depannageHistoryList');
+  if(!list) return;
+  list.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">⏳ Chargement…</div>';
+
+  const all = await _fetchAlerts();
+  const depannages = all.filter(a => a.kind === 'depannage').sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  _depannageHistoryCache = depannages;
+
+  if(!depannages.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucun dépannage envoyé pour le moment.</div>';
+    return;
+  }
+
+  // Regroupement par chantier (nom, à défaut "Sans chantier")
+  const groups = {};
+  depannages.forEach(a => {
+    const key = a.depannageSiteName || 'Sans chantier précisé';
+    if(!groups[key]) groups[key] = [];
+    groups[key].push(a);
+  });
+
+  list.innerHTML = Object.entries(groups).map(([siteName, items]) => `
+    <div class="card" style="margin-bottom:10px;">
+      <div style="font-weight:800;font-size:14px;margin-bottom:8px;">🏗️ ${escapeHtml(siteName)} <span class="hint">(${items.length})</span></div>
+      ${items.map(a => {
+        const dateLabel = a.depannageDate
+          ? new Date(a.depannageDate + 'T00:00:00').toLocaleDateString('fr-FR', {day:'numeric', month:'short', year:'numeric'})
+          : new Date(a.createdAt).toLocaleDateString('fr-FR', {day:'numeric', month:'short', year:'numeric'});
+        return `
+        <div style="padding:8px 0;border-top:1px solid var(--line);">
+          <div style="font-size:13px;">${dateLabel} — assigné à <strong>${escapeHtml(a.recipientName||'—')}</strong></div>
+          <div class="hint" style="margin-top:2px;">${escapeHtml((a.text||'').replace(/^.*? : /,'').substring(0,80))}${(a.text||'').length>80?'…':''}</div>
+          <div class="row-actions" style="margin-top:8px;">
+            <button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}', true)">👁 Détails</button>
+            <button class="btn btn-outline btn-sm" onclick="_resendDepannage('${a.id}')">🔁 Renvoyer</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
+}
+
+/* Renvoie un dépannage déjà existant : pré-remplit le formulaire de
+   composition avec les mêmes infos (chantier, adresse, date, outils, notes),
+   pour que le conducteur/patron n'ait qu'à choisir un nouveau destinataire
+   (ou garder le même) puis valider. */
+function _resendDepannage(alertId){
+  const a = _depannageHistoryCache.find(x => x.id === alertId);
+  if(!a) return;
+
+  showToast('Sélectionne un destinataire puis clique sur "Composer" pour renvoyer ce dépannage.');
+  _pendingResendDepannage = a;
+
+  // Scroll vers la liste des membres pour guider l'utilisateur.
+  const el = document.getElementById('alertesMemberList');
+  if(el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+let _pendingResendDepannage = null;
+
 /* Ouvrier/chef : répondre à une demande d'envoi d'heures → ouvre directement
    la vue Heures/Pointage pour compléter et envoyer sa fiche. */
 function _openHeuresFromAlert(alertId){
@@ -35781,8 +35950,9 @@ function _openHeuresFromAlert(alertId){
 /* Fiche détaillée d'un dépannage (Alertesmega) : chantier/adresse/date,
    médias (composant réutilisé du chantier), notes, checklist quincaillerie
    cochable, et raccourci de pointage sur la fiche d'heures du jour. */
-function openDepannageDetail(alertId){
-  const a = (_myAlertsCache||[]).find(x => x.id === alertId);
+function openDepannageDetail(alertId, fromHistory){
+  const source = fromHistory ? _depannageHistoryCache : _myAlertsCache;
+  const a = (source||[]).find(x => x.id === alertId);
   if(!a) return;
 
   const ex = document.getElementById('modal-depannageDetail');
@@ -35830,21 +36000,28 @@ function openDepannageDetail(alertId){
       <div class="section-title">📎 Médias</div>
       <div id="depannageMediaGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
         ${media.length ? media.map(m => `
-          <div style="aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
+          <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
             ${m.type === 'photo'
               ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;cursor:pointer;" onclick="window.open('${escapeHtml(m.url)}','_blank')">`
               : `<a href="${escapeHtml(m.url)}" target="_blank" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:28px;">📄</a>`}
+            ${m.addedBy ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.65);color:#fff;font-size:9px;padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(m.addedBy)}</div>` : ''}
           </div>
         `).join('') : '<div class="hint" style="grid-column:1/-1;">Aucun média pour le moment.</div>'}
       </div>
-      <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openMediaFabSheetForAlert('${alertId}')">📥 Ajouter un média</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openMediaFabSheetForAlert('${alertId}', ${fromHistory ? 'true' : 'false'})">📥 Ajouter un média</button>
 
+      ${!fromHistory ? `
       <button class="btn btn-primary btn-block" style="margin-bottom:8px;" onclick="_pointDepannageOnHours('${alertId}')">⏱ Pointer sur ce dépannage</button>
       <button class="btn btn-outline btn-block" onclick="deleteAlertToTrash('${alertId}'); document.getElementById('modal-depannageDetail').remove();">🗑 Supprimer</button>
+      ` : `
+      <div class="hint" style="text-align:center;">Vue historique — consultation seule pour le pointage/suppression.</div>
+      `}
     </div>`;
   document.body.appendChild(div);
 
-  if(typeof _clearAlert === 'function') _clearAlert(alertId);
+  // Ne marquer comme lu que si c'est bien MON propre historique (pas une
+  // simple consultation depuis l'Historique Dépannage global).
+  if(!fromHistory && typeof _clearAlert === 'function') _clearAlert(alertId);
 }
 
 /* Coche/décoche un article de la checklist quincaillerie, persisté sur
@@ -35860,6 +36037,8 @@ async function _toggleDepannageToolChecked(alertId, idx, isChecked){
     await _saveAlerts(alerts);
     const cached = (_myAlertsCache||[]).find(x => x.id === alertId);
     if(cached) cached.depannageToolsChecked = a.depannageToolsChecked;
+    const cachedHist = (_depannageHistoryCache||[]).find(x => x.id === alertId);
+    if(cachedHist) cachedHist.depannageToolsChecked = a.depannageToolsChecked;
   }catch(e){ /* silencieux */ }
 }
 
