@@ -27421,7 +27421,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '4.1.0';
+const APP_VERSION = '4.2.0';
 
 const CHANGELOG = [
   {
@@ -35999,6 +35999,25 @@ function renderAlertesTuile(){
   if(typeof markAllAlertsRead === 'function') markAllAlertsRead();
 }
 
+/* Détermine le chantier associé à une alerte, selon son type (chaque kind
+   stocke le chantier dans un champ différent). Retourne le nom du chantier,
+   ou null si l'alerte n'est liée à aucun chantier précis (message simple,
+   demande de signature/heures générique, etc.). */
+function _alertSiteLabel(a){
+  if(a.kind === 'depannage'){
+    return a.depannageSiteName || null;
+  }
+  if(a.kind === 'evenement' && a.eventSiteId){
+    const s = (data.sites||[]).find(x=>x.id===a.eventSiteId);
+    return s ? s.name : null;
+  }
+  if((a.kind === 'photo' || a.kind === 'nouveau-chantier') && a.siteId){
+    const s = (data.sites||[]).find(x=>x.id===a.siteId);
+    return s ? s.name : null;
+  }
+  return null;
+}
+
 function _renderAlertesHistoList(){
   const list = document.getElementById('alertesHistoList');
   if(!list) return;
@@ -36010,7 +36029,19 @@ function _renderAlertesHistoList(){
     return;
   }
 
-  list.innerHTML = mine.map(a => {
+  // Regroupement par chantier : "Sans chantier" pour tout ce qui n'a pas de
+  // lien identifiable (message simple, signature/heures génériques…),
+  // toujours affiché en dernier. Les groupes chantier sont triés par nom.
+  const groups = {};
+  mine.forEach(a => {
+    const key = _alertSiteLabel(a) || '__sans_chantier__';
+    if(!groups[key]) groups[key] = [];
+    groups[key].push(a);
+  });
+  const siteKeys = Object.keys(groups).filter(k => k !== '__sans_chantier__').sort((a,b) => a.localeCompare(b,'fr'));
+  const orderedKeys = groups['__sans_chantier__'] ? [...siteKeys, '__sans_chantier__'] : siteKeys;
+
+  const renderCard = (a) => {
     const isRead = a.readBy && a.readBy.includes(myId);
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
     let actionHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')">🗑 Supprimer</button>`;
@@ -36040,6 +36071,16 @@ function _renderAlertesHistoList(){
           </div>
         </div>
         <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
+      </div>`;
+  };
+
+  list.innerHTML = orderedKeys.map(key => {
+    const items = groups[key];
+    const groupTitle = key === '__sans_chantier__' ? '📭 Sans chantier' : '🏗️ ' + escapeHtml(key);
+    return `
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:800;color:var(--wood);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">${groupTitle} <span style="color:var(--ink-soft);font-weight:600;">(${items.length})</span></div>
+        ${items.map(renderCard).join('')}
       </div>`;
   }).join('');
 }
