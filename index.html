@@ -1930,6 +1930,14 @@
   .row-actions{ display:flex; gap:8px; margin-top:10px; }
   .row-actions .btn{ flex:1; }
 
+  /* Variante pour les cartes d'alerte (dépannage) : jusqu'à 4 boutons dont un
+     multi-mots ("Ajouter à l'historique") — on autorise le retour à la ligne
+     avec une largeur minimale pour que les boutons ne débordent jamais du
+     cadre. */
+  .row-actions-wrap{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .row-actions-wrap .btn{ flex:1 1 calc(50% - 4px); min-width:calc(50% - 4px); white-space:normal; }
+  .row-actions-wrap .hint{ flex:1 1 calc(50% - 4px); min-width:calc(50% - 4px); display:flex; align-items:center; justify-content:center; }
+
   .site-select-wrap{ margin-bottom: 14px; }
 
   /* EDITABLE TEXT (contenteditable) */
@@ -11480,7 +11488,7 @@ function _pickDepannageComposeMediaFile({ accept, capture, multiple }){
     input.remove();
     if(!files.length) return;
     showToast('⏳ Envoi en cours…');
-    let done = 0, failed = 0;
+    let done = 0, failed = 0, heicSkipped = 0;
     for(const file of files){
       try{
         // Utilise le siteId réellement sélectionné dans le formulaire s'il y en
@@ -11490,13 +11498,26 @@ function _pickDepannageComposeMediaFile({ accept, capture, multiple }){
         const siteSel = document.getElementById('alerteDepannageSiteSelect');
         const chosenSiteId = (siteSel && siteSel.value && siteSel.value !== '__libre__') ? siteSel.value : null;
         const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
-        const url = await uploadFileToSupabase(file, chosenSiteId || fallbackSiteId);
         const isImage = (file.type||'').startsWith('image/');
+        // Conversion des photos en JPEG avant upload : garantit que le
+        // navigateur (Android Chrome) pourra afficher l'aperçu inline. Un HEIC
+        // brut ne s'affiche pas dans un <img> sur Samsung → on le convertit.
+        let uploadFile = file, isHeic = /heic|heif/i.test(file.type||'') || /\.(heic|heif)$/i.test(file.name||'');
+        if(isImage){
+          const jpeg = await _photoToJpegFile(file);
+          if(jpeg){ uploadFile = jpeg; isHeic = false; }
+          else if(isHeic){ heicSkipped++; failed++; continue; } // HEIC non convertible → aperçu impossible, on n'ajoute pas une vignette cassée
+        }
+        const url = await uploadFileToSupabase(uploadFile, chosenSiteId || fallbackSiteId);
         _depannageComposeMedia.push({ url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
         done++;
       }catch(e){ failed++; }
     }
-    showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} média(s) ajouté(s)`);
+    if(heicSkipped){
+      showToast(`⚠️ ${heicSkipped} photo(s) HEIC non prise(s) en charge — passe l'appareil photo en JPEG`);
+    } else {
+      showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} média(s) ajouté(s)`);
+    }
     _renderDepannageComposeMedia();
   };
   input.click();
@@ -11505,13 +11526,49 @@ function _removeDepannageComposeMedia(idx){
   _depannageComposeMedia.splice(idx, 1);
   _renderDepannageComposeMedia();
 }
+/* Convertit un fichier image en File JPEG (via canvas) pour garantir un
+   aperçu inline affichable sur Android Chrome. Renvoie null si l'image n'est
+   pas décodable par le navigateur (cas typique du HEIC sur Samsung), pour que
+   l'appelant puisse avertir l'utilisateur au lieu d'ajouter une vignette
+   cassée. Redimensionne au passage (max 1600px) pour alléger l'upload. */
+function _photoToJpegFile(file, maxDim, quality){
+  maxDim = maxDim || 1600; quality = quality || 0.82;
+  return new Promise((resolve) => {
+    try{
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          try{
+            const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+            const w = Math.max(1, Math.round(img.width * scale));
+            const h = Math.max(1, Math.round(img.height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            canvas.toBlob((blob) => {
+              if(!blob){ resolve(null); return; }
+              const base = (file.name||'photo').replace(/\.[^.]+$/, '');
+              resolve(new File([blob], base + '.jpg', { type: 'image/jpeg' }));
+            }, 'image/jpeg', quality);
+          }catch(err){ resolve(null); }
+        };
+        img.onerror = () => resolve(null); // non décodable (HEIC/HEIF sur Android)
+        img.src = e.target.result;
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    }catch(e){ resolve(null); }
+  });
+}
+
 function _renderDepannageComposeMedia(){
   const grid = document.getElementById('alerteDepannageMediaGrid');
   if(!grid) return;
   grid.innerHTML = _depannageComposeMedia.map((m, idx) => `
     <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
       ${m.type === 'photo'
-        ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;">`
+        ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('div'),{innerHTML:'<img src=\\'icons/fichiers.png\\' style=\\'width:28px;height:28px;object-fit:contain;\\'>',style:'display:flex;align-items:center;justify-content:center;width:100%;height:100%;'}))">`
         : `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:24px;"><img src="icons/fichiers.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"></div>`}
       <button type="button" onclick="_removeDepannageComposeMedia(${idx})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.7);color:#fff;border:none;font-size:13px;cursor:pointer;line-height:1;">×</button>
     </div>
@@ -13826,7 +13883,7 @@ async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple },
     input.remove();
     if(!files.length) return;
     showToast('⏳ Envoi en cours…');
-    let done = 0, failed = 0;
+    let done = 0, failed = 0, heicSkipped = 0;
     for(const file of files){
       try{
         // Utilise le siteId réel de l'alerte dépannage s'il existe (chantier
@@ -13834,13 +13891,24 @@ async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple },
         // logique que _pickDepannageComposeMediaFile (voir son commentaire).
         const src = (_myAlertsCache||[]).find(x => x.id === alertId) || (_depannageHistoryCache||[]).find(x => x.id === alertId);
         const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
-        const url = await uploadFileToSupabase(file, (src && src.depannageSiteId) || fallbackSiteId);
         const isImage = (file.type||'').startsWith('image/');
+        // Conversion JPEG (aperçu Android) + détection HEIC — cf. compose.
+        let uploadFile = file, isHeic = /heic|heif/i.test(file.type||'') || /\.(heic|heif)$/i.test(file.name||'');
+        if(isImage){
+          const jpeg = await _photoToJpegFile(file);
+          if(jpeg){ uploadFile = jpeg; isHeic = false; }
+          else if(isHeic){ heicSkipped++; failed++; continue; }
+        }
+        const url = await uploadFileToSupabase(uploadFile, (src && src.depannageSiteId) || fallbackSiteId);
         await _addDepannageMedia(alertId, { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
         done++;
       }catch(e){ failed++; }
     }
-    showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
+    if(heicSkipped){
+      showToast(`⚠️ ${heicSkipped} photo(s) HEIC non prise(s) en charge — passe l'appareil photo en JPEG`);
+    } else {
+      showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
+    }
     if(fromHistory && typeof renderDepannageHistory === 'function') await renderDepannageHistory(); // resynchronise le cache historique
     openDepannageDetail(alertId, fromHistory); // re-render la fiche avec les nouveaux médias
   };
@@ -27498,7 +27566,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.5.1';
+const APP_VERSION = '5.5.2';
 
 const CHANGELOG = [
   {
@@ -36249,7 +36317,7 @@ function _renderAlertesHistoList(){
           </div>
           ${cardCloseCross}
         </div>
-        <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
+        <div class="row-actions-wrap" style="margin-top:10px;">${actionHtml}</div>
       </div>`;
   };
 
@@ -36440,7 +36508,7 @@ function openDepannageDetail(alertId, fromHistory){
         ${media.length ? media.map(m => `
           <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
             ${m.type === 'photo'
-              ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;cursor:pointer;" onclick="window.open('${escapeHtml(m.url)}','_blank')">`
+              ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;cursor:pointer;" onclick="window.open('${escapeHtml(m.url)}','_blank')" onerror="this.onerror=null;var u='${escapeHtml(m.url)}';this.replaceWith(Object.assign(document.createElement('div'),{innerHTML:'<img src=\\'icons/fichiers.png\\' style=\\'width:28px;height:28px;object-fit:contain;\\'>',style:'display:flex;align-items:center;justify-content:center;width:100%;height:100%;cursor:pointer;',onclick:function(){window.open(u,'_blank')}}))">`
               : `<a href="${escapeHtml(m.url)}" target="_blank" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:28px;"><img src="icons/fichiers.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"></a>`}
             ${m.addedBy ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.65);color:#fff;font-size:9px;padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(m.addedBy)}</div>` : ''}
           </div>
@@ -36662,7 +36730,7 @@ function _renderAlertInboxList(){
           </div>
           ${cardCloseCross}
         </div>
-        <div class="row-actions" style="margin-top:10px;">${actionHtml}</div>
+        <div class="row-actions-wrap" style="margin-top:10px;">${actionHtml}</div>
       </div>`;
   }).join('');
 }
