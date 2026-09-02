@@ -5350,6 +5350,16 @@
       <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
       <div id="alertesHistoList"></div>
 
+      <!-- Historique des alertes (perso, tous rôles) : les dépannages que
+           j'ai rangés via "Ajouter à l'historique". Ils quittent "Mes alertes
+           reçues" et la bulle, mais restent consultables ici avec un bouton
+           "Rétablir" pour les renvoyer dans les alertes reçues. -->
+      <div id="alertesArchiveSection" style="margin-top:24px;">
+        <div class="section-title"><img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Historique des alertes</div>
+        <div class="hint" style="margin-bottom:12px;">Les dépannages rangés via « Ajouter à l'historique ». Clique sur « Rétablir » pour renvoyer une alerte dans « Mes alertes reçues ».</div>
+        <div id="alertesArchiveList"></div>
+      </div>
+
       <!-- Historique Dépannage : conducteur/patron uniquement — tous les
            dépannages envoyés à l'équipe, groupés par chantier, permanents
            même si le destinataire a supprimé son alerte de son côté. -->
@@ -27566,7 +27576,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.5.2';
+const APP_VERSION = '5.5.3';
 
 const CHANGELOG = [
   {
@@ -36021,6 +36031,11 @@ async function checkForNewAlerts(){
     // (elles restent dans "Supprimés récemment" → Paramètres, récupérables).
     const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
+    // Exclure aussi les alertes rangées dans "Historique des alertes" (bouton
+    // "Ajouter à l'historique") — elles quittent les alertes reçues et la
+    // bulle, mais restent récupérables via "Rétablir" (voir archivedAlertIds).
+    const archived = (data.settings && data.settings.archivedAlertIds) || [];
+    if(archived.length) mine = mine.filter(a => !archived.includes(a.id));
     const myId = getDeviceSyncId();
     const previousCount = _myAlertsUnreadCount || 0;
 
@@ -36209,6 +36224,7 @@ function renderAlertesTuile(){
   if(knob) knob.style.transform = megaOn ? 'translateX(20px)' : 'translateX(0)';
 
   _renderAlertesHistoList();
+  if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
 
   // Historique Dépannage : visible uniquement conducteur/patron.
   const canSeeDepannageHistory = myRole === 'conducteur' || myRole === 'patron';
@@ -36457,9 +36473,21 @@ function _openHeuresFromAlert(alertId){
    médias (composant réutilisé du chantier), notes, checklist quincaillerie
    cochable, et raccourci de pointage sur la fiche d'heures du jour. */
 function openDepannageDetail(alertId, fromHistory){
-  const source = fromHistory ? _depannageHistoryCache : _myAlertsCache;
-  const a = (source||[]).find(x => x.id === alertId);
+  // Résolution robuste : cherche l'alerte dans le cache adéquat, avec repli
+  // sur l'historique des alertes archivées (ouverture depuis "Historique des
+  // alertes" → l'alerte n'est plus dans _myAlertsCache).
+  let a = fromHistory
+    ? (_depannageHistoryCache||[]).find(x => x.id === alertId)
+    : (_myAlertsCache||[]).find(x => x.id === alertId);
+  let fromArchive = false;
+  if(!a){
+    a = (_alertesArchiveCache||[]).find(x => x.id === alertId);
+    if(a) fromArchive = true;
+  }
   if(!a) return;
+  // Depuis l'archive : consultation seule (comme fromHistory) — pas de
+  // pointage/suppression, et pas de _clearAlert (déjà rangée).
+  const readOnly = fromHistory || fromArchive;
 
   const ex = document.getElementById('modal-depannageDetail');
   if(ex) ex.remove();
@@ -36514,9 +36542,9 @@ function openDepannageDetail(alertId, fromHistory){
           </div>
         `).join('') : '<div class="hint" style="grid-column:1/-1;">Aucun média pour le moment.</div>'}
       </div>
-      <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openMediaFabSheetForAlert('${alertId}', ${fromHistory ? 'true' : 'false'})"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Ajouter un média</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="openMediaFabSheetForAlert('${alertId}', ${readOnly ? 'true' : 'false'})"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Ajouter un média</button>
 
-      ${!fromHistory ? `
+      ${!readOnly ? `
       <button class="btn btn-primary btn-block" style="margin-bottom:8px;" onclick="_pointDepannageOnHours('${alertId}')">⏱ Pointer sur ce dépannage</button>
       <button class="btn btn-outline btn-block" onclick="deleteAlertToTrash('${alertId}'); document.getElementById('modal-depannageDetail').remove();"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>
       ` : `
@@ -36526,8 +36554,8 @@ function openDepannageDetail(alertId, fromHistory){
   document.body.appendChild(div);
 
   // Ne marquer comme lu que si c'est bien MON propre historique (pas une
-  // simple consultation depuis l'Historique Dépannage global).
-  if(!fromHistory && typeof _clearAlert === 'function') _clearAlert(alertId);
+  // simple consultation depuis l'Historique Dépannage global ni l'archive).
+  if(!readOnly && typeof _clearAlert === 'function') _clearAlert(alertId);
 }
 
 /* Coche/décoche un article de la checklist quincaillerie, persisté sur
@@ -36781,8 +36809,103 @@ async function _ackDepannageToHistory(alertId){
       if(!cached.depannageAckedBy.includes(myId)) cached.depannageAckedBy.push(myId);
     }
   }catch(e){ /* silencieux */ }
-  showToast('✅ Ajouté à l\'historique');
+  // Ranger dans "Historique des alertes" : on archive localement l'alerte
+  // (elle quitte "Mes alertes reçues" et la bulle) sans la supprimer de la
+  // base — elle reste récupérable via "Rétablir".
+  if(!data.settings) data.settings = {};
+  if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
+  if(!data.settings.archivedAlertIds.includes(alertId)) data.settings.archivedAlertIds.push(alertId);
+  _myAlertsCache = (_myAlertsCache||[]).filter(x => x.id !== alertId);
+  saveData();
+  showToast('✅ Rangé dans l\'historique des alertes');
   _renderAlertesHistoList();
+  if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
+  if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
+}
+
+/* Historique des alertes (perso, tous rôles) : affiche les dépannages que
+   l'utilisateur a rangés via "Ajouter à l'historique" (archivedAlertIds).
+   Chaque carte propose Détails, Rétablir (renvoie dans "Mes alertes reçues")
+   et Supprimer définitivement. Les données sont lues depuis la base pour
+   rester à jour même après resynchro. */
+let _alertesArchiveCache = [];
+async function _renderAlertesArchiveList(){
+  const list = document.getElementById('alertesArchiveList');
+  if(!list) return;
+  const archived = (data.settings && data.settings.archivedAlertIds) || [];
+  if(!archived.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte rangée dans l\'historique.</div>';
+    return;
+  }
+  list.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">⏳ Chargement…</div>';
+  let all = [];
+  try{ all = await _fetchAlerts(); }catch(e){ all = []; }
+  // On garde les alertes archivées encore présentes dans la base ; celles
+  // supprimées définitivement (base) ne sont plus affichables.
+  const items = all.filter(a => archived.includes(a.id))
+                   .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+  _alertesArchiveCache = items;
+
+  if(!items.length){
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte rangée dans l\'historique.</div>';
+    return;
+  }
+
+  list.innerHTML = items.map(a => {
+    const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const siteName = a.depannageSiteName || 'Sans chantier précisé';
+    const isDepannage = a.kind === 'depannage';
+    return `
+      <div class="card" style="margin-bottom:8px;">
+        <div style="font-weight:800;font-size:14px;">${isDepannage ? '🛠️ ' : ''}${escapeHtml(siteName)}</div>
+        <div style="font-size:13px;line-height:1.5;margin-top:4px;">${escapeHtml(a.text)}</div>
+        <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
+        <div class="row-actions-wrap" style="margin-top:10px;">
+          ${isDepannage ? `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` : ''}
+          <button class="btn btn-primary btn-sm" onclick="_restoreArchivedAlert('${a.id}')">↩️ Rétablir</button>
+          <button class="btn btn-outline btn-sm" onclick="_deleteArchivedAlert('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* Rétablir : retire l'alerte de l'historique perso → elle réapparaît dans
+   "Mes alertes reçues" et dans la bulle Alertesmega. */
+async function _restoreArchivedAlert(alertId){
+  if(!data.settings) data.settings = {};
+  data.settings.archivedAlertIds = (data.settings.archivedAlertIds||[]).filter(id => id !== alertId);
+  // Retire aussi l'ack du dépannage pour que la carte reçue repropose
+  // "Ajouter à l'historique" (et non "✅ Dans l'historique").
+  try{
+    const myId = getDeviceSyncId();
+    const alerts = await _fetchAlerts();
+    const a = alerts.find(x => x.id === alertId);
+    if(a && a.depannageAckedBy){
+      a.depannageAckedBy = a.depannageAckedBy.filter(id => id !== myId);
+      await _saveAlerts(alerts);
+    }
+  }catch(e){ /* silencieux */ }
+  saveData();
+  showToast('↩️ Alerte rétablie dans « Mes alertes reçues »');
+  if(typeof checkForNewAlerts === 'function'){ try{ await checkForNewAlerts(); }catch(e){} }
+  _renderAlertesHistoList();
+  _renderAlertesArchiveList();
+}
+
+/* Supprimer définitivement depuis l'historique perso (côté destinataire) :
+   masque l'alerte comme deleteAlertToTrash (dismissedAlertIds) et la retire
+   de l'archive. Récupérable dans Paramètres → Supprimés récemment. */
+function _deleteArchivedAlert(alertId){
+  if(!confirm('Retirer définitivement cette alerte de ton historique ?\n(Elle restera récupérable dans Paramètres → Supprimés récemment.)')) return;
+  if(!data.settings) data.settings = {};
+  const a = (_alertesArchiveCache||[]).find(x => x.id === alertId);
+  if(a){ ensureTrash(); data.trash.push({ id: uid(), kind: 'alert', alert: {...a}, deletedAt: formatDateTime(new Date()) }); }
+  data.settings.archivedAlertIds = (data.settings.archivedAlertIds||[]).filter(id => id !== alertId);
+  if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
+  if(!data.settings.dismissedAlertIds.includes(alertId)) data.settings.dismissedAlertIds.push(alertId);
+  saveData();
+  showToast('🗑 Alerte retirée de l\'historique');
+  _renderAlertesArchiveList();
 }
 
 /* Conducteur/patron : ouvrir la galerie du chantier depuis une alerte "photo ajoutée" */
