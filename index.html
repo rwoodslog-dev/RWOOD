@@ -18539,11 +18539,92 @@ function _recapIsMultiPerson(){
   return role === 'comptable' || role === 'conducteur' || role === 'patron';
 }
 
-/* Liste des ouvriers à récapituler (multi-personnes), triés par nom. */
+/* Contexte de données pour le récap multi-personnes.
+   Pour comptable/conducteur/patron, les pointages de toute l'équipe ne sont PAS
+   dans data.attendance mais récupérés via pullAllPointagesForComptable()
+   (_comptableLiveData). On fusionne ici tous les attendance/sites/workers de
+   l'équipe en un seul contexte, + la liste des personnes (id, nom). */
+function _recapTeamContext(){
+  const attendance = {};
+  const sites = [];
+  const persons = new Map(); // id -> name
+
+  const rows = _comptableLiveData || [];
+  rows.forEach(dev => {
+    // Fusion attendance (jour par jour, ouvrier par ouvrier). ATTENTION :
+    // siteId est au niveau du jour, mais chaque device = un utilisateur sur SON
+    // chantier. On mémorise donc le site PAR ouvrier (entry._siteId) pour ne
+    // pas mélanger les zones de trajet quand deux ouvriers pointent le même
+    // jour sur des chantiers différents.
+    Object.keys(dev.attendance || {}).forEach(dateKey => {
+      const src = dev.attendance[dateKey];
+      if(!src) return;
+      if(!attendance[dateKey]) attendance[dateKey] = { siteId: src.siteId, workers: {} };
+      if(attendance[dateKey].siteId == null && src.siteId != null) attendance[dateKey].siteId = src.siteId;
+      Object.keys(src.workers || {}).forEach(wid => {
+        if(!attendance[dateKey].workers[wid]){
+          // Copie de l'entry + site du jour de CE device, mémorisé par ouvrier.
+          const entry = Object.assign({}, src.workers[wid]);
+          if(entry._siteId == null) entry._siteId = src.siteId;
+          attendance[dateKey].workers[wid] = entry;
+        }
+      });
+    });
+    (dev.sites || []).forEach(s => { if(s && s.id && !sites.some(x=>x.id===s.id)) sites.push(s); });
+    (dev.workers || []).forEach(w => { if(w && w.id && w.name && !persons.has(w.id)) persons.set(w.id, w.name); });
+  });
+
+  // Compléter les personnes à partir des workerId présents dans les pointages
+  // sans nom connu (fallback lisible).
+  Object.keys(attendance).forEach(dateKey => {
+    const day = attendance[dateKey];
+    Object.keys(day.workers || {}).forEach(wid => {
+      if(!persons.has(wid)) persons.set(wid, 'Ouvrier ' + String(wid).slice(-4));
+    });
+  });
+
+  const workers = Array.from(persons.entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'));
+
+  return { attendance, sites, workers };
+}
+
+/* S'assure que les données d'équipe sont chargées pour le récap multi.
+   Si _comptableLiveData est vide, on déclenche le pull puis on re-render. */
+let _recapTeamPulling = false;
+async function _ensureRecapTeamData(){
+  if(_comptableLiveData && _comptableLiveData.length) return true;
+  if(_recapTeamPulling) return false;
+  _recapTeamPulling = true;
+  try{
+    if(typeof pullAllPointagesForComptable === 'function'){
+      const rows = await pullAllPointagesForComptable();
+      if(rows) _comptableLiveData = rows;
+    }
+  }catch(e){ /* hors-ligne : on reste sur ce qu'on a */ }
+  _recapTeamPulling = false;
+  return !!(_comptableLiveData && _comptableLiveData.length);
+}
+
+/* Liste des personnes à récapituler (multi-personnes), triées par nom.
+   Utilise le contexte d'équipe (comptable) si dispo, sinon data.workers local. */
 function _recapWorkers(){
-  return (data.workers || [])
-    .filter(w => w && w.name)
-    .slice()
+  const byId = new Map();
+  (data.workers || []).forEach(w => { if(w && w.id) byId.set(w.id, { id:w.id, name: w.name || null }); });
+  // Ajouter les workerId présents dans les pointages mais absents du registre.
+  Object.keys(data.attendance || {}).forEach(dateKey => {
+    const day = data.attendance[dateKey];
+    if(!day || !day.workers) return;
+    Object.keys(day.workers).forEach(wid => {
+      if(!byId.has(wid)){
+        const known = (data.workers||[]).find(w => w.id === wid);
+        byId.set(wid, { id: wid, name: (known && known.name) || 'Ouvrier ' + String(wid).slice(-4) });
+      }
+    });
+  });
+  return Array.from(byId.values())
+    .filter(w => w.name)
     .sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'));
 }
 
@@ -18568,7 +18649,9 @@ function _setRecapRange(which, value){
    semaine = { keys:[dateKey…], base:heuresHebdo }) pour un découpage
    correct des heures sup (par semaine). Retourne {totalHeures, heuresSup,
    paniers, zonesLignes:[{z,n,rate,sous}], cumulTrajet, parMotif}. */
-function _computeRecap(workerId, weekBuckets){
+function _computeRecap(workerId, weekBuckets, ctx){
+  const attendance = (ctx && ctx.attendance) || data.attendance || {};
+  const sites = (ctx && ctx.sites) || data.sites || [];
   const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
   let totalHeures = 0, paniers = 0, heuresSup = 0;
   const zonesCount = {};
@@ -18577,7 +18660,7 @@ function _computeRecap(workerId, weekBuckets){
   weekBuckets.forEach(bucket => {
     let heuresSemaine = 0;
     bucket.keys.forEach(dateKey => {
-      const day = (data.attendance || {})[dateKey];
+      const day = attendance[dateKey];
       if(!day) return;
       const entry = day.workers && day.workers[workerId];
       if(!entry) return;
@@ -18596,7 +18679,10 @@ function _computeRecap(workerId, weekBuckets){
       } else if(zoneOv && zoneOv !== 'auto'){
         zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
       } else {
-        const site = data.sites.find(s => s.id === day.siteId);
+        // Site : priorité au site mémorisé par ouvrier (contexte équipe fusionné),
+        // sinon le siteId du jour (récap perso local).
+        const sid = (entry._siteId != null) ? entry._siteId : day.siteId;
+        const site = sites.find(s => s.id === sid);
         if(site && site.trajetZone && site.trajetZone !== 'GD'){
           zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
         }
@@ -18678,6 +18764,12 @@ function renderRecapPerso(){
     return;
   }
 
+  // Multi-personnes : les pointages de l'équipe arrivent via un pull dédié.
+  // Si pas encore chargés, on lance le pull puis on re-render une fois prêt.
+  if(multi && !(_comptableLiveData && _comptableLiveData.length)){
+    _ensureRecapTeamData().then(ok => { if(ok) renderRecapPerso(); });
+  }
+
   // Sélecteur de mode commun (3 modes).
   const modeSwitch = `
     <div class="chip-row" style="margin-bottom:14px;">
@@ -18710,9 +18802,10 @@ function renderRecapPerso(){
 
 /* Buckets semaine d'un mois : on regroupe les jours pointés du mois par
    semaine ISO (lundi), pour un calcul d'heures sup par semaine cohérent. */
-function _monthWeekBuckets(year, month){
+function _monthWeekBuckets(year, month, attendanceSrc){
+  const attendance = attendanceSrc || data.attendance || {};
   const buckets = new Map();
-  Object.keys(data.attendance || {}).forEach(dateKey => {
+  Object.keys(attendance).forEach(dateKey => {
     const dd = new Date(dateKey + 'T00:00:00');
     if(dd.getFullYear() !== year || (dd.getMonth()+1) !== month) return;
     const mk = dateKeyOf(_mondayOfISO(dd));
@@ -18772,20 +18865,19 @@ function _recapMoisMultiHtml(){
       </select>
     </div>`;
 
-  const workers = _recapWorkers();
-  if(!workers.length) return selector + `<div class="card"><div class="hint">Aucun ouvrier enregistré.</div></div>`;
+  const team = _recapTeamContext();
+  const workers = team.workers;
+  if(!workers.length) return selector + `<div class="card"><div class="hint">Aucune donnée d'équipe chargée. Vérifie la connexion et réessaie.</div></div>`;
 
-  const buckets = _monthWeekBuckets(yy, mm);
+  const buckets = _monthWeekBuckets(yy, mm, team.attendance);
   const cards = workers.map(w => {
-    const r = _computeRecap(w.id, buckets);
-    const vide = r.totalHeures === 0 && r.paniers === 0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
-    if(vide) return '';
+    const r = _computeRecap(w.id, buckets, team);
     return _recapCardHtml(r, null, w.name);
-  }).filter(Boolean);
+  });
 
   return selector
-    + `<div class="section-title">${MOIS_FR[mm-1]} ${yy} — ${cards.length} personne(s)</div>`
-    + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée pour ce mois.</div></div>`);
+    + `<div class="section-title">${MOIS_FR[mm-1]} ${yy} — ${workers.length} personne(s)</div>`
+    + cards.join('');
 }
 
 /* ── Vue "Par semaines" : sélecteur de semaines ISO à cumuler ── */
@@ -18839,14 +18931,14 @@ function _renderRecapWeeksResult(){
   const titre = `Semaines ${weekNums.map(n=>'S'+n).join(', ')} (${weeks.length})`;
 
   if(_recapIsMultiPerson()){
-    const workers = _recapWorkers();
+    const team = _recapTeamContext();
+    const workers = team.workers;
     const cards = workers.map(w => {
-      const r = _computeRecap(w.id, buckets);
-      const vide = r.totalHeures===0 && r.paniers===0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
-      return vide ? '' : _recapCardHtml(r, null, w.name);
-    }).filter(Boolean);
-    box.innerHTML = `<div class="section-title">${titre} — ${cards.length} personne(s)</div>`
-      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée sur ces semaines.</div></div>`);
+      const r = _computeRecap(w.id, buckets, team);
+      return _recapCardHtml(r, null, w.name);
+    });
+    box.innerHTML = `<div class="section-title">${titre} — ${workers.length} personne(s)</div>`
+      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée d'équipe chargée.</div></div>`);
     return;
   }
 
@@ -18890,14 +18982,14 @@ function _renderRecapRangeResult(){
   const titre = `Du ${fmt(_recapRangeStart)} au ${fmt(_recapRangeEnd)}`;
 
   if(_recapIsMultiPerson()){
-    const workers = _recapWorkers();
+    const team = _recapTeamContext();
+    const workers = team.workers;
     const cards = workers.map(w => {
-      const r = _computeRecap(w.id, buckets);
-      const vide = r.totalHeures===0 && r.paniers===0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
-      return vide ? '' : _recapCardHtml(r, null, w.name);
-    }).filter(Boolean);
-    box.innerHTML = `<div class="section-title">${titre} — ${cards.length} personne(s)</div>`
-      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée sur cette période.</div></div>`);
+      const r = _computeRecap(w.id, buckets, team);
+      return _recapCardHtml(r, null, w.name);
+    });
+    box.innerHTML = `<div class="section-title">${titre} — ${workers.length} personne(s)</div>`
+      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée d'équipe chargée.</div></div>`);
     return;
   }
 
@@ -27875,7 +27967,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.8.0';
+const APP_VERSION = '5.8.1';
 
 const CHANGELOG = [
   {
