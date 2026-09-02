@@ -1930,6 +1930,11 @@
   .row-actions{ display:flex; gap:8px; margin-top:10px; }
   .row-actions .btn{ flex:1; }
 
+  /* Cadre repliable Historique des alertes : masque le marqueur natif du
+     <summary> (triangle par défaut) et fait pivoter notre chevron. */
+  #alertesArchiveSection > summary::-webkit-details-marker{ display:none; }
+  #alertesArchiveSection[open] #alertesArchiveChevron{ transform:rotate(90deg); }
+
   /* Variante pour les cartes d'alerte (dépannage) : jusqu'à 4 boutons dont un
      multi-mots ("Ajouter à l'historique") — on autorise le retour à la ligne
      avec une largeur minimale pour que les boutons ne débordent jamais du
@@ -5350,15 +5355,22 @@
       <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
       <div id="alertesHistoList"></div>
 
-      <!-- Historique des alertes (perso, tous rôles) : les dépannages que
-           j'ai rangés via "Ajouter à l'historique". Ils quittent "Mes alertes
-           reçues" et la bulle, mais restent consultables ici avec un bouton
-           "Rétablir" pour les renvoyer dans les alertes reçues. -->
-      <div id="alertesArchiveSection" style="margin-top:24px;">
-        <div class="section-title"><img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Historique des alertes</div>
-        <div class="hint" style="margin-bottom:12px;">Les dépannages rangés via « Ajouter à l'historique ». Clique sur « Rétablir » pour renvoyer une alerte dans « Mes alertes reçues ».</div>
-        <div id="alertesArchiveList"></div>
-      </div>
+      <!-- Historique des alertes (perso, tous rôles) : réceptacle des alertes
+           SUPPRIMÉES depuis "Mes alertes reçues". Cadre repliable (fermé par
+           défaut) pour ne pas encombrer. Chaque alerte : Détails, Rétablir
+           (renvoie dans les reçues), Supprimer définitivement. -->
+      <details id="alertesArchiveSection" style="margin-top:24px;border:1px solid var(--line);border-radius:12px;overflow:hidden;">
+        <summary style="list-style:none;cursor:pointer;padding:14px 14px;display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px;user-select:none;">
+          <span id="alertesArchiveChevron" style="transition:transform .2s;display:inline-block;">▶</span>
+          <img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;">
+          Historique des alertes
+          <span id="alertesArchiveCount" class="hint" style="font-weight:600;"></span>
+        </summary>
+        <div style="padding:0 14px 14px 14px;">
+          <div class="hint" style="margin-bottom:12px;">Les alertes que tu as supprimées de « Mes alertes reçues ». « Rétablir » les y renvoie ; « Supprimer définitivement » les efface pour de bon.</div>
+          <div id="alertesArchiveList"></div>
+        </div>
+      </details>
 
       <!-- Historique Dépannage : conducteur/patron uniquement — tous les
            dépannages envoyés à l'équipe, groupés par chantier, permanents
@@ -27576,7 +27588,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.5.4';
+const APP_VERSION = '5.6.0';
 
 const CHANGELOG = [
   {
@@ -36068,6 +36080,23 @@ async function checkForNewAlerts(){
     let mine = _filterAlertsForMe(all);
     // Exclure les alertes que l'utilisateur a supprimées de son historique local
     // (elles restent dans "Supprimés récemment" → Paramètres, récupérables).
+    // Migration unique (nouvelle logique) : autrefois les alertes "levées"/
+    // "supprimées" étaient masquées via dismissedAlertIds et devenaient
+    // invisibles. Désormais rien ne disparaît sauf "Supprimer" (→ historique).
+    // On déplace donc une fois pour toutes les ids historiquement masqués vers
+    // l'historique (archivedAlertIds) pour qu'ils redeviennent visibles et
+    // rétablissables — au lieu de rester perdus.
+    if(data.settings && !data.settings._alertsHistoryMigrated){
+      const old = data.settings.dismissedAlertIds || [];
+      if(old.length){
+        if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
+        old.forEach(id => { if(!data.settings.archivedAlertIds.includes(id)) data.settings.archivedAlertIds.push(id); });
+      }
+      data.settings.dismissedAlertIds = [];
+      data.settings._alertsHistoryMigrated = true;
+      saveData();
+    }
+
     const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
     // Exclure aussi les alertes rangées dans "Historique des alertes" (bouton
@@ -36342,22 +36371,16 @@ function _renderAlertesHistoList(){
       mainActionHtml = alreadyAdded
         ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
         : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
-      // Croix pour fermer/ignorer (au lieu du bouton Supprimer classique) :
-      // marque comme lu sans effacer, garde l'événement consultable si besoin.
-      closeHtml = '';
-      cardCloseCross = `<button onclick="event.stopPropagation(); _clearAlert('${a.id}'); _renderAlertesHistoList();" title="Fermer" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;">✕</button>`;
+      // La carte reste visible tant qu'on ne la supprime pas (→ historique).
     } else if(a.kind === 'nouveau-chantier'){
       mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
     } else if(a.kind === 'depannage'){
-      // Deux actions distinctes : "Détails" ouvre la fiche complète (photos,
-      // checklist, itinéraire) ; "Ajouter à l'historique" confirme la prise
-      // en compte sans faire disparaître la carte de "Mes alertes reçues".
-      const alreadyAcked = a.depannageAckedBy && a.depannageAckedBy.includes(myId);
+      // "Détails" ouvre la fiche complète (photos, checklist, itinéraire).
+      // "Alertesmega" remet une copie dans la bulle. La carte reste TOUJOURS
+      // visible ici : seul "Supprimer" (avec confirmation) la range dans
+      // l'historique.
       mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
-        ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertesHistoList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>` +
-        (alreadyAcked
-          ? ` <span class="hint" style="align-self:center;">✅ Dans l'historique</span>`
-          : ` <button class="btn btn-primary btn-sm" onclick="_ackDepannageToHistory('${a.id}')">📋 Ajouter à l'historique</button>`);
+        ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertesHistoList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>`;
     }
 
     const actionHtml = [mainActionHtml, closeHtml].filter(Boolean).join(' ');
@@ -36682,21 +36705,24 @@ function _addEventToAgendaFromAlert(alertId){
   _renderAlertesHistoList();
 }
 
-/* Supprime une alerte de MON historique perso (sans la retirer pour les
-   autres destinataires) → récupérable dans Paramètres → Supprimés récemment. */
+/* "Supprimer" une alerte reçue → l'envoie dans l'HISTORIQUE (cadre repliable
+   de la tuile Alertes), pas dans une corbeille cachée. L'alerte n'est jamais
+   perdue : elle reste consultable et "Rétablir" la renvoie dans "Mes alertes
+   reçues". Confirmation demandée (comportement voulu : aucune autre commande
+   ne fait bouger une alerte, seulement Supprimer + confirmation). */
 function deleteAlertToTrash(alertId){
   const alert = (_myAlertsCache||[]).find(a => a.id === alertId);
   if(!alert) return;
-  ensureTrash();
-  data.trash.push({ id: uid(), kind: 'alert', alert: {...alert}, deletedAt: formatDateTime(new Date()) });
-  // Marquer comme lu ET retirer localement de l'historique affiché (pas de la base partagée)
-  const myId = getDeviceSyncId();
-  if(!(data.settings.dismissedAlertIds)) data.settings.dismissedAlertIds = [];
-  data.settings.dismissedAlertIds.push(alertId);
+  if(!confirm('Envoyer cette alerte dans l\'historique ?\n\nElle quittera « Mes alertes reçues » mais restera consultable dans l\'historique (bouton « Rétablir » pour la remettre).')) return;
+  if(!data.settings) data.settings = {};
+  if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
+  if(!data.settings.archivedAlertIds.includes(alertId)) data.settings.archivedAlertIds.push(alertId);
   _myAlertsCache = (_myAlertsCache||[]).filter(a => a.id !== alertId);
   saveData();
   _renderAlertesHistoList();
-  showToast('🗑 Alerte supprimée');
+  if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
+  if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
+  showToast('📁 Alerte rangée dans l\'historique');
 }
 function restoreAlertFromTrash(trashId){
   ensureTrash();
@@ -36769,20 +36795,13 @@ function _renderAlertInboxList(){
       mainActionHtml = alreadyAdded
         ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
         : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
-      closeHtml = '';
-      cardCloseCross = `<button onclick="event.stopPropagation(); _clearAlert('${a.id}'); _renderAlertInboxList();" title="Fermer" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;">✕</button>`;
     } else if(a.kind === 'nouveau-chantier'){
       mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
     } else if(a.kind === 'depannage'){
-      const alreadyAcked = a.depannageAckedBy && a.depannageAckedBy.includes(myId);
       mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
-        ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertInboxList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>` +
-        (alreadyAcked
-          ? ` <span class="hint" style="align-self:center;">✅ Dans l'historique</span>`
-          : ` <button class="btn btn-primary btn-sm" onclick="_ackDepannageToHistory('${a.id}'); _renderAlertInboxList();">📋 Ajouter à l'historique</button>`);
+        ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertInboxList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>`;
     } else {
-      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_clearAlert('${a.id}'); _renderAlertInboxList();">Lever alerte</button>`;
-      closeHtml = '';
+      mainActionHtml = '';
     }
 
     const actionHtml = [mainActionHtml, closeHtml].filter(Boolean).join(' ');
@@ -36809,21 +36828,15 @@ async function _clearAlert(alertId){
   const alert = _myAlertsCache.find(a=>a.id===alertId);
   if(alert && !alert.readBy.includes(myId)) alert.readBy.push(myId);
 
-  // "Lever" une alerte doit avoir le même effet durable que "Supprimer" sur
-  // le compteur (voir deleteAlertToTrash) : sans ça, elle revient hanter le
-  // badge indéfiniment puisque celui-ci compte désormais le TOTAL présent,
-  // pas seulement le non-lu. On l'exclut donc de la même façon (masquage
-  // local, l'alerte reste récupérable dans Paramètres → Supprimés récemment
-  // si elle a aussi été archivée ailleurs).
-  if(!data.settings) data.settings = {};
-  if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
-  if(!data.settings.dismissedAlertIds.includes(alertId)) data.settings.dismissedAlertIds.push(alertId);
-  _myAlertsCache = (_myAlertsCache||[]).filter(a => a.id !== alertId);
+  // Règle voulue : une alerte ne disparaît JAMAIS de "Mes alertes reçues" du
+  // simple fait d'être lue/pointée/traitée. Seul "Supprimer" (avec
+  // confirmation) la range dans l'historique. _clearAlert se contente donc de
+  // marquer comme lu — sans masquer ni retirer l'alerte de la liste.
   saveData();
 
-  _renderAlertInboxList();
+  if(typeof _renderAlertInboxList === 'function') _renderAlertInboxList();
+  if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList();
   _updateAlertBubbleFromCache();
-  showToast('Alerte levee');
 }
 
 /* Dépannage : "Ajouter à l'historique" — confirme la prise en compte SANS
@@ -36862,18 +36875,23 @@ async function _ackDepannageToHistory(alertId){
   if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
 }
 
-/* Historique des alertes (perso, tous rôles) : affiche les dépannages que
-   l'utilisateur a rangés via "Ajouter à l'historique" (archivedAlertIds).
-   Chaque carte propose Détails, Rétablir (renvoie dans "Mes alertes reçues")
+/* Historique des alertes (perso, tous rôles) : réceptacle des alertes que
+   l'utilisateur a SUPPRIMÉES de "Mes alertes reçues" (archivedAlertIds).
+   Chaque carte propose Détails (dépannage), Rétablir (renvoie dans les reçues)
    et Supprimer définitivement. Les données sont lues depuis la base pour
    rester à jour même après resynchro. */
 let _alertesArchiveCache = [];
+function _setArchiveCount(n){
+  const c = document.getElementById('alertesArchiveCount');
+  if(c) c.textContent = n > 0 ? `(${n})` : '';
+}
 async function _renderAlertesArchiveList(){
   const list = document.getElementById('alertesArchiveList');
   if(!list) return;
   const archived = (data.settings && data.settings.archivedAlertIds) || [];
   if(!archived.length){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte rangée dans l\'historique.</div>';
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte dans l\'historique.</div>';
+    _setArchiveCount(0);
     return;
   }
   list.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">⏳ Chargement…</div>';
@@ -36884,25 +36902,26 @@ async function _renderAlertesArchiveList(){
   const items = all.filter(a => archived.includes(a.id))
                    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
   _alertesArchiveCache = items;
+  _setArchiveCount(items.length);
 
   if(!items.length){
-    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte rangée dans l\'historique.</div>';
+    list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte dans l\'historique.</div>';
     return;
   }
 
   list.innerHTML = items.map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'});
-    const siteName = a.depannageSiteName || 'Sans chantier précisé';
     const isDepannage = a.kind === 'depannage';
+    const title = isDepannage ? ('🛠️ ' + escapeHtml(a.depannageSiteName || 'Sans chantier précisé')) : (_alertSiteLabel(a) ? '🏗️ ' + escapeHtml(_alertSiteLabel(a)) : '📢 Alerte');
     return `
       <div class="card" style="margin-bottom:8px;">
-        <div style="font-weight:800;font-size:14px;">${isDepannage ? '🛠️ ' : ''}${escapeHtml(siteName)}</div>
+        <div style="font-weight:800;font-size:14px;">${title}</div>
         <div style="font-size:13px;line-height:1.5;margin-top:4px;">${escapeHtml(a.text)}</div>
         <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
         <div class="row-actions-wrap" style="margin-top:10px;">
           ${isDepannage ? `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` : ''}
           <button class="btn btn-primary btn-sm" onclick="_restoreArchivedAlert('${a.id}')">↩️ Rétablir</button>
-          <button class="btn btn-outline btn-sm" onclick="_deleteArchivedAlert('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>
+          <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);" onclick="_deleteArchivedAlert('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer déf.</button>
         </div>
       </div>`;
   }).join('');
