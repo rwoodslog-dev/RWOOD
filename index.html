@@ -27576,7 +27576,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.5.3';
+const APP_VERSION = '5.5.4';
 
 const CHANGELOG = [
   {
@@ -33489,7 +33489,7 @@ function _renderDevTabAlertTest(list){
 
     <!-- Gestion Historique Dépannage : suppression DÉFINITIVE, réservée au Dev. -->
     <div class="section-title" style="margin-top:20px;">🛠️ Gestion Historique Dépannage</div>
-    <div class="hint" style="margin-bottom:10px;">Supprime un dépannage définitivement de la base (irréversible, contrairement à la suppression normale qui ne masque que localement).</div>
+    <div class="hint" style="margin-bottom:10px;">Backup dev : « Renvoyer au destinataire » remet le dépannage dans « Mes alertes reçues » même s'il a été supprimé/rangé. « Supprimer définitivement » l'efface de la base pour tout le monde (irréversible, réservé au dev).</div>
     <div id="devDepannageList"></div>
   `;
   _renderDevDepannageList();
@@ -33564,9 +33564,48 @@ async function _renderDevDepannageList(){
     <div class="card" style="margin-bottom:8px;padding:10px 12px;">
       <div style="font-size:13px;font-weight:700;">${escapeHtml(a.depannageSiteName || 'Sans chantier')}</div>
       <div class="hint" style="margin-top:2px;">${dateLabel} — envoyé à ${escapeHtml(a.recipientName||'—')}</div>
-      <button class="btn btn-outline btn-sm" style="margin-top:8px;color:var(--red);border-color:var(--red);" onclick="_devDeleteDepannagePermanently('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement</button>
+      <div class="row-actions-wrap" style="margin-top:8px;">
+        <button class="btn btn-primary btn-sm" onclick="_devResendDepannageToRecipient('${a.id}')">↩️ Renvoyer au destinataire</button>
+        <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);" onclick="_devDeleteDepannagePermanently('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement</button>
+      </div>
     </div>`;
   }).join('');
+}
+
+async function _devResendDepannageToRecipient(alertId){
+  if(!confirm('Renvoyer ce dépannage au(x) destinataire(s) ?\n\nIl réapparaîtra dans « Mes alertes reçues » et la bulle Alertesmega, même s\'il l\'avait supprimé ou rangé dans l\'historique.')) return;
+  try{
+    const alerts = await _fetchAlerts();
+    const original = alerts.find(a => a.id === alertId);
+    if(!original){ showToast('❌ Dépannage introuvable dans la base'); return; }
+
+    // On recrée une copie avec un NOUVEL id et un createdAt rafraîchi : comme
+    // les listes "supprimé"/"rangé" du destinataire (dismissedAlertIds /
+    // archivedAlertIds) référencent l'ancien id, la copie n'y figure pas →
+    // elle réapparaît à coup sûr chez lui comme une alerte neuve à la prochaine
+    // synchro. On remplace l'ancienne entrée (removedIds) pour ne pas empiler
+    // de doublons dans la base — le dev garde une seule entrée par renvoi.
+    const copy = { ...original, id: uid(), createdAt: new Date().toISOString(), readBy: [], depannageAckedBy: [] };
+    const next = alerts.filter(a => a.id !== alertId);
+    next.push(copy);
+    await _saveAlerts(next, [alertId]);
+
+    // Si CE téléphone est destinataire, on nettoie aussi ses listes locales et
+    // on rafraîchit immédiatement (cas du renvoi à soi-même / dev = destinataire).
+    if(data.settings){
+      data.settings.dismissedAlertIds = (data.settings.dismissedAlertIds||[]).filter(id => id !== alertId);
+      data.settings.archivedAlertIds  = (data.settings.archivedAlertIds||[]).filter(id => id !== alertId);
+      saveData();
+    }
+    if(typeof checkForNewAlerts === 'function'){ try{ await checkForNewAlerts(); }catch(e){} }
+    if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList();
+    if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
+
+    showToast('↩️ Dépannage renvoyé au destinataire');
+    _renderDevDepannageList();
+  }catch(e){
+    showToast('❌ Échec du renvoi');
+  }
 }
 
 async function _devDeleteDepannagePermanently(alertId){
