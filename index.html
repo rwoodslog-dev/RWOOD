@@ -18512,6 +18512,30 @@ function setHeuresMode(mode){
 
 /* MODULE — Récap perso : mois par mois, calculé à partir des FICHES D'HEURES
    réelles (data.attendance), UNIQUEMENT pour l'utilisateur courant. */
+/* Mode d'affichage du récap perso : 'mois' (13 derniers mois, historique) ou
+   'semaines' (sélection libre de semaines ISO à cumuler). */
+let _recapMode = 'mois';
+let _recapSelectedWeeks = null; // Set des clés lundi ISO cochées (mode semaines)
+
+function _mondayOfISO(d){
+  const x = new Date(d);
+  const dow = (x.getDay() + 6) % 7; // lundi=0
+  x.setDate(x.getDate() - dow);
+  x.setHours(0,0,0,0);
+  return x;
+}
+
+function setRecapMode(mode){
+  _recapMode = mode;
+  renderRecapPerso();
+}
+
+function _toggleRecapWeek(key, checked){
+  if(!_recapSelectedWeeks) _recapSelectedWeeks = new Set();
+  if(checked) _recapSelectedWeeks.add(key); else _recapSelectedWeeks.delete(key);
+  _renderRecapWeeksResult();
+}
+
 function renderRecapPerso(){
   const container = document.getElementById('recapPersoContent');
   if(!container) return;
@@ -18524,6 +18548,24 @@ function renderRecapPerso(){
     return;
   }
 
+  // Sélecteur de mode (Mois / Semaines), commun aux deux vues.
+  const modeSwitch = `
+    <div class="chip-row" style="margin-bottom:14px;">
+      <button class="chip ${_recapMode==='mois'?'active':''}" onclick="setRecapMode('mois')">📅 Par mois</button>
+      <button class="chip ${_recapMode==='semaines'?'active':''}" onclick="setRecapMode('semaines')">🗓️ Par semaines</button>
+    </div>`;
+
+  if(_recapMode === 'semaines'){
+    container.innerHTML = modeSwitch + _recapWeeksSelectorHtml() + `<div id="recapWeeksResult"></div>`;
+    _renderRecapWeeksResult();
+    return;
+  }
+
+  container.innerHTML = modeSwitch + _recapMoisHtml(workerId);
+}
+
+/* ── Vue "Par mois" (comportement historique) ── */
+function _recapMoisHtml(workerId){
   const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
   const now = new Date();
   const blocks = [];
@@ -18536,63 +18578,54 @@ function renderRecapPerso(){
 
     let totalHeures = 0;
     let paniers = 0;
-    const zonesCount = {};          // { '2': 3, '5': 6, ... }
-    const parMotif = {};            // { 'Maladie': 2, ... } en jours
+    const zonesCount = {};
+    const parMotif = {};
 
-    // Parcourir tous les jours pointés de ce mois pour cet ouvrier
     Object.keys(data.attendance || {}).forEach(dateKey => {
       const dd = new Date(dateKey + 'T00:00:00');
       if(dd.getFullYear() !== year || (dd.getMonth()+1) !== month) return;
-
       const day = data.attendance[dateKey];
       const entry = day.workers && day.workers[workerId];
       if(!entry) return;
-
       const tj = entry.typeJournee || 'normal';
-      const isAbsence = tj !== 'normal';
-
-      if(isAbsence){
-        // Compter 1 jour d'absence sous son libellé
+      if(tj !== 'normal'){
         const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
         parMotif[label] = (parMotif[label] || 0) + 1;
-        return; // une journée d'absence ne compte pas en heures/panier/zone
+        return;
       }
-
-      // Heures
       totalHeures += parseFloat(entry.hours) || 0;
-      // Panier
       if(entry.panier) paniers++;
-      // Zone (override du jour prioritaire, sinon chantier)
       const zoneOv = entry.zoneOverride;
       if(zoneOv === 'none'){
-        // pas de trajet compté
       } else if(zoneOv && zoneOv !== 'auto'){
         zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
       } else {
         const site = data.sites.find(s => s.id === day.siteId);
         if(site && site.trajetZone && site.trajetZone !== 'GD'){
-          const z = site.trajetZone;
-          zonesCount[z] = (zonesCount[z] || 0) + 1;
+          zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
         }
       }
     });
 
-    // Heures sup : au-delà de la base contractuelle × nb semaines du mois
     const nbSem = _nbSemainesMois(year, month);
     const seuilMois = weeklyBase * nbSem;
     const heuresSup = Math.max(0, totalHeures - seuilMois);
 
-    // Zones triées (ordre du barème), seulement > 0
-    const zonesLignes = ZONES_TRAJET
-      .map(z => ({ z, n: zonesCount[z] || 0 }))
-      .filter(o => o.n > 0);
+    const zonesLignes = ZONES_TRAJET.map(z => ({ z, n: zonesCount[z] || 0 })).filter(o => o.n > 0);
 
-    // Mois totalement vide → on saute
     const vide = totalHeures === 0 && paniers === 0 && !zonesLignes.length && !Object.keys(parMotif).length;
     if(vide) continue;
 
+    // Zones AVEC tarif/jour + sous-total, et cumul des primes.
+    let cumulTrajet = 0;
     const zonesHtml = zonesLignes.length
-      ? zonesLignes.map(o => `<div class="recap-line"><span>Zone ${o.z}</span><strong>${o.n}×</strong></div>`).join('')
+      ? zonesLignes.map(o => {
+          const rate = getTrajetRates(o.z);
+          const tj = rate ? rate.trajet : 0;
+          const sous = tj * o.n;
+          cumulTrajet += sous;
+          return `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${tj.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${sous.toFixed(2).replace('.',',')} €</strong></div>`;
+        }).join('')
       : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
 
     const motifHtml = Object.keys(parMotif).length
@@ -18607,16 +18640,135 @@ function renderRecapPerso(){
         <div class="recap-line"><span>Paniers repas</span><strong>${paniers}</strong></div>
         <div class="recap-sub">Zones de trajet</div>
         ${zonesHtml}
+        <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
         <div class="recap-sub">Absences / congés</div>
         ${motifHtml}
       </div>
     `);
   }
 
-  container.innerHTML = (blocks.length
+  return (blocks.length
     ? blocks.join('')
     : `<div class="card"><div class="hint">Aucune donnée à afficher pour l'instant. Ton récap se remplit au fil de tes pointages.</div></div>`)
     + `<button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="openRecapPdfModal()"><img src="icons/fichiers.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Générer un PDF mensuel</button>`;
+}
+
+/* ── Vue "Par semaines" : sélecteur de semaines ISO à cumuler ── */
+function _recapWeeksSelectorHtml(){
+  const fmt = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+  // 16 dernières semaines proposées (de la plus récente à la plus ancienne).
+  let m = _mondayOfISO(new Date());
+  const weeks = [];
+  for(let i=0;i<16;i++){
+    const sun = new Date(m); sun.setDate(sun.getDate()+6);
+    weeks.push({ key: dateKeyOf(m), wn: getISOWeekNumber(m), start: new Date(m), end: sun });
+    m = new Date(m); m.setDate(m.getDate()-7);
+  }
+  if(_recapSelectedWeeks === null){
+    // Par défaut : la semaine en cours cochée.
+    _recapSelectedWeeks = new Set([weeks[0].key]);
+  }
+  const rows = weeks.map(w => {
+    const checked = _recapSelectedWeeks.has(w.key) ? 'checked' : '';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer;">
+      <input type="checkbox" ${checked} onchange="_toggleRecapWeek('${w.key}', this.checked)">
+      <span><strong>S${w.wn}</strong> · ${fmt(w.start)} → ${fmt(w.end)}</span>
+    </label>`;
+  }).join('');
+  return `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="hint" style="margin-bottom:8px;">Coche les semaines à cumuler (autant que tu veux) — le récap se met à jour automatiquement.</div>
+      <div style="max-height:38vh;overflow:auto;">${rows}</div>
+    </div>`;
+}
+
+function _renderRecapWeeksResult(){
+  const box = document.getElementById('recapWeeksResult');
+  if(!box) return;
+  const profile = data.settings.myProfile || {};
+  const workerId = profile.workerId;
+  const weeks = _recapSelectedWeeks ? Array.from(_recapSelectedWeeks) : [];
+
+  if(!weeks.length){
+    box.innerHTML = `<div class="card"><div class="hint">Sélectionne au moins une semaine pour générer le récap.</div></div>`;
+    return;
+  }
+
+  // Ensemble des dateKeys couverts par les semaines cochées (lundi→dimanche).
+  const daysSet = new Set();
+  const weekNums = [];
+  weeks.forEach(key => {
+    const mon = new Date(key + 'T00:00:00');
+    weekNums.push(getISOWeekNumber(mon));
+    for(let k=0;k<7;k++){ const d=new Date(mon); d.setDate(d.getDate()+k); daysSet.add(dateKeyOf(d)); }
+  });
+  weekNums.sort((a,b)=>a-b);
+
+  let totalHeures = 0, paniers = 0;
+  const zonesCount = {};
+  const parMotif = {};
+
+  daysSet.forEach(dateKey => {
+    const day = (data.attendance || {})[dateKey];
+    if(!day) return;
+    const entry = day.workers && day.workers[workerId];
+    if(!entry) return;
+    const tj = entry.typeJournee || 'normal';
+    if(tj !== 'normal'){
+      const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
+      parMotif[label] = (parMotif[label] || 0) + 1;
+      return;
+    }
+    totalHeures += parseFloat(entry.hours) || 0;
+    if(entry.panier) paniers++;
+    const zoneOv = entry.zoneOverride;
+    if(zoneOv === 'none'){
+    } else if(zoneOv && zoneOv !== 'auto'){
+      zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
+    } else {
+      const site = data.sites.find(s => s.id === day.siteId);
+      if(site && site.trajetZone && site.trajetZone !== 'GD'){
+        zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
+      }
+    }
+  });
+
+  const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
+  const seuil = weeklyBase * weeks.length; // seuil = base contractuelle × nb de semaines cochées
+  const heuresSup = Math.max(0, totalHeures - seuil);
+
+  const zonesLignes = ZONES_TRAJET.map(z => ({ z, n: zonesCount[z] || 0 })).filter(o => o.n > 0);
+
+  // Zones AVEC tarif/jour devant chaque zone + sous-total, cumul en bas.
+  let cumulTrajet = 0;
+  const zonesHtml = zonesLignes.length
+    ? zonesLignes.map(o => {
+        const rate = getTrajetRates(o.z);
+        const tj = rate ? rate.trajet : 0;
+        const sous = tj * o.n;
+        cumulTrajet += sous;
+        return `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${tj.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${sous.toFixed(2).replace('.',',')} €</strong></div>`;
+      }).join('')
+    : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
+
+  const motifHtml = Object.keys(parMotif).length
+    ? Object.keys(parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${parMotif[m]} j</strong></div>`).join('')
+    : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
+
+  const titre = `Semaines ${weekNums.map(n=>'S'+n).join(', ')} (${weeks.length})`;
+
+  box.innerHTML = `
+    <div class="section-title">${titre}</div>
+    <div class="card" style="display:flex;flex-direction:column;gap:2px;">
+      <div class="recap-line"><span>Heures totales</span><strong>${totalHeures.toFixed(1).replace('.',',')} h</strong></div>
+      <div class="recap-line"><span>Heures supplémentaires</span><strong>${heuresSup.toFixed(1).replace('.',',')} h</strong></div>
+      <div class="recap-line"><span>Paniers repas</span><strong>${paniers}</strong></div>
+      <div class="recap-sub">Zones de trajet (tarif/jour)</div>
+      ${zonesHtml}
+      <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
+      <div class="recap-sub">Absences / congés</div>
+      ${motifHtml}
+    </div>`;
 }
 
 /* MODULE — Récap PDF mensuel (tableaux façon fiches d'heures + signature) */
@@ -27588,7 +27740,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.6.1';
+const APP_VERSION = '5.7.0';
 
 const CHANGELOG = [
   {
@@ -38533,7 +38685,9 @@ function renderChantierActifBanner(){
           <select class="cab-name-select" onchange="setActiveSiteId(this.value)" title="Changer de chantier">${options}</select>
           <span class="badge ${site.status}" style="font-size:10.5px;">${statusLabels[site.status]||''}</span>
         </div>
-        <div class="cab-address"><img src="icons/bulle-punaise.png" alt="" class="cab-inline-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📍'}))"> ${escapeHtml(site.address || 'Adresse non renseignée')}</div>
+        <div class="cab-address" style="cursor:pointer;" title="Maintien long pour modifier l'adresse"
+          onmousedown="_cabAddressPressStart(event,'${site.id}')" onmouseup="_cabAddressPressEnd()" onmouseleave="_cabAddressPressEnd()"
+          ontouchstart="_cabAddressPressStart(event,'${site.id}')" ontouchend="_cabAddressPressEnd()" ontouchmove="_cabAddressPressEnd()"><img src="icons/bulle-punaise.png" alt="" class="cab-inline-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📍'}))"> ${escapeHtml(site.address || 'Adresse non renseignée')}</div>
         ${zoneLabel ? `<div class="cab-zone"><img src="icons/zone.png" alt="" class="cab-inline-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🗾'}))"> ${zoneLabel}</div>` : ''}
         ${startLabel ? `<div class="cab-start">${startLabel}</div>` : ''}
       </div>
@@ -38547,6 +38701,75 @@ function renderChantierActifBanner(){
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
     </div>
   `;
+}
+
+/* ── Maintien long sur l'adresse du bandeau chantier actif → édition ──
+   Un appui maintenu ~500ms ouvre un modal pour changer l'adresse. À
+   l'enregistrement, updateSiteField('address') sauvegarde ET pousse la
+   nouvelle adresse à tous les utilisateurs (syncAllSitesCycle). */
+let _cabAddressPressTimer = null;
+function _cabAddressPressStart(ev, siteId){
+  // Empêche la sélection de texte / le menu contextuel pendant le maintien.
+  if(ev && ev.type === 'mousedown' && ev.button !== 0) return;
+  _cabAddressPressEnd();
+  _cabAddressPressTimer = setTimeout(() => {
+    _cabAddressPressTimer = null;
+    if(navigator.vibrate){ try{ navigator.vibrate(15); }catch(e){} }
+    _openEditActiveSiteAddress(siteId);
+  }, 500);
+}
+function _cabAddressPressEnd(){
+  if(_cabAddressPressTimer){ clearTimeout(_cabAddressPressTimer); _cabAddressPressTimer = null; }
+}
+
+function _openEditActiveSiteAddress(siteId){
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  // Retire un éventuel modal déjà ouvert.
+  const old = document.getElementById('modal-cabEditAddress');
+  if(old) old.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay';
+  div.id = 'modal-cabEditAddress';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Modifier l'adresse</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-cabEditAddress').remove()">✕</button>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Chantier : <strong>${escapeHtml(site.name || '')}</strong>. La nouvelle adresse sera enregistrée pour tous les utilisateurs.</div>
+      <div class="field">
+        <label>Adresse de l'intervention</label>
+        <input type="text" id="cabEditAddressInput" placeholder="Adresse exacte" value="${escapeHtml(site.address || '')}">
+      </div>
+      <div class="row-actions-wrap" style="margin-top:14px;">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('modal-cabEditAddress').remove()">Annuler</button>
+        <button class="btn btn-primary btn-sm" onclick="_saveActiveSiteAddress('${site.id}')"><img src="icons/enregistrer.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'💾'}))"> Enregistrer</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+  requestAnimationFrame(() => div.classList.add('open'));
+  const input = document.getElementById('cabEditAddressInput');
+  if(input){ input.focus(); try{ input.setSelectionRange(input.value.length, input.value.length); }catch(e){} }
+}
+
+function _saveActiveSiteAddress(siteId){
+  const input = document.getElementById('cabEditAddressInput');
+  if(!input) return;
+  const value = input.value.trim();
+  // updateSiteField gère : maj du champ, saveData, recalcul zone trajet, et
+  // surtout la synchro vers TOUS les utilisateurs (syncAllSitesCycle).
+  if(typeof updateSiteField === 'function'){
+    updateSiteField(siteId, 'address', value);
+  } else {
+    const site = (data.sites||[]).find(s => s.id === siteId);
+    if(site){ site.address = value; saveData(); }
+  }
+  const modal = document.getElementById('modal-cabEditAddress');
+  if(modal) modal.remove();
+  renderChantierActifBanner();
+  showToast('✅ Adresse enregistrée pour tous');
 }
 
 /* Libellé "Zone X · 42,00 €/jour de trajet" (réutilise le barème existant). */
