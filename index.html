@@ -18694,48 +18694,50 @@ function _renderRecapWeeksResult(){
     return;
   }
 
-  // Ensemble des dateKeys couverts par les semaines cochées (lundi→dimanche).
-  const daysSet = new Set();
-  const weekNums = [];
-  weeks.forEach(key => {
-    const mon = new Date(key + 'T00:00:00');
-    weekNums.push(getISOWeekNumber(mon));
-    for(let k=0;k<7;k++){ const d=new Date(mon); d.setDate(d.getDate()+k); daysSet.add(dateKeyOf(d)); }
-  });
-  weekNums.sort((a,b)=>a-b);
+  const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
 
-  let totalHeures = 0, paniers = 0;
+  let totalHeures = 0, paniers = 0, heuresSup = 0;
   const zonesCount = {};
   const parMotif = {};
 
-  daysSet.forEach(dateKey => {
-    const day = (data.attendance || {})[dateKey];
-    if(!day) return;
-    const entry = day.workers && day.workers[workerId];
-    if(!entry) return;
-    const tj = entry.typeJournee || 'normal';
-    if(tj !== 'normal'){
-      const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
-      parMotif[label] = (parMotif[label] || 0) + 1;
-      return;
-    }
-    totalHeures += parseFloat(entry.hours) || 0;
-    if(entry.panier) paniers++;
-    const zoneOv = entry.zoneOverride;
-    if(zoneOv === 'none'){
-    } else if(zoneOv && zoneOv !== 'auto'){
-      zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
-    } else {
-      const site = data.sites.find(s => s.id === day.siteId);
-      if(site && site.trajetZone && site.trajetZone !== 'GD'){
-        zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
+  // On calcule semaine par semaine : les heures sup se comptent au-delà du
+  // seuil hebdo (35h) de CHAQUE semaine, puis on additionne. Une semaine à 32h
+  // ne "compense" pas une semaine à 38h. (Bug corrigé : avant on comparait le
+  // cumul total à 35×nbSemaines, ce qui annulait les sup des grosses semaines.)
+  weeks.forEach(key => {
+    const mon = new Date(key + 'T00:00:00');
+    let heuresSemaine = 0;
+    for(let k=0;k<7;k++){
+      const d = new Date(mon); d.setDate(d.getDate()+k);
+      const dateKey = dateKeyOf(d);
+      const day = (data.attendance || {})[dateKey];
+      if(!day) continue;
+      const entry = day.workers && day.workers[workerId];
+      if(!entry) continue;
+      const tj = entry.typeJournee || 'normal';
+      if(tj !== 'normal'){
+        const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
+        parMotif[label] = (parMotif[label] || 0) + 1;
+        continue;
+      }
+      const h = parseFloat(entry.hours) || 0;
+      heuresSemaine += h;
+      totalHeures += h;
+      if(entry.panier) paniers++;
+      const zoneOv = entry.zoneOverride;
+      if(zoneOv === 'none'){
+      } else if(zoneOv && zoneOv !== 'auto'){
+        zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
+      } else {
+        const site = data.sites.find(s => s.id === day.siteId);
+        if(site && site.trajetZone && site.trajetZone !== 'GD'){
+          zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
+        }
       }
     }
+    // Heures sup de CETTE semaine (au-delà du seuil hebdo).
+    heuresSup += Math.max(0, heuresSemaine - weeklyBase);
   });
-
-  const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
-  const seuil = weeklyBase * weeks.length; // seuil = base contractuelle × nb de semaines cochées
-  const heuresSup = Math.max(0, totalHeures - seuil);
 
   const zonesLignes = ZONES_TRAJET.map(z => ({ z, n: zonesCount[z] || 0 })).filter(o => o.n > 0);
 
@@ -18755,6 +18757,7 @@ function _renderRecapWeeksResult(){
     ? Object.keys(parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${parMotif[m]} j</strong></div>`).join('')
     : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
 
+  const weekNums = weeks.map(key => getISOWeekNumber(new Date(key + 'T00:00:00'))).sort((a,b)=>a-b);
   const titre = `Semaines ${weekNums.map(n=>'S'+n).join(', ')} (${weeks.length})`;
 
   box.innerHTML = `
@@ -27740,7 +27743,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.7.0';
+const APP_VERSION = '5.7.1';
 
 const CHANGELOG = [
   {
