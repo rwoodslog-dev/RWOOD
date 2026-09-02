@@ -27358,6 +27358,22 @@ window.addEventListener('resize', () => {
   if(tourActive) positionTourHighlight(TOUR_STEPS[tourStepIndex]);
 });
 
+/* Au redimensionnement (ou bascule PC↔téléphone), réappliquer la position
+   propre au layout courant pour chaque bulle. Débounce léger. */
+let _bubbleResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_bubbleResizeTimer);
+  _bubbleResizeTimer = setTimeout(() => {
+    try{
+      if(typeof _placeBubbleInCorner === 'function'){
+        const pn = data.settings && data.settings.pinnedNote;
+        _placeBubbleInCorner((pn && pn.corner) || 'bottom-right');
+      }
+    }catch(e){}
+    try{ if(typeof _applyAlertBubblePos === 'function') _applyAlertBubblePos(); }catch(e){}
+  }, 200);
+});
+
 
 /* ═══════════════════════════════════════════════════════
    MODULE FERME TRADITIONNELLE
@@ -28025,7 +28041,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.9.3';
+const APP_VERSION = '5.10.0';
 
 const CHANGELOG = [
   {
@@ -32198,13 +32214,25 @@ function showPinnedBubble(){
   if(typeof showToast === 'function') showToast('Bulle réaffichée');
 }
 
+/* Détecte le layout courant : PC (sidebar, ≥860px) ou téléphone. Sert à
+   mémoriser des positions de bulles SÉPARÉES pour PC et téléphone — une
+   bulle déplacée dans un coin sur téléphone garde sa propre position sur PC. */
+function _isPcLayout(){
+  return window.matchMedia && window.matchMedia('(min-width: 860px)').matches;
+}
+/* Clés de position selon le layout : posXPc/posYPc en PC, posX/posY en mobile. */
+function _bubblePosKeys(){
+  return _isPcLayout() ? { x:'posXPc', y:'posYPc' } : { x:'posX', y:'posY' };
+}
+
 function _placeBubbleInCorner(corner){
   const bubble = document.getElementById('pinnedNoteBubble');
   if(!bubble) return;
   const pn = data.settings && data.settings.pinnedNote;
-  // Si position exacte sauvegardée, l'utiliser
-  if(pn && pn.posX != null && pn.posY != null){
-    _setBubblePos(pn.posX, pn.posY);
+  const k = _bubblePosKeys();
+  // Si position exacte sauvegardée pour CE layout (PC ou mobile), l'utiliser
+  if(pn && pn[k.x] != null && pn[k.y] != null){
+    _setBubblePos(pn[k.x], pn[k.y]);
     return;
   }
   // Sinon placement par coin
@@ -32272,11 +32300,12 @@ function _initBubbleDrag(bubble){
     bubble.classList.remove('dragging');
     if(!isDragging) return;
 
-    // Sauvegarder la position exacte
+    // Sauvegarder la position exacte pour le layout courant (PC ou mobile)
     const rect = bubble.getBoundingClientRect();
     const pn = _getPinnedNote();
-    pn.posX = Math.round(rect.left);
-    pn.posY = Math.round(rect.top);
+    const k = _bubblePosKeys();
+    pn[k.x] = Math.round(rect.left);
+    pn[k.y] = Math.round(rect.top);
     saveData();
   }
 
@@ -37476,6 +37505,88 @@ function _updateAlertBubbleFromCache(){
   } else {
     if(badge) badge.style.display = 'none';
   }
+  // Position mémorisée (PC/mobile séparées) + drag, initialisés une seule fois.
+  _applyAlertBubblePos();
+  if(!bubble._dragInit){ _initAlertBubbleDrag(bubble); bubble._dragInit = true; }
+}
+
+/* Position sauvegardée de la bulle Alertesmega, séparée PC/mobile.
+   Structure : data.settings.alertBubblePos = {posX,posY, posXPc,posYPc}. */
+function _getAlertBubblePosStore(){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.alertBubblePos) data.settings.alertBubblePos = {};
+  return data.settings.alertBubblePos;
+}
+function _setAlertBubblePos(x, y){
+  const bubble = document.getElementById('alertBubble');
+  if(!bubble) return;
+  const size = bubble.offsetWidth || 46;
+  const maxX = window.innerWidth - size - 4;
+  const maxY = window.innerHeight - size - 4;
+  x = Math.max(4, Math.min(x, maxX));
+  y = Math.max(4, Math.min(y, maxY));
+  bubble.style.left   = x + 'px';
+  bubble.style.top    = y + 'px';
+  bubble.style.right  = '';
+  bubble.style.bottom = '';
+}
+/* Applique la position sauvegardée pour le layout courant, si elle existe.
+   Sinon laisse le placement par défaut du CSS (coin haut-droite). */
+function _applyAlertBubblePos(){
+  const bubble = document.getElementById('alertBubble');
+  if(!bubble) return;
+  const store = _getAlertBubblePosStore();
+  const k = _bubblePosKeys();
+  if(store[k.x] != null && store[k.y] != null){
+    _setAlertBubblePos(store[k.x], store[k.y]);
+  }
+}
+/* Drag libre de la bulle Alertesmega : même logique que la bulle "À faire".
+   Un clic simple (déplacement < 6px) ouvre l'inbox ; au-delà c'est un drag,
+   et l'ouverture est annulée. La position est sauvegardée dans la clé du
+   layout courant (PC ou mobile). */
+function _initAlertBubbleDrag(bubble){
+  let startX, startY, startLeft, startTop, isDragging=false;
+
+  function onStart(e){
+    const t = e.touches ? e.touches[0] : e;
+    startX = t.clientX; startY = t.clientY;
+    const rect = bubble.getBoundingClientRect();
+    startLeft = rect.left; startTop = rect.top;
+    isDragging = false;
+    window.addEventListener('mousemove', onMove, {passive:false});
+    window.addEventListener('mouseup',   onEnd);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('touchend',  onEnd);
+  }
+  function onMove(e){
+    const t = e.touches ? e.touches[0] : e;
+    const dx = t.clientX - startX, dy = t.clientY - startY;
+    if(!isDragging && Math.hypot(dx,dy) < 6) return;
+    isDragging = true;
+    bubble.classList.add('dragging');
+    _setAlertBubblePos(startLeft + dx, startTop + dy);
+    if(e.cancelable) e.preventDefault();
+  }
+  function onEnd(){
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup',   onEnd);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend',  onEnd);
+    bubble.classList.remove('dragging');
+    if(!isDragging) return;
+    // Bloque le clic d'ouverture qui suit immédiatement un drag.
+    bubble._suppressClick = true;
+    setTimeout(()=>{ bubble._suppressClick = false; }, 50);
+    const rect = bubble.getBoundingClientRect();
+    const store = _getAlertBubblePosStore();
+    const k = _bubblePosKeys();
+    store[k.x] = Math.round(rect.left);
+    store[k.y] = Math.round(rect.top);
+    saveData();
+  }
+  bubble.addEventListener('mousedown',  onStart);
+  bubble.addEventListener('touchstart', onStart, {passive:true});
 }
 
 async function checkDeviceRevocation(){
@@ -40793,7 +40904,7 @@ async function comptaEditEnsurePulled(){
 
 
 <!-- Bulle note épinglée -->
-<div id="alertBubble" onclick="openAlertInbox()">
+<div id="alertBubble" onclick="if(this._suppressClick)return; openAlertInbox()">
   <img src="icons/megaphone.png" alt="" style="width:30px;height:30px;object-fit:contain;pointer-events:none;">
   <span id="alertBubbleBadge" style="display:none;"></span>
 </div>
