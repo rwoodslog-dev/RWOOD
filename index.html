@@ -11818,6 +11818,15 @@ async function sendAlerteToMembers(authIds, names){
   if(modal) modal.remove();
   renderAlertesConducteurList();
 
+  // Rafraîchit immédiatement les vues d'historique après l'envoi (le cache
+  // d'alertes est déjà à jour grâce à l'await de checkForNewAlerts dans
+  // sendAlert). Corrige le bug « alerte invisible / historique vide juste
+  // après un envoi à soi-même ».
+  if(ok){
+    try{ if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList(); }catch(e){}
+    try{ if(typeof renderDepannageHistory === 'function') renderDepannageHistory(); }catch(e){}
+  }
+
   if(ok){
     showToast(unresolved.length
       ? `✅ Envoyée à ${deviceIds.length}/${authIds.length} (${unresolved.join(', ')} pas encore synchronisé${unresolved.length>1?'s':''})`
@@ -27489,7 +27498,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.5.0';
+const APP_VERSION = '5.5.1';
 
 const CHANGELOG = [
   {
@@ -33854,7 +33863,11 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
     // alertes générées automatiquement (rappels J-1, fiche d'heures, etc.)
     // et pas seulement celles reçues d'un autre appareil.
     if(typeof checkForNewAlerts === 'function'){
-      checkForNewAlerts().catch(()=>{});
+      // await : garantit que le cache d'alertes est réellement à jour AVANT
+      // que sendAlerteToMembers() rafraîchisse l'historique juste après l'envoi
+      // (sinon race condition : l'historique se redessinait avant l'arrivée
+      // de la nouvelle alerte — bug « alerte invisible juste après envoi »).
+      try{ await checkForNewAlerts(); }catch(e){}
     }
     return true;
   } catch(e){
