@@ -18491,8 +18491,12 @@ function renderHeures(){
   if(tabCompta) tabCompta.style.display = (isComptaRole && !isComptable) ? '' : 'none';
   if(pointageTab) pointageTab.style.display = isComptable ? 'none' : 'inline-block';
   if(paieTab) paieTab.style.display = isComptable ? 'none' : 'inline-block';
-  if(recapTab) recapTab.style.display = isComptable ? 'none' : 'inline-block';
-  if(isComptable && currentHeuresMode !== 'fiches') currentHeuresMode = 'fiches';
+  // Récap : visible pour TOUS les rôles, y compris le comptable (récap
+  // multi-personnes). C'est désormais son point d'entrée pour générer les
+  // fiches de tous les ouvriers par mois / semaines / plage de jours.
+  if(recapTab) recapTab.style.display = 'inline-block';
+  // Le comptable atterrit directement sur le Récap (au lieu de Fiches).
+  if(isComptable && currentHeuresMode !== 'fiches' && currentHeuresMode !== 'recap') currentHeuresMode = 'recap';
   setHeuresMode(currentHeuresMode);
 }
 
@@ -18512,10 +18516,14 @@ function setHeuresMode(mode){
 
 /* MODULE — Récap perso : mois par mois, calculé à partir des FICHES D'HEURES
    réelles (data.attendance), UNIQUEMENT pour l'utilisateur courant. */
-/* Mode d'affichage du récap perso : 'mois' (13 derniers mois, historique) ou
-   'semaines' (sélection libre de semaines ISO à cumuler). */
+/* ══ MODULE — Récap Heures (3 modes : mois / semaines / du…au) ══
+   Ouvrier & chef : leurs propres fiches. Comptable / conducteur / patron :
+   une fiche par personne (empilées, avec le nom). Le calcul est factorisé
+   dans _computeRecap() et le rendu d'une fiche dans _recapCardHtml(). */
 let _recapMode = 'mois';
-let _recapSelectedWeeks = null; // Set des clés lundi ISO cochées (mode semaines)
+let _recapSelectedWeeks = null;   // Set des clés lundi ISO cochées (mode semaines)
+let _recapRangeStart = null;      // 'YYYY-MM-DD' (mode du…au)
+let _recapRangeEnd = null;        // 'YYYY-MM-DD' (mode du…au)
 
 function _mondayOfISO(d){
   const x = new Date(d);
@@ -18523,6 +18531,20 @@ function _mondayOfISO(d){
   x.setDate(x.getDate() - dow);
   x.setHours(0,0,0,0);
   return x;
+}
+
+/* Rôle courant : détermine si on affiche le récap multi-personnes. */
+function _recapIsMultiPerson(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return role === 'comptable' || role === 'conducteur' || role === 'patron';
+}
+
+/* Liste des ouvriers à récapituler (multi-personnes), triés par nom. */
+function _recapWorkers(){
+  return (data.workers || [])
+    .filter(w => w && w.name)
+    .slice()
+    .sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'));
 }
 
 function setRecapMode(mode){
@@ -18536,55 +18558,27 @@ function _toggleRecapWeek(key, checked){
   _renderRecapWeeksResult();
 }
 
-function renderRecapPerso(){
-  const container = document.getElementById('recapPersoContent');
-  if(!container) return;
-
-  const profile = data.settings.myProfile || {};
-  const workerId = profile.workerId;
-
-  if(!workerId){
-    container.innerHTML = `<div class="card"><div class="hint">Associe ton profil à un ouvrier (dans le pointage) pour voir ton récap personnel.</div></div>`;
-    return;
-  }
-
-  // Sélecteur de mode (Mois / Semaines), commun aux deux vues.
-  const modeSwitch = `
-    <div class="chip-row" style="margin-bottom:14px;">
-      <button class="chip ${_recapMode==='mois'?'active':''}" onclick="setRecapMode('mois')">📅 Par mois</button>
-      <button class="chip ${_recapMode==='semaines'?'active':''}" onclick="setRecapMode('semaines')">🗓️ Par semaines</button>
-    </div>`;
-
-  if(_recapMode === 'semaines'){
-    container.innerHTML = modeSwitch + _recapWeeksSelectorHtml() + `<div id="recapWeeksResult"></div>`;
-    _renderRecapWeeksResult();
-    return;
-  }
-
-  container.innerHTML = modeSwitch + _recapMoisHtml(workerId);
+function _setRecapRange(which, value){
+  if(which === 'start') _recapRangeStart = value; else _recapRangeEnd = value;
+  _renderRecapRangeResult();
 }
 
-/* ── Vue "Par mois" (comportement historique) ── */
-function _recapMoisHtml(workerId){
+/* ── CALCUL FACTORISÉ ──────────────────────────────────────────────
+   Calcule le récap d'un ouvrier sur un ensemble de "semaines" (chaque
+   semaine = { keys:[dateKey…], base:heuresHebdo }) pour un découpage
+   correct des heures sup (par semaine). Retourne {totalHeures, heuresSup,
+   paniers, zonesLignes:[{z,n,rate,sous}], cumulTrajet, parMotif}. */
+function _computeRecap(workerId, weekBuckets){
   const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
-  const now = new Date();
-  const blocks = [];
+  let totalHeures = 0, paniers = 0, heuresSup = 0;
+  const zonesCount = {};
+  const parMotif = {};
 
-  for(let i = 0; i < 13; i++){
-    const dRef = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const year = dRef.getFullYear();
-    const month = dRef.getMonth() + 1;
-    const moisLabel = `${MOIS_FR[month-1]} ${year}`;
-
-    let totalHeures = 0;
-    let paniers = 0;
-    const zonesCount = {};
-    const parMotif = {};
-
-    Object.keys(data.attendance || {}).forEach(dateKey => {
-      const dd = new Date(dateKey + 'T00:00:00');
-      if(dd.getFullYear() !== year || (dd.getMonth()+1) !== month) return;
-      const day = data.attendance[dateKey];
+  weekBuckets.forEach(bucket => {
+    let heuresSemaine = 0;
+    bucket.keys.forEach(dateKey => {
+      const day = (data.attendance || {})[dateKey];
+      if(!day) return;
       const entry = day.workers && day.workers[workerId];
       if(!entry) return;
       const tj = entry.typeJournee || 'normal';
@@ -18593,7 +18587,9 @@ function _recapMoisHtml(workerId){
         parMotif[label] = (parMotif[label] || 0) + 1;
         return;
       }
-      totalHeures += parseFloat(entry.hours) || 0;
+      const h = parseFloat(entry.hours) || 0;
+      heuresSemaine += h;
+      totalHeures += h;
       if(entry.panier) paniers++;
       const zoneOv = entry.zoneOverride;
       if(zoneOv === 'none'){
@@ -18606,51 +18602,190 @@ function _recapMoisHtml(workerId){
         }
       }
     });
+    // Heures sup par semaine (au-delà du seuil hebdo), jamais compensées.
+    heuresSup += Math.max(0, heuresSemaine - (bucket.base != null ? bucket.base : weeklyBase));
+  });
 
-    const nbSem = _nbSemainesMois(year, month);
-    const seuilMois = weeklyBase * nbSem;
-    const heuresSup = Math.max(0, totalHeures - seuilMois);
+  let cumulTrajet = 0;
+  const zonesLignes = ZONES_TRAJET
+    .map(z => ({ z, n: zonesCount[z] || 0 }))
+    .filter(o => o.n > 0)
+    .map(o => {
+      const rate = getTrajetRates(o.z);
+      const tj = rate ? rate.trajet : 0;
+      const sous = tj * o.n;
+      cumulTrajet += sous;
+      return { z:o.z, n:o.n, rate:tj, sous };
+    });
 
-    const zonesLignes = ZONES_TRAJET.map(z => ({ z, n: zonesCount[z] || 0 })).filter(o => o.n > 0);
+  return { totalHeures, heuresSup, paniers, zonesLignes, cumulTrajet, parMotif };
+}
 
-    const vide = totalHeures === 0 && paniers === 0 && !zonesLignes.length && !Object.keys(parMotif).length;
+/* Rendu d'une fiche récap (carte) à partir du résultat de _computeRecap.
+   `title` : titre de section ; `nameLabel` : nom de la personne (multi). */
+function _recapCardHtml(r, title, nameLabel){
+  const zonesHtml = r.zonesLignes.length
+    ? r.zonesLignes.map(o => `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${o.rate.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${o.sous.toFixed(2).replace('.',',')} €</strong></div>`).join('')
+    : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
+  const motifHtml = Object.keys(r.parMotif).length
+    ? Object.keys(r.parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${r.parMotif[m]} j</strong></div>`).join('')
+    : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
+  const nameHtml = nameLabel
+    ? `<div class="recap-line" style="border-bottom:1px solid var(--line);margin-bottom:4px;padding-bottom:6px;"><span style="font-weight:800;">👤 ${escapeHtml(nameLabel)}</span></div>`
+    : '';
+  return `
+    ${title ? `<div class="section-title">${title}</div>` : ''}
+    <div class="card" style="display:flex;flex-direction:column;gap:2px;">
+      ${nameHtml}
+      <div class="recap-line"><span>Heures totales</span><strong>${r.totalHeures.toFixed(1).replace('.',',')} h</strong></div>
+      <div class="recap-line"><span>Heures supplémentaires</span><strong>${r.heuresSup.toFixed(1).replace('.',',')} h</strong></div>
+      <div class="recap-line"><span>Paniers repas</span><strong>${r.paniers}</strong></div>
+      <div class="recap-sub">Zones de trajet (tarif/jour)</div>
+      ${zonesHtml}
+      <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${r.cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
+      <div class="recap-sub">Absences / congés</div>
+      ${motifHtml}
+    </div>`;
+}
+
+/* Construit les "buckets" semaine pour une plage de dates arbitraire (du…au),
+   afin que les heures sup restent découpées par semaine ISO. */
+function _weekBucketsForRange(startKey, endKey){
+  const start = new Date(startKey + 'T00:00:00');
+  const end = new Date(endKey + 'T00:00:00');
+  const buckets = new Map(); // clé lundi ISO -> {keys:[]}
+  const cur = new Date(start);
+  while(cur <= end){
+    const mon = _mondayOfISO(cur);
+    const mk = dateKeyOf(mon);
+    if(!buckets.has(mk)) buckets.set(mk, { keys: [] });
+    buckets.get(mk).keys.push(dateKeyOf(cur));
+    cur.setDate(cur.getDate()+1);
+  }
+  return Array.from(buckets.values());
+}
+
+function renderRecapPerso(){
+  const container = document.getElementById('recapPersoContent');
+  if(!container) return;
+
+  const multi = _recapIsMultiPerson();
+  const profile = data.settings.myProfile || {};
+  const workerId = profile.workerId;
+
+  if(!multi && !workerId){
+    container.innerHTML = `<div class="card"><div class="hint">Associe ton profil à un ouvrier (dans le pointage) pour voir ton récap personnel.</div></div>`;
+    return;
+  }
+
+  // Sélecteur de mode commun (3 modes).
+  const modeSwitch = `
+    <div class="chip-row" style="margin-bottom:14px;">
+      <button class="chip ${_recapMode==='mois'?'active':''}" onclick="setRecapMode('mois')">📅 Par mois</button>
+      <button class="chip ${_recapMode==='semaines'?'active':''}" onclick="setRecapMode('semaines')">🗓️ Par semaines</button>
+      <button class="chip ${_recapMode==='plage'?'active':''}" onclick="setRecapMode('plage')">📆 Du…au</button>
+    </div>`;
+  const multiHint = multi
+    ? `<div class="hint" style="margin-bottom:12px;">Récap par personne — une fiche est générée pour chaque ouvrier sur la période choisie.</div>`
+    : '';
+
+  if(_recapMode === 'semaines'){
+    container.innerHTML = modeSwitch + multiHint + _recapWeeksSelectorHtml() + `<div id="recapWeeksResult"></div>`;
+    _renderRecapWeeksResult();
+    return;
+  }
+  if(_recapMode === 'plage'){
+    container.innerHTML = modeSwitch + multiHint + _recapRangeSelectorHtml() + `<div id="recapRangeResult"></div>`;
+    _renderRecapRangeResult();
+    return;
+  }
+
+  // Mode mois
+  if(multi){
+    container.innerHTML = modeSwitch + multiHint + _recapMoisMultiHtml();
+  } else {
+    container.innerHTML = modeSwitch + _recapMoisHtml(workerId);
+  }
+}
+
+/* Buckets semaine d'un mois : on regroupe les jours pointés du mois par
+   semaine ISO (lundi), pour un calcul d'heures sup par semaine cohérent. */
+function _monthWeekBuckets(year, month){
+  const buckets = new Map();
+  Object.keys(data.attendance || {}).forEach(dateKey => {
+    const dd = new Date(dateKey + 'T00:00:00');
+    if(dd.getFullYear() !== year || (dd.getMonth()+1) !== month) return;
+    const mk = dateKeyOf(_mondayOfISO(dd));
+    if(!buckets.has(mk)) buckets.set(mk, { keys: [] });
+    buckets.get(mk).keys.push(dateKey);
+  });
+  return Array.from(buckets.values());
+}
+
+/* ── Vue "Par mois" (ouvrier/chef) ── */
+function _recapMoisHtml(workerId){
+  const now = new Date();
+  const blocks = [];
+
+  for(let i = 0; i < 13; i++){
+    const dRef = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const year = dRef.getFullYear();
+    const month = dRef.getMonth() + 1;
+    const moisLabel = `${MOIS_FR[month-1]} ${year}`;
+
+    const buckets = _monthWeekBuckets(year, month);
+    const r = _computeRecap(workerId, buckets);
+
+    const vide = r.totalHeures === 0 && r.paniers === 0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
     if(vide) continue;
 
-    // Zones AVEC tarif/jour + sous-total, et cumul des primes.
-    let cumulTrajet = 0;
-    const zonesHtml = zonesLignes.length
-      ? zonesLignes.map(o => {
-          const rate = getTrajetRates(o.z);
-          const tj = rate ? rate.trajet : 0;
-          const sous = tj * o.n;
-          cumulTrajet += sous;
-          return `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${tj.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${sous.toFixed(2).replace('.',',')} €</strong></div>`;
-        }).join('')
-      : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
-
-    const motifHtml = Object.keys(parMotif).length
-      ? Object.keys(parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${parMotif[m]} j</strong></div>`).join('')
-      : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
-
-    blocks.push(`
-      <div class="section-title">${moisLabel}</div>
-      <div class="card" style="display:flex;flex-direction:column;gap:2px;">
-        <div class="recap-line"><span>Heures totales</span><strong>${totalHeures.toFixed(1).replace('.',',')} h</strong></div>
-        <div class="recap-line"><span>Heures supplémentaires</span><strong>${heuresSup.toFixed(1).replace('.',',')} h</strong></div>
-        <div class="recap-line"><span>Paniers repas</span><strong>${paniers}</strong></div>
-        <div class="recap-sub">Zones de trajet</div>
-        ${zonesHtml}
-        <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
-        <div class="recap-sub">Absences / congés</div>
-        ${motifHtml}
-      </div>
-    `);
+    blocks.push(_recapCardHtml(r, moisLabel, null));
   }
 
   return (blocks.length
     ? blocks.join('')
     : `<div class="card"><div class="hint">Aucune donnée à afficher pour l'instant. Ton récap se remplit au fil de tes pointages.</div></div>`)
     + `<button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="openRecapPdfModal()"><img src="icons/fichiers.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Générer un PDF mensuel</button>`;
+}
+
+/* ── Vue "Par mois" (multi-personnes : comptable/conducteur/patron) ──
+   Un sélecteur de mois + une fiche par ouvrier pour le mois choisi. */
+let _recapMultiMonth = null; // 'YYYY-MM'
+function setRecapMultiMonth(v){ _recapMultiMonth = v; renderRecapPerso(); }
+function _recapMoisMultiHtml(){
+  const now = new Date();
+  // 13 derniers mois en options.
+  const opts = [];
+  for(let i=0;i<13;i++){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    opts.push({ val, label: `${MOIS_FR[d.getMonth()]} ${d.getFullYear()}` });
+  }
+  if(!_recapMultiMonth) _recapMultiMonth = opts[0].val;
+  const [yy, mm] = _recapMultiMonth.split('-').map(Number);
+
+  const selector = `
+    <div class="field" style="margin-bottom:14px;">
+      <label>Mois</label>
+      <select onchange="setRecapMultiMonth(this.value)">
+        ${opts.map(o=>`<option value="${o.val}" ${o.val===_recapMultiMonth?'selected':''}>${o.label}</option>`).join('')}
+      </select>
+    </div>`;
+
+  const workers = _recapWorkers();
+  if(!workers.length) return selector + `<div class="card"><div class="hint">Aucun ouvrier enregistré.</div></div>`;
+
+  const buckets = _monthWeekBuckets(yy, mm);
+  const cards = workers.map(w => {
+    const r = _computeRecap(w.id, buckets);
+    const vide = r.totalHeures === 0 && r.paniers === 0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
+    if(vide) return '';
+    return _recapCardHtml(r, null, w.name);
+  }).filter(Boolean);
+
+  return selector
+    + `<div class="section-title">${MOIS_FR[mm-1]} ${yy} — ${cards.length} personne(s)</div>`
+    + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée pour ce mois.</div></div>`);
 }
 
 /* ── Vue "Par semaines" : sélecteur de semaines ISO à cumuler ── */
@@ -18685,8 +18820,6 @@ function _recapWeeksSelectorHtml(){
 function _renderRecapWeeksResult(){
   const box = document.getElementById('recapWeeksResult');
   if(!box) return;
-  const profile = data.settings.myProfile || {};
-  const workerId = profile.workerId;
   const weeks = _recapSelectedWeeks ? Array.from(_recapSelectedWeeks) : [];
 
   if(!weeks.length){
@@ -18694,84 +18827,83 @@ function _renderRecapWeeksResult(){
     return;
   }
 
-  const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
-
-  let totalHeures = 0, paniers = 0, heuresSup = 0;
-  const zonesCount = {};
-  const parMotif = {};
-
-  // On calcule semaine par semaine : les heures sup se comptent au-delà du
-  // seuil hebdo (35h) de CHAQUE semaine, puis on additionne. Une semaine à 32h
-  // ne "compense" pas une semaine à 38h. (Bug corrigé : avant on comparait le
-  // cumul total à 35×nbSemaines, ce qui annulait les sup des grosses semaines.)
-  weeks.forEach(key => {
+  // Buckets = une semaine ISO complète (lundi→dimanche) par clé cochée.
+  const buckets = weeks.map(key => {
     const mon = new Date(key + 'T00:00:00');
-    let heuresSemaine = 0;
-    for(let k=0;k<7;k++){
-      const d = new Date(mon); d.setDate(d.getDate()+k);
-      const dateKey = dateKeyOf(d);
-      const day = (data.attendance || {})[dateKey];
-      if(!day) continue;
-      const entry = day.workers && day.workers[workerId];
-      if(!entry) continue;
-      const tj = entry.typeJournee || 'normal';
-      if(tj !== 'normal'){
-        const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
-        parMotif[label] = (parMotif[label] || 0) + 1;
-        continue;
-      }
-      const h = parseFloat(entry.hours) || 0;
-      heuresSemaine += h;
-      totalHeures += h;
-      if(entry.panier) paniers++;
-      const zoneOv = entry.zoneOverride;
-      if(zoneOv === 'none'){
-      } else if(zoneOv && zoneOv !== 'auto'){
-        zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
-      } else {
-        const site = data.sites.find(s => s.id === day.siteId);
-        if(site && site.trajetZone && site.trajetZone !== 'GD'){
-          zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
-        }
-      }
-    }
-    // Heures sup de CETTE semaine (au-delà du seuil hebdo).
-    heuresSup += Math.max(0, heuresSemaine - weeklyBase);
+    const keys = [];
+    for(let k=0;k<7;k++){ const d=new Date(mon); d.setDate(d.getDate()+k); keys.push(dateKeyOf(d)); }
+    return { keys };
   });
-
-  const zonesLignes = ZONES_TRAJET.map(z => ({ z, n: zonesCount[z] || 0 })).filter(o => o.n > 0);
-
-  // Zones AVEC tarif/jour devant chaque zone + sous-total, cumul en bas.
-  let cumulTrajet = 0;
-  const zonesHtml = zonesLignes.length
-    ? zonesLignes.map(o => {
-        const rate = getTrajetRates(o.z);
-        const tj = rate ? rate.trajet : 0;
-        const sous = tj * o.n;
-        cumulTrajet += sous;
-        return `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${tj.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${sous.toFixed(2).replace('.',',')} €</strong></div>`;
-      }).join('')
-    : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
-
-  const motifHtml = Object.keys(parMotif).length
-    ? Object.keys(parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${parMotif[m]} j</strong></div>`).join('')
-    : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
 
   const weekNums = weeks.map(key => getISOWeekNumber(new Date(key + 'T00:00:00'))).sort((a,b)=>a-b);
   const titre = `Semaines ${weekNums.map(n=>'S'+n).join(', ')} (${weeks.length})`;
 
-  box.innerHTML = `
-    <div class="section-title">${titre}</div>
-    <div class="card" style="display:flex;flex-direction:column;gap:2px;">
-      <div class="recap-line"><span>Heures totales</span><strong>${totalHeures.toFixed(1).replace('.',',')} h</strong></div>
-      <div class="recap-line"><span>Heures supplémentaires</span><strong>${heuresSup.toFixed(1).replace('.',',')} h</strong></div>
-      <div class="recap-line"><span>Paniers repas</span><strong>${paniers}</strong></div>
-      <div class="recap-sub">Zones de trajet (tarif/jour)</div>
-      ${zonesHtml}
-      <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
-      <div class="recap-sub">Absences / congés</div>
-      ${motifHtml}
+  if(_recapIsMultiPerson()){
+    const workers = _recapWorkers();
+    const cards = workers.map(w => {
+      const r = _computeRecap(w.id, buckets);
+      const vide = r.totalHeures===0 && r.paniers===0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
+      return vide ? '' : _recapCardHtml(r, null, w.name);
+    }).filter(Boolean);
+    box.innerHTML = `<div class="section-title">${titre} — ${cards.length} personne(s)</div>`
+      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée sur ces semaines.</div></div>`);
+    return;
+  }
+
+  const profile = data.settings.myProfile || {};
+  const r = _computeRecap(profile.workerId, buckets);
+  box.innerHTML = _recapCardHtml(r, titre, null);
+}
+
+/* ── Vue "Du…au" : sélecteur de plage de jours ── */
+function _recapRangeSelectorHtml(){
+  // Valeurs par défaut : début de semaine courante → aujourd'hui.
+  if(!_recapRangeEnd) _recapRangeEnd = dateKeyOf(new Date());
+  if(!_recapRangeStart) _recapRangeStart = dateKeyOf(_mondayOfISO(new Date()));
+  return `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="field" style="margin-bottom:10px;">
+        <label>Du (jour)</label>
+        <input type="date" value="${_recapRangeStart}" onchange="_setRecapRange('start', this.value)">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Au (jour)</label>
+        <input type="date" value="${_recapRangeEnd}" onchange="_setRecapRange('end', this.value)">
+      </div>
     </div>`;
+}
+
+function _renderRecapRangeResult(){
+  const box = document.getElementById('recapRangeResult');
+  if(!box) return;
+  if(!_recapRangeStart || !_recapRangeEnd){
+    box.innerHTML = `<div class="card"><div class="hint">Choisis une date de début et de fin.</div></div>`;
+    return;
+  }
+  if(_recapRangeStart > _recapRangeEnd){
+    box.innerHTML = `<div class="card"><div class="hint">⚠️ La date de début est après la date de fin.</div></div>`;
+    return;
+  }
+
+  const buckets = _weekBucketsForRange(_recapRangeStart, _recapRangeEnd);
+  const fmt = k => { const d=new Date(k+'T00:00:00'); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; };
+  const titre = `Du ${fmt(_recapRangeStart)} au ${fmt(_recapRangeEnd)}`;
+
+  if(_recapIsMultiPerson()){
+    const workers = _recapWorkers();
+    const cards = workers.map(w => {
+      const r = _computeRecap(w.id, buckets);
+      const vide = r.totalHeures===0 && r.paniers===0 && !r.zonesLignes.length && !Object.keys(r.parMotif).length;
+      return vide ? '' : _recapCardHtml(r, null, w.name);
+    }).filter(Boolean);
+    box.innerHTML = `<div class="section-title">${titre} — ${cards.length} personne(s)</div>`
+      + (cards.length ? cards.join('') : `<div class="card"><div class="hint">Aucune donnée sur cette période.</div></div>`);
+    return;
+  }
+
+  const profile = data.settings.myProfile || {};
+  const r = _computeRecap(profile.workerId, buckets);
+  box.innerHTML = _recapCardHtml(r, titre, null);
 }
 
 /* MODULE — Récap PDF mensuel (tableaux façon fiches d'heures + signature) */
@@ -27743,7 +27875,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.7.1';
+const APP_VERSION = '5.8.0';
 
 const CHANGELOG = [
   {
