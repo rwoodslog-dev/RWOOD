@@ -2927,7 +2927,9 @@
     display:none; align-items:center; justify-content:center;
     font-size:21px; cursor:pointer; z-index:600;
     animation: alertPulse 1.8s ease-in-out infinite;
+    touch-action:none; /* indispensable : sinon Android scrolle la page au lieu de dragger la bulle */
   }
+  #alertBubble.dragging{ animation:none !important; cursor:grabbing; }
   #alertBubble.show{ display:flex; }
   @keyframes alertPulse{
     0%,100%{ transform:scale(1); }
@@ -27358,6 +27360,22 @@ window.addEventListener('resize', () => {
   if(tourActive) positionTourHighlight(TOUR_STEPS[tourStepIndex]);
 });
 
+/* Au redimensionnement (ou bascule PC↔téléphone), réappliquer la position
+   propre au layout courant pour chaque bulle. Débounce léger. */
+let _bubbleResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_bubbleResizeTimer);
+  _bubbleResizeTimer = setTimeout(() => {
+    try{
+      if(typeof _placeBubbleInCorner === 'function'){
+        const pn = data.settings && data.settings.pinnedNote;
+        _placeBubbleInCorner((pn && pn.corner) || 'bottom-right');
+      }
+    }catch(e){}
+    try{ if(typeof _applyAlertBubblePos === 'function') _applyAlertBubblePos(); }catch(e){}
+  }, 200);
+});
+
 
 /* ═══════════════════════════════════════════════════════
    MODULE FERME TRADITIONNELLE
@@ -28025,7 +28043,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.9.3';
+const APP_VERSION = '5.10.2';
 
 const CHANGELOG = [
   {
@@ -32198,13 +32216,25 @@ function showPinnedBubble(){
   if(typeof showToast === 'function') showToast('Bulle réaffichée');
 }
 
+/* Détecte le layout courant : PC (sidebar, ≥860px) ou téléphone. Sert à
+   mémoriser des positions de bulles SÉPARÉES pour PC et téléphone — une
+   bulle déplacée dans un coin sur téléphone garde sa propre position sur PC. */
+function _isPcLayout(){
+  return window.matchMedia && window.matchMedia('(min-width: 860px)').matches;
+}
+/* Clés de position selon le layout : posXPc/posYPc en PC, posX/posY en mobile. */
+function _bubblePosKeys(){
+  return _isPcLayout() ? { x:'posXPc', y:'posYPc' } : { x:'posX', y:'posY' };
+}
+
 function _placeBubbleInCorner(corner){
   const bubble = document.getElementById('pinnedNoteBubble');
   if(!bubble) return;
   const pn = data.settings && data.settings.pinnedNote;
-  // Si position exacte sauvegardée, l'utiliser
-  if(pn && pn.posX != null && pn.posY != null){
-    _setBubblePos(pn.posX, pn.posY);
+  const k = _bubblePosKeys();
+  // Si position exacte sauvegardée pour CE layout (PC ou mobile), l'utiliser
+  if(pn && pn[k.x] != null && pn[k.y] != null){
+    _setBubblePos(pn[k.x], pn[k.y]);
     return;
   }
   // Sinon placement par coin
@@ -32272,11 +32302,12 @@ function _initBubbleDrag(bubble){
     bubble.classList.remove('dragging');
     if(!isDragging) return;
 
-    // Sauvegarder la position exacte
+    // Sauvegarder la position exacte pour le layout courant (PC ou mobile)
     const rect = bubble.getBoundingClientRect();
     const pn = _getPinnedNote();
-    pn.posX = Math.round(rect.left);
-    pn.posY = Math.round(rect.top);
+    const k = _bubblePosKeys();
+    pn[k.x] = Math.round(rect.left);
+    pn[k.y] = Math.round(rect.top);
     saveData();
   }
 
@@ -36497,8 +36528,51 @@ async function _migrateDismissOldReadAlerts(){
   return;
 }
 
+/* Regroupe/dédoublonne les alertes automatiques de rappel ('rappel-heures',
+   'rappel') par (destinataire + texte + jour de création) et ne garde que
+   la première de chaque groupe. Utilisé pour nettoyer, une seule fois, les
+   doublons produits par l'ancien bug de réentrance (voir
+   _hoursReminderDuplicatesPurged ci-dessous). N'affecte jamais les alertes
+   normales (envoyées par un humain : info/signature/photo/evenement/depannage). */
+function _dedupeReminderAlerts(all){
+  const seen = new Set();
+  const removedIds = [];
+  const kept = [];
+  for(const a of all){
+    if(a.kind === 'rappel-heures' || a.kind === 'rappel'){
+      const day = (a.createdAt || '').slice(0, 10);
+      const key = a.kind + '|' + (a.recipientDeviceId || '') + '|' + (a.text || '') + '|' + day;
+      if(seen.has(key)){
+        removedIds.push(a.id);
+        continue;
+      }
+      seen.add(key);
+    }
+    kept.push(a);
+  }
+  return { kept, removedIds };
+}
+
+let _checkForNewAlertsRunning = false;
 async function checkForNewAlerts(){
   if(!navigator.onLine) return;
+  // Verrou anti-réentrance (correctif « 795 alertesMega ») : sendAlert()
+  // rappelle checkForNewAlerts() en interne pour rafraîchir immédiatement la
+  // bulle. Sans ce verrou, un appel encore en cours (ex: dans
+  // _checkHoursReminders/_checkAgendaReminders) pouvait se relancer par-
+  // dessus lui-même et repartir en boucle. On laisse quand même tourner la
+  // partie « rafraîchir la bulle/badge » ci-dessous en la sautant, le prochain
+  // appel (déclenché juste après par sendAlert ou le polling) s'en chargera.
+  if(_checkForNewAlertsRunning) return;
+  _checkForNewAlertsRunning = true;
+  try{
+    await _checkForNewAlertsInner();
+  } finally {
+    _checkForNewAlertsRunning = false;
+  }
+}
+
+async function _checkForNewAlertsInner(){
   const profile = (data.settings && data.settings.myProfile) || {};
 
   // Rappel J-1 : vérifie les événements ajoutés à l'agenda via une alerte
@@ -36513,7 +36587,26 @@ async function checkForNewAlerts(){
   }
 
   try{
-    const all = await _fetchAlerts();
+    let all = await _fetchAlerts();
+
+    // Nettoyage ponctuel (une seule fois, correctif « 795 alertesMega ») :
+    // la boucle de réentrance ci-dessus (_checkHoursReminders /
+    // _checkAgendaReminders) a pu écrire un très grand nombre d'alertes
+    // "rappel-heures"/"rappel" identiques côté serveur partagé avant ce
+    // correctif. On les fusionne ici pour ne garder qu'un seul exemplaire
+    // par (destinataire + texte + jour) — pour TOUT LE MONDE, puisque le
+    // stockage est partagé (une seule exécution, sur un seul appareil,
+    // nettoie pour tous).
+    if(data.settings && !data.settings._hoursReminderDuplicatesPurged){
+      const { kept, removedIds } = _dedupeReminderAlerts(all);
+      if(removedIds.length){
+        all = kept;
+        await _saveAlerts(kept, removedIds);
+      }
+      data.settings._hoursReminderDuplicatesPurged = true;
+      saveData();
+    }
+
     let mine = _filterAlertsForMe(all);
     // Exclure les alertes que l'utilisateur a supprimées de son historique local
     // (elles restent dans "Supprimés récemment" → Paramètres, récupérables).
@@ -36624,14 +36717,18 @@ async function _checkAgendaReminders(){
 
   const myId = getDeviceSyncId();
   for(const t of dueTomorrow){
+    // Marquer AVANT d'envoyer (voir explication dans _checkHoursReminders) :
+    // sendAlert() ré-entre dans checkForNewAlerts() → _checkAgendaReminders()
+    // avant de retourner ; si remindersSent n'est pas déjà à jour, cet appel
+    // ré-entrant retraite la même tâche et boucle indéfiniment.
+    data.settings.remindersSent.push(t.id);
+    saveData();
     const site = t.siteId ? (data.sites||[]).find(s=>s.id===t.siteId) : null;
     await sendAlert(
       `⏰ Rappel : ${t.text}${site ? ' — ' + site.name : ''} — demain`,
       'device', myId, null, 'rappel'
     );
-    data.settings.remindersSent.push(t.id);
   }
-  saveData();
 }
 
 /* Alertesmega — rappel fiche d'heures : tous les jours à 15h30 (pense à
@@ -36652,32 +36749,40 @@ async function _checkHoursReminders(){
   const todayKey = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
   const myId = getDeviceSyncId();
   const minutesNow = now.getHours() * 60 + now.getMinutes();
-  let changed = false;
+
+  // IMPORTANT (correctif « 795 alertesMega ») : sendAlert() appelle en
+  // interne checkForNewAlerts(), qui rappelle _checkHoursReminders() AVANT
+  // que le sendAlert() du dessus n'ait fini/retourné. Si on marquait le
+  // créneau comme « envoyé » APRÈS le await sendAlert(...), cet appel
+  // ré-entrant voyait encore log[key] !== true et renvoyait une alerte —
+  // qui elle-même ré-appelait checkForNewAlerts()… récursion incontrôlée
+  // pendant toute la fenêtre de tolérance (15h30-16h00), d'où les centaines
+  // d'alertes identiques. Fix : on marque le créneau comme envoyé et on
+  // sauvegarde AVANT d'envoyer l'alerte, pour que l'appel ré-entrant le
+  // voie déjà traité et ne renvoie rien.
 
   // Rappel quotidien : 15h30 (930 min), fenêtre de tolérance de 30 min pour
   // couvrir le cas où l'app n'est pas ouverte pile à l'heure.
   const dailyKey = 'daily_' + todayKey;
   if(minutesNow >= 15*60+30 && minutesNow < 16*60 && log[dailyKey] !== true){
+    log[dailyKey] = true;
+    saveData();
     await sendAlert(
       '⏱️ Pense à remplir ta fiche d\'heures du jour.',
       'device', myId, null, 'rappel-heures'
     );
-    log[dailyKey] = true;
-    changed = true;
   }
 
   // Rappel hebdomadaire : vendredi (day===5) à 10h, même fenêtre de tolérance.
   const weekKey = 'friday_' + _isoWeekKey(now);
   if(now.getDay() === 5 && minutesNow >= 10*60 && minutesNow < 10*60+30 && log[weekKey] !== true){
+    log[weekKey] = true;
+    saveData();
     await sendAlert(
       '🧾 C\'est vendredi — pense à envoyer ta fiche d\'heures de la semaine à la comptable.',
       'device', myId, null, 'rappel-heures'
     );
-    log[weekKey] = true;
-    changed = true;
   }
-
-  if(changed) saveData();
 }
 
 /* Clé "année-semaineISO" pour ne déclencher le rappel du vendredi qu'une
@@ -37476,6 +37581,91 @@ function _updateAlertBubbleFromCache(){
   } else {
     if(badge) badge.style.display = 'none';
   }
+  // Position mémorisée (PC/mobile séparées) + drag, initialisés une seule fois.
+  _applyAlertBubblePos();
+  if(!bubble._dragInit){ _initAlertBubbleDrag(bubble); bubble._dragInit = true; }
+}
+
+/* Position sauvegardée de la bulle Alertesmega, séparée PC/mobile.
+   Structure : data.settings.alertBubblePos = {posX,posY, posXPc,posYPc}. */
+function _getAlertBubblePosStore(){
+  if(!data.settings) data.settings = {};
+  if(!data.settings.alertBubblePos) data.settings.alertBubblePos = {};
+  return data.settings.alertBubblePos;
+}
+function _setAlertBubblePos(x, y){
+  const bubble = document.getElementById('alertBubble');
+  if(!bubble) return;
+  const size = bubble.offsetWidth || 46;
+  const maxX = window.innerWidth - size - 4;
+  const maxY = window.innerHeight - size - 4;
+  x = Math.max(4, Math.min(x, maxX));
+  y = Math.max(4, Math.min(y, maxY));
+  // setProperty avec priorité 'important' pour surcharger le CSS (#alertBubble
+  // et son @media 860px définissent top/right ; vider ne suffit pas, il faut
+  // forcer right/bottom à auto sinon la bulle reste ancrée à droite).
+  bubble.style.setProperty('left', x + 'px', 'important');
+  bubble.style.setProperty('top',  y + 'px', 'important');
+  bubble.style.setProperty('right',  'auto', 'important');
+  bubble.style.setProperty('bottom', 'auto', 'important');
+}
+/* Applique la position sauvegardée pour le layout courant, si elle existe.
+   Sinon laisse le placement par défaut du CSS (coin haut-droite). */
+function _applyAlertBubblePos(){
+  const bubble = document.getElementById('alertBubble');
+  if(!bubble) return;
+  const store = _getAlertBubblePosStore();
+  const k = _bubblePosKeys();
+  if(store[k.x] != null && store[k.y] != null){
+    _setAlertBubblePos(store[k.x], store[k.y]);
+  }
+}
+/* Drag libre de la bulle Alertesmega : même logique que la bulle "À faire".
+   Un clic simple (déplacement < 6px) ouvre l'inbox ; au-delà c'est un drag,
+   et l'ouverture est annulée. La position est sauvegardée dans la clé du
+   layout courant (PC ou mobile). */
+function _initAlertBubbleDrag(bubble){
+  let startX, startY, startLeft, startTop, isDragging=false;
+
+  function onStart(e){
+    const t = e.touches ? e.touches[0] : e;
+    startX = t.clientX; startY = t.clientY;
+    const rect = bubble.getBoundingClientRect();
+    startLeft = rect.left; startTop = rect.top;
+    isDragging = false;
+    window.addEventListener('mousemove', onMove, {passive:false});
+    window.addEventListener('mouseup',   onEnd);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('touchend',  onEnd);
+  }
+  function onMove(e){
+    const t = e.touches ? e.touches[0] : e;
+    const dx = t.clientX - startX, dy = t.clientY - startY;
+    if(!isDragging && Math.hypot(dx,dy) < 6) return;
+    isDragging = true;
+    bubble.classList.add('dragging');
+    _setAlertBubblePos(startLeft + dx, startTop + dy);
+    if(e.cancelable) e.preventDefault();
+  }
+  function onEnd(){
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup',   onEnd);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend',  onEnd);
+    bubble.classList.remove('dragging');
+    if(!isDragging) return;
+    // Bloque le clic d'ouverture qui suit immédiatement un drag.
+    bubble._suppressClick = true;
+    setTimeout(()=>{ bubble._suppressClick = false; }, 50);
+    const rect = bubble.getBoundingClientRect();
+    const store = _getAlertBubblePosStore();
+    const k = _bubblePosKeys();
+    store[k.x] = Math.round(rect.left);
+    store[k.y] = Math.round(rect.top);
+    saveData();
+  }
+  bubble.addEventListener('mousedown',  onStart);
+  bubble.addEventListener('touchstart', onStart, {passive:false});
 }
 
 async function checkDeviceRevocation(){
@@ -40793,7 +40983,7 @@ async function comptaEditEnsurePulled(){
 
 
 <!-- Bulle note épinglée -->
-<div id="alertBubble" onclick="openAlertInbox()">
+<div id="alertBubble" onclick="if(this._suppressClick)return; openAlertInbox()">
   <img src="icons/megaphone.png" alt="" style="width:30px;height:30px;object-fit:contain;pointer-events:none;">
   <span id="alertBubbleBadge" style="display:none;"></span>
 </div>
