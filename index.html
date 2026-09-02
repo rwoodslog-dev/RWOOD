@@ -27588,7 +27588,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.6.0';
+const APP_VERSION = '5.6.1';
 
 const CHANGELOG = [
   {
@@ -33499,9 +33499,9 @@ function _renderDevTabAlertTest(list){
     <button class="btn btn-outline btn-block" onclick="_devDiagnoseSelfAlert()">Lancer le diagnostic</button>
     <div class="hint" id="devSelfAlertDiag" style="margin-top:8px;white-space:pre-wrap;font-family:monospace;font-size:11px;"></div>
 
-    <!-- Gestion Historique Dépannage : suppression DÉFINITIVE, réservée au Dev. -->
-    <div class="section-title" style="margin-top:20px;">🛠️ Gestion Historique Dépannage</div>
-    <div class="hint" style="margin-bottom:10px;">Backup dev : « Renvoyer au destinataire » remet le dépannage dans « Mes alertes reçues » même s'il a été supprimé/rangé. « Supprimer définitivement » l'efface de la base pour tout le monde (irréversible, réservé au dev).</div>
+    <!-- Gestion Historique Alertes (Dev) : backup + suppression DÉFINITIVE. -->
+    <div class="section-title" style="margin-top:20px;">🛠️ Gestion Historique Alertes (Dev)</div>
+    <div class="hint" style="margin-bottom:10px;">Toutes les alertes conservées en base (y compris celles qu'un utilisateur a « supprimées définitivement » de son historique). « Renvoyer au destinataire » les lui remet dans « Mes alertes reçues ». « Supprimer définitivement » les efface de la base pour tout le monde — perdues à jamais (réservé au dev).</div>
     <div id="devDepannageList"></div>
   `;
   _renderDevDepannageList();
@@ -33563,19 +33563,28 @@ async function _renderDevDepannageList(){
   el.innerHTML = '<div class="hint" style="text-align:center;padding:12px;">⏳ Chargement…</div>';
 
   const all = await _fetchAlerts();
-  const depannages = all.filter(a => a.kind === 'depannage').sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const depannages = all.slice().sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   if(!depannages.length){
-    el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucun dépannage dans la base.</div>';
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucune alerte dans la base.</div>';
     return;
   }
 
+  const _kindLabel = (k) => ({
+    'depannage':'🛠️ Dépannage','signature':'✍️ Signature','photo':'📸 Photo',
+    'heures':'⏱ Heures','rappel-heures':'⏱ Rappel heures','evenement':'📅 Événement',
+    'nouveau-chantier':'🏗️ Nouveau chantier','rappel':'🔔 Rappel','info':'📢 Info'
+  }[k] || ('📢 ' + (k||'alerte')));
+
   el.innerHTML = depannages.map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+    const who = a.recipientName || '—';
+    const titleTxt = a.kind === 'depannage' ? (a.depannageSiteName || 'Sans chantier') : _kindLabel(a.kind);
     return `
     <div class="card" style="margin-bottom:8px;padding:10px 12px;">
-      <div style="font-size:13px;font-weight:700;">${escapeHtml(a.depannageSiteName || 'Sans chantier')}</div>
-      <div class="hint" style="margin-top:2px;">${dateLabel} — envoyé à ${escapeHtml(a.recipientName||'—')}</div>
+      <div style="font-size:13px;font-weight:700;">${_kindLabel(a.kind)}${a.kind==='depannage' ? ' — ' + escapeHtml(a.depannageSiteName||'Sans chantier') : ''}</div>
+      <div class="hint" style="margin-top:2px;">${dateLabel} — envoyé à ${escapeHtml(who)}</div>
+      <div class="hint" style="margin-top:4px;font-style:italic;">${escapeHtml((a.text||'').substring(0,90))}${(a.text||'').length>90?'…':''}</div>
       <div class="row-actions-wrap" style="margin-top:8px;">
         <button class="btn btn-primary btn-sm" onclick="_devResendDepannageToRecipient('${a.id}')">↩️ Renvoyer au destinataire</button>
         <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);" onclick="_devDeleteDepannagePermanently('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement</button>
@@ -36040,24 +36049,15 @@ function _playAlertSound(){
    première vérification post-mise à jour. On les marque ici comme
    définitivement écartées, une bonne fois pour toutes. */
 async function _migrateDismissOldReadAlerts(){
+  // NEUTRALISÉE (nouvelle logique v5.6+) : auparavant cette migration masquait
+  // toutes les alertes déjà lues via dismissedAlertIds. Désormais une alerte
+  // lue reste TOUJOURS visible dans "Mes alertes reçues" — seul "Supprimer"
+  // la range dans l'historique. On ne masque donc plus rien ici. Le flag est
+  // posé pour que l'ancienne version ne se rejoue jamais.
   if(!data.settings) data.settings = {};
-  if(data.settings.oldReadAlertsMigrated) return; // déjà fait sur cet appareil
-
-  try{
-    const myId = getDeviceSyncId();
-    const all = await _fetchAlerts();
-    const mine = _filterAlertsForMe(all);
-    const alreadyRead = mine.filter(a => a.readBy && a.readBy.includes(myId));
-
-    if(alreadyRead.length){
-      if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
-      alreadyRead.forEach(a => {
-        if(!data.settings.dismissedAlertIds.includes(a.id)) data.settings.dismissedAlertIds.push(a.id);
-      });
-    }
-    data.settings.oldReadAlertsMigrated = true;
-    saveData();
-  }catch(e){ /* silencieux : on retentera au prochain démarrage si ça échoue */ }
+  data.settings.oldReadAlertsMigrated = true;
+  saveData();
+  return;
 }
 
 async function checkForNewAlerts(){
@@ -36086,12 +36086,13 @@ async function checkForNewAlerts(){
     // On déplace donc une fois pour toutes les ids historiquement masqués vers
     // l'historique (archivedAlertIds) pour qu'ils redeviennent visibles et
     // rétablissables — au lieu de rester perdus.
+    // Migration unique (nouvelle logique v5.6+) : auparavant, lire/lever/
+    // supprimer une alerte la masquait via dismissedAlertIds et elle
+    // devenait invisible pour toujours. Désormais une alerte lue reste
+    // visible, et seul "Supprimer" la range dans l'historique. On vide donc
+    // une fois pour toutes l'ancien masquage pour que TOUTES les anciennes
+    // alertes redeviennent visibles dans "Mes alertes reçues".
     if(data.settings && !data.settings._alertsHistoryMigrated){
-      const old = data.settings.dismissedAlertIds || [];
-      if(old.length){
-        if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
-        old.forEach(id => { if(!data.settings.archivedAlertIds.includes(id)) data.settings.archivedAlertIds.push(id); });
-      }
       data.settings.dismissedAlertIds = [];
       data.settings._alertsHistoryMigrated = true;
       saveData();
@@ -36099,9 +36100,9 @@ async function checkForNewAlerts(){
 
     const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
-    // Exclure aussi les alertes rangées dans "Historique des alertes" (bouton
-    // "Ajouter à l'historique") — elles quittent les alertes reçues et la
-    // bulle, mais restent récupérables via "Rétablir" (voir archivedAlertIds).
+    // Exclure les alertes rangées dans "Historique des alertes" (bouton
+    // "Supprimer") — elles quittent les alertes reçues et la bulle, mais
+    // restent récupérables via "Rétablir" (voir archivedAlertIds).
     const archived = (data.settings && data.settings.archivedAlertIds) || [];
     if(archived.length) mine = mine.filter(a => !archived.includes(a.id));
     const myId = getDeviceSyncId();
@@ -36951,18 +36952,19 @@ async function _restoreArchivedAlert(alertId){
 }
 
 /* Supprimer définitivement depuis l'historique perso (côté destinataire) :
-   masque l'alerte comme deleteAlertToTrash (dismissedAlertIds) et la retire
-   de l'archive. Récupérable dans Paramètres → Supprimés récemment. */
+   l'alerte quitte définitivement l'historique de l'utilisateur (masquage local
+   persistant via dismissedAlertIds — elle ne reviendra jamais seule chez lui),
+   MAIS elle reste conservée dans la base → visible dans l'historique
+   développeur, qui peut la renvoyer au destinataire en cas de mauvaise manip.
+   Seul le dev peut l'effacer réellement (irréversible). */
 function _deleteArchivedAlert(alertId){
-  if(!confirm('Retirer définitivement cette alerte de ton historique ?\n(Elle restera récupérable dans Paramètres → Supprimés récemment.)')) return;
+  if(!confirm('Supprimer définitivement cette alerte de ton historique ?\n\nElle disparaîtra de ta liste. En cas d\'erreur, seul le développeur pourra te la renvoyer.')) return;
   if(!data.settings) data.settings = {};
-  const a = (_alertesArchiveCache||[]).find(x => x.id === alertId);
-  if(a){ ensureTrash(); data.trash.push({ id: uid(), kind: 'alert', alert: {...a}, deletedAt: formatDateTime(new Date()) }); }
   data.settings.archivedAlertIds = (data.settings.archivedAlertIds||[]).filter(id => id !== alertId);
   if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
   if(!data.settings.dismissedAlertIds.includes(alertId)) data.settings.dismissedAlertIds.push(alertId);
   saveData();
-  showToast('🗑 Alerte retirée de l\'historique');
+  showToast('🗑 Alerte supprimée de ton historique');
   _renderAlertesArchiveList();
 }
 
