@@ -12979,18 +12979,50 @@ window.addEventListener('online', () => { setTimeout(_dropboxFlushQueue, 1500); 
    autorename côté Dropbox : relançable sans créer de doublons destructifs
    (Dropbox ajoute un suffixe si le nom existe déjà). Affiche la progression. */
 let _dropboxBulkRunning = false;
+
+/* Traite UN média : télécharge depuis Supabase, convertit le HEIC, envoie vers
+   Dropbox. Réessaie jusqu'à `tries` fois en cas d'échec (timeout réseau
+   passager). Renvoie true si envoyé. */
+async function _dropboxSendOneMedia(siteId, media, index, tries){
+  tries = tries || 3;
+  for(let attempt=1; attempt<=tries; attempt++){
+    try{
+      const resp = await fetch(media.url);
+      if(!resp.ok) throw new Error('fetch ' + resp.status);
+      let blob = await resp.blob();
+      let fileName = media.name || ('media_' + index);
+
+      const looksImage = (blob.type||'').startsWith('image/') || (media.type === 'photo')
+        || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(fileName);
+      const looksHeic = /heic|heif/i.test(blob.type) || /\.(heic|heif)$/i.test(fileName) || /\.(heic|heif)$/i.test(media.url||'');
+      if(looksHeic){
+        const jpeg = await _heicToJpegBlob(blob, 0.9);
+        if(jpeg){ blob = jpeg; fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg'); if(!/\.jpe?g$/i.test(fileName)) fileName += '.jpg'; }
+      }
+      const sub = looksImage ? 'PHOTO' : 'DOCUMENTS';
+      const path = _dropboxBuildPath(siteId, fileName, sub);
+      const sent = await _dropboxUploadBlob(blob, path);
+      if(sent) return true;
+      throw new Error('upload refusé');
+    }catch(e){
+      if(attempt < tries){ await new Promise(r => setTimeout(r, 400 * attempt)); continue; } // petite pause croissante puis réessai
+      return false;
+    }
+  }
+  return false;
+}
+
 async function dropboxBackupAllExisting(){
   if(!_dropboxConfigured()){ if(typeof showToast==='function') showToast('❌ Dropbox non configuré'); return; }
   if(_dropboxBulkRunning){ if(typeof showToast==='function') showToast('⏳ Envoi déjà en cours…'); return; }
   if(!navigator.onLine){ if(typeof showToast==='function') showToast('❌ Hors-ligne'); return; }
-  if(!confirm('Envoyer TOUTES les photos et documents déjà dans RWOOD vers Dropbox ?\n\nCela peut prendre plusieurs minutes selon le nombre de fichiers. Tu peux laisser l\'app ouverte.')) return;
+  if(!confirm('Envoyer TOUTES les photos et documents déjà dans RWOOD vers Dropbox ?\n\nCela peut prendre quelques minutes. Tu peux laisser l\'app ouverte.')) return;
 
   _dropboxBulkRunning = true;
   const statusEl = document.getElementById('dropboxBulkStatus');
   const setStatus = (t) => { if(statusEl) statusEl.textContent = t; };
 
   try{
-    // Rassembler tous les médias (chantier + média).
     const items = [];
     (data.sites || []).forEach(site => {
       (site.sharedMedia || []).forEach(m => {
@@ -13000,32 +13032,26 @@ async function dropboxBackupAllExisting(){
 
     if(!items.length){ setStatus('Aucun média à envoyer.'); if(typeof showToast==='function') showToast('Aucun média trouvé'); _dropboxBulkRunning=false; return; }
 
-    let ok = 0, fail = 0;
-    for(let i=0;i<items.length;i++){
-      const { siteId, media } = items[i];
-      setStatus(`Envoi ${i+1}/${items.length}… (${ok} ok, ${fail} échec)`);
-      try{
-        const resp = await fetch(media.url);
-        if(!resp.ok){ fail++; continue; }
-        let blob = await resp.blob();
-        let fileName = media.name || ('media_' + (i+1));
+    // Envoi PARALLÉLISÉ par lots (CONCURRENCY à la fois) pour aller bien plus
+    // vite qu'un envoi un-par-un, avec réessai automatique sur chaque fichier.
+    const CONCURRENCY = 4;
+    let ok = 0, fail = 0, done = 0;
+    const total = items.length;
+    let cursor = 0;
 
-        // Type : image ou document, pour le sous-dossier + conversion HEIC.
-        const looksImage = (blob.type||'').startsWith('image/') || (media.type === 'photo')
-          || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(fileName);
-        const looksHeic = /heic|heif/i.test(blob.type) || /\.(heic|heif)$/i.test(fileName) || /\.(heic|heif)$/i.test(media.url||'');
-        if(looksHeic){
-          const jpeg = await _heicToJpegBlob(blob, 0.9);
-          if(jpeg){ blob = jpeg; fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg'); if(!/\.jpe?g$/i.test(fileName)) fileName += '.jpg'; }
-        }
-        const sub = looksImage ? 'PHOTO' : 'DOCUMENTS';
-        const path = _dropboxBuildPath(siteId, fileName, sub);
-        const sent = await _dropboxUploadBlob(blob, path);
+    async function worker(){
+      while(cursor < total){
+        const i = cursor++;
+        const { siteId, media } = items[i];
+        const sent = await _dropboxSendOneMedia(siteId, media, i+1, 3);
         if(sent) ok++; else fail++;
-      }catch(e){ fail++; }
+        done++;
+        setStatus(`Envoi ${done}/${total}…  ✅ ${ok}  ❌ ${fail}`);
+      }
     }
+    await Promise.all(Array.from({length: Math.min(CONCURRENCY, total)}, worker));
 
-    setStatus(`✅ Terminé : ${ok} envoyé(s), ${fail} échec(s).`);
+    setStatus(`✅ Terminé : ${ok} envoyé(s), ${fail} échec(s)${fail?'\n(Relance le bouton pour réessayer les échecs.)':''}.`);
     if(typeof showToast==='function') showToast(`✅ Dropbox : ${ok} envoyé(s), ${fail} échec(s)`);
   }catch(e){
     setStatus('❌ Erreur pendant l\'envoi.');
@@ -28470,7 +28496,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.13.5';
+const APP_VERSION = '5.13.6';
 
 const CHANGELOG = [
   {
