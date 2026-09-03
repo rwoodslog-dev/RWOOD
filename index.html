@@ -11598,6 +11598,11 @@ function _pickDepannageComposeMedia(){
         Choisir depuis la galerie
       </button>
 
+      ${_canImportFromDropbox() ? `<button class="action-sheet-item" data-act="dropbox">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
+        Importer depuis Dropbox
+      </button>` : ''}
+
       <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
     </div>`;
 
@@ -11613,11 +11618,17 @@ function _pickDepannageComposeMedia(){
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
     close(); _pickDepannageComposeMediaFile({ accept: 'image/*', multiple: true });
   };
+  const _dbxBtn3 = sheet.querySelector('[data-act="dropbox"]');
+  if(_dbxBtn3) _dbxBtn3.onclick = async () => {
+    close();
+    const files = await pickFromDropbox();
+    if(files.length) await _processComposeMediaFiles(files, 'media');
+  };
   sheet.querySelector('[data-act="cancel"]').onclick = close;
 
   document.body.appendChild(sheet);
 }
-function _pickDepannageComposeMediaFile({ accept, capture, multiple }){
+function _pickDepannageComposeMediaFile({ accept, capture, multiple, target }){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = accept;
@@ -11633,25 +11644,21 @@ function _pickDepannageComposeMediaFile({ accept, capture, multiple }){
     let done = 0, failed = 0, heicSkipped = 0;
     for(const file of files){
       try{
-        // Utilise le siteId réellement sélectionné dans le formulaire s'il y en
-        // a un (le stockage semble exiger un chantier existant pour autoriser
-        // la lecture publique) ; à défaut, se rabat sur le premier chantier
-        // connu pour rester dans un chemin toujours accessible.
         const siteSel = document.getElementById('alerteDepannageSiteSelect');
         const chosenSiteId = (siteSel && siteSel.value && siteSel.value !== '__libre__') ? siteSel.value : null;
         const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
         const isImage = (file.type||'').startsWith('image/');
-        // Conversion des photos en JPEG avant upload : garantit que le
-        // navigateur (Android Chrome) pourra afficher l'aperçu inline. Un HEIC
-        // brut ne s'affiche pas dans un <img> sur Samsung → on le convertit.
         let uploadFile = file, isHeic = /heic|heif/i.test(file.type||'') || /\.(heic|heif)$/i.test(file.name||'');
         if(isImage){
           const jpeg = await _photoToJpegFile(file);
           if(jpeg){ uploadFile = jpeg; isHeic = false; }
-          else if(isHeic){ heicSkipped++; failed++; continue; } // HEIC non convertible → aperçu impossible, on n'ajoute pas une vignette cassée
+          else if(isHeic){ heicSkipped++; failed++; continue; }
         }
         const url = await uploadFileToSupabase(uploadFile, chosenSiteId || fallbackSiteId);
-        _depannageComposeMedia.push({ url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
+        const entry = { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() };
+        // Range dans la boîte à clés ou dans les médias généraux selon la cible.
+        if(target === 'keybox') _depannageKeyboxMedia.push(entry);
+        else _depannageComposeMedia.push(entry);
         done++;
       }catch(e){ failed++; }
     }
@@ -11660,13 +11667,93 @@ function _pickDepannageComposeMediaFile({ accept, capture, multiple }){
     } else {
       showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} média(s) ajouté(s)`);
     }
-    _renderDepannageComposeMedia();
+    if(target === 'keybox') _renderDepannageKeyboxMedia();
+    else _renderDepannageComposeMedia();
   };
   input.click();
 }
 function _removeDepannageComposeMedia(idx){
   _depannageComposeMedia.splice(idx, 1);
   _renderDepannageComposeMedia();
+}
+
+/* ── Boîte à clés (dépannage) : photo(s) séparée(s) des médias généraux ── */
+let _depannageKeyboxMedia = [];
+function _pickDepannageKeyboxMedia(){
+  const ex = document.getElementById('mediaFabSheet');
+  if(ex) ex.remove();
+  const sheet = document.createElement('div');
+  sheet.id = 'mediaFabSheet';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  sheet.innerHTML = `
+    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Photo de la boîte à clés</div>
+      <button class="action-sheet-item" data-act="photo">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></span>
+        Prendre une photo
+      </button>
+      <button class="action-sheet-item" data-act="gallery">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-7 7"/></svg></span>
+        Choisir depuis la galerie
+      </button>
+      ${_canImportFromDropbox() ? `<button class="action-sheet-item" data-act="dropbox">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
+        Importer depuis Dropbox
+      </button>` : ''}
+      <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
+    </div>`;
+  const close = () => sheet.remove();
+  sheet.onclick = e => { if(e.target === sheet) close(); };
+  sheet.querySelector('[data-act="photo"]').onclick = () => { close(); _pickDepannageComposeMediaFile({ accept: 'image/*', capture: 'environment', target: 'keybox' }); };
+  sheet.querySelector('[data-act="gallery"]').onclick = () => { close(); _pickDepannageComposeMediaFile({ accept: 'image/*', multiple: true, target: 'keybox' }); };
+  const _dbxBtn4 = sheet.querySelector('[data-act="dropbox"]');
+  if(_dbxBtn4) _dbxBtn4.onclick = async () => {
+    close();
+    const files = await pickFromDropbox({ imagesOnly: true });
+    if(files.length) await _processComposeMediaFiles(files, 'keybox');
+  };
+  sheet.querySelector('[data-act="cancel"]').onclick = close;
+  document.body.appendChild(sheet);
+}
+
+/* Traite des fichiers Dropbox pour le formulaire de composition dépannage :
+   upload Supabase (avec conversion HEIC) puis ajout dans médias ou boîte à
+   clés selon `target`. */
+async function _processComposeMediaFiles(files, target){
+  if(!files || !files.length) return;
+  showToast('⏳ Envoi en cours…');
+  let done = 0, failed = 0;
+  for(const file of files){
+    try{
+      const siteSel = document.getElementById('alerteDepannageSiteSelect');
+      const chosenSiteId = (siteSel && siteSel.value && siteSel.value !== '__libre__') ? siteSel.value : null;
+      const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
+      const isImage = (file.type||'').startsWith('image/');
+      let uploadFile = file;
+      if(isImage){ const jpeg = await _photoToJpegFile(file); if(jpeg) uploadFile = jpeg; }
+      const url = await uploadFileToSupabase(uploadFile, chosenSiteId || fallbackSiteId);
+      const entry = { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() };
+      if(target === 'keybox') _depannageKeyboxMedia.push(entry);
+      else _depannageComposeMedia.push(entry);
+      done++;
+    }catch(e){ failed++; }
+  }
+  showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} média(s) importé(s)`);
+  if(target === 'keybox') _renderDepannageKeyboxMedia();
+  else _renderDepannageComposeMedia();
+}
+function _removeDepannageKeyboxMedia(idx){
+  _depannageKeyboxMedia.splice(idx, 1);
+  _renderDepannageKeyboxMedia();
+}
+function _renderDepannageKeyboxMedia(){
+  const grid = document.getElementById('alerteDepannageKeyboxGrid');
+  if(!grid) return;
+  grid.innerHTML = _depannageKeyboxMedia.map((m, i) => `
+    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);border:1px solid var(--line);">
+      <img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('div'),{innerHTML:'<img src=\\'icons/fichiers.png\\' style=\\'width:24px;height:24px;object-fit:contain;\\'>',style:'display:flex;align-items:center;justify-content:center;width:100%;height:100%;'}))">
+      <button type="button" onclick="_removeDepannageKeyboxMedia(${i})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,0.7);color:#fff;border:none;font-size:13px;line-height:1;cursor:pointer;padding:0;">×</button>
+    </div>`).join('');
 }
 /* Charge à la demande la bibliothèque heic2any (décodage HEIC → JPEG/PNG).
    Android Chrome ne sait PAS décoder le HEIC nativement (<img> échoue), donc
@@ -11844,7 +11931,13 @@ function openAlerteComposeGroup(){
           <button type="button" class="btn btn-outline btn-block" onclick="_pickDepannageComposeMedia()"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Ajouter un média</button>
         </div>
         <div class="field" style="margin-bottom:10px;">
-          <label>Date</label>
+          <label><img src="icons/boitecles.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Boîte à clés</label>
+          <input type="text" id="alerteDepannageKeybox" placeholder="Code / infos boîte à clés">
+          <div id="alerteDepannageKeyboxGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0;"></div>
+          <button type="button" class="btn btn-outline btn-block" onclick="_pickDepannageKeyboxMedia()"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Ajouter une photo de la boîte à clés</button>
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Date d'intervention</label>
           <input type="date" id="alerteDepannageDate">
         </div>
         <div class="field" style="margin-bottom:10px;">
@@ -11869,6 +11962,7 @@ function openAlerteComposeGroup(){
   _alerteComposeType = isChefOnly ? 'depannage' : 'info';
   _depannageTools = [];
   _depannageComposeMedia = [];
+  _depannageKeyboxMedia = [];
 
   document.getElementById('alerteComposeClose').addEventListener('click', () => div.remove());
 
@@ -11900,6 +11994,11 @@ function openAlerteComposeGroup(){
     if(dateEl) dateEl.value = src.depannageDate || '';
     _depannageTools = (src.depannageTools || []).slice();
     _renderDepannageTools();
+    // Boîte à clés (texte + photos) restaurée lors d'un renvoi.
+    const keyboxEl = document.getElementById('alerteDepannageKeybox');
+    if(keyboxEl) keyboxEl.value = src.depannageKeybox || '';
+    _depannageKeyboxMedia = (src.depannageKeyboxMedia || []).slice();
+    _renderDepannageKeyboxMedia();
     const textarea = document.getElementById('alerteComposeText');
     if(textarea) textarea.value = (src.text || '').replace(/^.*? : /,'');
   }
@@ -11922,6 +12021,12 @@ function _setAlerteComposeType(type){
   if(depannageFields) depannageFields.style.display = (type === 'depannage') ? 'block' : 'none';
   const textLabel = document.getElementById('alerteTextLabel');
   if(textLabel) textLabel.textContent = (type === 'depannage') ? 'Notes (instructions détaillées)' : 'Message';
+  // Modèles rapides : masqués pour le dépannage (formulaire structuré suffisant).
+  const tplTitle = document.getElementById('alerteTemplateTitle');
+  const tplChips = document.getElementById('alerteTemplateChips');
+  const showTpl = (type !== 'depannage');
+  if(tplTitle) tplTitle.style.display = showTpl ? '' : 'none';
+  if(tplChips) tplChips.style.display = showTpl ? '' : 'none';
   if(type === 'depannage') _renderDepannageTools();
   _renderAlerteTemplateChips(type);
 }
@@ -12017,13 +12122,16 @@ async function sendAlerteToMembers(authIds, names){
     }
     if(!siteName){ showToast('Indique le nom du chantier ou du client'); return; }
 
+    const keyboxEl = document.getElementById('alerteDepannageKeybox');
     depannageData = {
       siteName,
       siteId: depSiteId,
       address: addressEl ? addressEl.value.trim() : '',
       date: dateEl ? dateEl.value : '',
       tools: _depannageTools.slice(),
-      media: _depannageComposeMedia.slice() // photos/fichiers ajoutés par l'expéditeur avant l'envoi
+      media: _depannageComposeMedia.slice(), // photos/fichiers ajoutés par l'expéditeur avant l'envoi
+      keybox: keyboxEl ? keyboxEl.value.trim() : '',      // code / infos boîte à clés
+      keyboxMedia: _depannageKeyboxMedia.slice()          // photo(s) de la boîte à clés
     };
   }
 
@@ -13147,6 +13255,77 @@ async function dropboxDiagnostic(){
   }catch(e){ add('   ❌ Erreur réseau upload :\n   ' + e.message + '\n   (blocage CORS ou réseau)'); }
 }
 /* ═══ MODULE — DropboxBackup  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — DropboxChooser (import de fichiers DEPUIS le Dropbox de
+   l'utilisateur). Différent du backup : ici l'utilisateur pioche dans SON
+   propre Dropbox via la fenêtre officielle Dropbox (aucun accès à tout son
+   Dropbox, il ne partage que ce qu'il choisit). Utilise l'App key (pas de
+   token). Nécessite d'autoriser le domaine dans les réglages de l'app Dropbox
+   (section "Chooser/Saver domains").
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Charge le script Dropbox Chooser à la demande (une seule fois). */
+let _dropboxChooserLoading = null;
+function _ensureDropboxChooser(){
+  if(window.Dropbox && window.Dropbox.choose) return Promise.resolve(true);
+  if(_dropboxChooserLoading) return _dropboxChooserLoading;
+  _dropboxChooserLoading = new Promise((resolve) => {
+    if(!navigator.onLine){ resolve(false); return; }
+    if(!DROPBOX_APP_KEY){ resolve(false); return; }
+    const s = document.createElement('script');
+    s.src = 'https://www.dropbox.com/static/api/2/dropins.js';
+    s.id = 'dropboxjs';
+    s.setAttribute('data-app-key', DROPBOX_APP_KEY);
+    s.onload  = () => resolve(!!(window.Dropbox && window.Dropbox.choose));
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  });
+  return _dropboxChooserLoading;
+}
+
+/* Ouvre le Chooser Dropbox. Renvoie une promesse avec la liste des fichiers
+   choisis, chacun téléchargé en objet File prêt à uploader. `imagesOnly` limite
+   aux images. Résout [] si l'utilisateur annule. */
+async function pickFromDropbox({ imagesOnly } = {}){
+  const ok = await _ensureDropboxChooser();
+  if(!ok){
+    if(typeof showToast === 'function') showToast('❌ Dropbox indisponible (vérifie la connexion)');
+    return [];
+  }
+  const links = await new Promise((resolve) => {
+    window.Dropbox.choose({
+      success: (files) => resolve(files || []),
+      cancel: () => resolve([]),
+      linkType: 'direct',           // lien direct téléchargeable
+      multiselect: true,
+      extensions: imagesOnly ? ['images'] : undefined
+    });
+  });
+  if(!links.length) return [];
+
+  // Télécharge chaque fichier choisi et le transforme en File.
+  const out = [];
+  for(const link of links){
+    try{
+      const resp = await fetch(link.link);
+      if(!resp.ok) continue;
+      const blob = await resp.blob();
+      out.push(new File([blob], link.name || ('dropbox_' + uid()), { type: blob.type || 'application/octet-stream' }));
+    }catch(e){ /* on ignore ce fichier */ }
+  }
+  return out;
+}
+/* ═══ MODULE — DropboxChooser  ·  fin ═══ */
+
+/* L'import depuis Dropbox n'est proposé qu'aux rôles susceptibles d'avoir un
+   accès Dropbox pertinent : conducteur de travaux, comptable, patron, et le
+   développeur. Masqué pour les ouvriers/chefs (évite la confusion d'un écran
+   de connexion Dropbox pour ceux qui n'en ont pas). */
+function _canImportFromDropbox(){
+  const role = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  return role === 'conducteur' || role === 'comptable' || role === 'patron' || window._devRoleUnlocked === true;
+}
 
 /* Génère une miniature compressée (max 480px, JPEG qualité 70%) à partir
    d'un fichier image, et l'upload à part de l'original — pour que la
@@ -14347,6 +14526,11 @@ function openMediaFabSheet(siteId){
         Choisir depuis la galerie
       </button>
 
+      ${_canImportFromDropbox() ? `<button class="action-sheet-item" data-act="dropbox">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
+        Importer depuis Dropbox
+      </button>` : ''}
+
       <button class="action-sheet-item" data-act="zinc">
         <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20L13 4h2l6 16z"/><path d="M9 20l4-9"/></svg></span>
         Ajouter un pliage zinc
@@ -14366,6 +14550,21 @@ function openMediaFabSheet(siteId){
   };
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
     close(); _mediaFabPickFile(siteId, { accept: 'image/*', multiple: true });
+  };
+  const _dbxBtn1 = sheet.querySelector('[data-act="dropbox"]');
+  if(_dbxBtn1) _dbxBtn1.onclick = async () => {
+    close();
+    const files = await pickFromDropbox();
+    if(!files.length) return;
+    if(files.length === 1){ await addSharedMediaToSite(siteId, files[0]); }
+    else {
+      _mediaUploadShowProgress(0, files.length);
+      let done=0, failed=0;
+      for(const f of files){ try{ await addSharedMediaToSite(siteId, f, {silent:true}); }catch(e){ failed++; } done++; _mediaUploadShowProgress(done, files.length); }
+      _mediaUploadHideProgress();
+      showToast(failed ? `${done-failed}/${files.length} importées (${failed} échec)` : `✅ ${done} fichiers importés`);
+    }
+    if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId);
   };
   sheet.querySelector('[data-act="zinc"]').onclick = () => {
     close(); createFreeformZincProfileFromDetail();
@@ -14407,6 +14606,11 @@ function openMediaFabSheetForAlert(alertId, fromHistory){
         Choisir depuis la galerie
       </button>
 
+      ${_canImportFromDropbox() ? `<button class="action-sheet-item" data-act="dropbox">
+        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
+        Importer depuis Dropbox
+      </button>` : ''}
+
       <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
     </div>`;
 
@@ -14421,6 +14625,12 @@ function openMediaFabSheetForAlert(alertId, fromHistory){
   };
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
     close(); _mediaFabPickFileForAlert(alertId, { accept: 'image/*', multiple: true }, fromHistory);
+  };
+  const _dbxBtn2 = sheet.querySelector('[data-act="dropbox"]');
+  if(_dbxBtn2) _dbxBtn2.onclick = async () => {
+    close();
+    const files = await pickFromDropbox();
+    if(files.length) await _processAlertMediaFiles(alertId, files, fromHistory);
   };
   sheet.querySelector('[data-act="cancel"]').onclick = close;
 
@@ -14439,37 +14649,40 @@ async function _mediaFabPickFileForAlert(alertId, { accept, capture, multiple },
     const files = Array.from(input.files || []);
     input.remove();
     if(!files.length) return;
-    showToast('⏳ Envoi en cours…');
-    let done = 0, failed = 0, heicSkipped = 0;
-    for(const file of files){
-      try{
-        // Utilise le siteId réel de l'alerte dépannage s'il existe (chantier
-        // sélectionné à l'envoi), sinon le premier chantier connu — même
-        // logique que _pickDepannageComposeMediaFile (voir son commentaire).
-        const src = (_myAlertsCache||[]).find(x => x.id === alertId) || (_depannageHistoryCache||[]).find(x => x.id === alertId);
-        const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
-        const isImage = (file.type||'').startsWith('image/');
-        // Conversion JPEG (aperçu Android) + détection HEIC — cf. compose.
-        let uploadFile = file, isHeic = /heic|heif/i.test(file.type||'') || /\.(heic|heif)$/i.test(file.name||'');
-        if(isImage){
-          const jpeg = await _photoToJpegFile(file);
-          if(jpeg){ uploadFile = jpeg; isHeic = false; }
-          else if(isHeic){ heicSkipped++; failed++; continue; }
-        }
-        const url = await uploadFileToSupabase(uploadFile, (src && src.depannageSiteId) || fallbackSiteId);
-        await _addDepannageMedia(alertId, { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
-        done++;
-      }catch(e){ failed++; }
-    }
-    if(heicSkipped){
-      showToast(`⚠️ ${heicSkipped} photo(s) HEIC non prise(s) en charge — passe l'appareil photo en JPEG`);
-    } else {
-      showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
-    }
-    if(fromHistory && typeof renderDepannageHistory === 'function') await renderDepannageHistory(); // resynchronise le cache historique
-    openDepannageDetail(alertId, fromHistory); // re-render la fiche avec les nouveaux médias
+    await _processAlertMediaFiles(alertId, files, fromHistory);
   };
   input.click();
+}
+
+/* Traite une liste de fichiers (input local OU Dropbox) pour une alerte
+   dépannage : conversion HEIC, upload Supabase, ajout à l'alerte. */
+async function _processAlertMediaFiles(alertId, files, fromHistory){
+  if(!files || !files.length) return;
+  showToast('⏳ Envoi en cours…');
+  let done = 0, failed = 0, heicSkipped = 0;
+  for(const file of files){
+    try{
+      const src = (_myAlertsCache||[]).find(x => x.id === alertId) || (_depannageHistoryCache||[]).find(x => x.id === alertId);
+      const fallbackSiteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
+      const isImage = (file.type||'').startsWith('image/');
+      let uploadFile = file, isHeic = /heic|heif/i.test(file.type||'') || /\.(heic|heif)$/i.test(file.name||'');
+      if(isImage){
+        const jpeg = await _photoToJpegFile(file);
+        if(jpeg){ uploadFile = jpeg; isHeic = false; }
+        else if(isHeic){ heicSkipped++; failed++; continue; }
+      }
+      const url = await uploadFileToSupabase(uploadFile, (src && src.depannageSiteId) || fallbackSiteId);
+      await _addDepannageMedia(alertId, { url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
+      done++;
+    }catch(e){ failed++; }
+  }
+  if(heicSkipped){
+    showToast(`⚠️ ${heicSkipped} photo(s) HEIC non prise(s) en charge — passe l'appareil photo en JPEG`);
+  } else {
+    showToast(failed ? `${done}/${files.length} envoyé(s) (${failed} échec)` : `✅ ${done} média(s) ajouté(s)`);
+  }
+  if(fromHistory && typeof renderDepannageHistory === 'function') await renderDepannageHistory();
+  openDepannageDetail(alertId, fromHistory);
 }
 
 /* Ajoute un média à l'alerte dépannage (persisté côté serveur, comme les
@@ -28518,7 +28731,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.14.6';
+const APP_VERSION = '5.16.1';
 
 const CHANGELOG = [
   {
@@ -34935,6 +35148,8 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       depannageAddress: (depannageData && depannageData.address) || null,
       depannageDate: (depannageData && depannageData.date) || null,
       depannageTools: (depannageData && depannageData.tools) || null,
+      depannageKeybox: (depannageData && depannageData.keybox) || null,          // code / infos boîte à clés
+      depannageKeyboxMedia: (depannageData && depannageData.keyboxMedia) || null, // photo(s) boîte à clés
       depannageNotes: (depannageData && depannageData.notes) || null, // vraies notes tapées par l'expéditeur
       depannageMedia: _depannageMediaTagged, // médias de l'expéditeur (fusionnés avec ceux du destinataire via _addDepannageMedia)
       senderName: _senderName,
@@ -37611,6 +37826,19 @@ function openDepannageDetail(alertId, fromHistory){
 
       <div class="section-title" style="margin-top:0;">📝 Notes</div>
       <div class="card" style="margin-bottom:14px;font-size:14px;line-height:1.5;">${escapeHtml(a.depannageNotes != null ? a.depannageNotes : (a.text||'').replace(/^.*? : /,''))}</div>
+
+      ${(a.depannageKeybox || (a.depannageKeyboxMedia && a.depannageKeyboxMedia.length)) ? `
+      <div class="section-title"><img src="icons/boitecles.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Boîte à clés</div>
+      <div class="card" style="margin-bottom:14px;">
+        ${a.depannageKeybox ? `<div style="font-size:15px;font-weight:700;margin-bottom:${(a.depannageKeyboxMedia&&a.depannageKeyboxMedia.length)?'10px':'0'};">${escapeHtml(a.depannageKeybox)}</div>` : ''}
+        ${(a.depannageKeyboxMedia && a.depannageKeyboxMedia.length) ? `
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">
+          ${a.depannageKeyboxMedia.map(m => `
+            <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
+              <img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;cursor:pointer;" onclick="window.open('${escapeHtml(m.url)}','_blank')" onerror="this.onerror=null;var u='${escapeHtml(m.url)}';this.replaceWith(Object.assign(document.createElement('div'),{innerHTML:'<img src=\\'icons/fichiers.png\\' style=\\'width:28px;height:28px;object-fit:contain;\\'>',style:'display:flex;align-items:center;justify-content:center;width:100%;height:100%;cursor:pointer;',onclick:function(){window.open(u,'_blank')}}))">
+            </div>`).join('')}
+        </div>` : ''}
+      </div>` : ''}
 
       <div class="section-title">🔧 Quincaillerie à prendre</div>
       <div id="depannageToolsChecklist" style="margin-bottom:14px;">
