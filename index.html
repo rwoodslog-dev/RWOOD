@@ -7841,6 +7841,23 @@ async function prepareDataForExport(src){
 const SUPA_URL = 'https://espiotysnvxgjxrzkfta.supabase.co';
 const SUPA_KEY = 'sb_publishable_Q8V0-K4HERye-JKhcbjm1Q_fyEsBxMu';
 
+/* ═══════════════════════════════════════════════════════════════════
+   CONFIG DROPBOX (sauvegarde auto des médias vers le Dropbox entreprise)
+   À REMPLIR quand tu auras créé l'app sur https://developers.dropbox.com :
+   - DROPBOX_APP_KEY     : "App key" de ton app Dropbox
+   - DROPBOX_APP_SECRET  : "App secret" de ton app Dropbox
+   - DROPBOX_REFRESH_TOKEN : jeton longue durée (généré une fois, voir guide)
+   Tant que ces 3 valeurs sont vides, la sauvegarde Dropbox est INACTIVE :
+   RWOOD fonctionne exactement comme avant (Supabase seul). Aucun risque.
+   ═══════════════════════════════════════════════════════════════════ */
+const DROPBOX_APP_KEY      = 'c8u65s6ry36391h';
+const DROPBOX_APP_SECRET   = 'vekeuiqqnmmfj2t';
+const DROPBOX_REFRESH_TOKEN = 'dF5kj2JtnMMAAAAAAAAAAUbT1sz5hDYTdtRfNmUQf6RQ5H5I9beFTcz5HocKyQIw';
+/* Dossier racine. En mode "App folder" (dossier applicatif isolé), Dropbox
+   place déjà tout dans Applications/RWOOD/ : on écrit donc à la racine de ce
+   dossier (chaîne vide), rangé ensuite par chantier. */
+const DROPBOX_ROOT_FOLDER  = '';
+
 
 // Indicateur visuel de sync dans le header
 let syncIndicatorEl = null;
@@ -9627,21 +9644,53 @@ async function galerieExportSelection(){
     + (media.name || ('photo_'+(i+1)))
     + ((media.name && media.name.includes('.')) ? '' : '.jpg');
 
-  // Chemin optimal : File System Access API (Chrome desktop) → 1 seul dossier
+  /* Récupère un fichier exportable pour un média : télécharge le blob et, si
+     c'est du HEIC, le convertit en JPEG pour qu'il soit lisible partout. */
+  async function _fetchExportable(site, media, i){
+    const resp = await fetch(media.url);
+    let blob = await resp.blob();
+    let name = _fname(site, media, i);
+    const looksHeic = /heic|heif/i.test(blob.type) || /\.(heic|heif)$/i.test(media.name||'') || /\.(heic|heif)$/i.test(media.url||'');
+    if(looksHeic){
+      const jpeg = await _heicToJpegBlob(blob, 0.9);
+      if(jpeg){ blob = jpeg; name = name.replace(/\.(heic|heif)$/i, '.jpg'); if(!/\.jpe?g$/i.test(name)) name += '.jpg'; }
+    }
+    return new File([blob], name, { type: blob.type || 'image/jpeg' });
+  }
+
+  // ── MOBILE (et navigateurs compatibles) : menu de partage natif ──
+  // Permet d'envoyer vers Dropbox, mail, galerie, WhatsApp… en un geste.
+  const canShareFiles = navigator.canShare && navigator.share;
+  if(canShareFiles){
+    showToast(`Préparation de ${sel.length} photo${sel.length>1?'s':''}…`);
+    const files = [];
+    for(let i=0;i<sel.length;i++){
+      try{ files.push(await _fetchExportable(sel[i].site, sel[i].media, i)); }catch(e){ /* on continue */ }
+    }
+    if(files.length && navigator.canShare({ files })){
+      try{
+        await navigator.share({ files, title: 'Photos RWOOD' });
+        return; // partagé avec succès
+      }catch(e){
+        if(e && e.name === 'AbortError') return; // annulé par l'utilisateur
+        // sinon on retombe sur les fallbacks ci-dessous
+      }
+    }
+  }
+
+  // ── PC : File System Access API → enregistrement dans un dossier choisi ──
   if(window.showDirectoryPicker){
     let dir;
     try{ dir = await window.showDirectoryPicker(); }
-    catch(e){ return; } // annulé par l'utilisateur
+    catch(e){ return; } // annulé
     showToast(`Export de ${sel.length} photo${sel.length>1?'s':''}…`);
     let ok = 0;
     for(let i=0;i<sel.length;i++){
-      const { site, media } = sel[i];
       try{
-        const resp = await fetch(media.url);
-        const blob = await resp.blob();
-        const fh = await dir.getFileHandle(_fname(site, media, i), { create:true });
+        const f = await _fetchExportable(sel[i].site, sel[i].media, i);
+        const fh = await dir.getFileHandle(f.name, { create:true });
         const ws = await fh.createWritable();
-        await ws.write(blob); await ws.close();
+        await ws.write(f); await ws.close();
         ok++;
       }catch(e){ /* on continue */ }
     }
@@ -9649,22 +9698,22 @@ async function galerieExportSelection(){
     return;
   }
 
-  // Fallback : téléchargement séquentiel (mobile / navigateurs sans l'API)
+  // ── Fallback ultime : téléchargement séquentiel ──
   showToast(`Téléchargement de ${sel.length} photo${sel.length>1?'s':''}…`);
+  let ok = 0;
   for(let i=0;i<sel.length;i++){
-    const { site, media } = sel[i];
     try{
-      const resp = await fetch(media.url);
-      const blob = await resp.blob();
+      const f = await _fetchExportable(sel[i].site, sel[i].media, i);
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = _fname(site, media, i);
+      a.href = URL.createObjectURL(f);
+      a.download = f.name;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(a.href);
+      ok++;
       await new Promise(r => setTimeout(r, 350));
     }catch(e){ /* on continue */ }
   }
-  showToast('✅ Téléchargement terminé');
+  showToast(ok ? '✅ Téléchargement terminé' : '❌ Export impossible');
 }
 
 /* Suppression (rôles autorisés). Retire des sharedMedia + resync. */
@@ -11605,12 +11654,66 @@ function _removeDepannageComposeMedia(idx){
   _depannageComposeMedia.splice(idx, 1);
   _renderDepannageComposeMedia();
 }
-/* Convertit un fichier image en File JPEG (via canvas) pour garantir un
-   aperçu inline affichable sur Android Chrome. Renvoie null si l'image n'est
-   pas décodable par le navigateur (cas typique du HEIC sur Samsung), pour que
-   l'appelant puisse avertir l'utilisateur au lieu d'ajouter une vignette
-   cassée. Redimensionne au passage (max 1600px) pour alléger l'upload. */
+/* Charge à la demande la bibliothèque heic2any (décodage HEIC → JPEG/PNG).
+   Android Chrome ne sait PAS décoder le HEIC nativement (<img> échoue), donc
+   pour les photos iPhone il faut cette lib. Chargée une seule fois, seulement
+   quand un HEIC doit être converti (pas au démarrage). Renvoie true si prête. */
+let _heicLibLoading = null;
+function _ensureHeicLib(){
+  if(window.heic2any) return Promise.resolve(true);
+  if(_heicLibLoading) return _heicLibLoading;
+  _heicLibLoading = new Promise((resolve) => {
+    if(!navigator.onLine){ resolve(false); return; } // besoin du réseau la 1re fois
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+    s.onload  = () => resolve(!!window.heic2any);
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  });
+  return _heicLibLoading;
+}
+
+/* Convertit un fichier/blob HEIC en Blob JPEG via heic2any. Renvoie null si
+   la lib n'est pas dispo ou si la conversion échoue. */
+async function _heicToJpegBlob(file, quality){
+  try{
+    const ok = await _ensureHeicLib();
+    if(!ok || !window.heic2any) return null;
+    const out = await window.heic2any({ blob: file, toType: 'image/jpeg', quality: quality || 0.85 });
+    return Array.isArray(out) ? out[0] : out;
+  }catch(e){ return null; }
+}
+
+/* Détecte un fichier HEIC/HEIF (par type MIME ou extension). */
+function _isHeicFile(file){
+  const t = (file && file.type || '').toLowerCase();
+  const n = (file && file.name || '').toLowerCase();
+  return /heic|heif/.test(t) || /\.(heic|heif)$/.test(n);
+}
+
+/* Convertit un fichier image en File JPEG (via canvas). Renvoie null si l'image
+   n'est pas décodable par le navigateur. Pour le HEIC (non décodable par
+   Android Chrome), bascule automatiquement sur heic2any. Redimensionne au
+   passage (max 1600px) pour alléger l'upload. */
 function _photoToJpegFile(file, maxDim, quality){
+  maxDim = maxDim || 1600; quality = quality || 0.82;
+  // HEIC : le canvas natif ne peut pas le décoder → conversion via heic2any,
+  // puis on repasse dans le pipeline canvas pour le redimensionnement.
+  if(_isHeicFile(file)){
+    return _heicToJpegBlob(file, quality).then((jpegBlob) => {
+      if(!jpegBlob) return null;
+      const base = (file.name||'photo').replace(/\.[^.]+$/, '');
+      const jpegFile = new File([jpegBlob], base + '.jpg', { type: 'image/jpeg' });
+      // Re-passe dans le pipeline standard (redimensionnement) — sans risque
+      // de récursion car le fichier est maintenant du JPEG.
+      return _photoToJpegFileCanvas(jpegFile, maxDim, quality);
+    }).catch(() => null);
+  }
+  return _photoToJpegFileCanvas(file, maxDim, quality);
+}
+
+/* Pipeline canvas pur (pour formats déjà décodables : JPEG/PNG/WebP). */
+function _photoToJpegFileCanvas(file, maxDim, quality){
   maxDim = maxDim || 1600; quality = quality || 0.82;
   return new Promise((resolve) => {
     try{
@@ -11632,7 +11735,7 @@ function _photoToJpegFile(file, maxDim, quality){
             }, 'image/jpeg', quality);
           }catch(err){ resolve(null); }
         };
-        img.onerror = () => resolve(null); // non décodable (HEIC/HEIF sur Android)
+        img.onerror = () => resolve(null);
         img.src = e.target.result;
       };
       reader.onerror = () => resolve(null);
@@ -12677,8 +12780,245 @@ async function uploadFileToSupabase(file, siteId){
     throw new Error('Upload échoué (' + res.status + ') : ' + err);
   }
 
+  // Sauvegarde auto vers Dropbox (non bloquante) : copie du média dans le
+  // Dropbox de l'entreprise. Inactif tant que Dropbox n'est pas configuré.
+  if(typeof backupMediaToDropbox === 'function'){
+    backupMediaToDropbox(file, siteId);
+  }
+
   return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — DropboxBackup
+   Sauvegarde AUTOMATIQUE des médias (photos/documents) vers le Dropbox
+   de l'entreprise, EN PLUS de Supabase (qui reste la base/source de vérité).
+   - Sens unique : RWOOD → Dropbox (copie de sauvegarde, pas un miroir).
+   - Rangement : /RWOOD/<NomChantier>/<date>_<nom-fichier>.
+   - Hors-ligne : les fichiers non envoyés sont mis en file d'attente locale
+     (localStorage) et renvoyés au retour du réseau / à l'ouverture de l'app.
+   - INACTIF tant que les 3 constantes DROPBOX_* sont vides → aucun impact.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function _dropboxConfigured(){
+  return !!(DROPBOX_APP_KEY && DROPBOX_APP_SECRET && DROPBOX_REFRESH_TOKEN);
+}
+
+/* Access token court (≈4h) obtenu via le refresh token. Mis en cache mémoire
+   avec son expiration ; régénéré automatiquement quand il approche de la fin. */
+let _dropboxAccessToken = null;
+let _dropboxTokenExpiry = 0;
+async function _dropboxGetAccessToken(){
+  if(!_dropboxConfigured()) return null;
+  const now = Date.now();
+  if(_dropboxAccessToken && now < _dropboxTokenExpiry - 60000) return _dropboxAccessToken;
+  try{
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: DROPBOX_REFRESH_TOKEN,
+      client_id: DROPBOX_APP_KEY,
+      client_secret: DROPBOX_APP_SECRET
+    });
+    const res = await fetch('https://api.dropboxapi.com/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    if(!res.ok) return null;
+    const data = await res.json();
+    _dropboxAccessToken = data.access_token;
+    _dropboxTokenExpiry = now + ((data.expires_in || 14400) * 1000);
+    return _dropboxAccessToken;
+  }catch(e){ return null; }
+}
+
+/* Nettoie un nom pour un chemin Dropbox (retire les caractères interdits). */
+function _dropboxSafeName(s){
+  return String(s || '').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'Sans_nom';
+}
+
+/* Détermine le sous-dossier ('PHOTO' ou 'DOCUMENTS') d'après le fichier. */
+function _dropboxSubfolder(file){
+  const type = (file && file.type || '').toLowerCase();
+  const name = (file && file.name || '').toLowerCase();
+  const isImage = type.startsWith('image/') || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/.test(name);
+  return isImage ? 'PHOTO' : 'DOCUMENTS';
+}
+
+/* Construit le chemin Dropbox cible :
+   /<Chantier>/<PHOTO|DOCUMENTS>/<date>_<fichier>. */
+function _dropboxBuildPath(siteId, fileName, subfolder){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  const folder = _dropboxSafeName(site ? site.name : (siteId || 'Divers'));
+  const sub = _dropboxSafeName(subfolder || 'DOCUMENTS');
+  const d = new Date();
+  const datePrefix = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  const clean = _dropboxSafeName(fileName || ('media_' + uid()));
+  return `${DROPBOX_ROOT_FOLDER}/${folder}/${sub}/${datePrefix}_${clean}`;
+}
+
+/* Envoie réellement un blob vers Dropbox (upload simple, fichiers < 150 Mo).
+   Retourne true si l'upload a réussi. */
+async function _dropboxUploadBlob(blob, dropboxPath){
+  const token = await _dropboxGetAccessToken();
+  if(!token) return false;
+  try{
+    const res = await fetch('https://content.dropboxapi.com/2/files/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/octet-stream',
+        'Dropbox-API-Arg': JSON.stringify({
+          path: dropboxPath,
+          mode: 'add',
+          autorename: true,   // évite d'écraser si un fichier du même nom existe
+          mute: true
+        })
+      },
+      body: blob
+    });
+    return res.ok;
+  }catch(e){ return false; }
+}
+
+/* File d'attente hors-ligne : on stocke les fichiers non encore envoyés sous
+   forme de dataURL (base64) dans localStorage, indépendamment de `data` pour
+   ne pas alourdir la synchro Supabase. */
+const DROPBOX_QUEUE_KEY = 'rwood-dropbox-queue';
+function _dropboxLoadQueue(){
+  try{ return JSON.parse(localStorage.getItem(DROPBOX_QUEUE_KEY) || '[]'); }catch(e){ return []; }
+}
+function _dropboxSaveQueue(q){
+  try{ localStorage.setItem(DROPBOX_QUEUE_KEY, JSON.stringify(q)); }catch(e){ /* quota plein : on ignore */ }
+}
+function _dropboxEnqueue(dataUrl, dropboxPath){
+  const q = _dropboxLoadQueue();
+  // Limite de sécurité : ne pas laisser la file exploser (localStorage ~5 Mo).
+  if(q.length >= 50) q.shift();
+  q.push({ dataUrl, path: dropboxPath, ts: Date.now() });
+  _dropboxSaveQueue(q);
+}
+
+/* Convertit un dataURL en Blob. */
+function _dataUrlToBlob(dataUrl){
+  const [head, b64] = dataUrl.split(',');
+  const mime = (head.match(/data:([^;]+)/) || [,'application/octet-stream'])[1];
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+/* Tente de vider la file d'attente Dropbox (appelée au démarrage et au retour
+   du réseau). Envoie un par un ; garde ceux qui échouent pour plus tard. */
+let _dropboxFlushRunning = false;
+async function _dropboxFlushQueue(){
+  if(!_dropboxConfigured() || !navigator.onLine || _dropboxFlushRunning) return;
+  _dropboxFlushRunning = true;
+  try{
+    let q = _dropboxLoadQueue();
+    if(!q.length) return;
+    const remaining = [];
+    for(const item of q){
+      let ok = false;
+      try{ ok = await _dropboxUploadBlob(_dataUrlToBlob(item.dataUrl), item.path); }catch(e){ ok = false; }
+      if(!ok) remaining.push(item); // on retentera plus tard
+    }
+    _dropboxSaveQueue(remaining);
+  } finally {
+    _dropboxFlushRunning = false;
+  }
+}
+
+/* Point d'entrée : sauvegarde un fichier vers Dropbox (non bloquant).
+   Appelé après un upload Supabase réussi. Si Dropbox n'est pas configuré,
+   ne fait rien. Si hors-ligne ou échec, met en file d'attente. */
+async function backupMediaToDropbox(file, siteId){
+  if(!_dropboxConfigured() || !file) return;
+  try{
+    const dropboxPath = _dropboxBuildPath(siteId, file.name, _dropboxSubfolder(file));
+    // En ligne : tentative directe. Hors-ligne ou échec : file d'attente.
+    if(navigator.onLine){
+      const ok = await _dropboxUploadBlob(file, dropboxPath);
+      if(ok) return;
+    }
+    // Mise en file d'attente (lecture en dataURL pour persistance localStorage).
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = e => resolve(e.target.result);
+      r.onerror = () => reject(new Error('read'));
+      r.readAsDataURL(file);
+    });
+    _dropboxEnqueue(dataUrl, dropboxPath);
+  }catch(e){ /* silencieux : la sauvegarde Dropbox ne doit jamais bloquer l'app */ }
+}
+
+/* Relance la file au démarrage et au retour du réseau. */
+document.addEventListener('DOMContentLoaded', () => setTimeout(_dropboxFlushQueue, 4000));
+window.addEventListener('online', () => { setTimeout(_dropboxFlushQueue, 1500); });
+
+/* ── Envoi de TOUT l'existant vers Dropbox (bouton Dev) ──────────────
+   Parcourt tous les chantiers et tous leurs médias déjà uploadés (Supabase),
+   les télécharge et les recopie vers Dropbox, rangés /<Chantier>/<PHOTO|
+   DOCUMENTS>/. Convertit le HEIC en JPEG au passage. Idempotent grâce à
+   autorename côté Dropbox : relançable sans créer de doublons destructifs
+   (Dropbox ajoute un suffixe si le nom existe déjà). Affiche la progression. */
+let _dropboxBulkRunning = false;
+async function dropboxBackupAllExisting(){
+  if(!_dropboxConfigured()){ if(typeof showToast==='function') showToast('❌ Dropbox non configuré'); return; }
+  if(_dropboxBulkRunning){ if(typeof showToast==='function') showToast('⏳ Envoi déjà en cours…'); return; }
+  if(!navigator.onLine){ if(typeof showToast==='function') showToast('❌ Hors-ligne'); return; }
+  if(!confirm('Envoyer TOUTES les photos et documents déjà dans RWOOD vers Dropbox ?\n\nCela peut prendre plusieurs minutes selon le nombre de fichiers. Tu peux laisser l\'app ouverte.')) return;
+
+  _dropboxBulkRunning = true;
+  const statusEl = document.getElementById('dropboxBulkStatus');
+  const setStatus = (t) => { if(statusEl) statusEl.textContent = t; };
+
+  try{
+    // Rassembler tous les médias (chantier + média).
+    const items = [];
+    (data.sites || []).forEach(site => {
+      (site.sharedMedia || []).forEach(m => {
+        if(m && m.url) items.push({ siteId: site.id, media: m });
+      });
+    });
+
+    if(!items.length){ setStatus('Aucun média à envoyer.'); if(typeof showToast==='function') showToast('Aucun média trouvé'); _dropboxBulkRunning=false; return; }
+
+    let ok = 0, fail = 0;
+    for(let i=0;i<items.length;i++){
+      const { siteId, media } = items[i];
+      setStatus(`Envoi ${i+1}/${items.length}… (${ok} ok, ${fail} échec)`);
+      try{
+        const resp = await fetch(media.url);
+        if(!resp.ok){ fail++; continue; }
+        let blob = await resp.blob();
+        let fileName = media.name || ('media_' + (i+1));
+
+        // Type : image ou document, pour le sous-dossier + conversion HEIC.
+        const looksImage = (blob.type||'').startsWith('image/') || (media.type === 'photo')
+          || /\.(jpe?g|png|gif|webp|heic|heif|bmp|tiff?)$/i.test(fileName);
+        const looksHeic = /heic|heif/i.test(blob.type) || /\.(heic|heif)$/i.test(fileName) || /\.(heic|heif)$/i.test(media.url||'');
+        if(looksHeic){
+          const jpeg = await _heicToJpegBlob(blob, 0.9);
+          if(jpeg){ blob = jpeg; fileName = fileName.replace(/\.(heic|heif)$/i, '.jpg'); if(!/\.jpe?g$/i.test(fileName)) fileName += '.jpg'; }
+        }
+        const sub = looksImage ? 'PHOTO' : 'DOCUMENTS';
+        const path = _dropboxBuildPath(siteId, fileName, sub);
+        const sent = await _dropboxUploadBlob(blob, path);
+        if(sent) ok++; else fail++;
+      }catch(e){ fail++; }
+    }
+
+    setStatus(`✅ Terminé : ${ok} envoyé(s), ${fail} échec(s).`);
+    if(typeof showToast==='function') showToast(`✅ Dropbox : ${ok} envoyé(s), ${fail} échec(s)`);
+  }catch(e){
+    setStatus('❌ Erreur pendant l\'envoi.');
+  } finally {
+    _dropboxBulkRunning = false;
+  }
+}
+/* ═══ MODULE — DropboxBackup  ·  fin ═══ */
 
 /* Génère une miniature compressée (max 480px, JPEG qualité 70%) à partir
    d'un fichier image, et l'upload à part de l'original — pour que la
@@ -12752,6 +13092,16 @@ async function addSharedMediaToSite(siteId, file, opts){
 
   if(!silent) showToast('⬆️ Upload en cours…');
   try{
+    // Conversion HEIC/HEIF → JPEG AVANT upload : les photos iPhone en HEIC ne
+    // sont pas affichables sur Android ni exportables telles quelles. On les
+    // convertit pour qu'elles soient visibles et utilisables partout.
+    if(_isHeicFile(file)){
+      if(!silent) showToast('🔄 Conversion photo iPhone (HEIC)…');
+      const jpeg = await _photoToJpegFile(file, 3000, 0.9); // grande taille : on garde la qualité de l'original
+      if(jpeg){ file = jpeg; }
+      else if(!silent){ showToast('⚠️ Conversion HEIC impossible (vérifie la connexion)'); }
+    }
+
     const isPdf   = file.type === 'application/pdf' || file.name.endsWith('.pdf');
     const isImage = file.type.startsWith('image/');
 
@@ -28040,7 +28390,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.10.2';
+const APP_VERSION = '5.13.0';
 
 const CHANGELOG = [
   {
@@ -33963,6 +34313,12 @@ function _renderDevTabAlertTest(list){
     <div class="section-title" style="margin-top:20px;"><img src="icons/loupe.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Diagnostic : alerte à moi-même</div>
     <button class="btn btn-outline btn-block" onclick="_devDiagnoseSelfAlert()">Lancer le diagnostic</button>
     <div class="hint" id="devSelfAlertDiag" style="margin-top:8px;white-space:pre-wrap;font-family:monospace;font-size:11px;"></div>
+
+    <!-- Sauvegarde Dropbox (Dev) -->
+    <div class="section-title" style="margin-top:20px;"><img src="icons/import.png" alt="" style="width:16px;height:16px;object-fit:contain;vertical-align:-3px;"> Sauvegarde Dropbox</div>
+    <div class="hint" style="margin-bottom:10px;">Envoie toutes les photos et documents déjà présents dans RWOOD vers Dropbox, rangés par chantier (dossiers PHOTO / DOCUMENTS). Les nouveaux médias sont déjà sauvegardés automatiquement.</div>
+    <button class="btn btn-primary btn-block" onclick="dropboxBackupAllExisting()"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Envoyer tout l'existant vers Dropbox</button>
+    <div class="hint" id="dropboxBulkStatus" style="margin-top:8px;text-align:center;"></div>
 
     <!-- Gestion Historique Alertes (Dev) : backup + suppression DÉFINITIVE. -->
     <div class="section-title" style="margin-top:20px;">🛠️ Gestion Historique Alertes (Dev)</div>
