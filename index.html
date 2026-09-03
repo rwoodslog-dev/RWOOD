@@ -12859,6 +12859,16 @@ function _dropboxBuildPath(siteId, fileName, subfolder){
 
 /* Envoie réellement un blob vers Dropbox (upload simple, fichiers < 150 Mo).
    Retourne true si l'upload a réussi. */
+/* Encode l'en-tête Dropbox-API-Arg en ASCII pur : Dropbox exige que tout
+   caractère non-ASCII (accents é/è/à, etc. dans les noms de chantier) soit
+   échappé en \uXXXX, sinon l'en-tête HTTP est invalide et l'upload échoue
+   SILENCIEUSEMENT. C'était la cause des envois qui ne partaient pas. */
+function _dropboxApiArg(obj){
+  return JSON.stringify(obj).replace(/[\u007f-\uffff]/g, c =>
+    '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4)
+  );
+}
+
 async function _dropboxUploadBlob(blob, dropboxPath){
   const token = await _dropboxGetAccessToken();
   if(!token) return false;
@@ -12868,7 +12878,7 @@ async function _dropboxUploadBlob(blob, dropboxPath){
       headers: {
         'Authorization': 'Bearer ' + token,
         'Content-Type': 'application/octet-stream',
-        'Dropbox-API-Arg': JSON.stringify({
+        'Dropbox-API-Arg': _dropboxApiArg({
           path: dropboxPath,
           mode: 'add',
           autorename: true,   // évite d'écraser si un fichier du même nom existe
@@ -13017,6 +13027,62 @@ async function dropboxBackupAllExisting(){
   } finally {
     _dropboxBulkRunning = false;
   }
+}
+/* Diagnostic Dropbox : teste chaque étape et affiche le résultat précis, pour
+   comprendre pourquoi un envoi ne passe pas (config, token, permission, upload). */
+async function dropboxDiagnostic(){
+  const el = document.getElementById('dropboxBulkStatus');
+  const log = [];
+  const show = () => { if(el) el.textContent = log.join('\n'); };
+  const add = (t) => { log.push(t); show(); };
+
+  add('1) Config…');
+  if(!_dropboxConfigured()){ add('   ❌ Clés manquantes (APP_KEY/SECRET/REFRESH_TOKEN).'); return; }
+  add('   ✅ 3 identifiants présents.');
+
+  add('2) Connexion internet…');
+  if(!navigator.onLine){ add('   ❌ Appareil hors-ligne.'); return; }
+  add('   ✅ En ligne.');
+
+  add('3) Obtention du token d\'accès…');
+  let token = null;
+  try{
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: DROPBOX_REFRESH_TOKEN,
+      client_id: DROPBOX_APP_KEY,
+      client_secret: DROPBOX_APP_SECRET
+    });
+    const r = await fetch('https://api.dropboxapi.com/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    const txt = await r.text();
+    if(!r.ok){ add('   ❌ Échec token (HTTP ' + r.status + ') : ' + txt.slice(0,200)); return; }
+    try{ token = JSON.parse(txt).access_token; }catch(e){}
+    if(!token){ add('   ❌ Token absent de la réponse : ' + txt.slice(0,200)); return; }
+    add('   ✅ Token obtenu.');
+  }catch(e){ add('   ❌ Erreur réseau token : ' + e.message + '\n   (souvent un blocage CORS ou réseau)'); return; }
+
+  add('4) Envoi d\'un fichier test…');
+  try{
+    const testBlob = new Blob(['RWOOD test ' + new Date().toISOString()], { type: 'text/plain' });
+    const testPath = `${DROPBOX_ROOT_FOLDER}/_test/rwood_test.txt`;
+    const r = await fetch('https://content.dropboxapi.com/2/files/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/octet-stream',
+        'Dropbox-API-Arg': _dropboxApiArg({ path: testPath, mode: 'add', autorename: true, mute: true })
+      },
+      body: testBlob
+    });
+    const txt = await r.text();
+    if(!r.ok){ add('   ❌ Upload refusé (HTTP ' + r.status + ') : ' + txt.slice(0,250)); return; }
+    add('   ✅ Fichier test envoyé !');
+    add('\n🎉 Tout fonctionne. Regarde dans Dropbox :\n   Applications/RWOOD/_test/rwood_test.txt');
+  }catch(e){ add('   ❌ Erreur réseau upload : ' + e.message + '\n   (probable blocage CORS du navigateur)'); }
 }
 /* ═══ MODULE — DropboxBackup  ·  fin ═══ */
 
@@ -28390,7 +28456,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.13.0';
+const APP_VERSION = '5.13.1';
 
 const CHANGELOG = [
   {
@@ -34318,7 +34384,8 @@ function _renderDevTabAlertTest(list){
     <div class="section-title" style="margin-top:20px;"><img src="icons/import.png" alt="" style="width:16px;height:16px;object-fit:contain;vertical-align:-3px;"> Sauvegarde Dropbox</div>
     <div class="hint" style="margin-bottom:10px;">Envoie toutes les photos et documents déjà présents dans RWOOD vers Dropbox, rangés par chantier (dossiers PHOTO / DOCUMENTS). Les nouveaux médias sont déjà sauvegardés automatiquement.</div>
     <button class="btn btn-primary btn-block" onclick="dropboxBackupAllExisting()"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Envoyer tout l'existant vers Dropbox</button>
-    <div class="hint" id="dropboxBulkStatus" style="margin-top:8px;text-align:center;"></div>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="dropboxDiagnostic()">🔍 Tester la connexion Dropbox</button>
+    <div class="hint" id="dropboxBulkStatus" style="margin-top:8px;text-align:center;white-space:pre-wrap;font-family:monospace;font-size:11px;"></div>
 
     <!-- Gestion Historique Alertes (Dev) : backup + suppression DÉFINITIVE. -->
     <div class="section-title" style="margin-top:20px;">🛠️ Gestion Historique Alertes (Dev)</div>
