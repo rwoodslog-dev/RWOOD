@@ -29026,7 +29026,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.4';
+const APP_VERSION = '5.21.5';
 
 const CHANGELOG = [
   {
@@ -36863,6 +36863,19 @@ async function pushSharedSite(site){
     const deletedIds = await _fetchDeletedSiteIds();
     if(deletedIds.includes(site.id)) return; // suppression définitive — on ne repousse pas
     const shared = await _fetchSharedSites();
+    const existing = shared.find(s => s.id === site.id);
+    // Union des médias/documents avec la version déjà partagée (jamais
+    // d'écrasement, même logique que syncAllSitesPushAll) : ce chemin de
+    // push plus direct ne doit pas non plus faire disparaître un document
+    // ajouté par un autre appareil entre-temps.
+    const _mergeMediaLocal = (a, b) => {
+      const out = [], seen = new Set();
+      const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+      [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
+        const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+      });
+      return out;
+    };
     const snapshot = {
       id:                  site.id,
       name:                site.name,
@@ -36887,8 +36900,14 @@ async function pushSharedSite(site){
       assignedChefAuthId:  site.assignedChefAuthId || '',
       assignedAt:          site.assignedAt         || null,
       teamName:            site.teamName           || '',
-      sharedMedia:         Array.isArray(site.sharedMedia) ? site.sharedMedia : [],
-      assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : []
+      sharedMedia:         _mergeMediaLocal(site.sharedMedia, existing && existing.sharedMedia),
+      documents:           _mergeMediaLocal(site.documents, existing && existing.documents),
+      assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
+      tileId:              site.tileId || null,
+      coverPhotoUrl:       site.coverPhotoUrl || null, // photo de référence du bandeau chantier actif
+      noteCategories:      (typeof _mergeNoteCategoriesForPush === 'function')
+        ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
+        : (site.noteCategories || [])
     };
     const idx = shared.findIndex(s => s.id === site.id);
     if(idx === -1) shared.push(snapshot); else shared[idx] = snapshot;
@@ -37126,7 +37145,7 @@ async function syncAllSitesPull(){
     const identityFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','trajetZone','teamName',
       'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
-      'assignedTeamName','lastSyncAt','ownerDeviceId','tileId'];
+      'assignedTeamName','lastSyncAt','ownerDeviceId','tileId','coverPhotoUrl'];
     // NB : 'sharedMedia' et 'documents' sont VOLONTAIREMENT exclus ci-dessus.
     // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMedia)
     // pour qu'un document/photo n'disparaisse jamais lors d'une synchro.
