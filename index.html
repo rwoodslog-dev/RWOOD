@@ -6642,8 +6642,13 @@
       <label>Description</label>
       <textarea id="taskText" placeholder="Ex : livraison charpente, RDV client, pose toiture..."></textarea>
     </div>
+    <div class="field" id="taskReminderField" style="display:none;">
+      <label>Rappel</label>
+      <div id="taskReminderStatus" class="hint" style="margin-bottom:8px;"></div>
+    </div>
     <div class="row-actions">
       <button class="btn btn-danger" id="taskDeleteBtn" style="display:none;" onclick="deleteTask()">Supprimer</button>
+      <button class="btn btn-outline" id="taskReminderBtn" style="display:none;" onclick="openTaskReminderPicker()">🔔 Être alerté</button>
       <button class="btn btn-outline" id="taskShareBtn" style="display:none;" onclick="shareTaskSMS()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg> SMS</button>
       <button class="btn btn-outline" id="taskQRBtn" style="display:none;" onclick="shareViaQR('agenda', editingTaskId)"><img src="icons/qr.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;display:inline-block;flex-shrink:0;"> QR</button>
       <button class="btn btn-primary" onclick="saveTask()">Enregistrer</button>
@@ -27873,6 +27878,17 @@ function openTaskModal(taskId){
     shareBtn.style.display = 'inline-flex';
     const qrBtn2 = document.getElementById('taskQRBtn');
     if(qrBtn2) qrBtn2.style.display = 'inline-flex';
+    const remBtn = document.getElementById('taskReminderBtn');
+    const remField = document.getElementById('taskReminderField');
+    const remStatus = document.getElementById('taskReminderStatus');
+    if(remBtn) remBtn.style.display = 'inline-flex';
+    if(remField) remField.style.display = t.reminderAt ? 'block' : 'none';
+    if(remStatus && t.reminderAt){
+      const rd = new Date(t.reminderAt);
+      const dLabel = rd.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric'});
+      const tLabel = rd.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+      remStatus.textContent = `🔔 Rappel programmé le ${dLabel} à ${tLabel}`;
+    } else if(remStatus) remStatus.textContent = '';
   } else {
     document.getElementById('taskModalTitle').textContent = 'Nouvelle tâche';
     document.getElementById('taskDate').value = agendaSelectedDate || dateKeyOf(new Date());
@@ -27882,10 +27898,165 @@ function openTaskModal(taskId){
     shareBtn.style.display = 'none';
     const qrBtn3 = document.getElementById('taskQRBtn');
     if(qrBtn3) qrBtn3.style.display = 'none';
+    // Le rappel nécessite une tâche déjà enregistrée (on a besoin de son id
+    // pour retrouver l'échéance) : masqué tant que la tâche n'existe pas.
+    const remBtn2 = document.getElementById('taskReminderBtn');
+    const remField2 = document.getElementById('taskReminderField');
+    if(remBtn2) remBtn2.style.display = 'none';
+    if(remField2) remField2.style.display = 'none';
   }
 
   openModal('task');
 }
+
+/* ── Rappel/alerte sur événement d'agenda ──────────────────────────────
+   task.reminderAt = ISO complet (date+heure) de déclenchement du rappel.
+   task.reminderNotified = true une fois le rappel affiché, pour ne jamais
+   le redéclencher. Vérifié périodiquement par _checkTaskReminders(). */
+function openTaskReminderPicker(){
+  if(!editingTaskId) return;
+  const t = data.tasks.find(x => x.id === editingTaskId);
+  if(!t){ showToast('Enregistre d\'abord la tâche'); return; }
+
+  const ex = document.getElementById('modal-taskReminder');
+  if(ex) ex.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-taskReminder';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🔔 Être alerté</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-taskReminder').remove()">✕</button>
+      </div>
+      <div class="hint" style="margin-bottom:14px;">Quand veux-tu recevoir l'alerte pour « ${escapeHtml(t.text)} » ?</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+        <button class="btn btn-outline btn-block" onclick="_setTaskReminder('veille')">📅 La veille (à 18h)</button>
+        <button class="btn btn-outline btn-block" onclick="_setTaskReminder('1h')">⏰ 1h avant</button>
+        <button class="btn btn-outline btn-block" onclick="_showTaskReminderCustom()">✏️ Personnalisé…</button>
+      </div>
+      <div id="taskReminderCustomZone" style="display:none;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:8px;">
+          <label>Date du rappel</label>
+          <input type="date" id="taskReminderCustomDate">
+        </div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Heure du rappel</label>
+          <input type="time" id="taskReminderCustomTime" value="09:00">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="_setTaskReminder('custom')">Valider ce rappel</button>
+      </div>
+      ${t.reminderAt ? `<button class="btn btn-outline btn-block" style="color:var(--ink-soft);" onclick="_clearTaskReminder()">🔕 Supprimer le rappel actuel</button>` : ''}
+    </div>`;
+  document.body.appendChild(div);
+}
+
+function _showTaskReminderCustom(){
+  const zone = document.getElementById('taskReminderCustomZone');
+  const dateEl = document.getElementById('taskReminderCustomDate');
+  if(zone) zone.style.display = 'block';
+  if(dateEl && !dateEl.value && editingTaskId){
+    const t = data.tasks.find(x => x.id === editingTaskId);
+    if(t) dateEl.value = t.date; // pré-rempli avec le jour de l'événement, modifiable
+  }
+}
+
+/* Calcule et enregistre l'heure de rappel selon l'option choisie, notifie
+   TOUS les rôles concernés en local (l'événement reste visible par tous dans
+   l'agenda ; le rappel, lui, est personnel à qui l'a programmé — chacun
+   choisit son propre délai). */
+function _setTaskReminder(mode){
+  if(!editingTaskId) return;
+  const t = data.tasks.find(x => x.id === editingTaskId);
+  if(!t || !t.date) return;
+
+  let reminderDate; // objet Date local
+  if(mode === 'veille'){
+    reminderDate = new Date(t.date + 'T18:00:00');
+    reminderDate.setDate(reminderDate.getDate() - 1);
+  } else if(mode === '1h'){
+    // Une tâche n'a pas forcément d'heure précise : on prend 8h par défaut
+    // si aucune heure n'est renseignée sur l'événement lui-même.
+    const baseTime = t.time || '08:00';
+    reminderDate = new Date(t.date + 'T' + baseTime + ':00');
+    reminderDate.setHours(reminderDate.getHours() - 1);
+  } else if(mode === 'custom'){
+    const dateEl = document.getElementById('taskReminderCustomDate');
+    const timeEl = document.getElementById('taskReminderCustomTime');
+    const d = dateEl ? dateEl.value : '';
+    const tm = timeEl ? timeEl.value : '';
+    if(!d || !tm){ showToast('Choisis une date et une heure'); return; }
+    reminderDate = new Date(d + 'T' + tm + ':00');
+  } else return;
+
+  if(isNaN(reminderDate.getTime())){ showToast('Date de rappel invalide'); return; }
+  if(reminderDate.getTime() <= Date.now()){
+    showToast('⚠️ Cette heure de rappel est déjà passée');
+    return;
+  }
+
+  t.reminderAt = reminderDate.toISOString();
+  t.reminderNotified = false;
+  saveData();
+  const modal = document.getElementById('modal-taskReminder');
+  if(modal) modal.remove();
+  const d2 = reminderDate;
+  const dateLabel = d2.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric'});
+  const timeLabel = d2.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+  showToast(`✅ Rappel programmé le ${dateLabel} à ${timeLabel}`);
+  // Rafraîchit l'indicateur dans la modale tâche si elle est encore ouverte.
+  const remField = document.getElementById('taskReminderField');
+  const remStatus = document.getElementById('taskReminderStatus');
+  if(remField) remField.style.display = 'block';
+  if(remStatus) remStatus.textContent = `🔔 Rappel programmé le ${dateLabel} à ${timeLabel}`;
+}
+
+function _clearTaskReminder(){
+  if(!editingTaskId) return;
+  const t = data.tasks.find(x => x.id === editingTaskId);
+  if(!t) return;
+  delete t.reminderAt;
+  delete t.reminderNotified;
+  saveData();
+  const modal = document.getElementById('modal-taskReminder');
+  if(modal) modal.remove();
+  const remField = document.getElementById('taskReminderField');
+  if(remField) remField.style.display = 'none';
+  showToast('🔕 Rappel supprimé');
+}
+
+/* Vérifie périodiquement si un rappel programmé arrive à échéance et
+   déclenche une notification locale (fonctionne tant que l'app est ouverte
+   ou récemment active — même principe que les autres rappels de RWOOD).
+   Ne redéclenche jamais deux fois le même rappel (reminderNotified). */
+function _checkTaskReminders(){
+  if(!data.tasks || !data.tasks.length) return;
+  const now = Date.now();
+  data.tasks.forEach(t => {
+    if(!t.reminderAt || t.reminderNotified) return;
+    const dueAt = Date.parse(t.reminderAt);
+    if(isNaN(dueAt) || dueAt > now) return;
+    t.reminderNotified = true;
+    const site = (data.sites||[]).find(s => s.id === t.siteId);
+    const title = '🔔 Rappel — ' + (site ? site.name : 'Agenda');
+    const body = t.text + (t.date ? ` (${t.date.split('-').reverse().join('/')})` : '');
+    try{
+      if('Notification' in window && Notification.permission === 'granted'){
+        new Notification(title, { body, tag: 'task-reminder-' + t.id });
+      } else if(typeof showToast === 'function'){
+        showToast(`${title} : ${body}`);
+      }
+    }catch(e){ if(typeof showToast === 'function') showToast(`${title} : ${body}`); }
+  });
+  saveData();
+}
+/* Vérification au démarrage puis toutes les minutes — assez précis pour un
+   rappel sans être coûteux, cohérent avec les autres polling de l'app. */
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(_checkTaskReminders, 4000);
+  setInterval(_checkTaskReminders, 60000);
+});
 
 function saveTask(){
   const date = document.getElementById('taskDate').value;
@@ -28868,7 +29039,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.20.0';
+const APP_VERSION = '5.21.0';
 
 const CHANGELOG = [
   {
@@ -40125,6 +40296,7 @@ function openSiteNotesModal(siteId){
   if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
   _siteNotesOpenCategoryId = null;
   _siteNotePendingMedia = null; // jamais de média orphelin d'une session précédente
+  _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
 
   const ex = document.getElementById('modal-siteNotes');
   if(ex) ex.remove();
@@ -40262,12 +40434,14 @@ function _unarchiveSiteNoteCategory(siteId, catId){
 function _openSiteNoteCategory(catId, siteId){
   _siteNotesOpenCategoryId = catId;
   _siteNotePendingMedia = null; // repart à vide en changeant de catégorie
+  _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
   _renderSiteNoteCategoryDetail(siteId, catId);
 }
 
 function _closeSiteNoteCategory(siteId){
   _siteNotesOpenCategoryId = null;
   _siteNotePendingMedia = null;
+  _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
   _renderSiteNoteCategoriesList(siteId);
 }
 
@@ -40307,13 +40481,15 @@ function _renderSiteNoteCategoryDetail(siteId, catId){
 
   if(canEdit){
     const pendingMedia = _siteNotePendingMedia;
+    const draft = _siteNoteDraft || { text:'', date:'', hasCheckbox:false };
     html += `
       <div class="card" style="margin-bottom:12px;padding:12px;">
-        <textarea id="siteNoteTextInput" placeholder="Ajouter une note dans « ${escapeHtml(cat.title)} »…" rows="3" style="width:100%;resize:vertical;margin-bottom:8px;"></textarea>
+        <textarea id="siteNoteTextInput" placeholder="Ajouter une note dans « ${escapeHtml(cat.title)} »…" rows="3" style="width:100%;resize:vertical;margin-bottom:8px;"
+          oninput="_siteNoteDraft.text=this.value">${escapeHtml(draft.text)}</textarea>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
-          <input type="date" id="siteNoteDateInput" style="width:auto;">
+          <input type="date" id="siteNoteDateInput" style="width:auto;" value="${escapeHtml(draft.date)}" onchange="_siteNoteDraft.date=this.value">
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-            <input type="checkbox" id="siteNoteCheckboxToggle" style="accent-color:var(--wood);"> Ajouter une case à cocher
+            <input type="checkbox" id="siteNoteCheckboxToggle" style="accent-color:var(--wood);" ${draft.hasCheckbox?'checked':''} onchange="_siteNoteDraft.hasCheckbox=this.checked"> Ajouter une case à cocher
           </label>
         </div>
         ${pendingMedia ? `
@@ -40346,6 +40522,12 @@ function _renderSiteNoteCategoryDetail(siteId, catId){
    commande…). Remis à null après chaque ajout de note ou changement de
    catégorie/fermeture pour ne jamais coller à la mauvaise note. */
 let _siteNotePendingMedia = null;
+
+/* Brouillon du formulaire de saisie (texte, date, case à cocher) : conservé
+   en mémoire et réinjecté à chaque re-rendu, pour que le texte tapé ne
+   disparaisse jamais quand une autre action (choisir une photo, changer la
+   date) force le formulaire à se reconstruire. */
+let _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
 
 function _pickSiteNoteMedia(siteId, catId){
   const ex = document.getElementById('mediaFabSheet');
@@ -40449,18 +40631,18 @@ function _addSiteNote(siteId, catId){
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
   if(!cat) return;
-  const textEl = document.getElementById('siteNoteTextInput');
-  const dateEl = document.getElementById('siteNoteDateInput');
-  const cbEl = document.getElementById('siteNoteCheckboxToggle');
-  const text = textEl ? textEl.value.trim() : '';
+  // Lu depuis le brouillon (_siteNoteDraft), pas directement depuis les
+  // <input>/<textarea> : le formulaire peut avoir été reconstruit entre-temps
+  // (ex. après le choix d'une photo), le brouillon reste la source fiable.
+  const text = (_siteNoteDraft.text || '').trim();
   if(!text){ showToast('Écris le contenu de la note'); return; }
   const myName = (data.settings.myProfile && data.settings.myProfile.name) || 'Moi';
   if(!Array.isArray(cat.notes)) cat.notes = [];
   cat.notes.push({
     id: uid(),
     text,
-    date: (dateEl && dateEl.value) ? dateEl.value : null,
-    hasCheckbox: !!(cbEl && cbEl.checked),
+    date: _siteNoteDraft.date || null,
+    hasCheckbox: !!_siteNoteDraft.hasCheckbox,
     media: _siteNotePendingMedia || null, // { url, name } — photo, bon de commande…
     done: false,
     archived: false,
@@ -40469,6 +40651,7 @@ function _addSiteNote(siteId, catId){
     createdBy: myName
   });
   _siteNotePendingMedia = null; // repart à vide pour la prochaine note
+  _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
   cat.catUpdatedAt = new Date().toISOString();
   site.updatedAt = new Date().toISOString();
   saveData();
