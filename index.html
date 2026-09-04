@@ -7779,38 +7779,7 @@ function mergeArrayById(localArr, remoteArr){
     // deux côtés (le cas le plus fréquent : on ajoute des notes à une
     // catégorie existante au fil du chantier).
     if('noteCategories' in local || 'noteCategories' in remote){
-      const localCats = Array.isArray(local.noteCategories) ? local.noteCategories : [];
-      const remoteCats = Array.isArray(remote.noteCategories) ? remote.noteCategories : [];
-      const lcMap = new Map(localCats.map(c => [c.id, c]));
-      const rcMap = new Map(remoteCats.map(c => [c.id, c]));
-      const cIds = new Set([...lcMap.keys(), ...rcMap.keys()]);
-      merged.noteCategories = [...cIds].map(cid => {
-        const lc = lcMap.get(cid), rc = rcMap.get(cid);
-        if(!lc) return rc;
-        if(!rc) return lc;
-        // Catégorie présente des deux côtés : base = la plus récemment
-        // modifiée (titre/archivage), via catUpdatedAt.
-        let catBase = lc, catOther = rc;
-        if(lc.catUpdatedAt && rc.catUpdatedAt && new Date(rc.catUpdatedAt) > new Date(lc.catUpdatedAt)){ catBase = rc; catOther = lc; }
-        const mergedCat = Object.assign({}, catOther, catBase);
-        // Notes DANS la catégorie : toujours l'union par id (jamais d'écrasement).
-        const localNotes = Array.isArray(lc.notes) ? lc.notes : [];
-        const remoteNotes = Array.isArray(rc.notes) ? rc.notes : [];
-        const lnMap = new Map(localNotes.map(n => [n.id, n]));
-        const rnMap = new Map(remoteNotes.map(n => [n.id, n]));
-        const nIds = new Set([...lnMap.keys(), ...rnMap.keys()]);
-        mergedCat.notes = [...nIds].map(nid => {
-          const ln = lnMap.get(nid), rn = rnMap.get(nid);
-          if(!ln) return rn;
-          if(!rn) return ln;
-          // Note présente des deux côtés (ex. cochée d'un côté / archivée de
-          // l'autre) : garde la modification la plus récente via
-          // noteUpdatedAt, jamais createdAt qui ne bouge pas.
-          if(ln.noteUpdatedAt && rn.noteUpdatedAt && new Date(rn.noteUpdatedAt) > new Date(ln.noteUpdatedAt)) return rn;
-          return ln;
-        });
-        return mergedCat;
-      });
+      merged.noteCategories = _mergeNoteCategoriesForPush(local.noteCategories, remote.noteCategories);
     }
     return merged;
   });
@@ -29057,7 +29026,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.1';
+const APP_VERSION = '5.21.2';
 
 const CHANGELOG = [
   {
@@ -36978,6 +36947,40 @@ let _assignChefCandidates = [];
    ═══════════════════════════════════════════════════════════════════ */
 
 /* Pousse TOUS les chantiers locaux vers la synchro partagée. */
+/* Fusion à deux niveaux des catégories de notes (et de leurs notes internes)
+   utilisée au PUSH pour ne jamais écraser une catégorie/note ajoutée par un
+   autre appareil et déjà présente côté serveur au moment de cet envoi. Même
+   logique que dans mergeArrayById / syncAllSitesPull, factorisée ici pour
+   être réutilisable aux trois endroits sans divergence. */
+function _mergeNoteCategoriesForPush(localCatsRaw, remoteCatsRaw){
+  const localCats = Array.isArray(localCatsRaw) ? localCatsRaw : [];
+  const remoteCats = Array.isArray(remoteCatsRaw) ? remoteCatsRaw : [];
+  const lcMap = new Map(localCats.map(c => [c.id, c]));
+  const rcMap = new Map(remoteCats.map(c => [c.id, c]));
+  const cIds = new Set([...lcMap.keys(), ...rcMap.keys()]);
+  return [...cIds].map(cid => {
+    const lc = lcMap.get(cid), rc = rcMap.get(cid);
+    if(!lc) return rc;
+    if(!rc) return lc;
+    let catBase = lc, catOther = rc;
+    if(lc.catUpdatedAt && rc.catUpdatedAt && new Date(rc.catUpdatedAt) > new Date(lc.catUpdatedAt)){ catBase = rc; catOther = lc; }
+    const mergedCat = Object.assign({}, catOther, catBase);
+    const localNotes = Array.isArray(lc.notes) ? lc.notes : [];
+    const remoteNotes = Array.isArray(rc.notes) ? rc.notes : [];
+    const lnMap = new Map(localNotes.map(n => [n.id, n]));
+    const rnMap = new Map(remoteNotes.map(n => [n.id, n]));
+    const nIds = new Set([...lnMap.keys(), ...rnMap.keys()]);
+    mergedCat.notes = [...nIds].map(nid => {
+      const ln = lnMap.get(nid), rn = rnMap.get(nid);
+      if(!ln) return rn;
+      if(!rn) return ln;
+      if(ln.noteUpdatedAt && rn.noteUpdatedAt && new Date(rn.noteUpdatedAt) > new Date(ln.noteUpdatedAt)) return rn;
+      return ln;
+    });
+    return mergedCat;
+  });
+}
+
 async function syncAllSitesPushAll(){
   try{
     if(!Array.isArray(data.sites) || !data.sites.length) return;
@@ -37020,7 +37023,19 @@ async function syncAllSitesPushAll(){
         teamName: site.teamName || '',
         sharedMedia: mergedMedia,
         documents: mergedDocs,
-        assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : []
+        assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
+        tileId: site.tileId || null, // fiche tuile assignée (voir dashOpenTuileFiche)
+        coverPhotoUrl: site.coverPhotoUrl || null, // photo de référence du bandeau chantier actif
+        // Catégories de notes du chantier : MANQUAIT ici, ce qui empêchait
+        // toute note/catégorie d'être réellement transmise au serveur — elle
+        // restait uniquement locale, quelle que soit la qualité de la fusion
+        // côté réception (rien à fusionner puisque rien n'arrivait jamais).
+        // Fusionnées en union avec la version déjà partagée pour ne jamais
+        // faire disparaître une catégorie/note créée par un autre appareil
+        // entre-temps, avant que ce push n'écrive la nouvelle version.
+        noteCategories: (typeof _mergeNoteCategoriesForPush === 'function')
+          ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
+          : (site.noteCategories || [])
       };
       // On écrit toujours la version fusionnée (identité à jour + union des médias).
       byId[site.id] = existing ? Object.assign({}, existing, snapshot) : snapshot;
@@ -37116,35 +37131,12 @@ async function syncAllSitesPull(){
         // (jamais écrasées), même règle que documents/sharedMedia — sinon
         // une catégorie ou une note tout juste créée localement pouvait
         // disparaître si ce pull s'exécutait juste après (avant que le push
-        // n'ait eu le temps d'être visible côté serveur).
+        // n'ait eu le temps d'être visible côté serveur). Factorisé via
+        // _mergeNoteCategoriesForPush pour rester cohérent avec le push.
         if(Array.isArray(local.noteCategories) || Array.isArray(remote.noteCategories)){
-          const localCats = Array.isArray(local.noteCategories) ? local.noteCategories : [];
-          const remoteCats = Array.isArray(remote.noteCategories) ? remote.noteCategories : [];
-          const lcMap = new Map(localCats.map(c => [c.id, c]));
-          const rcMap = new Map(remoteCats.map(c => [c.id, c]));
-          const cIds = new Set([...lcMap.keys(), ...rcMap.keys()]);
-          const mergedCats = [...cIds].map(cid => {
-            const lc = lcMap.get(cid), rc = rcMap.get(cid);
-            if(!lc) return rc;
-            if(!rc) return lc;
-            let catBase = lc, catOther = rc;
-            if(lc.catUpdatedAt && rc.catUpdatedAt && new Date(rc.catUpdatedAt) > new Date(lc.catUpdatedAt)){ catBase = rc; catOther = lc; }
-            const mergedCat = Object.assign({}, catOther, catBase);
-            const localNotes = Array.isArray(lc.notes) ? lc.notes : [];
-            const remoteNotes = Array.isArray(rc.notes) ? rc.notes : [];
-            const lnMap = new Map(localNotes.map(n => [n.id, n]));
-            const rnMap = new Map(remoteNotes.map(n => [n.id, n]));
-            const nIds = new Set([...lnMap.keys(), ...rnMap.keys()]);
-            mergedCat.notes = [...nIds].map(nid => {
-              const ln = lnMap.get(nid), rn = rnMap.get(nid);
-              if(!ln) return rn;
-              if(!rn) return ln;
-              if(ln.noteUpdatedAt && rn.noteUpdatedAt && new Date(rn.noteUpdatedAt) > new Date(ln.noteUpdatedAt)) return rn;
-              return ln;
-            });
-            return mergedCat;
-          });
-          if(mergedCats.length !== localCats.length) changed = true;
+          const localCatsCount = Array.isArray(local.noteCategories) ? local.noteCategories.length : 0;
+          const mergedCats = _mergeNoteCategoriesForPush(local.noteCategories, remote.noteCategories);
+          if(mergedCats.length !== localCatsCount) changed = true;
           local.noteCategories = mergedCats;
         }
 
