@@ -14179,17 +14179,27 @@ async function workerSyncPull(){
         sharedMedia: Array.isArray(remote.sharedMedia) ? remote.sharedMedia : [],
         shared: true,
         _workerReadOnly: true,       // marqueur : chantier reçu en lecture seule
-        stockNeeds: {}, stockTaken: {}
+        stockNeeds: {}, stockTaken: {},
+        updatedAt: remote.updatedAt || null // indispensable à _applyRemoteSiteIfNewer
       };
       if(idx === -1){
         data.sites.push(readOnlySite);
         changed = true;
       } else {
         // Mise à jour non destructive : on ne touche qu'aux champs synchro
+        // — même règle de décision partagée que les autres chemins de
+        // synchro (voir _applyRemoteSiteIfNewer) : AVANT, ces champs (dont
+        // "status") étaient écrasés sans jamais comparer les dates, avec le
+        // même risque de "retour en arrière" déjà corrigé ailleurs. Ce
+        // chemin côté OUVRIER n'avait encore jamais été vérifié.
         const local = data.sites[idx];
-        ['name','address','status','progress','color','keyboxCode','startDate',
-         'dueDate','deliveryDates','customEvents','assignedChefs','assignedWorkers',
-         'sharedMedia'].forEach(k => { if(readOnlySite[k] !== undefined) local[k] = readOnlySite[k]; });
+        _applyRemoteSiteIfNewer(local, readOnlySite,
+          ['name','address','status','progress','color','keyboxCode','startDate',
+           'dueDate','deliveryDates','customEvents','assignedChefs','assignedWorkers','updatedAt']);
+        // Médias : toujours en union, jamais écrasés (même règle que partout ailleurs).
+        if(Array.isArray(readOnlySite.sharedMedia)){
+          local.sharedMedia = _mergeSiteMediaUnion(local.sharedMedia, readOnlySite.sharedMedia);
+        }
         local.shared = true;
         local._workerReadOnly = true;
         changed = true;
@@ -29041,7 +29051,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.22.3';
+const APP_VERSION = '5.22.5';
 
 const CHANGELOG = [
   {
@@ -36701,11 +36711,15 @@ async function pullSitesFromChefs(){
         changed = true;
         showToast('🏗 Nouveau chantier reçu de ' + (remote.fromChef||'un chef'));
       } else {
-        // Mettre à jour les champs du chef
+        // Mettre à jour les champs du chef — même règle de décision partagée
+        // que syncAllSitesPull/pullSharedSites (voir _applyRemoteSiteIfNewer) :
+        // AVANT, ces champs (dont "status") étaient écrasés sans jamais
+        // regarder quelle version était la plus récente, avec le même risque
+        // de "retour en arrière" déjà corrigé sur les deux autres chemins.
         const local = data.sites[idx];
-        ['name','address','status','progress','color','keyboxCode','dueDate','startDate','customEvents'].forEach(k=>{
-          if(remote[k] !== undefined) local[k] = remote[k];
-        });
+        const applied = _applyRemoteSiteIfNewer(local, remote,
+          ['name','address','status','progress','color','keyboxCode','dueDate','startDate','customEvents','updatedAt']);
+        if(applied) changed = true;
         if(_isPatron) local.syncLive = true; // le patron peut repousser
         changed = true;
       }
@@ -36937,6 +36951,37 @@ async function pushSharedSite(site){
    - Chef d'equipe : uniquement les chantiers qui lui sont assignes (telephone).
    Une copie locale recue devient independante : ses modifs futures ne remontent pas
    vers le conducteur (V1 volontairement simple, pas de fusion bidirectionnelle). */
+/* ── Règle de décision UNIQUE pour la synchro des chantiers ────────────
+   "Le plus récent gagne" : si le remote a un updatedAt et qu'il est plus
+   récent que le local (ou que le local n'en a pas du tout), on applique les
+   champs listés depuis remote vers local. Sinon on ne touche à rien.
+   Centralisée ici et utilisée par TOUTES les fonctions qui synchronisent des
+   chantiers (syncAllSitesPull, pullSharedSites…) pour qu'il n'existe plus
+   qu'un seul endroit à corriger si un bug de ce type était trouvé, au lieu
+   d'avoir plusieurs copies de la même logique qui peuvent diverger et qu'on
+   peut oublier de mettre à jour ensemble (cause des bugs de "statut/photo
+   qui revient en arrière" corrigés précédemment). */
+function _applyRemoteSiteIfNewer(local, remote, fields){
+  const remoteIsNewer = remote.updatedAt && (!local.updatedAt || new Date(remote.updatedAt) > new Date(local.updatedAt));
+  if(remoteIsNewer){
+    fields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+  }
+  return remoteIsNewer;
+}
+
+/* Union de deux listes de médias (photos/documents), dédupliquée par
+   id/url/data/name — jamais d'écrasement, un média ajouté sur un appareil
+   ne doit jamais disparaître. Centralisée elle aussi (même besoin répété à
+   plusieurs endroits). */
+function _mergeSiteMediaUnion(a, b){
+  const out = [], seen = new Set();
+  const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+  [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
+    const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+  });
+  return out;
+}
+
 async function pullSharedSites(){
   try{
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
@@ -37010,22 +37055,17 @@ async function pullSharedSites(){
         // copie par-dessus la correction qui venait d'arriver par un autre
         // canal de synchro.
         const local = data.sites[idx];
-        const remoteIsNewer = remote.updatedAt && (!local.updatedAt || new Date(remote.updatedAt) > new Date(local.updatedAt));
-        if(remoteIsNewer){
-          conducteurFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
-          changed = true;
-        }
+        // Règle de décision UNIQUE, partagée avec syncAllSitesPull — voir
+        // _applyRemoteSiteIfNewer. AVANT : chaque fonction avait sa propre
+        // copie de cette logique, avec le risque (déjà vécu) qu'une seule
+        // soit corrigée et l'autre oubliée.
+        const applied = _applyRemoteSiteIfNewer(local, remote, conducteurFields);
+        if(applied) changed = true;
         // Médias et catégories de notes : TOUJOURS en union (jamais simplement
         // écrasés), même règle que syncAllSitesPull — sinon une photo/note
         // ajoutée sur un autre appareil pouvait disparaître via ce chemin.
         if(Array.isArray(remote.sharedMedia)){
-          const seen = new Set();
-          const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
-          const mergedMedia = [];
-          [ ...(Array.isArray(local.sharedMedia)?local.sharedMedia:[]), ...remote.sharedMedia ].forEach(m => {
-            const k = keyOf(m); if(seen.has(k)) return; seen.add(k); mergedMedia.push(m);
-          });
-          local.sharedMedia = mergedMedia;
+          local.sharedMedia = _mergeSiteMediaUnion(local.sharedMedia, remote.sharedMedia);
         }
         if(Array.isArray(remote.noteCategories) && typeof _mergeNoteCategoriesForPush === 'function'){
           local.noteCategories = _mergeNoteCategoriesForPush(local.noteCategories, remote.noteCategories);
@@ -37199,22 +37239,9 @@ async function syncAllSitesPull(){
       'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
       'assignedTeamName','lastSyncAt','ownerDeviceId','tileId','coverPhotoUrl'];
     // NB : 'sharedMedia' et 'documents' sont VOLONTAIREMENT exclus ci-dessus.
-    // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMedia)
-    // pour qu'un document/photo n'disparaisse jamais lors d'une synchro.
-
-    // Fusion union de deux listes de médias/documents, dédupliquée par id (ou url/data).
-    const _mergeSiteMedia = (a, b) => {
-      const out = [];
-      const seen = new Set();
-      const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
-      [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
-        const k = keyOf(m);
-        if(seen.has(k)) return;
-        seen.add(k);
-        out.push(m);
-      });
-      return out;
-    };
+    // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMediaUnion,
+    // fonction centralisée) pour qu'un document/photo ne disparaisse jamais
+    // lors d'une synchro.
 
     let changed = false;
     relevant.forEach(remote => {
@@ -37227,25 +37254,20 @@ async function syncAllSitesPull(){
         // Chantier déjà présent : on rafraîchit son identité si la version
         // distante est plus récente, sans toucher aux données locales de stock.
         const local = data.sites[idx];
-        // NOTE : l'ancienne logique se basait sur "iAmOwner" (comparaison de
-        // local.ownerDeviceId à l'appareil courant) pour décider si on avait
-        // le droit d'accepter une mise à jour distante. Problème : les
-        // chantiers de démonstration (seedData()) ont les MÊMES id sur
-        // CHAQUE nouvelle installation, donc chaque nouveau compte se
-        // croyait "propriétaire" de son propre "Marchal"/"Guanxi" local et
-        // refusait catégoriquement toute mise à jour venue du serveur pour
-        // ces chantiers (adresse, statut, ET la photo de couverture — d'où
-        // le bug signalé). On utilise désormais uniquement l'horodatage de
-        // modification réelle (site.updatedAt, posé à chaque changement),
-        // exactement le même principe fiable que mergeArrayById.
-        const remoteUpdated = Date.parse(remote.updatedAt || 0) || 0;
-        const localUpdated  = Date.parse(local.updatedAt || 0) || 0;
-        const remoteIsNewer = remote.updatedAt && (!local.updatedAt || remoteUpdated > localUpdated);
+        // Règle de décision UNIQUE, partagée avec pullSharedSites — voir
+        // _applyRemoteSiteIfNewer. Remplace l'ancienne logique "iAmOwner"
+        // (comparaison à l'appareil courant) : les chantiers de démonstration
+        // (seedData()) ont les MÊMES id sur chaque nouvelle installation,
+        // donc chaque nouveau compte se croyait "propriétaire" de son propre
+        // "Marchal"/"Guanxi" local et refusait catégoriquement toute mise à
+        // jour venue du serveur pour ces chantiers (adresse, statut, photo).
+        // On se base uniquement sur updatedAt, appliqué de façon identique
+        // partout désormais.
 
         // Médias/documents : TOUJOURS fusionnés en union (jamais écrasés),
         // quel que soit le propriétaire ou l'horodatage.
-        const mergedMedia = _mergeSiteMedia(local.sharedMedia, remote.sharedMedia);
-        const mergedDocs  = _mergeSiteMedia(local.documents, remote.documents);
+        const mergedMedia = _mergeSiteMediaUnion(local.sharedMedia, remote.sharedMedia);
+        const mergedDocs  = _mergeSiteMediaUnion(local.documents, remote.documents);
         if(mergedMedia.length !== (local.sharedMedia||[]).length){ local.sharedMedia = mergedMedia; changed = true; }
         else { local.sharedMedia = mergedMedia; }
         if(mergedDocs.length !== (local.documents||[]).length){ local.documents = mergedDocs; changed = true; }
@@ -37282,8 +37304,8 @@ async function syncAllSitesPull(){
           local.noteCategories = mergedCats;
         }
 
-        if(remoteIsNewer){
-          identityFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+        const applied = _applyRemoteSiteIfNewer(local, remote, identityFields);
+        if(applied){
           local.shared = true;
           changed = true;
         } else if(!local.shared){
