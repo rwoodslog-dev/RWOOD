@@ -29026,7 +29026,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.6';
+const APP_VERSION = '5.22.0';
 
 const CHANGELOG = [
   {
@@ -36904,7 +36904,7 @@ async function pushSharedSite(site){
       documents:           _mergeMediaLocal(site.documents, existing && existing.documents),
       assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
       tileId:              site.tileId || null,
-      coverPhotoUrl:       site.coverPhotoUrl || null, // photo de référence du bandeau chantier actif
+      coverPhotoUrl:       site.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
       updatedAt:           site.updatedAt || null, // indispensable à la fusion par date (voir syncAllSitesPull)
       noteCategories:      (typeof _mergeNoteCategoriesForPush === 'function')
         ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
@@ -37105,7 +37105,7 @@ async function syncAllSitesPushAll(){
         documents: mergedDocs,
         assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
         tileId: site.tileId || null, // fiche tuile assignée (voir dashOpenTuileFiche)
-        coverPhotoUrl: site.coverPhotoUrl || null, // photo de référence du bandeau chantier actif
+        coverPhotoUrl: site.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
         // Catégories de notes du chantier : MANQUAIT ici, ce qui empêchait
         // toute note/catégorie d'être réellement transmise au serveur — elle
         // restait uniquement locale, quelle que soit la qualité de la fusion
@@ -40334,8 +40334,17 @@ function renderChantierActifBanner(){
   const workers = _cabWorkersCount(site.id);
   const hours = _cabHoursTotal(site.id);
   const zoneLabel = _cabZoneLabel(site);
-  const iconHtml = site.coverPhotoUrl
-    ? `<img src="${escapeHtml(site.coverPhotoUrl)}" alt="">`
+  // Photo affichée dans le bandeau : la DERNIÈRE photo ajoutée à la galerie
+  // du chantier (sharedMedia), plutôt qu'un choix manuel séparé. La galerie
+  // se synchronise déjà de façon fiable pour tout le monde — en dérivant
+  // l'icône directement d'elle, il n'y a plus de champ séparé à synchroniser
+  // ni de risque de désynchro entre comptes : chacun voit toujours la même
+  // dernière photo, automatiquement.
+  const _cabLastPhoto = (site.sharedMedia || [])
+    .filter(m => m && m.url && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')))
+    .sort((a,b) => new Date(b.uploadedAt||0) - new Date(a.uploadedAt||0))[0];
+  const iconHtml = _cabLastPhoto
+    ? `<img src="${escapeHtml(_cabLastPhoto.url)}" alt="">`
     : '🏠';
 
   // MODULE — PCDashboard : dégradé du bandeau teinté avec la couleur du
@@ -40357,7 +40366,7 @@ function renderChantierActifBanner(){
   el.innerHTML = `
     <div class="cab-label">🏗 Chantier actif</div>
     <div class="cab-main">
-      <div class="cab-icon" onclick="dashPickCoverPhoto()" title="Choisir une photo (depuis les médias du chantier)">${iconHtml}</div>
+      <div class="cab-icon" onclick="dashOpenGalerieChantier('${site.id}')" title="Voir la galerie du chantier (dernière photo ajoutée)">${iconHtml}</div>
       <div class="cab-info">
         <div class="cab-title-row">
           <select class="cab-name-select" onchange="setActiveSiteId(this.value)" title="Changer de chantier">${options}</select>
@@ -41006,56 +41015,25 @@ function dashOpenZone(siteId){
 
 /* Icône maison : choisir une photo parmi les médias déjà importés pour ce
    chantier (onglet Média) comme visuel du bandeau. */
+/* Depuis le bandeau chantier actif : ouvre directement la galerie du
+   chantier (son dossier de photos), plutôt qu'un sélecteur manuel — la
+   photo affichée dans le bandeau est désormais automatiquement la dernière
+   ajoutée à cette galerie. */
+function dashOpenGalerieChantier(siteId){
+  goTo('galerie');
+  setTimeout(() => { if(typeof galerieOpenFolder === 'function') galerieOpenFolder(siteId); }, 50);
+}
+
+/* [OBSOLÈTE] Choix manuel d'une photo de couverture (site.coverPhotoUrl) —
+   remplacé par un affichage automatique de la DERNIÈRE photo de la galerie
+   du chantier (voir _cabLastPhoto dans renderChantierActifBanner), pour
+   éliminer tout risque de désynchronisation de ce choix entre comptes : la
+   galerie, elle, se synchronise déjà de façon fiable pour tout le monde.
+   Gardée en redirection simple au cas où un ancien cache client l'appellerait
+   encore. */
 function dashPickCoverPhoto(){
-  const site = (data.sites||[]).find(s => s.id === getActiveSiteId());
-  if(!site) return;
-  const photos = (site.sharedMedia||[]).filter(m => m.type==='photo' || (m.mimeType||'').startsWith('image/'));
-  if(!photos.length){ showToast('Aucune photo dans les médias de ce chantier pour l\'instant'); return; }
-
-  const ex = document.getElementById('cabCoverPicker');
-  if(ex) ex.remove();
-
-  const sheet = document.createElement('div');
-  sheet.id = 'cabCoverPicker';
-  sheet.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px;';
-  sheet.innerHTML = `
-    <div style="background:var(--bg-elev);border-radius:16px;max-width:420px;width:100%;max-height:80vh;overflow:auto;padding:16px;">
-      <div style="font-size:14px;font-weight:700;margin-bottom:12px;">Choisir une photo — ${escapeHtml(site.name)}</div>
-      <div id="cabCoverGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"></div>
-      ${site.coverPhotoUrl ? `<button class="btn btn-outline btn-block" style="margin-top:12px;" id="cabCoverReset">Retirer la photo actuelle</button>` : ''}
-      <button class="btn btn-outline btn-block" style="margin-top:8px;" id="cabCoverCancel">Annuler</button>
-    </div>`;
-  document.body.appendChild(sheet);
-
-  const grid = sheet.querySelector('#cabCoverGrid');
-  grid.innerHTML = photos.map((m,i) => `<img data-i="${i}" src="${m.url}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;border:2px solid transparent;">`).join('');
-  grid.querySelectorAll('img').forEach(img => img.addEventListener('click', () => {
-    const m = photos[+img.dataset.i];
-    site.coverPhotoUrl = m.url;
-    // updatedAt : même logique que updateSiteField — permet à la fusion
-    // multi-appareils (mergeArrayById) de garder la photo la plus récemment
-    // choisie au lieu de risquer qu'un appareil désynchronisé la fasse
-    // "revenir en arrière" (même bug que celui corrigé sur l'adresse).
-    site.updatedAt = new Date().toISOString();
-    saveData();
-    renderChantierActifBanner();
-    // Synchro IMMÉDIATE (pas d'attente du cycle périodique) pour que tous
-    // les utilisateurs connectés voient la nouvelle photo de référence
-    // sans délai — c'est le point demandé : "instantanément mise à jour".
-    if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-    sheet.remove();
-  }));
-  const resetBtn = sheet.querySelector('#cabCoverReset');
-  if(resetBtn) resetBtn.addEventListener('click', () => {
-    delete site.coverPhotoUrl;
-    site.updatedAt = new Date().toISOString();
-    saveData();
-    renderChantierActifBanner();
-    if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-    sheet.remove();
-  });
-  sheet.querySelector('#cabCoverCancel').addEventListener('click', () => sheet.remove());
-  sheet.onclick = e => { if(e.target === sheet) sheet.remove(); };
+  const siteId = getActiveSiteId();
+  if(siteId && typeof dashOpenGalerieChantier === 'function') dashOpenGalerieChantier(siteId);
 }
 /* ═══ MODULE — PCDashboard (JS) · fin ═══ */
 
