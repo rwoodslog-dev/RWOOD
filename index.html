@@ -7742,26 +7742,45 @@ function mergeArrayById(localArr, remoteArr){
     if('sharedMedia' in local || 'sharedMedia' in remote){
       merged.sharedMedia = mergeMedia(local.sharedMedia, remote.sharedMedia);
     }
-    // Notes de chantier : TOUJOURS l'union des deux versions, par id — une
-    // note ajoutée sur un appareil ne doit JAMAIS disparaître si un autre
-    // appareil synchronise entre-temps (exigence : ne jamais perdre une
-    // note). Pour une note présente des deux côtés (même id, ex. cochée ou
-    // archivée sur l'un des deux), on garde la plus récemment modifiée.
-    if('notes' in local || 'notes' in remote){
-      const localNotes = Array.isArray(local.notes) ? local.notes : [];
-      const remoteNotes = Array.isArray(remote.notes) ? remote.notes : [];
-      const lnMap = new Map(localNotes.map(n => [n.id, n]));
-      const rnMap = new Map(remoteNotes.map(n => [n.id, n]));
-      const nIds = new Set([...lnMap.keys(), ...rnMap.keys()]);
-      merged.notes = [...nIds].map(nid => {
-        const ln = lnMap.get(nid), rn = rnMap.get(nid);
-        if(!ln) return rn;
-        if(!rn) return ln;
-        // Les deux existent (même id, ex. cochée d'un côté / archivée de
-        // l'autre) : garde la modification la plus récente via noteUpdatedAt
-        // (posé à chaque changement), jamais createdAt qui ne bouge pas.
-        if(ln.noteUpdatedAt && rn.noteUpdatedAt && new Date(rn.noteUpdatedAt) > new Date(ln.noteUpdatedAt)) return rn;
-        return ln;
+    // Catégories de notes de chantier : fusion à DEUX niveaux, jamais de
+    // perte. Niveau 1 (catégories) : union par id — une catégorie créée sur
+    // un appareil ne doit jamais disparaître si un autre appareil
+    // synchronise entre-temps. Niveau 2 (notes DANS chaque catégorie) :
+    // même règle d'union par id, y compris quand la catégorie existe des
+    // deux côtés (le cas le plus fréquent : on ajoute des notes à une
+    // catégorie existante au fil du chantier).
+    if('noteCategories' in local || 'noteCategories' in remote){
+      const localCats = Array.isArray(local.noteCategories) ? local.noteCategories : [];
+      const remoteCats = Array.isArray(remote.noteCategories) ? remote.noteCategories : [];
+      const lcMap = new Map(localCats.map(c => [c.id, c]));
+      const rcMap = new Map(remoteCats.map(c => [c.id, c]));
+      const cIds = new Set([...lcMap.keys(), ...rcMap.keys()]);
+      merged.noteCategories = [...cIds].map(cid => {
+        const lc = lcMap.get(cid), rc = rcMap.get(cid);
+        if(!lc) return rc;
+        if(!rc) return lc;
+        // Catégorie présente des deux côtés : base = la plus récemment
+        // modifiée (titre/archivage), via catUpdatedAt.
+        let catBase = lc, catOther = rc;
+        if(lc.catUpdatedAt && rc.catUpdatedAt && new Date(rc.catUpdatedAt) > new Date(lc.catUpdatedAt)){ catBase = rc; catOther = lc; }
+        const mergedCat = Object.assign({}, catOther, catBase);
+        // Notes DANS la catégorie : toujours l'union par id (jamais d'écrasement).
+        const localNotes = Array.isArray(lc.notes) ? lc.notes : [];
+        const remoteNotes = Array.isArray(rc.notes) ? rc.notes : [];
+        const lnMap = new Map(localNotes.map(n => [n.id, n]));
+        const rnMap = new Map(remoteNotes.map(n => [n.id, n]));
+        const nIds = new Set([...lnMap.keys(), ...rnMap.keys()]);
+        mergedCat.notes = [...nIds].map(nid => {
+          const ln = lnMap.get(nid), rn = rnMap.get(nid);
+          if(!ln) return rn;
+          if(!rn) return ln;
+          // Note présente des deux côtés (ex. cochée d'un côté / archivée de
+          // l'autre) : garde la modification la plus récente via
+          // noteUpdatedAt, jamais createdAt qui ne bouge pas.
+          if(ln.noteUpdatedAt && rn.noteUpdatedAt && new Date(rn.noteUpdatedAt) > new Date(ln.noteUpdatedAt)) return rn;
+          return ln;
+        });
+        return mergedCat;
       });
     }
     return merged;
@@ -28825,7 +28844,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.18.3';
+const APP_VERSION = '5.19.0';
 
 const CHANGELOG = [
   {
@@ -39983,26 +40002,35 @@ function renderChantierActifBanner(){
       <button onclick="dashOpenTuileFiche('${site.id}')"><img src="icons/toiture.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🏠'}))"> Fiche tuile</button>
       <button onclick="dashOpenPointage('${site.id}')"><img src="icons/heures.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'⏱️'}))"> Pointer</button>
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
-      <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.notes||[]).filter(x=>!x.archived).length; return n ? ` (${n})` : ''; })()}</button>
+      <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.noteCategories||[]).filter(c=>!c.archived).reduce((sum,c)=>sum+(c.notes||[]).filter(x=>!x.archived).length,0); return n ? ` (${n})` : ''; })()}</button>
     </div>
   `;
 }
 
-/* ── Notes du chantier (type "carnet", jamais de suppression) ─────────
-   site.notes = [{ id, title, text, date, hasCheckbox, done, archived,
-                    createdAt, createdBy }]
-   Règle absolue : AUCUNE suppression réelle possible. "Archiver" retire la
-   note de la vue principale mais elle reste en base pour toujours et reste
-   consultable dans la section Archivées — les données de chantier ne
+/* ── Notes du chantier — structure à deux niveaux (type "classeur") ───
+   site.noteCategories = [{ id, title, archived, createdAt,
+     notes: [{ id, text, hasCheckbox, done, archived, createdAt, createdBy }]
+   }]
+   Le conducteur/patron crée des catégories à volonté (ex: "À faire
+   attention", "Points importants", "À compléter") et range des notes dedans
+   au fil du chantier, en cliquant sur la catégorie concernée pour y ajouter
+   une nouvelle note quand le besoin apparaît. La catégorie fait office de
+   titre : une note dans une catégorie n'a que du texte.
+   Règle absolue : AUCUNE suppression réelle possible, ni des catégories ni
+   des notes. "Archiver" retire l'élément de la vue principale mais il reste
+   en base pour toujours et reste consultable — les données de chantier ne
    doivent jamais pouvoir être perdues.
-   Droits : Patron/Conducteur créent, modifient, cochent et archivent
-   (utile dès la phase brouillon, en amont du lancement de chantier).
-   Chef d'équipe/Ouvrier consultent tout (y compris l'archive) et cochent
-   les notes qui ont une case, sans pouvoir créer/modifier/archiver. */
+   Droits : Patron/Conducteur créent des catégories, ajoutent/cochent/
+   archivent les notes (utile dès la phase brouillon, en amont du lancement
+   de chantier). Chef d'équipe/Ouvrier consultent tout (y compris l'archive)
+   et cochent les notes qui ont une case, sans pouvoir créer/archiver. */
+let _siteNotesOpenCategoryId = null; // catégorie actuellement ouverte dans la modale (null = vue liste des catégories)
+
 function openSiteNotesModal(siteId){
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
-  if(!Array.isArray(site.notes)) site.notes = [];
+  if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
+  _siteNotesOpenCategoryId = null;
 
   const ex = document.getElementById('modal-siteNotes');
   if(ex) ex.remove();
@@ -40013,15 +40041,13 @@ function openSiteNotesModal(siteId){
   div.innerHTML = `
     <div class="modal">
       <div class="modal-header">
-        <h2>📝 Notes — ${escapeHtml(site.name)}</h2>
+        <h2 id="siteNotesModalTitle">📝 Notes — ${escapeHtml(site.name)}</h2>
         <button class="modal-close" onclick="document.getElementById('modal-siteNotes').remove()">✕</button>
       </div>
-      <div id="siteNotesAddZone"></div>
-      <div id="siteNotesList"></div>
-      <div id="siteNotesArchiveZone"></div>
+      <div id="siteNotesBody"></div>
     </div>`;
   document.body.appendChild(div);
-  _renderSiteNotesList(siteId);
+  _renderSiteNotesBody(siteId);
 }
 
 function _canEditSiteNotes(){
@@ -40029,91 +40055,201 @@ function _canEditSiteNotes(){
   return role === 'conducteur' || role === 'patron';
 }
 
-/* Rendu d'une note (utilisé pour la liste active ET l'archive). */
-function _renderOneSiteNote(site, n, canEdit){
-  const dateHtml = n.date ? `<span style="font-size:11px;color:var(--ink-soft);">📅 ${escapeHtml(_fmtSiteNoteDate(n.date))}</span>` : '';
-  const metaHtml = `<span style="font-size:11px;color:var(--ink-soft);">${escapeHtml(n.createdBy||'')}</span>`;
-  return `
-    <div class="card" style="margin-bottom:8px;padding:10px 12px;${n.archived ? 'opacity:.65;' : ''}">
-      <div style="display:flex;align-items:flex-start;gap:10px;">
-        ${n.hasCheckbox ? `<input type="checkbox" ${n.done ? 'checked' : ''} onchange="_toggleSiteNote('${site.id}','${n.id}')"
-          style="width:20px;height:20px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;cursor:pointer;">` : ''}
-        <div style="flex:1;min-width:0;">
-          ${n.title ? `<div style="font-weight:700;font-size:14px;margin-bottom:2px;${n.done ? 'text-decoration:line-through;opacity:.6;' : ''}">${escapeHtml(n.title)}</div>` : ''}
-          ${n.text ? `<div style="font-size:13.5px;line-height:1.45;white-space:pre-wrap;${n.done ? 'text-decoration:line-through;opacity:.6;' : ''}">${escapeHtml(n.text)}</div>` : ''}
-          <div style="display:flex;gap:10px;margin-top:6px;">${dateHtml}${metaHtml}</div>
-        </div>
-        ${(canEdit && !n.archived) ? `<button onclick="_archiveSiteNote('${site.id}','${n.id}')" title="Archiver (jamais supprimée)" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:15px;padding:2px 6px;flex-shrink:0;">📦</button>` : ''}
-        ${(canEdit && n.archived) ? `<button onclick="_unarchiveSiteNote('${site.id}','${n.id}')" title="Désarchiver" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:15px;padding:2px 6px;flex-shrink:0;">↩️</button>` : ''}
-      </div>
-    </div>`;
-}
-
 function _fmtSiteNoteDate(iso){
   try{ return new Date(iso).toLocaleDateString('fr-FR', {day:'2-digit', month:'short', year:'numeric'}); }
   catch(e){ return iso; }
 }
 
-function _renderSiteNotesList(siteId){
+/* Bascule : vue liste des catégories, ou vue détail d'une catégorie. */
+function _renderSiteNotesBody(siteId){
+  if(_siteNotesOpenCategoryId) _renderSiteNoteCategoryDetail(siteId, _siteNotesOpenCategoryId);
+  else _renderSiteNoteCategoriesList(siteId);
+}
+
+/* ── Vue liste des catégories (niveau 1) ── */
+function _renderSiteNoteCategoriesList(siteId){
   const site = (data.sites||[]).find(s => s.id === siteId);
-  const list = document.getElementById('siteNotesList');
-  const addZone = document.getElementById('siteNotesAddZone');
-  const archiveZone = document.getElementById('siteNotesArchiveZone');
-  if(!site || !list) return;
+  const body = document.getElementById('siteNotesBody');
+  const titleEl = document.getElementById('siteNotesModalTitle');
+  if(!site || !body) return;
+  if(titleEl) titleEl.textContent = `📝 Notes — ${site.name}`;
   const canEdit = _canEditSiteNotes();
-  const allNotes = site.notes || [];
-  const active = allNotes.filter(n => !n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
-  const archived = allNotes.filter(n => n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+  const cats = site.noteCategories || [];
+  const active = cats.filter(c => !c.archived);
+  const archived = cats.filter(c => c.archived);
 
-  list.innerHTML = active.length ? active.map(n => _renderOneSiteNote(site, n, canEdit)).join('')
-    : `<div class="hint" style="text-align:center;padding:16px 0;">Aucune note pour l'instant.${canEdit ? ' Ajoute la première ci-dessus.' : ''}</div>`;
+  const catCard = (c) => {
+    const notesCount = (c.notes||[]).filter(n => !n.archived).length;
+    return `
+    <div class="card" style="margin-bottom:8px;padding:0;overflow:hidden;${c.archived?'opacity:.65;':''}">
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;" onclick="_openSiteNoteCategory('${c.id}','${siteId}')">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:15px;">📁 ${escapeHtml(c.title)}</div>
+          <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">${notesCount} note${notesCount>1?'s':''}</div>
+        </div>
+        <span style="color:var(--ink-soft);font-size:18px;">›</span>
+      </div>
+      ${(canEdit && !c.archived) ? `<div style="padding:0 14px 10px;"><button onclick="event.stopPropagation();_archiveSiteNoteCategory('${siteId}','${c.id}')" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:12px;padding:2px 0;">📦 Archiver cette catégorie</button></div>` : ''}
+      ${(canEdit && c.archived) ? `<div style="padding:0 14px 10px;"><button onclick="event.stopPropagation();_unarchiveSiteNoteCategory('${siteId}','${c.id}')" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:12px;padding:2px 0;">↩️ Désarchiver</button></div>` : ''}
+    </div>`;
+  };
 
-  // Section Archivées : repliable, jamais vidée réellement — juste masquée
-  // par défaut pour ne pas encombrer la vue du jour du chantier.
-  if(archiveZone){
-    archiveZone.innerHTML = archived.length ? `
-      <details style="margin-top:14px;">
-        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--ink-soft);padding:6px 0;">📦 Notes archivées (${archived.length})</summary>
-        <div style="margin-top:8px;">${archived.map(n => _renderOneSiteNote(site, n, canEdit)).join('')}</div>
-      </details>` : '';
+  let html = '';
+  html += active.length ? active.map(catCard).join('')
+    : `<div class="hint" style="text-align:center;padding:16px 0;">Aucune catégorie pour l'instant.${canEdit ? ' Crée-en une ci-dessous (ex : "À faire attention", "Points importants"…).' : ''}</div>`;
+
+  if(archived.length){
+    html += `
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--ink-soft);padding:6px 0;">📦 Catégories archivées (${archived.length})</summary>
+        <div style="margin-top:8px;">${archived.map(catCard).join('')}</div>
+      </details>`;
   }
 
-  // Zone d'ajout : réservée conducteur/patron (création dès la phase
-  // brouillon, en amont de la réunion de lancement de chantier).
-  if(addZone){
-    addZone.innerHTML = canEdit ? `
+  if(canEdit){
+    html += `
+      <div class="card" style="margin-top:14px;padding:12px;">
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="siteNoteCategoryInput" placeholder="Nouvelle catégorie (ex : À faire attention)…" style="flex:1;"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();_addSiteNoteCategory('${siteId}');}">
+          <button class="btn btn-primary" onclick="_addSiteNoteCategory('${siteId}')">+ Créer</button>
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+function _addSiteNoteCategory(siteId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const input = document.getElementById('siteNoteCategoryInput');
+  const title = input ? input.value.trim() : '';
+  if(!title) return;
+  if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
+  site.noteCategories.push({ id: uid(), title, archived: false, createdAt: new Date().toISOString(), notes: [] });
+  site.updatedAt = new Date().toISOString(); // voir mergeArrayById
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  _renderSiteNoteCategoriesList(siteId);
+}
+
+function _archiveSiteNoteCategory(siteId, catId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  cat.archived = true;
+  cat.catUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  _renderSiteNoteCategoriesList(siteId);
+}
+
+function _unarchiveSiteNoteCategory(siteId, catId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  cat.archived = false;
+  cat.catUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  _renderSiteNoteCategoriesList(siteId);
+}
+
+/* ── Vue détail d'une catégorie (niveau 2 : ses notes) ── */
+function _openSiteNoteCategory(catId, siteId){
+  _siteNotesOpenCategoryId = catId;
+  _renderSiteNoteCategoryDetail(siteId, catId);
+}
+
+function _closeSiteNoteCategory(siteId){
+  _siteNotesOpenCategoryId = null;
+  _renderSiteNoteCategoriesList(siteId);
+}
+
+function _renderSiteNoteCategoryDetail(siteId, catId){
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  const body = document.getElementById('siteNotesBody');
+  const titleEl = document.getElementById('siteNotesModalTitle');
+  if(!site || !body) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat){ _closeSiteNoteCategory(siteId); return; }
+  if(titleEl) titleEl.textContent = `📁 ${cat.title}`;
+  const canEdit = _canEditSiteNotes();
+  const notes = cat.notes || [];
+  const active = notes.filter(n => !n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+  const archived = notes.filter(n => n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
+
+  const noteCard = (n) => `
+    <div class="card" style="margin-bottom:8px;padding:10px 12px;${n.archived?'opacity:.65;':''}">
+      <div style="display:flex;align-items:flex-start;gap:10px;">
+        ${n.hasCheckbox ? `<input type="checkbox" ${n.done?'checked':''} onchange="_toggleSiteNote('${siteId}','${cat.id}','${n.id}')"
+          style="width:20px;height:20px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;cursor:pointer;">` : ''}
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13.5px;line-height:1.45;white-space:pre-wrap;${n.done?'text-decoration:line-through;opacity:.6;':''}">${escapeHtml(n.text)}</div>
+          <div style="display:flex;gap:10px;margin-top:6px;">
+            ${n.date ? `<span style="font-size:11px;color:var(--ink-soft);">📅 ${escapeHtml(_fmtSiteNoteDate(n.date))}</span>` : ''}
+            <span style="font-size:11px;color:var(--ink-soft);">${escapeHtml(n.createdBy||'')}</span>
+          </div>
+        </div>
+        ${(canEdit && !n.archived) ? `<button onclick="_archiveSiteNote('${siteId}','${cat.id}','${n.id}')" title="Archiver (jamais supprimée)" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:15px;padding:2px 6px;flex-shrink:0;">📦</button>` : ''}
+        ${(canEdit && n.archived) ? `<button onclick="_unarchiveSiteNote('${siteId}','${cat.id}','${n.id}')" title="Désarchiver" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:15px;padding:2px 6px;flex-shrink:0;">↩️</button>` : ''}
+      </div>
+    </div>`;
+
+  let html = `<button class="btn btn-outline btn-block" style="margin-bottom:12px;" onclick="_closeSiteNoteCategory('${siteId}')">← Toutes les catégories</button>`;
+
+  if(canEdit){
+    html += `
       <div class="card" style="margin-bottom:12px;padding:12px;">
-        <input type="text" id="siteNoteTitleInput" placeholder="Titre (optionnel)" style="margin-bottom:8px;">
-        <textarea id="siteNoteTextInput" placeholder="Contenu de la note…" rows="3" style="width:100%;resize:vertical;margin-bottom:8px;"></textarea>
+        <textarea id="siteNoteTextInput" placeholder="Ajouter une note dans « ${escapeHtml(cat.title)} »…" rows="3" style="width:100%;resize:vertical;margin-bottom:8px;"></textarea>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
-            <input type="date" id="siteNoteDateInput" style="width:auto;">
-          </label>
+          <input type="date" id="siteNoteDateInput" style="width:auto;">
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
             <input type="checkbox" id="siteNoteCheckboxToggle" style="accent-color:var(--wood);"> Ajouter une case à cocher
           </label>
         </div>
-        <button class="btn btn-primary btn-block" onclick="_addSiteNote('${siteId}')">+ Ajouter la note</button>
-      </div>` : '';
+        <button class="btn btn-primary btn-block" onclick="_addSiteNote('${siteId}','${cat.id}')">+ Ajouter la note</button>
+      </div>`;
   }
+
+  html += active.length ? active.map(noteCard).join('')
+    : `<div class="hint" style="text-align:center;padding:16px 0;">Aucune note dans cette catégorie pour l'instant.</div>`;
+
+  if(archived.length){
+    html += `
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--ink-soft);padding:6px 0;">📦 Notes archivées (${archived.length})</summary>
+        <div style="margin-top:8px;">${archived.map(noteCard).join('')}</div>
+      </details>`;
+  }
+
+  body.innerHTML = html;
 }
 
-function _addSiteNote(siteId){
+function _addSiteNote(siteId, catId){
   if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
-  const titleEl = document.getElementById('siteNoteTitleInput');
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
   const textEl = document.getElementById('siteNoteTextInput');
   const dateEl = document.getElementById('siteNoteDateInput');
   const cbEl = document.getElementById('siteNoteCheckboxToggle');
-  const title = titleEl ? titleEl.value.trim() : '';
   const text = textEl ? textEl.value.trim() : '';
-  if(!title && !text){ showToast('Écris au moins un titre ou un contenu'); return; }
-  if(!Array.isArray(site.notes)) site.notes = [];
+  if(!text){ showToast('Écris le contenu de la note'); return; }
   const myName = (data.settings.myProfile && data.settings.myProfile.name) || 'Moi';
-  site.notes.push({
+  if(!Array.isArray(cat.notes)) cat.notes = [];
+  cat.notes.push({
     id: uid(),
-    title, text,
+    text,
     date: (dateEl && dateEl.value) ? dateEl.value : null,
     hasCheckbox: !!(cbEl && cbEl.checked),
     done: false,
@@ -40122,59 +40258,67 @@ function _addSiteNote(siteId){
     noteUpdatedAt: new Date().toISOString(), // voir mergeArrayById (fusion notes par id)
     createdBy: myName
   });
-  site.updatedAt = new Date().toISOString(); // voir mergeArrayById
+  cat.catUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  _renderSiteNotesList(siteId);
+  _renderSiteNoteCategoryDetail(siteId, catId);
   renderChantierActifBanner(); // met à jour le compteur sur le bouton
 }
 
-function _toggleSiteNote(siteId, noteId){
+function _toggleSiteNote(siteId, catId, noteId){
   // Cocher/décocher est ouvert à TOUS les rôles pouvant voir le chantier
   // (chef/ouvrier inclus) — c'est le cœur de la consultation/validation.
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
-  const note = (site.notes||[]).find(n => n.id === noteId);
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  const note = (cat.notes||[]).find(n => n.id === noteId);
   if(!note) return;
   note.done = !note.done;
   note.noteUpdatedAt = new Date().toISOString();
   site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  _renderSiteNotesList(siteId);
+  _renderSiteNoteCategoryDetail(siteId, catId);
   renderChantierActifBanner();
 }
 
-/* Archivage — JAMAIS de suppression réelle. La note reste en base pour
-   toujours (exigence : ne jamais perdre ces données de chantier), elle est
-   seulement masquée de la vue principale et déplacée vers "Archivées". */
-function _archiveSiteNote(siteId, noteId){
+/* Archivage — JAMAIS de suppression réelle, ni pour les notes ni pour les
+   catégories. Elles restent en base pour toujours (exigence : ne jamais
+   perdre ces données de chantier), seulement masquées de la vue principale
+   et déplacées vers "Archivées". */
+function _archiveSiteNote(siteId, catId, noteId){
   if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
-  const note = (site.notes||[]).find(n => n.id === noteId);
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  const note = (cat.notes||[]).find(n => n.id === noteId);
   if(!note) return;
   note.archived = true;
   note.noteUpdatedAt = new Date().toISOString();
   site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  _renderSiteNotesList(siteId);
+  _renderSiteNoteCategoryDetail(siteId, catId);
   renderChantierActifBanner();
 }
 
-function _unarchiveSiteNote(siteId, noteId){
+function _unarchiveSiteNote(siteId, catId, noteId){
   if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
-  const note = (site.notes||[]).find(n => n.id === noteId);
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  const note = (cat.notes||[]).find(n => n.id === noteId);
   if(!note) return;
   note.archived = false;
   note.noteUpdatedAt = new Date().toISOString();
   site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  _renderSiteNotesList(siteId);
+  _renderSiteNoteCategoryDetail(siteId, catId);
   renderChantierActifBanner();
 }
 /* ── Maintien long sur l'adresse du bandeau chantier actif → édition ──
