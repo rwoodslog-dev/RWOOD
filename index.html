@@ -29026,7 +29026,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.2';
+const APP_VERSION = '5.21.4';
 
 const CHANGELOG = [
   {
@@ -34912,6 +34912,57 @@ let _devCurrentTab = 'comptes'; // 'comptes' | 'pointages' | 'machines'
 
 /* ── Onglet Dev : Test alertes — simule l'envoi d'une alerte à SOI-MÊME
    (le compte dev courant) pour voir son rendu réel dans l'inbox. ── */
+/* Diagnostic réel (vrais appels réseau) pour comprendre pourquoi un chantier
+   ou ses notes n'apparaissent pas sur un autre compte : vérifie la présence
+   locale, l'écriture réelle sur le canal partagé Supabase, puis la relecture
+   depuis ce même canal — étape par étape, sans rien avaler en silence. */
+async function _syncDiagnosticRun(){
+  const el = document.getElementById('syncDiagStatus');
+  const sel = document.getElementById('syncDiagSiteSelect');
+  const log = [];
+  const show = () => { if(el) el.textContent = log.join('\n'); };
+  const add = (t) => { log.push(t); show(); };
+
+  const siteId = sel ? sel.value : null;
+  const site = (data.sites||[]).find(s => s.id === siteId);
+
+  add('1) Chantier en local…');
+  if(!site){ add('   ❌ Introuvable dans data.sites de CE compte.'); return; }
+  add(`   ✅ "${site.name}" trouvé.`);
+
+  const catCount = (site.noteCategories||[]).length;
+  const noteCount = (site.noteCategories||[]).reduce((s,c)=>s+(c.notes||[]).length,0);
+  add(`2) Notes en local sur CE compte…`);
+  add(`   ${catCount} catégorie(s), ${noteCount} note(s) au total.`);
+  if(!catCount){ add('   ⚠️ Aucune catégorie sur ce chantier depuis ce compte — normal si tu testes depuis le compte qui les REÇOIT.'); }
+
+  add('3) Connexion internet…');
+  if(!navigator.onLine){ add('   ❌ Hors-ligne — la synchro ne peut pas fonctionner.'); return; }
+  add('   ✅ En ligne.');
+
+  add('4) Envoi réel vers le canal partagé (push)…');
+  try{
+    await syncAllSitesCycle();
+    add('   ✅ Cycle de synchro exécuté sans erreur.');
+  }catch(e){ add('   ❌ Erreur pendant le push : ' + (e && e.message)); return; }
+
+  add('5) Relecture depuis le canal partagé…');
+  try{
+    const shared = await _fetchSharedSites();
+    const sharedSite = (shared||[]).find(s => s.id === siteId);
+    if(!sharedSite){ add('   ❌ Ce chantier est ABSENT du canal partagé — le push n\'a pas fonctionné (vérifie la connexion Supabase).'); return; }
+    add(`   ✅ Chantier présent côté serveur.`);
+    const sCatCount = (sharedSite.noteCategories||[]).length;
+    const sNoteCount = (sharedSite.noteCategories||[]).reduce((s,c)=>s+(c.notes||[]).length,0);
+    add(`   Catégories côté serveur : ${sCatCount}, notes : ${sNoteCount}.`);
+    if(!sCatCount && catCount){
+      add('   ❌ PROBLÈME CONFIRMÉ : les catégories existent en local mais PAS côté serveur.\n   → Version pas à jour sur cet appareil, redéploie la dernière version.');
+    } else if(sCatCount){
+      add('\n🎉 Les notes sont bien sur le serveur. Si l\'autre compte ne les voit toujours pas :\n   → vérifie qu\'il tourne aussi sur la dernière version (cache),\n   → et qu\'il a bien ce même chantier dans sa liste (pas juste les notes).');
+    }
+  }catch(e){ add('   ❌ Erreur pendant la relecture : ' + (e && e.message)); }
+}
+
 function _renderDevTabAlertTest(list){
   const sites = (data.sites||[]).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'','fr'));
   const siteOptions = sites.map(s=>`<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
@@ -34924,6 +34975,15 @@ function _renderDevTabAlertTest(list){
       <button class="btn btn-outline btn-block" onclick="dropboxDiagnostic()">🔍 Tester la connexion Dropbox</button>
       <button class="btn btn-primary btn-block" style="margin-top:8px;" onclick="dropboxBackupAllExisting()"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Envoyer tout l'existant vers Dropbox</button>
       <div class="hint" id="dropboxBulkStatus" style="margin-top:8px;text-align:left;white-space:pre-wrap;font-family:monospace;font-size:11px;"></div>
+    </div>
+
+    <!-- Diagnostic synchro chantiers/notes (Dev) -->
+    <div class="card" style="margin-bottom:14px;border:1px solid var(--wood);">
+      <div class="section-title" style="margin-top:0;">🔍 Diagnostic synchro chantiers</div>
+      <div class="hint" style="margin-bottom:10px;">Vérifie étape par étape pourquoi un chantier (et ses notes) n'apparaît pas sur un autre compte : présence locale, envoi au canal partagé, relecture.</div>
+      <select id="syncDiagSiteSelect" style="margin-bottom:8px;">${siteOptions}</select>
+      <button class="btn btn-outline btn-block" onclick="_syncDiagnosticRun()">🔍 Lancer le diagnostic</button>
+      <div class="hint" id="syncDiagStatus" style="margin-top:8px;text-align:left;white-space:pre-wrap;font-family:monospace;font-size:11px;"></div>
     </div>
 
     <div class="hint" style="margin-bottom:12px;">Envoie une alerte de test sur CE compte, pour voir exactement le rendu qu'aura un utilisateur dans son inbox (bouton "Alertes" en haut de l'app).</div>
@@ -40965,7 +41025,14 @@ function simpleModeRenderConfig(){
   const list = document.getElementById('simpleModeOngletsList');
   if(!list) return;
   const selected = _simpleGetTiles();
-  list.innerHTML = SIMPLE_ALL_TILES.map(t => {
+  // La tuile "Dev" ne doit être ni visible ni activable dans cette liste de
+  // personnalisation pour qui que ce soit d'autre que le développeur — même
+  // garde stricte que celle déjà appliquée à l'affichage du dashboard
+  // (voir _simpleGetTiles/canDev), sinon n'importe quel rôle pouvait la
+  // cocher depuis les réglages alors qu'elle restait inaccessible ensuite.
+  const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
+  const availableTiles = canDev ? SIMPLE_ALL_TILES : SIMPLE_ALL_TILES.filter(t => t.view !== 'dev');
+  list.innerHTML = availableTiles.map(t => {
     const on = selected.includes(t.view);
     const iconHtml = t.img
       ? `<img src="${encodeURI(t.img)}" alt="" style="width:26px;height:26px;object-fit:contain;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${t.icon}',style:'font-size:20px;'}))">`
