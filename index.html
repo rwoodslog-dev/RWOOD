@@ -29041,7 +29041,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.22.2';
+const APP_VERSION = '5.22.3';
 
 const CHANGELOG = [
   {
@@ -36989,7 +36989,7 @@ async function pullSharedSites(){
     const conducteurFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','assignedChefs','assignedChefs',
       'assignedChefPhone','assignedChefName','assignedChefAuthId','trajetZone',
-      'syncLive','lastSyncAt','ownerDeviceId','teamName','sharedMedia'];
+      'syncLive','lastSyncAt','ownerDeviceId','teamName','updatedAt','tileId','coverPhotoUrl'];
 
     relevant.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
@@ -36999,9 +36999,37 @@ async function pullSharedSites(){
         data.sites.push({ ...remote, shared:true, syncLive: _isPatron ? true : remote.syncLive, stockNeeds:{}, stockTaken:{} });
         changed = true;
       } else if(remote.syncLive){
-        // Synchro temps réel : mettre à jour les champs conducteur sans toucher aux données chef
+        // Synchro temps réel : mettre à jour les champs conducteur sans toucher
+        // aux données chef — MAIS seulement si le remote est réellement plus
+        // récent (même règle que syncAllSitesPull). AVANT : écrasement pur et
+        // simple dès que remote.syncLive était vrai, sans jamais regarder
+        // quelle version était la plus récente — c'est ce qui faisait
+        // "revenir en arrière" un statut/nom/adresse tout juste changé
+        // ailleurs : ce polling (déclenché ~4.5s après chargement ET à
+        // chaque fois que l'app redevient visible) repoussait une ancienne
+        // copie par-dessus la correction qui venait d'arriver par un autre
+        // canal de synchro.
         const local = data.sites[idx];
-        conducteurFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+        const remoteIsNewer = remote.updatedAt && (!local.updatedAt || new Date(remote.updatedAt) > new Date(local.updatedAt));
+        if(remoteIsNewer){
+          conducteurFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
+          changed = true;
+        }
+        // Médias et catégories de notes : TOUJOURS en union (jamais simplement
+        // écrasés), même règle que syncAllSitesPull — sinon une photo/note
+        // ajoutée sur un autre appareil pouvait disparaître via ce chemin.
+        if(Array.isArray(remote.sharedMedia)){
+          const seen = new Set();
+          const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
+          const mergedMedia = [];
+          [ ...(Array.isArray(local.sharedMedia)?local.sharedMedia:[]), ...remote.sharedMedia ].forEach(m => {
+            const k = keyOf(m); if(seen.has(k)) return; seen.add(k); mergedMedia.push(m);
+          });
+          local.sharedMedia = mergedMedia;
+        }
+        if(Array.isArray(remote.noteCategories) && typeof _mergeNoteCategoriesForPush === 'function'){
+          local.noteCategories = _mergeNoteCategoriesForPush(local.noteCategories, remote.noteCategories);
+        }
         local.shared = true;
         if(_isPatron) local.syncLive = true;
         changed = true;
