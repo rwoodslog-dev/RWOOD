@@ -29026,7 +29026,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.5';
+const APP_VERSION = '5.21.6';
 
 const CHANGELOG = [
   {
@@ -36905,6 +36905,7 @@ async function pushSharedSite(site){
       assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
       tileId:              site.tileId || null,
       coverPhotoUrl:       site.coverPhotoUrl || null, // photo de référence du bandeau chantier actif
+      updatedAt:           site.updatedAt || null, // indispensable à la fusion par date (voir syncAllSitesPull)
       noteCategories:      (typeof _mergeNoteCategoriesForPush === 'function')
         ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
         : (site.noteCategories || [])
@@ -37114,7 +37115,15 @@ async function syncAllSitesPushAll(){
         // entre-temps, avant que ce push n'écrive la nouvelle version.
         noteCategories: (typeof _mergeNoteCategoriesForPush === 'function')
           ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
-          : (site.noteCategories || [])
+          : (site.noteCategories || []),
+        // updatedAt : INDISPENSABLE — c'est sur ce champ que se base toute la
+        // fusion de "l'identité" du chantier (nom, adresse, statut, photo de
+        // couverture, tuile…) pour savoir quelle version est la plus
+        // récente. Sans lui transmis au serveur, remote.updatedAt était
+        // toujours vide côté réception, et aucune mise à jour de ces champs
+        // ne pouvait jamais être acceptée par un autre appareil (voir le fix
+        // sur "iAmOwner" → remoteIsNewer dans syncAllSitesPull).
+        updatedAt: site.updatedAt || null
       };
       // On écrit toujours la version fusionnée (identité à jour + union des médias).
       byId[site.id] = existing ? Object.assign({}, existing, snapshot) : snapshot;
@@ -37175,9 +37184,20 @@ async function syncAllSitesPull(){
         // Chantier déjà présent : on rafraîchit son identité si la version
         // distante est plus récente, sans toucher aux données locales de stock.
         const local = data.sites[idx];
-        const remoteTs = Date.parse(remote.lastSyncAt || 0) || 0;
-        const localTs  = Date.parse(local.lastSyncAt || 0) || 0;
-        const iAmOwner = (local.ownerDeviceId || '') === getDeviceSyncId();
+        // NOTE : l'ancienne logique se basait sur "iAmOwner" (comparaison de
+        // local.ownerDeviceId à l'appareil courant) pour décider si on avait
+        // le droit d'accepter une mise à jour distante. Problème : les
+        // chantiers de démonstration (seedData()) ont les MÊMES id sur
+        // CHAQUE nouvelle installation, donc chaque nouveau compte se
+        // croyait "propriétaire" de son propre "Marchal"/"Guanxi" local et
+        // refusait catégoriquement toute mise à jour venue du serveur pour
+        // ces chantiers (adresse, statut, ET la photo de couverture — d'où
+        // le bug signalé). On utilise désormais uniquement l'horodatage de
+        // modification réelle (site.updatedAt, posé à chaque changement),
+        // exactement le même principe fiable que mergeArrayById.
+        const remoteUpdated = Date.parse(remote.updatedAt || 0) || 0;
+        const localUpdated  = Date.parse(local.updatedAt || 0) || 0;
+        const remoteIsNewer = remote.updatedAt && (!local.updatedAt || remoteUpdated > localUpdated);
 
         // Médias/documents : TOUJOURS fusionnés en union (jamais écrasés),
         // quel que soit le propriétaire ou l'horodatage.
@@ -37219,7 +37239,7 @@ async function syncAllSitesPull(){
           local.noteCategories = mergedCats;
         }
 
-        if(!iAmOwner && remoteTs >= localTs){
+        if(remoteIsNewer){
           identityFields.forEach(k => { if(remote[k] !== undefined) local[k] = remote[k]; });
           local.shared = true;
           changed = true;
