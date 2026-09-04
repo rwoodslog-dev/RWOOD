@@ -17831,8 +17831,16 @@ function _catalogueDoAssoc(siteId){
     type: model.type||'', pureau: model.pureau||'', coloris: model.coloris||[],
     fiche: _modelFicheImportee(marque, model) || _modelLien(marque, model) || ''
   });
+  // updatedAt + sync immédiate : l'association d'une tuile à un chantier
+  // doit être enregistrée DÉFINITIVEMENT pour tout le monde jusqu'à un
+  // changement d'assignation explicite — sans updatedAt, un appareil
+  // désynchronisé pourrait repousser une ancienne version et faire
+  // disparaître l'association (même classe de bug que l'adresse et la
+  // photo de couverture, voir mergeArrayById / syncAllSitesPull).
+  site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncPush === 'function'){ try{ syncPush(); }catch(_){} }
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
   closeModal('catalogueAssoc');
   showToast('🏗 ' + nom + ' associée à ' + (site.name||'ce chantier'));
 }
@@ -18289,8 +18297,10 @@ function detailRemoveTile(siteId, idx){
   const site = data.sites.find(s=>s.id===siteId);
   if(!site || !Array.isArray(site.tiles)) return;
   site.tiles.splice(idx, 1);
+  site.updatedAt = new Date().toISOString(); // voir mergeArrayById / syncAllSitesPull
   saveData();
   if(typeof syncPush === 'function'){ try{ syncPush(); }catch(_){} }
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
   renderDetailTile(siteId);
 }
 
@@ -18357,7 +18367,15 @@ function selectTileForSite(siteId, tileId){
   const site = data.sites.find(s=>s.id===siteId);
   if(!site) return;
   site.tileId = tileId;
+  // updatedAt + sync immédiate : indispensable pour que l'assignation de la
+  // fiche tuile au chantier soit enregistrée DÉFINITIVEMENT pour tous —
+  // jusqu'à un changement d'assignation explicite — sans risque qu'un autre
+  // appareil désynchronisé la fasse "revenir en arrière" lors d'une fusion
+  // (même classe de bug déjà corrigée sur l'adresse et la photo de
+  // couverture, voir mergeArrayById / syncAllSitesPull).
+  site.updatedAt = new Date().toISOString();
   saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
   closeModal('selectTile');
   renderDetailTile(siteId);
   showToast('Tuile du chantier définie');
@@ -29039,7 +29057,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.21.0';
+const APP_VERSION = '5.21.1';
 
 const CHANGELOG = [
   {
@@ -37033,7 +37051,7 @@ async function syncAllSitesPull(){
     const identityFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','trajetZone','teamName',
       'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
-      'assignedTeamName','lastSyncAt','ownerDeviceId'];
+      'assignedTeamName','lastSyncAt','ownerDeviceId','tileId'];
     // NB : 'sharedMedia' et 'documents' sont VOLONTAIREMENT exclus ci-dessus.
     // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMedia)
     // pour qu'un document/photo n'disparaisse jamais lors d'une synchro.
@@ -37075,6 +37093,24 @@ async function syncAllSitesPull(){
         else { local.sharedMedia = mergedMedia; }
         if(mergedDocs.length !== (local.documents||[]).length){ local.documents = mergedDocs; changed = true; }
         else { local.documents = mergedDocs; }
+
+        // Tuiles associées au chantier (site.tiles, ex. "DC 12 — Terreal")
+        // TOUJOURS fusionnées en union, jamais écrasées — sinon une
+        // association faite sur un appareil pouvait disparaître si un autre
+        // appareil (avec une version sans cette tuile) synchronisait juste
+        // après. Dédupliquée par marque+nom (même clé que la vérification
+        // anti-doublon de _catalogueDoAssoc).
+        const _mergeSiteTiles = (a, b) => {
+          const out = [], seen = new Set();
+          [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(t => {
+            const k = (t && (t.marque||'') + '|' + (t.nom||'')) || JSON.stringify(t);
+            if(seen.has(k)) return; seen.add(k); out.push(t);
+          });
+          return out;
+        };
+        const mergedTiles = _mergeSiteTiles(local.tiles, remote.tiles);
+        if(mergedTiles.length !== (local.tiles||[]).length){ local.tiles = mergedTiles; changed = true; }
+        else { local.tiles = mergedTiles; }
 
         // Catégories de notes : TOUJOURS fusionnées en union à deux niveaux
         // (jamais écrasées), même règle que documents/sharedMedia — sinon
@@ -39662,7 +39698,10 @@ const SIMPLE_ALL_TILES = [
   { view:'zinc', img:'icons/zinc.png', icon:'🔧', label:'Zinc' },
   { view:'zone-chantier', img:'icons/zone.png', icon:'🗾', label:'Zone' },
   { view:'magasin', img:'icons/magasin.png', icon:'🛒', label:'Magasin' },
-  { view:'quincaillerie', img:'icons/quincaillerie.png', icon:'🔩', label:'Quincaillerie' },
+  // (Tuile "Quincaillerie" — scanner dédié à icône vis — définitivement absente
+  // de ce catalogue : masquée pour tout le monde. La catégorie de stock
+  // "quincaillerie" reste accessible via Stock/Magasin/Dépannage, seule
+  // cette tuile d'accès direct est retirée.)
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
   { view:'alertes-conducteur', img:'icons/bulle-gyrophare.png', icon:'🚨', label:'Alertes' },
 ];
@@ -39887,6 +39926,11 @@ function simpleModeRenderDash(){
   // La tuile Dev n'est visible que pour un utilisateur is_dev (garde stricte).
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
   if(!canDev) tiles = tiles.filter(v => v !== 'dev');
+  // Tuile "Quincaillerie" retirée du catalogue global : filtrée même si un
+  // utilisateur l'avait déjà sélectionnée avant ce retrait, pour qu'elle
+  // disparaisse proprement au lieu de laisser une tuile fantôme (icône
+  // générique + libellé brut) toujours cliquable.
+  tiles = tiles.filter(v => v !== 'quincaillerie');
   const n = tiles.length;
   // Adapter les colonnes : 1→1col, 2→2col, 3→3col, 4+→2col (scroll si > 6)
   grid.classList.remove('cols-1','cols-3');
@@ -40081,6 +40125,7 @@ function renderPcSidebarNav(){
   let tiles = _simpleGetTiles();
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
   if(!canDev) tiles = tiles.filter(v => v !== 'dev');
+  tiles = tiles.filter(v => v !== 'quincaillerie'); // retirée du catalogue global (voir SIMPLE_ALL_TILES)
 
   const tileBtns = tiles.map(viewId => {
     const def = SIMPLE_ALL_TILES.find(t => t.view === viewId);
@@ -40816,6 +40861,17 @@ function _cabWorkersCount(siteId){
 function dashOpenTuileFiche(siteId){
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
+  // Priorité à la VRAIE fiche tuile assignée au chantier (site.tileId →
+  // data.tiles, module Couverture/Toiture) : c'est cette assignation qui est
+  // enregistrée définitivement et synchronisée pour tous (voir
+  // selectTileForSite). On ouvre directement le fichier/la fiche technique,
+  // pas une page de site générique.
+  if(site.tileId){
+    const tile = (data.tiles || []).find(t => t.id === site.tileId);
+    if(tile){ openTileRecap(siteId); return; }
+  }
+  // Repli : ancien système de tuiles embarquées directement sur le site
+  // (site.tiles[]), conservé pour compatibilité si jamais utilisé ailleurs.
   const tiles = Array.isArray(site.tiles) ? site.tiles : [];
   if(!tiles.length){ goTo('couverture'); return; }
   const withFiche = tiles.find(t => t.fiche);
