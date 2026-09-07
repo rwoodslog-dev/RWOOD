@@ -6589,6 +6589,40 @@
   </div>
 </div>
 
+<!-- MODAL : Consentement signature / données de fiches d'heures — NON
+     FERMABLE tant que les deux cases ne sont pas cochées et qu'une
+     signature n'a pas été enregistrée (voir _checkSignatureConsent). Pas
+     de croix de fermeture, pas de clic sur l'overlay pour fermer, et le
+     bouton retour est explicitement ignoré pour cette modale précise (voir
+     le gestionnaire popstate). -->
+<div class="modal-overlay" id="modal-signatureConsent">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <h2>✍️ Ta signature</h2>
+    </div>
+    <div class="hint" style="margin-bottom:14px;">
+      Pour continuer à utiliser l'app, confirme les points suivants et signe une fois ci-dessous.
+    </div>
+    <label style="display:flex; align-items:flex-start; gap:10px; margin-bottom:12px; cursor:pointer;">
+      <input type="checkbox" id="consentSignatureUsage" style="width:20px;height:20px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;">
+      <span style="font-size:13.5px;">J'autorise l'utilisation de ma signature sur mes fiches d'heures et mes récapitulatifs.</span>
+    </label>
+    <label style="display:flex; align-items:flex-start; gap:10px; margin-bottom:16px; cursor:pointer;">
+      <input type="checkbox" id="consentDataUsage" style="width:20px;height:20px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;">
+      <span style="font-size:13.5px;">J'autorise l'utilisation des données de mes fiches d'heures dans le cadre du fonctionnement de l'application.</span>
+    </label>
+    <div class="signature-canvas-wrap">
+      <canvas id="consentSignatureCanvas"></canvas>
+    </div>
+    <div class="signature-hint">Signe au doigt dans le cadre ci-dessus</div>
+    <div class="hint" id="consentSignatureError" style="display:none; color:var(--red); margin-top:8px;"></div>
+    <div class="row-actions" style="margin-top:12px;">
+      <button class="btn btn-outline" onclick="clearConsentSignatureCanvas()">Effacer</button>
+      <button class="btn btn-primary" onclick="submitSignatureConsent()">Valider et continuer</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL : Administration du catalogue tuiles (Dev) -->
 <div class="modal-overlay" id="modal-catalogueAdmin">
   <div class="modal" style="max-width:640px;">
@@ -7496,6 +7530,10 @@ async function initRwoodStorage(){
   setTimeout(()=> { if(typeof _migrateDismissOldReadAlerts === 'function') _migrateDismissOldReadAlerts(); }, 3800);
   // Verifier les alertes de la comptable (bulle flottante si message en attente)
   setTimeout(()=> checkForNewAlerts(), 4000);
+  // Consentement signature / données fiches d'heures : bloque l'app tant
+  // que ce n'est pas validé, pour tout compte déjà existant n'ayant jamais
+  // répondu à cette version du consentement.
+  setTimeout(()=> { if(typeof _checkSignatureConsent === 'function') _checkSignatureConsent(); }, 4200);
   setTimeout(()=> pullSharedSites(), 4500);
   // Fix pointage vide au 1er lancement : re-render après que pullSharedSites a fini
   setTimeout(()=> { try{ if(currentHeuresMode === 'pointage') renderPointage(); }catch(e){} }, 5500);
@@ -20558,6 +20596,101 @@ let sigCtx = null;
 let sigDrawing = false;
 let sigHasContent = false;
 
+/* Version du texte de consentement d'usage de la signature et des données
+   de fiches d'heures. Toute personne dont worker.signatureConsentVersion
+   est absent ou inférieur à cette valeur doit revalider avant de pouvoir
+   utiliser l'app (voir _checkSignatureConsent, déclenché au démarrage). Si
+   le texte de consentement change un jour, incrémenter cette constante
+   pour redemander l'accord à tout le monde. */
+const SIGNATURE_CONSENT_VERSION = 1;
+
+/* ── Consentement signature / données de fiches d'heures ────────────────
+   Bloque l'utilisation de l'app tant que l'utilisateur n'a pas coché les
+   deux cases et signé. S'applique à TOUS les comptes existants (une
+   seule fois chacun, à la première ouverture après le déploiement de
+   cette version) ET à tout nouveau compte créé. La signature saisie ici
+   s'assigne automatiquement au compte connecté (via profile.workerId,
+   exactement comme le module signature classique). */
+let _consentSigCtx = null, _consentSigHasContent = false;
+
+function _checkSignatureConsent(){
+  const profile = data.settings.myProfile;
+  if(!profile || !profile.workerId) return; // pas encore de profil ouvrier créé, rien à bloquer
+  const w = data.workers.find(x => x.id === profile.workerId);
+  if(!w) return;
+  const already = (w.signatureConsentVersion || 0) >= SIGNATURE_CONSENT_VERSION;
+  if(already) return;
+  openModal('signatureConsent');
+  setTimeout(_setupConsentSignatureCanvas, 260);
+}
+
+function _setupConsentSignatureCanvas(){
+  const canvas = document.getElementById('consentSignatureCanvas');
+  if(!canvas) return;
+  const wrap = canvas.parentElement;
+  const ratio = window.devicePixelRatio || 1;
+  const rect = wrap.getBoundingClientRect();
+  canvas.width = rect.width * ratio;
+  canvas.height = rect.height * ratio;
+  _consentSigCtx = canvas.getContext('2d');
+  _consentSigCtx.scale(ratio, ratio);
+  _consentSigCtx.lineWidth = 2.5;
+  _consentSigCtx.lineCap = 'round';
+  _consentSigCtx.lineJoin = 'round';
+  _consentSigCtx.strokeStyle = '#1C1714';
+  _consentSigHasContent = false;
+
+  const getPos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const point = e.touches ? e.touches[0] : e;
+    return { x: point.clientX - r.left, y: point.clientY - r.top };
+  };
+  let drawing = false;
+  const start = (e) => { e.preventDefault(); drawing = true; const p = getPos(e); _consentSigCtx.beginPath(); _consentSigCtx.moveTo(p.x, p.y); };
+  const move = (e) => { if(!drawing) return; e.preventDefault(); const p = getPos(e); _consentSigCtx.lineTo(p.x, p.y); _consentSigCtx.stroke(); _consentSigHasContent = true; };
+  const end = () => { drawing = false; };
+  canvas.onmousedown = start; canvas.onmousemove = move; canvas.onmouseup = end; canvas.onmouseleave = end;
+  canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
+}
+
+function clearConsentSignatureCanvas(){
+  const canvas = document.getElementById('consentSignatureCanvas');
+  if(!canvas || !_consentSigCtx) return;
+  _consentSigCtx.clearRect(0, 0, canvas.width, canvas.height);
+  _consentSigHasContent = false;
+}
+
+function submitSignatureConsent(){
+  const errEl = document.getElementById('consentSignatureError');
+  const usage = document.getElementById('consentSignatureUsage').checked;
+  const dataUse = document.getElementById('consentDataUsage').checked;
+  if(!usage || !dataUse){
+    errEl.textContent = 'Les deux cases doivent être cochées pour continuer.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if(!_consentSigHasContent){
+    errEl.textContent = 'Signe dans le cadre avant de valider.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+
+  const profile = data.settings.myProfile;
+  const w = data.workers.find(x => x.id === (profile && profile.workerId));
+  if(!w){ closeModal('signatureConsent'); return; } // garde-fou, ne devrait jamais arriver ici
+
+  const canvas = document.getElementById('consentSignatureCanvas');
+  w.signature = canvas.toDataURL('image/png'); // assignation automatique au compte connecté
+  w.signatureConsentVersion = SIGNATURE_CONSENT_VERSION;
+  w.signatureConsentAt = new Date().toISOString();
+  saveData();
+  if(typeof syncPush === 'function'){ try{ syncPush(); }catch(_){} }
+
+  closeModal('signatureConsent');
+  showToast('✅ Merci, ta signature est enregistrée');
+}
+
 function openSignatureModal(workerId){
   const w = data.workers.find(w=>w.id===workerId);
   if(!w) return;
@@ -26000,6 +26133,19 @@ function finishAuthCreation(){
     data.settings.teamName = autoTeam;
   }
 
+  // Créer immédiatement la fiche ouvrier correspondante (au lieu d'attendre
+  // que l'utilisateur remplisse "Mon compte" dans les Paramètres) — sans
+  // ça, profile.workerId resterait vide et le blocage de consentement
+  // signature (_checkSignatureConsent) n'aurait jamais rien à vérifier tant
+  // que ce formulaire n'est pas rempli, ce qui permettrait de contourner
+  // l'obligation de signer dès l'inscription.
+  if(!newProfile.workerId && newProfile.firstName){
+    const fullName = [newProfile.firstName, newProfile.lastName].filter(Boolean).join(' ');
+    const worker = { id: uid(), name: fullName, active: true };
+    data.workers.push(worker);
+    data.settings.myProfile.workerId = worker.id;
+  }
+
   // Sauvegarder et afficher
   saveData();
   document.getElementById('authScreen').style.display = 'none';
@@ -26013,6 +26159,11 @@ function finishAuthCreation(){
     if(navigator.onLine) syncPush().then(()=>startSyncPolling());
     pushMyUserRegistration();
   }, 500);
+
+  // Consentement signature obligatoire dès la création du compte — voir
+  // _checkSignatureConsent, ne peut pas être ignoré (modale sans croix de
+  // fermeture, sans clic-extérieur, sans effet du bouton retour).
+  setTimeout(() => { if(typeof _checkSignatureConsent === 'function') _checkSignatureConsent(); }, 700);
 }
 
 function attemptAuthLogin(){
@@ -29109,7 +29260,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.24.1';
+const APP_VERSION = '5.25.0';
 
 const CHANGELOG = [
   {
@@ -41248,6 +41399,13 @@ function _initBackHandler(){
     // Si une modale est ouverte → la fermer d'abord
     const openModal = document.querySelector('.modal-overlay.open');
     if(openModal){
+      // EXCEPTION : la modale de consentement signature ne doit JAMAIS
+      // pouvoir être fermée par le bouton retour — l'utilisateur doit
+      // cocher les deux cases et signer, sans échappatoire possible.
+      if(openModal.id === 'modal-signatureConsent'){
+        history.pushState({}, '');
+        return;
+      }
       openModal.classList.remove('open');
       history.pushState({}, '');
       return;
