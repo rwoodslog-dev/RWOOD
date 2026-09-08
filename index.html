@@ -5508,6 +5508,9 @@
         <button id="devTabChantiers" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('chantiers')">🏗 Chantiers</button>
         <button id="devTabAlertes" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('alertes')">🔔 Test alertes</button>
       </div>
+      <div style="display:flex; gap:6px; margin-bottom:12px;">
+        <button id="devTabPhotos" class="btn btn-outline" style="flex:1;font-size:12px;" onclick="switchDevTab('photos')">📷 Photos</button>
+      </div>
       <div style="margin-bottom:12px;">
         <button class="btn btn-outline btn-block" id="devPanelRefreshBtn" onclick="refreshDevPanel()">🔄 Actualiser</button>
       </div>
@@ -29205,7 +29208,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.27.2';
+const APP_VERSION = '5.28.0';
 
 const CHANGELOG = [
   {
@@ -35435,11 +35438,13 @@ function switchDevTab(tab){
   const btnM = document.getElementById('devTabMachines');
   const btnCh = document.getElementById('devTabChantiers');
   const btnA = document.getElementById('devTabAlertes');
+  const btnPh = document.getElementById('devTabPhotos');
   if(btnC){ btnC.className = tab==='comptes' ? 'btn btn-primary' : 'btn btn-outline'; btnC.style.flex='1'; btnC.style.fontSize='12px'; }
   if(btnP){ btnP.className = tab==='pointages' ? 'btn btn-primary' : 'btn btn-outline'; btnP.style.flex='1'; btnP.style.fontSize='12px'; }
   if(btnM){ btnM.className = tab==='machines' ? 'btn btn-primary' : 'btn btn-outline'; btnM.style.flex='1'; btnM.style.fontSize='12px'; }
   if(btnCh){ btnCh.className = tab==='chantiers' ? 'btn btn-primary' : 'btn btn-outline'; btnCh.style.flex='1'; btnCh.style.fontSize='12px'; }
   if(btnA){ btnA.className = tab==='alertes' ? 'btn btn-primary' : 'btn btn-outline'; btnA.style.flex='1'; btnA.style.fontSize='12px'; }
+  if(btnPh){ btnPh.className = tab==='photos' ? 'btn btn-primary' : 'btn btn-outline'; btnPh.style.flex='1'; btnPh.style.fontSize='12px'; }
   refreshDevPanel();
 }
 
@@ -35457,6 +35462,8 @@ async function refreshDevPanel(){
     await devChantiersRender(list); // MODULE — DevChantiers
   } else if(_devCurrentTab === 'alertes'){
     _renderDevTabAlertTest(list);
+  } else if(_devCurrentTab === 'photos'){
+    await devPhotosRender(list); // MODULE — DevPhotos : suppression définitive cross-chantiers
   } else {
     await _renderDevTabPointages(list);
   }
@@ -42306,6 +42313,131 @@ async function _devChantiersCollect(){
 }
 
 /* Rendu de l'onglet Chantiers (liste OU corbeille). */
+/* ── MODULE — DevPhotos ──────────────────────────────────────────────────
+   Vue développeur : toutes les photos de TOUS les chantiers, réunies en une
+   seule grille, avec sélection multiple et suppression RÉELLEMENT
+   définitive (retire directement l'entrée de site.sharedMedia et pousse
+   le changement — pas de passage par une corbeille). Répond au besoin :
+   corriger une photo ajoutée par erreur sur le mauvais chantier par un
+   utilisateur, sans devoir attendre ou dépendre de la personne qui l'a
+   ajoutée. Réutilise _devChantiersCollect (déjà utilisé par l'onglet
+   Chantiers) pour agréger les chantiers de toutes les sources connues. */
+let _devPhotosSelected = new Set();
+let _devPhotosSiteFilter = '';
+
+async function devPhotosRender(container){
+  container.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Chargement des photos…</div>';
+  const sites = await _devChantiersCollect();
+
+  const allPhotos = [];
+  sites.forEach(s => {
+    (s.sharedMedia||[]).forEach(m => {
+      if(m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url){
+        allPhotos.push({ siteId: s.id, siteName: s.name || '(sans nom)', media: m });
+      }
+    });
+  });
+  allPhotos.sort((a,b) => new Date(b.media.uploadedAt||0) - new Date(a.media.uploadedAt||0));
+
+  if(!allPhotos.length){
+    container.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune photo trouvée sur aucun chantier.</div>';
+    return;
+  }
+
+  const siteOptions = ['<option value="">Tous les chantiers</option>']
+    .concat(sites.filter(s => (s.sharedMedia||[]).some(m => m.type==='photo' || (m.mimeType||'').startsWith('image/')))
+      .sort((a,b)=>(a.name||'').localeCompare(b.name||''))
+      .map(s => `<option value="${s.id}" ${_devPhotosSiteFilter===s.id?'selected':''}>${_devEsc(s.name||'(sans nom)')}</option>`))
+    .join('');
+
+  const filtered = _devPhotosSiteFilter ? allPhotos.filter(p => p.siteId === _devPhotosSiteFilter) : allPhotos;
+
+  const header = `
+    <div class="hint" style="margin-bottom:10px;">${allPhotos.length} photo${allPhotos.length>1?'s':''} au total, tous chantiers confondus. Sélectionne puis supprime définitivement — cette action ne passe pas par la corbeille.</div>
+    <select onchange="_devPhotosSiteFilter=this.value; devPhotosRender(document.getElementById('devPanelList'))" style="width:100%;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px;margin-bottom:10px;">
+      ${siteOptions}
+    </select>
+    <div style="display:flex;gap:6px;margin-bottom:10px;">
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_devPhotosSelectAll()">Tout sélectionner</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_devPhotosSelected.clear(); devPhotosRender(document.getElementById('devPanelList'))">Tout désélectionner</button>
+    </div>
+    <button class="btn btn-block" style="margin-bottom:14px;background:#5a2f24;border-color:#5a2f24;color:#E07A63;" onclick="_devPhotosDeleteSelected()">
+      <img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement (${_devPhotosSelected.size} sélectionnée${_devPhotosSelected.size>1?'s':''})
+    </button>`;
+
+  const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;">` +
+    filtered.map(p => {
+      const key = p.siteId + '::' + p.media.id;
+      const checked = _devPhotosSelected.has(key);
+      return `
+        <div style="position:relative;cursor:pointer;" onclick="_devPhotosToggle('${_devEsc(key)}')">
+          <img src="${_devEsc(p.media.url)}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:2px solid ${checked?'var(--wood)':'transparent'};opacity:${checked?'0.55':'1'};">
+          <div style="position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:${checked?'var(--wood)':'rgba(0,0,0,0.55)'};display:flex;align-items:center;justify-content:center;font-size:12px;color:#1a0f00;font-weight:800;">${checked?'✓':''}</div>
+          <div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.65);color:#fff;font-size:9.5px;padding:2px 4px;border-radius:0 0 6px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_devEsc(p.siteName)}</div>
+        </div>`;
+    }).join('') + `</div>`;
+
+  container.innerHTML = header + grid;
+}
+
+function _devPhotosToggle(key){
+  if(_devPhotosSelected.has(key)) _devPhotosSelected.delete(key);
+  else _devPhotosSelected.add(key);
+  devPhotosRender(document.getElementById('devPanelList'));
+}
+
+async function _devPhotosSelectAll(){
+  // Sélectionne toutes les photos actuellement affichées (respecte le filtre par chantier)
+  const keys = await _devPhotosCollectVisible();
+  keys.forEach(key => _devPhotosSelected.add(key));
+  devPhotosRender(document.getElementById('devPanelList'));
+}
+
+async function _devPhotosCollectVisible(){
+  const sites = await _devChantiersCollect();
+  const keys = [];
+  sites.forEach(s => {
+    if(_devPhotosSiteFilter && s.id !== _devPhotosSiteFilter) return;
+    (s.sharedMedia||[]).forEach(m => {
+      if(m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url){
+        keys.push(s.id + '::' + m.id);
+      }
+    });
+  });
+  return keys;
+}
+
+async function _devPhotosDeleteSelected(){
+  if(!_devPhotosSelected.size){ showToast('Aucune photo sélectionnée'); return; }
+  if(!confirm(`Supprimer définitivement ${_devPhotosSelected.size} photo(s) ? Cette action est IRRÉVERSIBLE, aucune corbeille.`)) return;
+
+  // Regrouper par chantier pour minimiser les appels réseau (un push par chantier concerné).
+  const bySite = {};
+  _devPhotosSelected.forEach(key => {
+    const [siteId, mediaId] = key.split('::');
+    (bySite[siteId] = bySite[siteId] || []).push(mediaId);
+  });
+
+  const sites = await _devChantiersCollect();
+  for(const siteId in bySite){
+    const site = sites.find(s => s.id === siteId);
+    if(!site) continue;
+    const mediaIds = bySite[siteId];
+    site.sharedMedia = (site.sharedMedia||[]).filter(m => !mediaIds.includes(m.id));
+    site.updatedAt = new Date().toISOString(); // voir mergeArrayById / syncAllSitesPull
+    // Répercuter aussi sur data.sites en local si ce chantier y existe déjà,
+    // pour que l'app reflète immédiatement la suppression sans attendre un
+    // cycle de synchro complet.
+    const localSite = (data.sites||[]).find(s => s.id === siteId);
+    if(localSite) localSite.sharedMedia = site.sharedMedia;
+    try{ if(typeof pushSharedSite === 'function') await pushSharedSite(site); }catch(e){}
+  }
+  saveData();
+  _devPhotosSelected.clear();
+  showToast('✅ Photos supprimées définitivement');
+  devPhotosRender(document.getElementById('devPanelList'));
+}
+
 async function devChantiersRender(container){
   const trash = _devChantiersTrash();
   const header =
