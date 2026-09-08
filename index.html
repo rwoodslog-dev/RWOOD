@@ -3993,6 +3993,12 @@
       <button class="nav-btn" data-view="notes" id="notesNavBtn" onclick="goTo('notes')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13l3 3v13a0 0 0 0 1 0 0H4z"/><path d="M8 3v5h8"/><path d="M8 13h8M8 17h5"/></svg></span><span class="lbl">Listes à faire</span>
       </button>
+      <!-- MODULE — SiteNotesDashboard : tableau de bord des notes de chaque
+           chantier, réservé conducteur/patron/comptable — voir
+           siteNotesDashboardApplyVisibility. -->
+      <button class="nav-btn" data-view="notesdashboard" id="siteNotesDashboardNavBtn" onclick="goTo('notesdashboard')" style="display:none;">
+        <span class="ico"><img src="icons/note.png" alt="" style="width:1.15em;height:1.15em;object-fit:contain;"></span><span class="lbl">Notes</span>
+      </button>
       <!-- MODULE — SuiviHeures : bouton nav (patron / dev uniquement) -->
       <button class="nav-btn" data-view="suivi" id="suiviNavBtn" onclick="goTo('suivi')" style="display:none;">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"/></svg></span><span class="lbl">Suivi</span>
@@ -5415,6 +5421,25 @@
     </section>
 
     <!-- MODULE — Notes (fin DOM) -->
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         MODULE — SiteNotesDashboard : tableau de bord des notes de chantier
+         (conducteur/patron/comptable). Vue transversale sur TOUS les
+         chantiers à la fois, sans devoir choisir un chantier dans le
+         bandeau "Chantier actif" au préalable — contrairement à
+         openSiteNotesModal, qui reste la vraie fenêtre d'édition détaillée
+         (réutilisée ici en un clic depuis chaque carte). Aucun nouveau
+         système de stockage : on lit/écrit toujours site.noteCategories,
+         exactement comme le fait déjà le bandeau chantier actif.
+         ═══════════════════════════════════════════════════════════════ -->
+    <section class="view" id="view-notesdashboard">
+      <div class="view-heading"><img src="icons/note.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-3px;"> Notes — tous les chantiers</div>
+      <div class="hint" style="margin-bottom:12px;">Vue d'ensemble des notes de chaque chantier. Touche une note pour l'ouvrir directement, ou "+ Nouvelle note" pour en ajouter une sans changer de chantier actif.</div>
+      <input type="text" id="notesDashboardSearch" placeholder="Rechercher un chantier ou une note…" oninput="renderSiteNotesDashboard()" style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-elev);color:var(--ink);font-size:13.5px;margin-bottom:14px;">
+      <div id="notesDashboardList"></div>
+    </section>
+
+    <!-- MODULE — SiteNotesDashboard (fin DOM) -->
 
     <!-- ═══════════════════════════════════════════════════════════════
          MODULE — SimpleMode · Dashboard 4 boutons (style CarPlay)
@@ -8992,6 +9017,7 @@ function goTo(viewName, siteId){
     suivi:       ['Suivi analytique', 'Cumul des heures par chantier'],
     dev:         ['Mode Développeur', 'Outils et réglages réservés au développeur'],
     utilisateurs: ['Utilisateurs', 'Informations personnelles des comptes de l\'entreprise'],
+    notesdashboard: ['Notes', 'Tableau de bord des notes de tous les chantiers'],
     detail:      [null, null],
     simpleDash:  ['Mode Simple', 'Dashboard tactile']
   };
@@ -9104,7 +9130,16 @@ function goTo(viewName, siteId){
   }
 
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
-  if(viewName === 'notes'){ notesSyncFollowedThenRender(); renderNotesBubbleBtn(); } // MODULE — Notes
+  if(viewName === 'notes'){ // MODULE — Notes ("Listes à faire") — réservé chef/ouvrier
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    if(role !== 'chef' && role !== 'ouvrier'){ goTo('chantiers'); return; }
+    notesSyncFollowedThenRender(); renderNotesBubbleBtn();
+  }
+  if(viewName === 'notesdashboard'){ // réservé conducteur/patron/comptable — voir siteNotesDashboardApplyVisibility
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    if(role !== 'conducteur' && role !== 'patron' && role !== 'comptable'){ goTo('chantiers'); return; }
+    renderSiteNotesDashboard();
+  }
   if(viewName === 'suivi'){ // MODULE — SuiviHeures : réservé patron/dev
     if(!suiviCanAccess()){ goTo('chantiers'); return; }
     suiviRefresh(false);
@@ -10206,7 +10241,14 @@ function createSite(){
   if(typeof chefAutoShareSchedule === 'function') chefAutoShareSchedule(); // [autoshare] MODULE — ChefAutoShare
   if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300); // MODULE — SyncAllSites : partage immédiat
   if(typeof devSiteAlertRaise === 'function') devSiteAlertRaise(site); // MODULE — DevSiteAlerts
-  if(typeof _alertNewSiteCreated === 'function') _alertNewSiteCreated(site); // Alertesmega
+  // _alertNewSiteCreated(site) RETIRÉE sur demande — l'alerte "Nouveau
+  // chantier créé" à toute l'équipe faisait partie des sources de
+  // doublons dans l'historique. On ne garde désormais que les alertes
+  // explicitement envoyées par quelqu'un (comptable, signature, dépannage,
+  // événement). devSiteAlertRaise ci-dessus n'est PAS concernée : c'est un
+  // outil de diagnostic interne au développeur (page Dev), jamais visible
+  // dans la bulle des utilisateurs.
+  // if(typeof _alertNewSiteCreated === 'function') _alertNewSiteCreated(site); // Alertesmega
   // Pas de synchro auto à la création simple même côté conducteur : il utilise "Mettre en attente"
   // ou ira dans Synchro Équipe depuis la fiche
 }
@@ -29100,7 +29142,7 @@ function applyNavHidden(){
     // dernier mot — sans cette exclusion, cette boucle générique écrase
     // systématiquement leur visibilité juste après (ordre d'exécution),
     // affichant "Utilisateurs" à un ouvrier ou le masquant à un patron.
-    if(view === 'utilisateurs' || view === 'dev') return;
+    if(view === 'utilisateurs' || view === 'dev' || view === 'notesdashboard') return;
     if(isComptable){
       btn.style.display = comptableOnly.has(view) ? '' : 'none';
     } else {
@@ -29115,6 +29157,8 @@ function applyNavHidden(){
   // pour rester robuste même si l'exclusion ci-dessus était un jour retirée
   // par erreur lors d'une future modification.
   if(typeof applyUsersTileVisibility === 'function') applyUsersTileVisibility();
+  if(typeof siteNotesDashboardApplyVisibility === 'function') siteNotesDashboardApplyVisibility();
+  if(typeof notesApplyTabVisibility === 'function') notesApplyTabVisibility();
 }
 
 /* Masque l'onglet actuellement sélectionné dans le mode réordonnancement */
@@ -29216,7 +29260,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.29.0';
+const APP_VERSION = '5.31.0';
 
 const CHANGELOG = [
   {
@@ -35708,6 +35752,58 @@ async function _saveAlerts(alerts, removedIds){
   } catch(e){ /* silencieux : mieux vaut ne pas bloquer l'action utilisateur */ }
 }
 
+/* ── Archivage d'alerte — porté par l'ALERTE elle-même, pas par une liste
+   locale à l'appareil ────────────────────────────────────────────────────
+   Avant (bug remonté : « je supprime une alerte, elle revient ») : l'état
+   "supprimé"/"archivé" vivait uniquement dans data.settings.dismissedAlertIds
+   / archivedAlertIds — une liste PROPRE À CHAQUE APPAREIL, synchronisée par
+   un canal complètement différent (canal privé général) de celui où vit la
+   vraie alerte (canal partagé ALERTS_SYNC_KEY). Si cette liste locale
+   n'était pas encore synchronisée, ou se faisait écraser par une fusion
+   (le même risque déjà vu sur les photos/chantiers), l'alerte "supprimée"
+   redevenait invisible pour rien — elle réapparaissait.
+
+   Maintenant : un tableau archivedBy directement sur l'objet alerte
+   (archivedBy: ["jean.dupont", "marie.martin"]) — l'ajout de mon authId à
+   ce tableau EST la suppression, et il voyage avec l'alerte partout où
+   elle va, peu importe l'appareil qui la relit. Impossible qu'une
+   resynchro "oublie" cet état, puisqu'il n'est plus séparé de la donnée
+   qu'il concerne. */
+function _myAlertAuthId(){
+  return (data.settings && data.settings.auth && data.settings.auth.authId) || null;
+}
+
+function _isAlertArchivedForMe(alert){
+  const myId = _myAlertAuthId();
+  if(!myId) return false;
+  return Array.isArray(alert.archivedBy) && alert.archivedBy.includes(myId);
+}
+
+async function _archiveAlertForMe(alertId){
+  const myId = _myAlertAuthId();
+  if(!myId) return;
+  try{
+    const alerts = await _fetchAlerts();
+    const alert = alerts.find(a => a.id === alertId);
+    if(!alert) return;
+    if(!Array.isArray(alert.archivedBy)) alert.archivedBy = [];
+    if(!alert.archivedBy.includes(myId)) alert.archivedBy.push(myId);
+    await _saveAlerts(alerts);
+  }catch(e){ /* silencieux */ }
+}
+
+async function _unarchiveAlertForMe(alertId){
+  const myId = _myAlertAuthId();
+  if(!myId) return;
+  try{
+    const alerts = await _fetchAlerts();
+    const alert = alerts.find(a => a.id === alertId);
+    if(!alert) return;
+    alert.archivedBy = (alert.archivedBy || []).filter(id => id !== myId);
+    await _saveAlerts(alerts);
+  }catch(e){ /* silencieux */ }
+}
+
 /* Envoyer une nouvelle alerte (cote comptable) */
 async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData){
   if(!text || !text.trim()) return false;
@@ -36489,6 +36585,18 @@ async function refreshUtilisateursList(){
 /* Affiche/masque l'onglet "Utilisateurs" selon le rôle — réservé
    patron/comptable, appelée au même moment que les autres gardes de
    navigation (applyNavHidden, devAccessApplyNav). */
+/* Affiche/masque l'onglet "Notes" (tableau de bord) selon le rôle —
+   réservé conducteur/patron/comptable, symétrique de notesApplyTabVisibility
+   qui réserve "Listes à faire" à chef/ouvrier. Appelée au même moment que
+   les autres gardes de navigation (voir applyNavHidden). */
+function siteNotesDashboardApplyVisibility(){
+  const btn = document.getElementById('siteNotesDashboardNavBtn');
+  if(!btn) return;
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const allowed = (role === 'conducteur' || role === 'patron' || role === 'comptable');
+  btn.style.display = allowed ? '' : 'none';
+}
+
 function applyUsersTileVisibility(){
   const btn = document.getElementById('usersNavBtn');
   if(!btn) return;
@@ -38173,16 +38281,21 @@ async function checkForNewAlerts(){
 async function _checkForNewAlertsInner(){
   const profile = (data.settings && data.settings.myProfile) || {};
 
-  // Rappel J-1 : vérifie les événements ajoutés à l'agenda via une alerte
-  // et génère un rappel local si l'un d'eux a lieu demain (une seule fois).
-  if(typeof _checkAgendaReminders === 'function'){
-    try{ await _checkAgendaReminders(); }catch(e){ /* silencieux */ }
-  }
-
-  // Rappel fiche d'heures : tous les jours à 15h30 + le vendredi à 10h (voir _checkHoursReminders).
-  if(typeof _checkHoursReminders === 'function'){
-    try{ await _checkHoursReminders(); }catch(e){ /* silencieux */ }
-  }
+  // Rappel J-1 (agenda) et rappels fiche d'heures RETIRÉS sur demande —
+  // c'était une source récurrente de doublons dans l'historique des
+  // alertes (voir les correctifs "795 alertesMega" laissés en commentaire
+  // dans _checkAgendaReminders/_checkHoursReminders plus bas : le problème
+  // s'est reproduit malgré un premier correctif). Le vrai système de
+  // rappel personnalisé sur les tâches d'agenda (bouton "Être alerté",
+  // voir _checkTaskReminders) reste totalement actif et n'est pas concerné
+  // — il utilise un mécanisme différent, une notification locale, jamais
+  // le canal d'alertes partagé.
+  // if(typeof _checkAgendaReminders === 'function'){
+  //   try{ await _checkAgendaReminders(); }catch(e){ /* silencieux */ }
+  // }
+  // if(typeof _checkHoursReminders === 'function'){
+  //   try{ await _checkHoursReminders(); }catch(e){ /* silencieux */ }
+  // }
 
   try{
     let all = await _fetchAlerts();
@@ -38233,6 +38346,12 @@ async function _checkForNewAlertsInner(){
     // restent récupérables via "Rétablir" (voir archivedAlertIds).
     const archived = (data.settings && data.settings.archivedAlertIds) || [];
     if(archived.length) mine = mine.filter(a => !archived.includes(a.id));
+    // Option A : filtre principal, porté par l'alerte elle-même
+    // (archivedBy) plutôt qu'une liste locale — voir _isAlertArchivedForMe.
+    // C'est ce filtre qui résiste à une resynchro/réinstallation, contrairement
+    // aux deux listes locales ci-dessus qui restent en place uniquement
+    // pour ne pas perdre l'historique déjà archivé avant ce changement.
+    mine = mine.filter(a => !_isAlertArchivedForMe(a));
     const myId = getDeviceSyncId();
     const previousCount = _myAlertsUnreadCount || 0;
 
@@ -38877,10 +38996,16 @@ function deleteAlertToTrash(alertId){
   if(!alert) return;
   if(!confirm('Envoyer cette alerte dans l\'historique ?\n\nElle quittera « Mes alertes reçues » mais restera consultable dans l\'historique (bouton « Rétablir » pour la remettre).')) return;
   if(!data.settings) data.settings = {};
+  // Option A : le marqueur d'archivage est désormais porté par l'alerte
+  // elle-même (archivedBy), pas uniquement une liste locale à l'appareil —
+  // voir _archiveAlertForMe. On garde aussi l'ancienne liste locale en
+  // parallèle (rétrocompatibilité avec ce qui a déjà été archivé avant ce
+  // changement), mais c'est le nouveau marqueur qui fait foi désormais.
   if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
   if(!data.settings.archivedAlertIds.includes(alertId)) data.settings.archivedAlertIds.push(alertId);
   _myAlertsCache = (_myAlertsCache||[]).filter(a => a.id !== alertId);
   saveData();
+  _archiveAlertForMe(alertId).catch(()=>{});
   _renderAlertesHistoList();
   if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
   if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
@@ -38891,9 +39016,11 @@ function restoreAlertFromTrash(trashId){
   const item = data.trash.find(t=>t.id===trashId && t.kind==='alert');
   if(!item) return;
   data.settings.dismissedAlertIds = (data.settings.dismissedAlertIds||[]).filter(id => id !== item.alert.id);
+  data.settings.archivedAlertIds  = (data.settings.archivedAlertIds||[]).filter(id => id !== item.alert.id);
   _myAlertsCache.push(item.alert);
   data.trash = data.trash.filter(t=>t.id!==trashId);
   saveData();
+  _unarchiveAlertForMe(item.alert.id).catch(()=>{});
   renderTrash();
   _renderAlertesHistoList();
   showToast('Alerte restaurée');
@@ -39060,8 +39187,11 @@ async function _renderAlertesArchiveList(){
   let all = [];
   try{ all = await _fetchAlerts(); }catch(e){ all = []; }
   // On garde les alertes archivées encore présentes dans la base ; celles
-  // supprimées définitivement (base) ne sont plus affichables.
-  const items = all.filter(a => archived.includes(a.id))
+  // supprimées définitivement (base) ne sont plus affichables. Combine
+  // l'ancienne liste locale ET le nouveau marqueur porté par l'alerte
+  // (archivedBy, option A) pour ne rien manquer, quelle que soit la
+  // méthode qui a servi à l'archiver.
+  const items = all.filter(a => archived.includes(a.id) || _isAlertArchivedForMe(a))
                    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
   _alertesArchiveCache = items;
   _setArchiveCount(items.length);
@@ -39095,15 +39225,20 @@ async function _restoreArchivedAlert(alertId){
   if(!data.settings) data.settings = {};
   data.settings.archivedAlertIds = (data.settings.archivedAlertIds||[]).filter(id => id !== alertId);
   // Retire aussi l'ack du dépannage pour que la carte reçue repropose
-  // "Ajouter à l'historique" (et non "✅ Dans l'historique").
+  // "Ajouter à l'historique" (et non "✅ Dans l'historique"), et retire le
+  // marqueur d'archivage porté par l'alerte elle-même (option A).
   try{
     const myId = getDeviceSyncId();
     const alerts = await _fetchAlerts();
     const a = alerts.find(x => x.id === alertId);
     if(a && a.depannageAckedBy){
       a.depannageAckedBy = a.depannageAckedBy.filter(id => id !== myId);
-      await _saveAlerts(alerts);
     }
+    const myAuthId = _myAlertAuthId();
+    if(a && myAuthId && Array.isArray(a.archivedBy)){
+      a.archivedBy = a.archivedBy.filter(id => id !== myAuthId);
+    }
+    await _saveAlerts(alerts);
   }catch(e){ /* silencieux */ }
   saveData();
   showToast('↩️ Alerte rétablie dans « Mes alertes reçues »');
@@ -39125,6 +39260,9 @@ function _deleteArchivedAlert(alertId){
   if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
   if(!data.settings.dismissedAlertIds.includes(alertId)) data.settings.dismissedAlertIds.push(alertId);
   saveData();
+  // Le marqueur archivedBy (option A) reste volontairement en place — c'est
+  // lui qui garantit que cette alerte ne réapparaîtra jamais chez moi, quel
+  // que soit l'appareil ou une resynchro future.
   showToast('🗑 Alerte supprimée de ton historique');
   _renderAlertesArchiveList();
 }
@@ -39972,7 +40110,12 @@ function notesSetTabEnabled(on){
 function notesApplyTabVisibility(){
   const btn = document.getElementById('notesNavBtn');
   if(!btn) return;
-  const enabled = !(data.settings && data.settings.notesTabEnabled === false);
+  // Réservé aux rôles chef et ouvrier — conducteur/patron/comptable ont
+  // désormais leur propre tableau de bord "Notes" (voir siteNotesDashboardNavBtn),
+  // qui remplace cet onglet pour eux plutôt que de le partager.
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const roleAllowed = (role === 'chef' || role === 'ouvrier');
+  const enabled = roleAllowed && !(data.settings && data.settings.notesTabEnabled === false);
   btn.style.display = enabled ? '' : 'none';
 }
 
@@ -40890,7 +41033,10 @@ function openSiteNotesModal(siteId){
 
 function _canEditSiteNotes(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  return role === 'conducteur' || role === 'patron';
+  // Comptable ajoutée sur demande : elle a désormais accès au tableau de
+  // bord des notes (voir view-notesdashboard) avec les mêmes droits de
+  // gestion que conducteur/patron — visualisation, ajout, modification.
+  return role === 'conducteur' || role === 'patron' || role === 'comptable';
 }
 
 function _fmtSiteNoteDate(iso){
@@ -40959,7 +41105,7 @@ function _renderSiteNoteCategoriesList(siteId){
 }
 
 function _addSiteNoteCategory(siteId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const input = document.getElementById('siteNoteCategoryInput');
@@ -40974,7 +41120,7 @@ function _addSiteNoteCategory(siteId){
 }
 
 function _archiveSiteNoteCategory(siteId, catId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
@@ -40988,7 +41134,7 @@ function _archiveSiteNoteCategory(siteId, catId){
 }
 
 function _unarchiveSiteNoteCategory(siteId, catId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
@@ -41197,7 +41343,7 @@ function _addSiteNoteToAgenda(siteId, catId, noteId){
 }
 
 function _addSiteNote(siteId, catId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
@@ -41231,6 +41377,80 @@ function _addSiteNote(siteId, catId){
   renderChantierActifBanner(); // met à jour le compteur sur le bouton
 }
 
+/* ── MODULE — SiteNotesDashboard ────────────────────────────────────────
+   Tableau de bord : une carte par chantier, listant ses catégories de
+   notes sous forme compacte (comme un mini-tableau), sans devoir changer
+   le chantier actif au préalable. Réutilise entièrement le système de
+   notes déjà existant (site.noteCategories) — la gestion complète
+   (ajouter une catégorie, une note, cocher, archiver) se fait toujours via
+   openSiteNotesModal, ouverte en un clic depuis n'importe quelle carte. */
+function renderSiteNotesDashboard(){
+  const list = document.getElementById('notesDashboardList');
+  if(!list) return;
+
+  const search = (document.getElementById('notesDashboardSearch')?.value || '').trim().toLowerCase();
+
+  // Chantiers actifs uniquement (à-faire/en-cours), triés par nom — les
+  // chantiers terminés/brouillons n'encombrent pas ce tableau de bord.
+  let sites = (data.sites||[]).filter(s => s.status !== 'termine' && s.status !== 'brouillon');
+  sites = sites.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'));
+
+  if(search){
+    sites = sites.filter(s => {
+      if((s.name||'').toLowerCase().includes(search)) return true;
+      return (s.noteCategories||[]).some(cat =>
+        (cat.title||'').toLowerCase().includes(search) ||
+        (cat.notes||[]).some(n => !n.archived && (n.text||'').toLowerCase().includes(search))
+      );
+    });
+  }
+
+  if(!sites.length){
+    list.innerHTML = `<div class="hint" style="text-align:center;padding:24px 0;">${search ? 'Aucun résultat pour cette recherche.' : 'Aucun chantier actif pour le moment.'}</div>`;
+    return;
+  }
+
+  list.innerHTML = sites.map(site => {
+    const cats = (site.noteCategories||[]).filter(c => !c.archived);
+    const totalNotes = cats.reduce((sum,c) => sum + (c.notes||[]).filter(n=>!n.archived).length, 0);
+
+    const catsHtml = cats.length ? cats.map(cat => {
+      const notes = (cat.notes||[]).filter(n => !n.archived)
+        .sort((a,b) => new Date(b.noteUpdatedAt||b.createdAt||0) - new Date(a.noteUpdatedAt||a.createdAt||0));
+      const rows = notes.slice(0, 3).map(n => `
+        <div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-top:1px solid var(--line);">
+          ${n.hasCheckbox ? `<span style="flex-shrink:0;margin-top:1px;">${n.done ? '☑️' : '⬜'}</span>` : ''}
+          <span style="flex:1;font-size:12.5px;line-height:1.4;${n.done?'text-decoration:line-through;opacity:.6;':''}">${escapeHtml((n.text||'').slice(0,90))}${(n.text||'').length>90?'…':''}</span>
+          ${n.date ? `<span style="flex-shrink:0;font-size:10.5px;color:var(--ink-soft);">${escapeHtml(_fmtSiteNoteDate(n.date))}</span>` : ''}
+        </div>`).join('');
+      const moreCount = notes.length - 3;
+      return `
+        <div style="margin-bottom:8px;">
+          <div style="font-size:11.5px;font-weight:800;color:var(--wood);text-transform:uppercase;letter-spacing:0.4px;">${escapeHtml(cat.title)} <span style="color:var(--ink-soft);font-weight:600;">(${notes.length})</span></div>
+          ${rows || '<div class="hint" style="padding:4px 0;font-size:12px;">Aucune note active</div>'}
+          ${moreCount > 0 ? `<div class="hint" style="font-size:11px;padding:3px 0 0;">+${moreCount} autre${moreCount>1?'s':''}…</div>` : ''}
+        </div>`;
+    }).join('') : `<div class="hint" style="padding:6px 0;">Aucune catégorie de notes pour ce chantier.</div>`;
+
+    return `
+      <div class="card" style="margin-bottom:12px;border-left:3px solid ${escapeHtml(site.color||'var(--wood)')};cursor:pointer;" onclick="_openNotesDashboardSite('${site.id}')">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div style="font-weight:800;font-size:15px;">${escapeHtml(site.name||'(sans nom)')}</div>
+          <div style="font-size:11px;color:var(--ink-soft);flex-shrink:0;">${totalNotes} note${totalNotes>1?'s':''}</div>
+        </div>
+        ${catsHtml}
+      </div>`;
+  }).join('');
+}
+
+/* Ouvre directement la vraie fenêtre de gestion des notes de ce chantier
+   (visualisation, ajout, modification, cases à cocher, médias) — sans
+   avoir à passer par le bandeau "Chantier actif" ni à changer le chantier
+   actif de l'app. */
+function _openNotesDashboardSite(siteId){
+  openSiteNotesModal(siteId);
+}
+
 function _toggleSiteNote(siteId, catId, noteId){
   // Cocher/décocher est ouvert à TOUS les rôles pouvant voir le chantier
   // (chef/ouvrier inclus) — c'est le cœur de la consultation/validation.
@@ -41254,7 +41474,7 @@ function _toggleSiteNote(siteId, catId, noteId){
    perdre ces données de chantier), seulement masquées de la vue principale
    et déplacées vers "Archivées". */
 function _archiveSiteNote(siteId, catId, noteId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
@@ -41271,7 +41491,7 @@ function _archiveSiteNote(siteId, catId, noteId){
 }
 
 function _unarchiveSiteNote(siteId, catId, noteId){
-  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux et au patron'); return; }
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
