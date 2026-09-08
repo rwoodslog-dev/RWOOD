@@ -4504,21 +4504,6 @@
       </div>
 
       <!-- ACCORDÉON : COMPTE -->
-      <!-- ACCORDÉON : SIDEBAR — choix des onglets affichés dans la barre de
-           navigation. Réutilise le mécanisme déjà existant (data.settings.
-           navHidden, appliqué par applyNavHidden) plutôt qu'un second
-           système : le geste d'appui long directement sur un onglet reste
-           possible, cette section n'ajoute qu'un accès plus visible via
-           une liste de cases à cocher. -->
-      <div class="accordion-section" id="parametresMode-sidebar">
-        <div class="accordion-header" onclick="toggleParametresSection('sidebar')">
-          <span>Sidebar</span><span class="accordion-arrow">▾</span>
-        </div>
-        <div class="accordion-body">
-          <div class="hint" style="margin-bottom:12px;">Choisis les onglets affichés dans le menu. « Chantiers » et « Paramètres » restent toujours visibles.</div>
-          <div id="sidebarVisibilityList"></div>
-        </div>
-      </div>
 
       <div class="accordion-section" id="parametresMode-compte">
         <div class="accordion-header" onclick="toggleParametresSection('compte')">
@@ -9135,9 +9120,9 @@ function goTo(viewName, siteId){
     if(role !== 'chef' && role !== 'ouvrier'){ goTo('chantiers'); return; }
     notesSyncFollowedThenRender(); renderNotesBubbleBtn();
   }
-  if(viewName === 'notesdashboard'){ // réservé conducteur/patron — voir siteNotesDashboardApplyVisibility
+  if(viewName === 'notesdashboard'){ // réservé conducteur/patron/comptable — voir siteNotesDashboardApplyVisibility
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    if(role !== 'conducteur' && role !== 'patron'){ goTo('chantiers'); return; }
+    if(role !== 'conducteur' && role !== 'patron' && role !== 'comptable'){ goTo('chantiers'); return; }
     renderSiteNotesDashboard();
   }
   if(viewName === 'suivi'){ // MODULE — SuiviHeures : réservé patron/dev
@@ -25004,7 +24989,6 @@ function renderParametres(){
   // Les réglages data.settings.notifications restent en mémoire (non affichés).
 
   applyOpenParametresSections();
-  renderSidebarVisibilityList();
   if(typeof _purgeOldTrashItems === 'function') _purgeOldTrashItems();
   renderMyAccount();
   renderTeamRoster();
@@ -26621,9 +26605,9 @@ function applyComptableNavRestrictions(){
   // (siteNotesDashboardApplyVisibility, applyUsersTileVisibility,
   // devAccessApplyNav, notesApplyTabVisibility) — cette fonction ne doit
   // JAMAIS les toucher, sinon elle écrase leur état juste après (bug
-  // confirmé : le patron voyait "À faire" réapparaître de force). La
-  // comptable n'a plus accès au tableau de bord "Notes" (réservé
-  // conducteur/patron) — géré uniquement par siteNotesDashboardApplyVisibility.
+  // confirmé : le patron voyait "À faire" réapparaître de force, et la
+  // comptable ne pouvait jamais voir le nouveau tableau de bord "Notes"
+  // puisqu'il n'existait pas dans son ancienne liste blanche).
   const dedicatedGuardViews = new Set(['notesdashboard', 'notes', 'utilisateurs', 'dev']);
 
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn=>{
@@ -26642,11 +26626,10 @@ function applyComptableNavRestrictions(){
   if(isComptable){
     document.body.classList.remove('fab-visible'); // le comptable n'a pas de FAB (pas de création chantier)
     const activeBtn = document.querySelector('nav.bottom .nav-btn.active');
-    // "notesdashboard" (tableau de bord "Notes") n'est plus accessible à la
-    // comptable, réservé conducteur/patron — si elle s'y trouvait déjà
-    // (état antérieur), on la ramène sur "heures" comme les autres vues
-    // non autorisées.
-    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires'];
+    // "notesdashboard" ajouté aux vues autorisées pour la comptable — sinon
+    // le code juste en dessous la redirigerait de force vers "heures" à
+    // chaque fois qu'elle arriverait sur son propre tableau de bord "Notes".
+    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires', 'notesdashboard'];
     if(activeBtn && !allowedViews.includes(activeBtn.dataset.view)) goTo('heures');
   }
 
@@ -29087,75 +29070,12 @@ const NAV_LABELS = {
   agenda:'Agenda', couverture:'Toiture', galerie:'Galerie',
   zinc:'Zinc', ferme:'Ferme', parametres:'Paramètres',
   scanner:'Scanner', magasin:'Magasin',
-  notes:'Listes à faire', suivi:'Suivi', notesdashboard:'Notes',
+  notes:'Listes à faire', suivi:'Suivi',
   'alertes-conducteur':'Alertes', 'zone-chantier':'Zone',
 };
 
 // Onglets qu'on ne peut pas masquer (indispensables)
 const NAV_PROTECTED = ['chantiers', 'parametres'];
-
-/* Libellés lisibles pour la liste de choix des onglets sidebar (section
-   "Sidebar" des Paramètres) — même liste de vues que la navigation réelle,
-   hors "dev" (jamais proposé ici, voir devAccessApplyNav) et hors les 2
-   onglets protégés (toujours visibles, non désactivables, voir
-   NAV_PROTECTED). */
-const SIDEBAR_TOGGLE_LABELS = {
-  'heures': 'Heures',
-  'agenda': 'Agenda',
-  'notes': 'À faire',
-  'notesdashboard': 'Notes',
-  'alertes-conducteur': 'Alertes',
-  'galerie': 'Galerie',
-  'calcul': 'Calcul',
-  'suivi': 'Suivi',
-  'zinc': 'Zinc',
-  'couverture': 'Toiture',
-  'itineraires': 'Itinéraires',
-  'stock': 'Stock',
-  'contacts': 'Contacts',
-  'magasin': 'Magasin',
-  'zone-chantier': 'Zone',
-  'photos': 'Photos'
-};
-
-/* Certaines entrées de cette liste sont réservées à des rôles précis
-   (même garde que les onglets réels — voir notesApplyTabVisibility et
-   siteNotesDashboardApplyVisibility) : on ne les propose dans les
-   réglages "Sidebar" qu'aux rôles concernés, pour ne pas afficher un
-   interrupteur pour un onglet que le rôle actuel ne verra jamais. */
-function _sidebarToggleAllowedForRole(view, role){
-  if(view === 'notes') return (role === 'chef' || role === 'ouvrier');
-  if(view === 'notesdashboard') return (role === 'conducteur' || role === 'patron');
-  return true;
-}
-
-function renderSidebarVisibilityList(){
-  const el = document.getElementById('sidebarVisibilityList');
-  if(!el) return;
-  ensureNavHidden();
-  const hidden = data.settings.navHidden;
-  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  el.innerHTML = Object.entries(SIDEBAR_TOGGLE_LABELS)
-    .filter(([view]) => _sidebarToggleAllowedForRole(view, role))
-    .map(([view, label]) => {
-      const isHidden = hidden.includes(view);
-      return `
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;">
-          <span style="font-size:13.5px;">${label}</span>
-          <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="_toggleSidebarView('${view}', this.checked)" style="width:20px;height:20px;accent-color:var(--wood);flex-shrink:0;">
-        </label>`;
-    }).join('');
-}
-
-function _toggleSidebarView(view, visible){
-  ensureNavHidden();
-  const hidden = data.settings.navHidden;
-  const idx = hidden.indexOf(view);
-  if(visible && idx !== -1) hidden.splice(idx, 1);
-  else if(!visible && idx === -1) hidden.push(view);
-  saveData();
-  applyNavHidden();
-}
 
 function ensureNavHidden(){
   if(!data.settings) data.settings = {};
@@ -36620,19 +36540,15 @@ async function refreshUtilisateursList(){
    patron/comptable, appelée au même moment que les autres gardes de
    navigation (applyNavHidden, devAccessApplyNav). */
 /* Affiche/masque l'onglet "Notes" (tableau de bord) selon le rôle —
-   réservé conducteur/patron uniquement (la comptable n'y a plus accès),
-   symétrique de notesApplyTabVisibility qui réserve "Listes à faire" à
-   chef/ouvrier. Appelée au même moment que les autres gardes de
-   navigation (voir applyNavHidden). Respecte aussi navHidden, comme les
-   autres onglets, pour rester masquable depuis Paramètres › Sidebar. */
+   réservé conducteur/patron/comptable, symétrique de notesApplyTabVisibility
+   qui réserve "Listes à faire" à chef/ouvrier. Appelée au même moment que
+   les autres gardes de navigation (voir applyNavHidden). */
 function siteNotesDashboardApplyVisibility(){
   const btn = document.getElementById('siteNotesDashboardNavBtn');
   if(!btn) return;
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const roleAllowed = (role === 'conducteur' || role === 'patron');
-  ensureNavHidden();
-  const hiddenByUser = data.settings.navHidden.includes('notesdashboard');
-  btn.style.display = (roleAllowed && !hiddenByUser) ? '' : 'none';
+  const allowed = (role === 'conducteur' || role === 'patron' || role === 'comptable');
+  btn.style.display = allowed ? '' : 'none';
 }
 
 function applyUsersTileVisibility(){
@@ -40384,6 +40300,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const SIMPLE_ALL_TILES = [
   { view:'chantiers', img:'icons/chantier.png', icon:'🏗️', label:'Chantier' },
   { view:'notes', img:'icons/afaire.png', icon:'📋', label:'À faire' },
+  { view:'notesdashboard', img:'icons/note.png', icon:'📝', label:'Notes' },
   { view:'heures', img:'icons/heures.png', icon:'⏱️', label:'Heures' },
   { view:'itineraires', img:'icons/itineraire.png', icon:'🗺️', label:'Itinéraire' },
   { view:'stock', img:'icons/stock.png', icon:'📦', label:'Stock' },
@@ -40562,9 +40479,26 @@ function simpleModeIsActive(){
   if(data.settings.simpleMode === false) return false;
   return true;
 }
+/* Onglets "notes" (Listes à faire, chef/ouvrier) et "notesdashboard"
+   (Notes, conducteur/patron/comptable) sont mutuellement exclusifs selon
+   le rôle — voir notesApplyTabVisibility / siteNotesDashboardApplyVisibility
+   pour la barre de navigation. Cette fonction applique la même règle à la
+   liste de personnalisation du dashboard (Paramètres) et au dashboard
+   simple lui-même, pour qu'aucun rôle ne puisse cocher/afficher l'onglet
+   qui ne lui est pas destiné. */
+function _simpleTileAllowedForRole(viewId){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(viewId === 'notes') return (role === 'chef' || role === 'ouvrier');
+  if(viewId === 'notesdashboard') return (role === 'conducteur' || role === 'patron' || role === 'comptable');
+  return true;
+}
 function _simpleGetTiles(){
   let sel = data.settings && data.settings.simpleTiles;
   sel = (Array.isArray(sel) && sel.length) ? sel.slice() : SIMPLE_DEFAULT_TILES.slice();
+  // Retire les tuiles "notes"/"notesdashboard" non autorisées pour le rôle
+  // actuel (ex: un compte reconfiguré en Patron ne doit plus voir "À faire"
+  // même s'il l'avait sélectionnée quand il était Chef).
+  sel = sel.filter(v => _simpleTileAllowedForRole(v));
   // Migration : l'ancien id 'ferme' (détourné en raccourci Dev) est devenu 'dev'.
   // On le renomme à la volée et on nettoie les données pour faire disparaître
   // la tuile fantôme 📁 « ferme ». On dédoublonne si 'dev' était déjà présent.
@@ -41416,17 +41350,28 @@ function _addSiteNote(siteId, catId){
 }
 
 /* ── MODULE — SiteNotesDashboard ────────────────────────────────────────
-   Tableau de bord : une carte par chantier, listant ses catégories de
-   notes sous forme compacte (comme un mini-tableau), sans devoir changer
-   le chantier actif au préalable. Réutilise entièrement le système de
-   notes déjà existant (site.noteCategories) — la gestion complète
-   (ajouter une catégorie, une note, cocher, archiver) se fait toujours via
-   openSiteNotesModal, ouverte en un clic depuis n'importe quelle carte. */
+   Tableau de bord "Notes" : une COLONNE par chantier (triées par nom),
+   listant ses catégories de notes. L'ajout d'une catégorie et l'ajout/
+   modification (cocher, archiver) d'une note se font directement dans la
+   colonne, en ligne — comportement identique à la gestion des notes dans
+   le bandeau "Chantier actif" (openSiteNotesModal), sans avoir à
+   sélectionner au préalable un chantier actif ni à ouvrir de fenêtre.
+   Aucun nouveau système de stockage : toujours site.noteCategories, mêmes
+   droits (_canEditSiteNotes = conducteur/patron/comptable), même règle
+   "jamais de suppression réelle" (archivage uniquement). */
+
+/* Brouillon de saisie "nouvelle note" par catégorie, affiché en ligne dans
+   la colonne du chantier — indépendant du brouillon de la modale
+   (_siteNoteDraft) pour ne pas se marcher dessus si les deux sont ouverts. */
+let _ndbNoteDrafts = {}; // { [catId]: text }
+let _ndbOpenAddCatFor = null; // id du chantier dont le formulaire "+ Nouvelle catégorie" est ouvert
+
 function renderSiteNotesDashboard(){
   const list = document.getElementById('notesDashboardList');
   if(!list) return;
 
   const search = (document.getElementById('notesDashboardSearch')?.value || '').trim().toLowerCase();
+  const canEdit = _canEditSiteNotes();
 
   // Chantiers actifs uniquement (à-faire/en-cours), triés par nom — les
   // chantiers terminés/brouillons n'encombrent pas ce tableau de bord.
@@ -41448,43 +41393,162 @@ function renderSiteNotesDashboard(){
     return;
   }
 
-  list.innerHTML = sites.map(site => {
-    const cats = (site.noteCategories||[]).filter(c => !c.archived);
-    const totalNotes = cats.reduce((sum,c) => sum + (c.notes||[]).filter(n=>!n.archived).length, 0);
+  list.innerHTML = `<div id="notesDashboardCols" style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;align-items:flex-start;">${
+    sites.map(site => _ndbRenderColumn(site, canEdit)).join('')
+  }</div>`;
+}
 
-    const catsHtml = cats.length ? cats.map(cat => {
-      const notes = (cat.notes||[]).filter(n => !n.archived)
-        .sort((a,b) => new Date(b.noteUpdatedAt||b.createdAt||0) - new Date(a.noteUpdatedAt||a.createdAt||0));
-      const rows = notes.slice(0, 3).map(n => `
-        <div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-top:1px solid var(--line);">
-          ${n.hasCheckbox ? `<span style="flex-shrink:0;margin-top:1px;">${n.done ? '☑️' : '⬜'}</span>` : ''}
-          <span style="flex:1;font-size:12.5px;line-height:1.4;${n.done?'text-decoration:line-through;opacity:.6;':''}">${escapeHtml((n.text||'').slice(0,90))}${(n.text||'').length>90?'…':''}</span>
-          ${n.date ? `<span style="flex-shrink:0;font-size:10.5px;color:var(--ink-soft);">${escapeHtml(_fmtSiteNoteDate(n.date))}</span>` : ''}
-        </div>`).join('');
-      const moreCount = notes.length - 3;
-      return `
-        <div style="margin-bottom:8px;">
-          <div style="font-size:11.5px;font-weight:800;color:var(--wood);text-transform:uppercase;letter-spacing:0.4px;">${escapeHtml(cat.title)} <span style="color:var(--ink-soft);font-weight:600;">(${notes.length})</span></div>
-          ${rows || '<div class="hint" style="padding:4px 0;font-size:12px;">Aucune note active</div>'}
-          ${moreCount > 0 ? `<div class="hint" style="font-size:11px;padding:3px 0 0;">+${moreCount} autre${moreCount>1?'s':''}…</div>` : ''}
-        </div>`;
-    }).join('') : `<div class="hint" style="padding:6px 0;">Aucune catégorie de notes pour ce chantier.</div>`;
+function _ndbRenderColumn(site, canEdit){
+  const cats = (site.noteCategories||[]).filter(c => !c.archived);
+  const totalNotes = cats.reduce((sum,c) => sum + (c.notes||[]).filter(n=>!n.archived).length, 0);
 
-    return `
-      <div class="card" style="margin-bottom:12px;border-left:3px solid ${escapeHtml(site.color||'var(--wood)')};cursor:pointer;" onclick="_openNotesDashboardSite('${site.id}')">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <div style="font-weight:800;font-size:15px;">${escapeHtml(site.name||'(sans nom)')}</div>
-          <div style="font-size:11px;color:var(--ink-soft);flex-shrink:0;">${totalNotes} note${totalNotes>1?'s':''}</div>
-        </div>
-        ${catsHtml}
-      </div>`;
-  }).join('');
+  const catsHtml = cats.length ? cats.map(cat => _ndbRenderCategory(site, cat, canEdit)).join('')
+    : `<div class="hint" style="padding:6px 0;">Aucune catégorie de notes pour ce chantier.</div>`;
+
+  const addCatHtml = canEdit ? (
+    _ndbOpenAddCatFor === site.id
+      ? `<div style="display:flex;gap:6px;margin-top:8px;">
+           <input type="text" id="ndbCatInput-${site.id}" placeholder="Nom de la catégorie…" style="flex:1;font-size:12.5px;padding:6px 8px;"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();_ndbAddCategory('${site.id}');} if(event.key==='Escape'){_ndbCancelAddCategory('${site.id}');}">
+           <button class="btn btn-primary btn-sm" onclick="_ndbAddCategory('${site.id}')">+</button>
+           <button class="btn btn-outline btn-sm" onclick="_ndbCancelAddCategory('${site.id}')">✕</button>
+         </div>`
+      : `<button class="btn btn-outline btn-sm btn-block" style="margin-top:8px;" onclick="_ndbOpenAddCategory('${site.id}')">+ Nouvelle catégorie</button>`
+  ) : '';
+
+  return `
+    <div class="card" style="flex:0 0 260px;width:260px;border-top:3px solid ${escapeHtml(site.color||'var(--wood)')};align-self:stretch;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:6px;">
+        <div style="font-weight:800;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(site.name||'')}">${escapeHtml(site.name||'(sans nom)')}</div>
+        <div style="font-size:10.5px;color:var(--ink-soft);flex-shrink:0;">${totalNotes} note${totalNotes>1?'s':''}</div>
+      </div>
+      ${catsHtml}
+      ${addCatHtml}
+    </div>`;
+}
+
+function _ndbRenderCategory(site, cat, canEdit){
+  const notes = (cat.notes||[]).filter(n => !n.archived)
+    .sort((a,b) => new Date(b.noteUpdatedAt||b.createdAt||0) - new Date(a.noteUpdatedAt||a.createdAt||0));
+  const rows = notes.map(n => `
+    <div style="display:flex;align-items:flex-start;gap:6px;padding:5px 0;border-top:1px solid var(--line);">
+      ${n.hasCheckbox ? `<input type="checkbox" ${n.done?'checked':''} onchange="_toggleSiteNote('${site.id}','${cat.id}','${n.id}')" style="width:16px;height:16px;margin-top:1px;accent-color:var(--wood);flex-shrink:0;cursor:pointer;">` : ''}
+      <span style="flex:1;font-size:12.5px;line-height:1.4;white-space:pre-wrap;${n.done?'text-decoration:line-through;opacity:.6;':''}">${escapeHtml(n.text||'')}</span>
+      ${n.date ? `<span style="flex-shrink:0;font-size:10px;color:var(--ink-soft);">${escapeHtml(_fmtSiteNoteDate(n.date))}</span>` : ''}
+      ${canEdit ? `<button onclick="_ndbArchiveNote('${site.id}','${cat.id}','${n.id}')" title="Archiver (jamais supprimée)" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:12px;padding:0 2px;flex-shrink:0;">📦</button>` : ''}
+    </div>`).join('');
+
+  const draftText = _ndbNoteDrafts[cat.id] || '';
+  const addNoteHtml = canEdit ? `
+    <div style="display:flex;gap:6px;margin-top:6px;">
+      <input type="text" id="ndbNoteInput-${cat.id}" placeholder="Ajouter une note…" value="${escapeHtml(draftText)}" style="flex:1;font-size:12px;padding:5px 8px;"
+        oninput="_ndbNoteDrafts['${cat.id}']=this.value"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();_ndbAddNote('${site.id}','${cat.id}');}">
+      <button class="btn btn-primary btn-sm" onclick="_ndbAddNote('${site.id}','${cat.id}')">+</button>
+    </div>` : '';
+
+  return `
+    <div style="margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+        <div style="font-size:11px;font-weight:800;color:var(--wood);text-transform:uppercase;letter-spacing:0.4px;">📁 ${escapeHtml(cat.title)} <span style="color:var(--ink-soft);font-weight:600;">(${notes.length})</span></div>
+        ${canEdit ? `<button onclick="_ndbArchiveCategory('${site.id}','${cat.id}')" title="Archiver la catégorie" style="background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:11px;padding:0;flex-shrink:0;">📦</button>` : ''}
+      </div>
+      ${rows || '<div class="hint" style="padding:4px 0;font-size:11.5px;">Aucune note active</div>'}
+      ${addNoteHtml}
+    </div>`;
+}
+
+function _ndbOpenAddCategory(siteId){
+  _ndbOpenAddCatFor = siteId;
+  renderSiteNotesDashboard();
+  setTimeout(() => { const el = document.getElementById('ndbCatInput-'+siteId); if(el) el.focus(); }, 0);
+}
+function _ndbCancelAddCategory(siteId){
+  _ndbOpenAddCatFor = null;
+  renderSiteNotesDashboard();
+}
+function _ndbAddCategory(siteId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const input = document.getElementById('ndbCatInput-'+siteId);
+  const title = input ? input.value.trim() : '';
+  if(!title) return;
+  if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
+  site.noteCategories.push({ id: uid(), title, archived: false, createdAt: new Date().toISOString(), notes: [] });
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  _ndbOpenAddCatFor = null;
+  renderSiteNotesDashboard();
+}
+
+function _ndbAddNote(siteId, catId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  const text = (_ndbNoteDrafts[catId] || '').trim();
+  if(!text) return;
+  const myName = (data.settings.myProfile && data.settings.myProfile.name) || 'Moi';
+  if(!Array.isArray(cat.notes)) cat.notes = [];
+  cat.notes.push({
+    id: uid(),
+    text,
+    date: null,
+    hasCheckbox: false,
+    media: null,
+    done: false,
+    archived: false,
+    createdAt: new Date().toISOString(),
+    noteUpdatedAt: new Date().toISOString(),
+    createdBy: myName
+  });
+  cat.catUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
+  delete _ndbNoteDrafts[catId];
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  renderSiteNotesDashboard();
+  renderChantierActifBanner();
+}
+
+function _ndbArchiveNote(siteId, catId, noteId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  const note = (cat.notes||[]).find(n => n.id === noteId);
+  if(!note) return;
+  note.archived = true;
+  note.noteUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  renderSiteNotesDashboard();
+}
+
+function _ndbArchiveCategory(siteId, catId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const cat = (site.noteCategories||[]).find(c => c.id === catId);
+  if(!cat) return;
+  cat.archived = true;
+  cat.catUpdatedAt = new Date().toISOString();
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  renderSiteNotesDashboard();
 }
 
 /* Ouvre directement la vraie fenêtre de gestion des notes de ce chantier
    (visualisation, ajout, modification, cases à cocher, médias) — sans
    avoir à passer par le bandeau "Chantier actif" ni à changer le chantier
-   actif de l'app. */
+   actif de l'app. Conservée pour compat (plus appelée par défaut depuis les
+   colonnes, la gestion se fait désormais en ligne). */
 function _openNotesDashboardSite(siteId){
   openSiteNotesModal(siteId);
 }
@@ -41503,7 +41567,13 @@ function _toggleSiteNote(siteId, catId, noteId){
   site.updatedAt = new Date().toISOString();
   saveData();
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  _renderSiteNoteCategoryDetail(siteId, catId);
+  // Rafraîchit la vue ouverte au moment du clic : la modale détaillée
+  // (bandeau "chantier actif") si elle est ouverte, et/ou le tableau de
+  // bord "Notes" en colonnes (view-notesdashboard) — les deux peuvent
+  // coexister en mémoire sans être visibles à l'écran, d'où les tests
+  // d'existence des éléments DOM cibles avant de re-rendre.
+  if(document.getElementById('siteNotesBody')) _renderSiteNoteCategoryDetail(siteId, catId);
+  if(document.getElementById('notesDashboardList')) renderSiteNotesDashboard();
   renderChantierActifBanner();
 }
 
@@ -41732,7 +41802,11 @@ function simpleModeRenderConfig(){
   // (voir _simpleGetTiles/canDev), sinon n'importe quel rôle pouvait la
   // cocher depuis les réglages alors qu'elle restait inaccessible ensuite.
   const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
-  const availableTiles = canDev ? SIMPLE_ALL_TILES : SIMPLE_ALL_TILES.filter(t => t.view !== 'dev');
+  const availableTiles = SIMPLE_ALL_TILES
+    .filter(t => canDev || t.view !== 'dev')
+    // "À faire" (chef/ouvrier) et "Notes" (conducteur/patron/comptable) sont
+    // réservés à leurs rôles respectifs — voir _simpleTileAllowedForRole.
+    .filter(t => _simpleTileAllowedForRole(t.view));
   list.innerHTML = availableTiles.map(t => {
     const on = selected.includes(t.view);
     const iconHtml = t.img
