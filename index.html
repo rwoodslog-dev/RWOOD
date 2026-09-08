@@ -29208,7 +29208,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.28.0';
+const APP_VERSION = '5.28.1';
 
 const CHANGELOG = [
   {
@@ -35432,6 +35432,11 @@ async function _devSendTestAlert(type){
 }
 
 function switchDevTab(tab){
+  // Si on quitte l'onglet Photos, on vide le cache local : à la prochaine
+  // ouverture, les photos seront rechargées depuis le serveur plutôt que
+  // de risquer d'afficher une liste périmée (photo ajoutée/supprimée par
+  // un utilisateur entre-temps).
+  if(_devCurrentTab === 'photos' && tab !== 'photos') _devPhotosCache = null;
   _devCurrentTab = tab;
   const btnC = document.getElementById('devTabComptes');
   const btnP = document.getElementById('devTabPointages');
@@ -42321,58 +42326,77 @@ async function _devChantiersCollect(){
    corriger une photo ajoutée par erreur sur le mauvais chantier par un
    utilisateur, sans devoir attendre ou dépendre de la personne qui l'a
    ajoutée. Réutilise _devChantiersCollect (déjà utilisé par l'onglet
-   Chantiers) pour agréger les chantiers de toutes les sources connues. */
+   Chantiers) pour agréger les chantiers de toutes les sources connues.
+
+   IMPORTANT — mise en cache locale (_devPhotosCache) : la première version
+   de ce module rappelait _devChantiersCollect() (donc plusieurs requêtes
+   réseau) à CHAQUE clic sur une photo, en reconstruisant toute la grille à
+   chaque fois — c'est ce qui causait le bug remonté (scroll qui saute en
+   haut, affichage qui rame). Désormais, les données ne sont chargées
+   qu'une fois à l'ouverture de l'onglet (ou sur "Actualiser" explicite) ;
+   cocher/décocher une photo ne fait que modifier son style directement en
+   DOM, sans jamais recharger ni reconstruire toute la grille. */
 let _devPhotosSelected = new Set();
 let _devPhotosSiteFilter = '';
+let _devPhotosCache = null; // [{siteId, siteName, media}] — rempli une fois, réutilisé ensuite
 
-async function devPhotosRender(container){
-  container.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Chargement des photos…</div>';
-  const sites = await _devChantiersCollect();
-
-  const allPhotos = [];
-  sites.forEach(s => {
-    (s.sharedMedia||[]).forEach(m => {
-      if(m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url){
-        allPhotos.push({ siteId: s.id, siteName: s.name || '(sans nom)', media: m });
-      }
+async function devPhotosRender(container, forceReload){
+  if(!_devPhotosCache || forceReload){
+    container.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Chargement des photos…</div>';
+    const sites = await _devChantiersCollect();
+    const allPhotos = [];
+    sites.forEach(s => {
+      (s.sharedMedia||[]).forEach(m => {
+        if(m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url){
+          allPhotos.push({ siteId: s.id, siteName: s.name || '(sans nom)', media: m });
+        }
+      });
     });
-  });
-  allPhotos.sort((a,b) => new Date(b.media.uploadedAt||0) - new Date(a.media.uploadedAt||0));
+    allPhotos.sort((a,b) => new Date(b.media.uploadedAt||0) - new Date(a.media.uploadedAt||0));
+    _devPhotosCache = allPhotos;
+  }
+  _devPhotosRenderFromCache(container);
+}
+
+function _devPhotosRenderFromCache(container){
+  const allPhotos = _devPhotosCache || [];
 
   if(!allPhotos.length){
     container.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune photo trouvée sur aucun chantier.</div>';
     return;
   }
 
+  const siteNames = {};
+  allPhotos.forEach(p => { siteNames[p.siteId] = p.siteName; });
   const siteOptions = ['<option value="">Tous les chantiers</option>']
-    .concat(sites.filter(s => (s.sharedMedia||[]).some(m => m.type==='photo' || (m.mimeType||'').startsWith('image/')))
-      .sort((a,b)=>(a.name||'').localeCompare(b.name||''))
-      .map(s => `<option value="${s.id}" ${_devPhotosSiteFilter===s.id?'selected':''}>${_devEsc(s.name||'(sans nom)')}</option>`))
+    .concat(Object.keys(siteNames).sort((a,b)=>siteNames[a].localeCompare(siteNames[b]))
+      .map(id => `<option value="${id}" ${_devPhotosSiteFilter===id?'selected':''}>${_devEsc(siteNames[id])}</option>`))
     .join('');
 
   const filtered = _devPhotosSiteFilter ? allPhotos.filter(p => p.siteId === _devPhotosSiteFilter) : allPhotos;
 
   const header = `
     <div class="hint" style="margin-bottom:10px;">${allPhotos.length} photo${allPhotos.length>1?'s':''} au total, tous chantiers confondus. Sélectionne puis supprime définitivement — cette action ne passe pas par la corbeille.</div>
-    <select onchange="_devPhotosSiteFilter=this.value; devPhotosRender(document.getElementById('devPanelList'))" style="width:100%;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px;margin-bottom:10px;">
+    <select onchange="_devPhotosSiteFilter=this.value; _devPhotosRenderFromCache(document.getElementById('devPanelList'))" style="width:100%;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px;margin-bottom:10px;">
       ${siteOptions}
     </select>
     <div style="display:flex;gap:6px;margin-bottom:10px;">
       <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_devPhotosSelectAll()">Tout sélectionner</button>
-      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_devPhotosSelected.clear(); devPhotosRender(document.getElementById('devPanelList'))">Tout désélectionner</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_devPhotosDeselectAll()">Tout désélectionner</button>
+      <button class="btn btn-outline btn-sm" style="flex:0 0 auto;padding:6px 10px;" onclick="devPhotosRender(document.getElementById('devPanelList'), true)" title="Recharger depuis le serveur">🔄</button>
     </div>
-    <button class="btn btn-block" style="margin-bottom:14px;background:#5a2f24;border-color:#5a2f24;color:#E07A63;" onclick="_devPhotosDeleteSelected()">
+    <button class="btn btn-block" id="devPhotosDeleteBtn" style="margin-bottom:14px;background:#5a2f24;border-color:#5a2f24;color:#E07A63;" onclick="_devPhotosDeleteSelected()">
       <img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement (${_devPhotosSelected.size} sélectionnée${_devPhotosSelected.size>1?'s':''})
     </button>`;
 
-  const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;">` +
+  const grid = `<div id="devPhotosGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;">` +
     filtered.map(p => {
       const key = p.siteId + '::' + p.media.id;
       const checked = _devPhotosSelected.has(key);
       return `
-        <div style="position:relative;cursor:pointer;" onclick="_devPhotosToggle('${_devEsc(key)}')">
+        <div class="dev-photo-cell" data-key="${_devEsc(key)}" style="position:relative;cursor:pointer;" onclick="_devPhotosToggle('${_devEsc(key)}')">
           <img src="${_devEsc(p.media.url)}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:2px solid ${checked?'var(--wood)':'transparent'};opacity:${checked?'0.55':'1'};">
-          <div style="position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:${checked?'var(--wood)':'rgba(0,0,0,0.55)'};display:flex;align-items:center;justify-content:center;font-size:12px;color:#1a0f00;font-weight:800;">${checked?'✓':''}</div>
+          <div class="dev-photo-check" style="position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;background:${checked?'var(--wood)':'rgba(0,0,0,0.55)'};display:flex;align-items:center;justify-content:center;font-size:12px;color:#1a0f00;font-weight:800;">${checked?'✓':''}</div>
           <div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.65);color:#fff;font-size:9.5px;padding:2px 4px;border-radius:0 0 6px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_devEsc(p.siteName)}</div>
         </div>`;
     }).join('') + `</div>`;
@@ -42380,31 +42404,57 @@ async function devPhotosRender(container){
   container.innerHTML = header + grid;
 }
 
+/* Coche/décoche une seule vignette SANS reconstruire toute la grille — met
+   juste à jour son style directement, et le compteur du bouton de
+   suppression. C'est ce qui corrige le bug de scroll/affichage : avant,
+   chaque clic relançait un rendu complet (et un rechargement réseau). */
 function _devPhotosToggle(key){
   if(_devPhotosSelected.has(key)) _devPhotosSelected.delete(key);
   else _devPhotosSelected.add(key);
-  devPhotosRender(document.getElementById('devPanelList'));
+
+  const cell = document.querySelector(`.dev-photo-cell[data-key="${CSS.escape(key)}"]`);
+  if(cell){
+    const checked = _devPhotosSelected.has(key);
+    const img = cell.querySelector('img');
+    const badge = cell.querySelector('.dev-photo-check');
+    if(img){ img.style.borderColor = checked ? 'var(--wood)' : 'transparent'; img.style.opacity = checked ? '0.55' : '1'; }
+    if(badge){ badge.style.background = checked ? 'var(--wood)' : 'rgba(0,0,0,0.55)'; badge.textContent = checked ? '✓' : ''; }
+  }
+  _devPhotosUpdateDeleteBtn();
 }
 
-async function _devPhotosSelectAll(){
-  // Sélectionne toutes les photos actuellement affichées (respecte le filtre par chantier)
-  const keys = await _devPhotosCollectVisible();
-  keys.forEach(key => _devPhotosSelected.add(key));
-  devPhotosRender(document.getElementById('devPanelList'));
+function _devPhotosUpdateDeleteBtn(){
+  const btn = document.getElementById('devPhotosDeleteBtn');
+  if(!btn) return;
+  const n = _devPhotosSelected.size;
+  btn.innerHTML = `<img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer définitivement (${n} sélectionnée${n>1?'s':''})`;
 }
 
-async function _devPhotosCollectVisible(){
-  const sites = await _devChantiersCollect();
-  const keys = [];
-  sites.forEach(s => {
-    if(_devPhotosSiteFilter && s.id !== _devPhotosSiteFilter) return;
-    (s.sharedMedia||[]).forEach(m => {
-      if(m && (m.type === 'photo' || (m.mimeType||'').startsWith('image/')) && m.url){
-        keys.push(s.id + '::' + m.id);
-      }
-    });
+function _devPhotosSelectAll(){
+  // Sélectionne toutes les vignettes actuellement visibles dans la grille
+  // (respecte le filtre par chantier) — travaille sur le cache local, pas
+  // de rechargement réseau, pas de reconstruction de la grille.
+  document.querySelectorAll('#devPhotosGrid .dev-photo-cell').forEach(cell => {
+    const key = cell.dataset.key;
+    _devPhotosSelected.add(key);
+    const img = cell.querySelector('img');
+    const badge = cell.querySelector('.dev-photo-check');
+    if(img){ img.style.borderColor = 'var(--wood)'; img.style.opacity = '0.55'; }
+    if(badge){ badge.style.background = 'var(--wood)'; badge.textContent = '✓'; }
   });
-  return keys;
+  _devPhotosUpdateDeleteBtn();
+}
+
+function _devPhotosDeselectAll(){
+  document.querySelectorAll('#devPhotosGrid .dev-photo-cell').forEach(cell => {
+    const key = cell.dataset.key;
+    _devPhotosSelected.delete(key);
+    const img = cell.querySelector('img');
+    const badge = cell.querySelector('.dev-photo-check');
+    if(img){ img.style.borderColor = 'transparent'; img.style.opacity = '1'; }
+    if(badge){ badge.style.background = 'rgba(0,0,0,0.55)'; badge.textContent = ''; }
+  });
+  _devPhotosUpdateDeleteBtn();
 }
 
 async function _devPhotosDeleteSelected(){
@@ -42433,9 +42483,14 @@ async function _devPhotosDeleteSelected(){
     try{ if(typeof pushSharedSite === 'function') await pushSharedSite(site); }catch(e){}
   }
   saveData();
+
+  // Retirer du cache local (pas de rechargement réseau nécessaire) les
+  // photos qu'on vient de supprimer, puis ré-affichage rapide.
+  const deletedKeys = new Set(_devPhotosSelected);
+  _devPhotosCache = (_devPhotosCache||[]).filter(p => !deletedKeys.has(p.siteId + '::' + p.media.id));
   _devPhotosSelected.clear();
   showToast('✅ Photos supprimées définitivement');
-  devPhotosRender(document.getElementById('devPanelList'));
+  _devPhotosRenderFromCache(document.getElementById('devPanelList'));
 }
 
 async function devChantiersRender(container){
