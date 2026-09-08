@@ -7373,6 +7373,10 @@ async function initRwoodStorage(){
   setTimeout(()=> { if(typeof _checkSignatureConsent === 'function') _checkSignatureConsent(); }, 4200);
   // Purge automatique de la corbeille "Supprimés récemment" (30 jours).
   setTimeout(()=> { if(typeof _purgeOldTrashItems === 'function') _purgeOldTrashItems(); }, 4300);
+  // Précharge la tombstone des médias définitivement supprimés (voir
+  // DELETED_MEDIA_KEY) — indispensable pour que le filtre s'applique dès
+  // les premiers cycles de synchro, avant même qu'une fusion ne se produise.
+  setTimeout(()=> { if(typeof _preloadDeletedMediaIds === 'function') _preloadDeletedMediaIds(); }, 3000);
   setTimeout(()=> pullSharedSites(), 4500);
   // Fix pointage vide au 1er lancement : re-render après que pullSharedSites a fini
   setTimeout(()=> { try{ if(currentHeuresMode === 'pointage') renderPointage(); }catch(e){} }, 5500);
@@ -7684,7 +7688,11 @@ function mergeArrayById(localArr, remoteArr){
     [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
       const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
     });
-    return out;
+    // Exclut toute photo/document définitivement supprimé (voir
+    // DELETED_MEDIA_KEY) — sans ce filtre, l'union ci-dessus resuscite une
+    // suppression volontaire dès qu'un appareil qui possède encore
+    // l'ancienne version se resynchronise.
+    return _filterDeletedMedia(out);
   };
   return [...ids].map(id => {
     const local = localMap.get(id);
@@ -29208,7 +29216,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.28.1';
+const APP_VERSION = '5.29.0';
 
 const CHANGELOG = [
   {
@@ -35959,6 +35967,69 @@ function openSendNoteToChef(siteId){
 const SHARED_SITES_KEY   = 'company_shared_sites';
 const DELETED_SITES_KEY  = 'company_deleted_sites'; // tombstone — IDs définitivement supprimés
 
+/* Tombstone MÉDIA — même principe que DELETED_SITES_KEY, mais pour les
+   photos/documents individuels d'un chantier. Nécessaire car TOUTES les
+   fonctions de fusion (mergeArrayById, pushSharedSite, syncAllSitesPull)
+   font volontairement une UNION des médias entre deux versions, pour ne
+   jamais perdre une photo ajoutée par un autre appareil pendant une
+   synchronisation — ce qui est le bon comportement pour un ajout normal,
+   mais qui annule silencieusement toute suppression volontaire dès qu'un
+   appareil qui possède encore l'ancienne version se resynchronise. Une
+   suppression VRAIMENT définitive (voir _devPhotosDeleteSelected) doit
+   donc être mémorisée ici, et chaque fonction de fusion doit exclure
+   systématiquement les identifiants qui y figurent. */
+const DELETED_MEDIA_KEY = 'company_deleted_media';
+
+async function _fetchDeletedMediaIds(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DELETED_MEDIA_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return [];
+    const rows = await res.json();
+    if(!rows || !rows.length) return [];
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && d.ids) || [];
+  }catch(e){ return []; }
+}
+
+async function _addDeletedMediaIds(ids){
+  if(!ids || !ids.length) return;
+  try{
+    const existing = await _fetchDeletedMediaIds();
+    const merged = Array.from(new Set([...existing, ...ids]));
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DELETED_MEDIA_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ ids: merged })
+      })
+    });
+    // Cache local pour un filtrage synchrone immédiat (voir _filterDeletedMedia).
+    _deletedMediaIdsCache = merged;
+  }catch(e){}
+}
+
+let _deletedMediaIdsCache = null; // rempli au premier appel, réutilisé pour filtrer en synchrone
+
+/* Retire d'une liste de médias tout ce qui figure dans la tombstone —
+   utilisé par TOUTES les fonctions de fusion pour qu'une suppression
+   définitive résiste à n'importe quelle resynchronisation ultérieure. */
+function _filterDeletedMedia(mediaList){
+  if(!Array.isArray(mediaList) || !mediaList.length) return mediaList;
+  if(!_deletedMediaIdsCache || !_deletedMediaIdsCache.length) return mediaList;
+  const blacklist = new Set(_deletedMediaIdsCache);
+  return mediaList.filter(m => !(m && blacklist.has(m.id)));
+}
+
+/* À appeler une fois au démarrage pour que _filterDeletedMedia dispose
+   d'une liste à jour sans devoir refaire un appel réseau à chaque fusion
+   (qui peut se produire très fréquemment). */
+async function _preloadDeletedMediaIds(){
+  _deletedMediaIdsCache = await _fetchDeletedMediaIds();
+}
+
+
 async function _fetchDeletedSiteIds(){
   try{
     const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DELETED_SITES_KEY) + '&select=data', { headers:{'Prefer':''} });
@@ -37185,7 +37256,11 @@ async function pushSharedSite(site){
       [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
         const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
       });
-      return out;
+      // Exclut systématiquement toute photo définitivement supprimée (voir
+      // DELETED_MEDIA_KEY) — sans ce filtre, l'union ci-dessus resuscite
+      // silencieusement une suppression volontaire dès que la version encore
+      // détenue par un autre appareil ou canal repasse par ici.
+      return _filterDeletedMedia(out);
     };
     const snapshot = {
       id:                  site.id,
@@ -37261,7 +37336,11 @@ function _mergeSiteMediaUnion(a, b){
   [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
     const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
   });
-  return out;
+  // Exclut toute photo/document définitivement supprimé (voir
+  // DELETED_MEDIA_KEY) — cette fonction est réutilisée par plusieurs
+  // chemins de synchro (pullSharedSites, syncAllSitesPull), la corriger
+  // ici suffit à les couvrir tous.
+  return _filterDeletedMedia(out);
 }
 
 async function pullSharedSites(){
@@ -42461,26 +42540,80 @@ async function _devPhotosDeleteSelected(){
   if(!_devPhotosSelected.size){ showToast('Aucune photo sélectionnée'); return; }
   if(!confirm(`Supprimer définitivement ${_devPhotosSelected.size} photo(s) ? Cette action est IRRÉVERSIBLE, aucune corbeille.`)) return;
 
-  // Regrouper par chantier pour minimiser les appels réseau (un push par chantier concerné).
+  // Regrouper par chantier.
   const bySite = {};
   _devPhotosSelected.forEach(key => {
     const [siteId, mediaId] = key.split('::');
     (bySite[siteId] = bySite[siteId] || []).push(mediaId);
   });
+  const allDeletedMediaIds = Object.values(bySite).flat();
 
+  // 1) Alimenter la tombstone AVANT toute écriture — c'est elle qui
+  //    empêche les fonctions de fusion (mergeArrayById, pushSharedSite,
+  //    syncAllSitesPull) de ressusciter ces photos si un autre appareil
+  //    encore en possession de l'ancienne version se resynchronise après
+  //    cette suppression. Sans ça (bug confirmé), l'union systématique des
+  //    médias entre deux versions annule silencieusement la suppression.
+  await _addDeletedMediaIds(allDeletedMediaIds);
+
+  // 2) Retirer les photos de CHAQUE source connue, en écrivant directement
+  //    (pas via pushSharedSite, qui referait une union avec l'existant
+  //    côté serveur et remettrait les photos qu'on vient de retirer).
   const sites = await _devChantiersCollect();
   for(const siteId in bySite){
     const site = sites.find(s => s.id === siteId);
     if(!site) continue;
     const mediaIds = bySite[siteId];
     site.sharedMedia = (site.sharedMedia||[]).filter(m => !mediaIds.includes(m.id));
-    site.updatedAt = new Date().toISOString(); // voir mergeArrayById / syncAllSitesPull
-    // Répercuter aussi sur data.sites en local si ce chantier y existe déjà,
-    // pour que l'app reflète immédiatement la suppression sans attendre un
-    // cycle de synchro complet.
+    site.updatedAt = new Date().toISOString();
+  }
+
+  // Canal partagé général (SHARED_SITES_KEY) : écriture brute de la liste
+  // complète déjà nettoyée, sans repasser par une fusion.
+  try{
+    const shared = await _fetchSharedSites();
+    let changed = false;
+    shared.forEach(s => {
+      if(bySite[s.id]){
+        const before = (s.sharedMedia||[]).length;
+        s.sharedMedia = (s.sharedMedia||[]).filter(m => !bySite[s.id].includes(m.id));
+        if(s.sharedMedia.length !== before) changed = true;
+      }
+    });
+    if(changed) await _saveSharedSites(shared);
+  }catch(e){}
+
+  // Canal chef (CHEF_PUSH_KEY) : même nettoyage direct, sans fusion.
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        const chefSites = (d && d.sites) || [];
+        let changed = false;
+        chefSites.forEach(s => {
+          if(bySite[s.id]){
+            const before = (s.sharedMedia||[]).length;
+            s.sharedMedia = (s.sharedMedia||[]).filter(m => !bySite[s.id].includes(m.id));
+            if(s.sharedMedia.length !== before) changed = true;
+          }
+        });
+        if(changed){
+          await supaFetch('/rest/v1/rwood_sync', {
+            method: 'POST',
+            headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify({ user_id: CHEF_PUSH_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ sites: chefSites }) })
+          });
+        }
+      }
+    }
+  }catch(e){}
+
+  // 3) Répercuter en local (data.sites) pour un retour visuel immédiat.
+  for(const siteId in bySite){
     const localSite = (data.sites||[]).find(s => s.id === siteId);
-    if(localSite) localSite.sharedMedia = site.sharedMedia;
-    try{ if(typeof pushSharedSite === 'function') await pushSharedSite(site); }catch(e){}
+    if(localSite) localSite.sharedMedia = (localSite.sharedMedia||[]).filter(m => !bySite[siteId].includes(m.id));
   }
   saveData();
 
