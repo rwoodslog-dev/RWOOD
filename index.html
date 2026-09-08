@@ -26617,8 +26617,18 @@ function applyComptableNavRestrictions(){
   const isComptable = profile.role === 'comptable';
   const isPatronRole = profile.role === 'patron';
 
+  // Boutons à garde de rôle dédiée : leur visibilité est décidée ailleurs
+  // (siteNotesDashboardApplyVisibility, applyUsersTileVisibility,
+  // devAccessApplyNav, notesApplyTabVisibility) — cette fonction ne doit
+  // JAMAIS les toucher, sinon elle écrase leur état juste après (bug
+  // confirmé : le patron voyait "À faire" réapparaître de force, et la
+  // comptable ne pouvait jamais voir le nouveau tableau de bord "Notes"
+  // puisqu'il n'existait pas dans son ancienne liste blanche).
+  const dedicatedGuardViews = new Set(['notesdashboard', 'notes', 'utilisateurs', 'dev']);
+
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn=>{
     const view = btn.dataset.view;
+    if(dedicatedGuardViews.has(view)) return;
     if(isPatronRole){
       // Patron : tout visible sauf alertes-conducteur (déjà géré par renderSites)
       btn.style.display = '';
@@ -26632,9 +26642,17 @@ function applyComptableNavRestrictions(){
   if(isComptable){
     document.body.classList.remove('fab-visible'); // le comptable n'a pas de FAB (pas de création chantier)
     const activeBtn = document.querySelector('nav.bottom .nav-btn.active');
-    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires'];
+    // "notesdashboard" ajouté aux vues autorisées pour la comptable — sinon
+    // le code juste en dessous la redirigerait de force vers "heures" à
+    // chaque fois qu'elle arriverait sur son propre tableau de bord "Notes".
+    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires', 'notesdashboard'];
     if(activeBtn && !allowedViews.includes(activeBtn.dataset.view)) goTo('heures');
   }
+
+  // Ré-applique juste après les gardes dédiées, pour que leur état ait
+  // toujours le dernier mot quel que soit l'ordre d'appel au démarrage.
+  if(typeof siteNotesDashboardApplyVisibility === 'function') siteNotesDashboardApplyVisibility();
+  if(typeof notesApplyTabVisibility === 'function') notesApplyTabVisibility();
 }
 
 function renderTeamRoster(){
@@ -29260,7 +29278,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.31.0';
+const APP_VERSION = '5.31.1';
 
 const CHANGELOG = [
   {
@@ -42451,7 +42469,7 @@ function dedupBuildMap(sources){
 let PATRON_NAV_PRESET_ENABLED = true;
 
 /* Onglets conservés dans la barre pour patron/conducteur (9 principaux). */
-const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notes','suivi','alertes-conducteur','zone-chantier'];
+const PATRON_NAV_KEEP = ['chantiers','heures','stock','contacts','agenda','magasin','notesdashboard','suivi','alertes-conducteur','zone-chantier'];
 
 function _patronNavIsTargetRole(){
   const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
@@ -42467,10 +42485,18 @@ function patronNavPreset(){
 
   if(!Array.isArray(data.settings.navHidden)) data.settings.navHidden = [];
   const keep = new Set(PATRON_NAV_KEEP);
+  // "notesdashboard", "notes", "utilisateurs", "dev" ont leur propre garde
+  // de rôle dédiée (siteNotesDashboardApplyVisibility, notesApplyTabVisibility,
+  // applyUsersTileVisibility, devAccessApplyNav) qui doit avoir le dernier
+  // mot — ce préréglage ne doit jamais les pousser dans navHidden ni les en
+  // retirer, sous peine de re-créer le même conflit que celui déjà corrigé
+  // sur applyComptableNavRestrictions.
+  const dedicatedGuardViews = new Set(['notesdashboard', 'notes', 'utilisateurs', 'dev']);
   // Masque tout onglet présent dans la barre qui n'est pas gardé (hors 'parametres' et 'scanner' accessibles autrement)
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn => {
     const view = btn.dataset.view;
     if(!view || view === 'parametres') return;
+    if(dedicatedGuardViews.has(view)) return;
     if(!keep.has(view) && !data.settings.navHidden.includes(view)){
       data.settings.navHidden.push(view);
     }
