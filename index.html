@@ -9135,9 +9135,9 @@ function goTo(viewName, siteId){
     if(role !== 'chef' && role !== 'ouvrier'){ goTo('chantiers'); return; }
     notesSyncFollowedThenRender(); renderNotesBubbleBtn();
   }
-  if(viewName === 'notesdashboard'){ // réservé conducteur/patron/comptable — voir siteNotesDashboardApplyVisibility
+  if(viewName === 'notesdashboard'){ // réservé conducteur/patron — voir siteNotesDashboardApplyVisibility
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    if(role !== 'conducteur' && role !== 'patron' && role !== 'comptable'){ goTo('chantiers'); return; }
+    if(role !== 'conducteur' && role !== 'patron'){ goTo('chantiers'); return; }
     renderSiteNotesDashboard();
   }
   if(viewName === 'suivi'){ // MODULE — SuiviHeures : réservé patron/dev
@@ -26621,9 +26621,9 @@ function applyComptableNavRestrictions(){
   // (siteNotesDashboardApplyVisibility, applyUsersTileVisibility,
   // devAccessApplyNav, notesApplyTabVisibility) — cette fonction ne doit
   // JAMAIS les toucher, sinon elle écrase leur état juste après (bug
-  // confirmé : le patron voyait "À faire" réapparaître de force, et la
-  // comptable ne pouvait jamais voir le nouveau tableau de bord "Notes"
-  // puisqu'il n'existait pas dans son ancienne liste blanche).
+  // confirmé : le patron voyait "À faire" réapparaître de force). La
+  // comptable n'a plus accès au tableau de bord "Notes" (réservé
+  // conducteur/patron) — géré uniquement par siteNotesDashboardApplyVisibility.
   const dedicatedGuardViews = new Set(['notesdashboard', 'notes', 'utilisateurs', 'dev']);
 
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn=>{
@@ -26642,10 +26642,11 @@ function applyComptableNavRestrictions(){
   if(isComptable){
     document.body.classList.remove('fab-visible'); // le comptable n'a pas de FAB (pas de création chantier)
     const activeBtn = document.querySelector('nav.bottom .nav-btn.active');
-    // "notesdashboard" ajouté aux vues autorisées pour la comptable — sinon
-    // le code juste en dessous la redirigerait de force vers "heures" à
-    // chaque fois qu'elle arriverait sur son propre tableau de bord "Notes".
-    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires', 'notesdashboard'];
+    // "notesdashboard" (tableau de bord "Notes") n'est plus accessible à la
+    // comptable, réservé conducteur/patron — si elle s'y trouvait déjà
+    // (état antérieur), on la ramène sur "heures" comme les autres vues
+    // non autorisées.
+    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires'];
     if(activeBtn && !allowedViews.includes(activeBtn.dataset.view)) goTo('heures');
   }
 
@@ -29086,7 +29087,7 @@ const NAV_LABELS = {
   agenda:'Agenda', couverture:'Toiture', galerie:'Galerie',
   zinc:'Zinc', ferme:'Ferme', parametres:'Paramètres',
   scanner:'Scanner', magasin:'Magasin',
-  notes:'Listes à faire', suivi:'Suivi',
+  notes:'Listes à faire', suivi:'Suivi', notesdashboard:'Notes',
   'alertes-conducteur':'Alertes', 'zone-chantier':'Zone',
 };
 
@@ -29102,6 +29103,7 @@ const SIDEBAR_TOGGLE_LABELS = {
   'heures': 'Heures',
   'agenda': 'Agenda',
   'notes': 'À faire',
+  'notesdashboard': 'Notes',
   'alertes-conducteur': 'Alertes',
   'galerie': 'Galerie',
   'calcul': 'Calcul',
@@ -29116,19 +29118,33 @@ const SIDEBAR_TOGGLE_LABELS = {
   'photos': 'Photos'
 };
 
+/* Certaines entrées de cette liste sont réservées à des rôles précis
+   (même garde que les onglets réels — voir notesApplyTabVisibility et
+   siteNotesDashboardApplyVisibility) : on ne les propose dans les
+   réglages "Sidebar" qu'aux rôles concernés, pour ne pas afficher un
+   interrupteur pour un onglet que le rôle actuel ne verra jamais. */
+function _sidebarToggleAllowedForRole(view, role){
+  if(view === 'notes') return (role === 'chef' || role === 'ouvrier');
+  if(view === 'notesdashboard') return (role === 'conducteur' || role === 'patron');
+  return true;
+}
+
 function renderSidebarVisibilityList(){
   const el = document.getElementById('sidebarVisibilityList');
   if(!el) return;
   ensureNavHidden();
   const hidden = data.settings.navHidden;
-  el.innerHTML = Object.entries(SIDEBAR_TOGGLE_LABELS).map(([view, label]) => {
-    const isHidden = hidden.includes(view);
-    return `
-      <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;">
-        <span style="font-size:13.5px;">${label}</span>
-        <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="_toggleSidebarView('${view}', this.checked)" style="width:20px;height:20px;accent-color:var(--wood);flex-shrink:0;">
-      </label>`;
-  }).join('');
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  el.innerHTML = Object.entries(SIDEBAR_TOGGLE_LABELS)
+    .filter(([view]) => _sidebarToggleAllowedForRole(view, role))
+    .map(([view, label]) => {
+      const isHidden = hidden.includes(view);
+      return `
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;">
+          <span style="font-size:13.5px;">${label}</span>
+          <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="_toggleSidebarView('${view}', this.checked)" style="width:20px;height:20px;accent-color:var(--wood);flex-shrink:0;">
+        </label>`;
+    }).join('');
 }
 
 function _toggleSidebarView(view, visible){
@@ -36604,15 +36620,19 @@ async function refreshUtilisateursList(){
    patron/comptable, appelée au même moment que les autres gardes de
    navigation (applyNavHidden, devAccessApplyNav). */
 /* Affiche/masque l'onglet "Notes" (tableau de bord) selon le rôle —
-   réservé conducteur/patron/comptable, symétrique de notesApplyTabVisibility
-   qui réserve "Listes à faire" à chef/ouvrier. Appelée au même moment que
-   les autres gardes de navigation (voir applyNavHidden). */
+   réservé conducteur/patron uniquement (la comptable n'y a plus accès),
+   symétrique de notesApplyTabVisibility qui réserve "Listes à faire" à
+   chef/ouvrier. Appelée au même moment que les autres gardes de
+   navigation (voir applyNavHidden). Respecte aussi navHidden, comme les
+   autres onglets, pour rester masquable depuis Paramètres › Sidebar. */
 function siteNotesDashboardApplyVisibility(){
   const btn = document.getElementById('siteNotesDashboardNavBtn');
   if(!btn) return;
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const allowed = (role === 'conducteur' || role === 'patron' || role === 'comptable');
-  btn.style.display = allowed ? '' : 'none';
+  const roleAllowed = (role === 'conducteur' || role === 'patron');
+  ensureNavHidden();
+  const hiddenByUser = data.settings.navHidden.includes('notesdashboard');
+  btn.style.display = (roleAllowed && !hiddenByUser) ? '' : 'none';
 }
 
 function applyUsersTileVisibility(){
