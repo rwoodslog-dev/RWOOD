@@ -1147,6 +1147,16 @@
     height: 180px;
     touch-action: none;
   }
+  /* Même dimensionnement que #signatureCanvas — sans cette règle, le canvas
+     de la modale de consentement n'avait aucune hauteur fixée et pouvait
+     s'étirer bien au-delà de l'écran visible sur mobile, rendant les
+     boutons "Effacer"/"Valider" inaccessibles (bug rapporté). */
+  #consentSignatureCanvas{
+    display:block;
+    width: 100%;
+    height: 180px;
+    touch-action: none;
+  }
   .signature-hint{
     font-size:12px;
     color: var(--ink-soft);
@@ -6433,7 +6443,7 @@
     </label>
     <label style="display:flex; align-items:flex-start; gap:10px; margin-bottom:16px; cursor:pointer;">
       <input type="checkbox" id="consentDataUsage" style="width:20px;height:20px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;">
-      <span style="font-size:13.5px;">J'autorise l'utilisation des données de mes fiches d'heures dans le cadre du fonctionnement de l'application.</span>
+      <span style="font-size:13.5px;">J'autorise l'application à utiliser mes informations personnelles dans le cadre de l'entreprise et à des fins professionnelles.</span>
     </label>
     <div class="signature-canvas-wrap">
       <canvas id="consentSignatureCanvas"></canvas>
@@ -20542,6 +20552,10 @@ function submitSignatureConsent(){
   w.signatureConsentAt = new Date().toISOString();
   saveData();
   if(typeof syncPush === 'function'){ try{ syncPush(); }catch(_){} }
+  // Push immédiat des données de compte détaillées (signature + preuve de
+  // consentement datée) — c'est cette clé que lit la page "Utilisateurs"
+  // (patron/comptable), sans attendre un cycle de synchro générique.
+  if(typeof _pushAccountData === 'function'){ try{ _pushAccountData(); }catch(_){} }
 
   closeModal('signatureConsent');
   showToast('✅ Merci, ta signature est enregistrée');
@@ -24947,7 +24961,10 @@ function renderParametres(){
   // PIN et autoLock supprimés
   updateSecurityStatusLabel();
   applyRoleLockUI();
-  initChefTodoParamsSection();
+  // initChefTodoParamsSection() retiré : cette fonction ciblait l'écran
+  // Paramètres "Liste à faire" (retiré) — la sélection du chef à suivre vit
+  // désormais dans le popup de la bulle (voir switchTodoTab /
+  // _populateChefTodoSelectorPopup).
   renderUpdateBadge();
   renderAccentPresets(data.settings&&data.settings.accentColor||'#E8AC3D');
 
@@ -29188,7 +29205,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.26.0';
+const APP_VERSION = '5.27.1';
 
 const CHANGELOG = [
   {
@@ -33538,7 +33555,24 @@ function switchTodoTab(tab){
   if(parSect) parSect.style.display = tab==='partage' ? '' : 'none';
   if(btnMa){  btnMa.style.background  = tab==='ma'? 'var(--wood)':'transparent'; btnMa.style.color  = tab==='ma'? '#1a0f00':'var(--ink-soft)'; }
   if(btnPar){ btnPar.style.background = tab==='partage'? 'var(--wood)':'transparent'; btnPar.style.color = tab==='partage'? '#1a0f00':'var(--ink-soft)'; }
-  if(tab === 'partage') refreshSharedTodoInPopup();
+  if(tab === 'partage'){
+    _populateChefTodoSelectorPopup();
+    refreshSharedTodoInPopup();
+  }
+}
+
+/* Peuple le sélecteur de chef du popup (voir switchTodoTab) — même logique
+   que l'ancienne section Paramètres retirée, mais accessible directement
+   depuis la bulle, sans passer par un écran de réglages qui n'existe plus. */
+async function _populateChefTodoSelectorPopup(){
+  const sel = document.getElementById('chefTodoSelectorPopup');
+  if(!sel) return;
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  const followedId = _getFollowedChefId();
+  const chefs = await fetchChefsForMyCompany();
+  const filteredChefs = chefs.filter(c => c.authId !== myAuthId);
+  sel.innerHTML = '<option value="">— Choisir un chef —</option>' +
+    filteredChefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name||c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('');
 }
 
 async function refreshSharedTodoInPopup(){
@@ -33551,7 +33585,7 @@ async function refreshSharedTodoInPopup(){
 
   // Fix doublon : un chef ne peut pas se suivre lui-même
   if(!followedId || followedId === myAuthId){
-    itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">Aucun chef · <button onclick="closePinnedNotePopup(); goTo(\'parametres\'); setTimeout(()=>toggleParametresSection(\'pinnedNotes\'),300);" style="background:none;border:none;color:var(--wood);font-size:12px;cursor:pointer;padding:0;font-weight:700;">Configurer</button></span>';
+    itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">Choisis un chef ci-dessus pour voir sa liste.</span>';
     if(labelEl) labelEl.textContent = 'Liste partagée';
     return;
   }
@@ -33825,11 +33859,14 @@ async function pullChefTodoList(authId){
 function _getFollowedChefId(){ return data.settings && data.settings.followedChefTodoId || null; }
 function _setFollowedChefId(id){ if(!data.settings) data.settings = {}; data.settings.followedChefTodoId = id; saveData(); }
 
-/* Rendu du sélecteur de chef + liste todo dans le popup (mode ouvrier) */
+/* Déclenché par le changement de sélection du chef dans le popup de la
+   bulle (voir #chefTodoSelectorPopup). Rafraîchit directement l'affichage
+   du popup — l'ancienne cible (refreshChefTodoInParams, pensée pour
+   l'écran Paramètres retiré) référençait des éléments qui n'existent plus. */
 async function onChefTodoSelectorChange(authId){
   _setFollowedChefId(authId || null);
   pushMyUserRegistration(); // mettre à jour le registre avec le nouveau followedChefTodoId
-  await refreshChefTodoInParams();
+  await refreshSharedTodoInPopup();
 }
 
 
@@ -36339,6 +36376,15 @@ async function refreshUtilisateursList(){
       const sigHtml = acc.signature
         ? `<img src="${acc.signature}" alt="Signature" style="max-width:140px;max-height:60px;background:#fff;border-radius:6px;border:1px solid var(--line);">`
         : '<span class="hint">Aucune signature enregistrée</span>';
+      // Preuve de consentement (cases à cocher + signature) : date/heure
+      // exactes de validation et version du texte acceptée — sert de
+      // justificatif pour le développeur en cas de besoin (voir l'attestation
+      // développeur/patron), sans jamais avoir à aller chercher la donnée
+      // brute côté Supabase.
+      const consentVersion = acc.signatureConsentVersion || 0;
+      const consentHtml = consentVersion > 0 && acc.signatureConsentAt
+        ? `<span style="color:var(--green);">✅ Consentement accepté le ${new Date(acc.signatureConsentAt).toLocaleDateString('fr-FR')} à ${new Date(acc.signatureConsentAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})} (version ${consentVersion})</span>`
+        : `<span style="color:var(--red);">⚠️ Consentement non encore accepté</span>`;
       return `
         <div class="card" style="margin-bottom:10px;">
           <div style="font-weight:700;font-size:15px;margin-bottom:2px;">${escapeHtml(fullName)}</div>
@@ -36349,6 +36395,7 @@ async function refreshUtilisateursList(){
             <div>📞 Téléphone : <strong>${escapeHtml(acc.phone || u.phone || '—')}</strong></div>
           </div>
           <div style="margin-top:10px;">${sigHtml}</div>
+          <div style="margin-top:8px;font-size:12px;">${consentHtml}</div>
         </div>`;
     }).join('');
   }catch(e){
@@ -36407,13 +36454,21 @@ async function _pushAccountData(){
   const auth = data.settings.auth || {};
   const profile = data.settings.myProfile || {};
   const moi = (data.contacts||[]).find(c=>c.role==='Moi') || {};
+  // La signature et les infos de consentement (case à cocher) sont écrites
+  // sur le worker lié au profil (voir submitSignatureConsent), pas sur
+  // data.contacts — on lit depuis cette même source pour que la page
+  // "Utilisateurs" (patron/comptable) affiche exactement ce qui a été
+  // réellement signé, avec sa date, quel que soit l'appareil qui consulte.
+  const worker = (data.workers||[]).find(w => w.id === profile.workerId) || {};
   const accountData = {
     firstName: profile.firstName || '',
     lastName:  profile.lastName  || '',
     birthDate: profile.birthDate || '', // nécessaire pour la tuile "Utilisateurs" (patron/comptable)
     phone:     moi.phone         || '',
     email:     moi.email         || '',
-    signature: moi.signature     || '',
+    signature: worker.signature || moi.signature || '',
+    signatureConsentVersion: worker.signatureConsentVersion || 0,
+    signatureConsentAt:      worker.signatureConsentAt || '',
     authPwd:   auth.authPwd      || '',   // déjà hashé/opaque
     teamName:  data.settings.teamName || '',
     savedAt:   new Date().toISOString()
@@ -42985,12 +43040,21 @@ async function comptaEditEnsurePulled(){
 
   <!-- LISTE PARTAGÉE -->
   <div id="todoSectionPartage" style="display:none;">
+    <!-- Sélection du chef à suivre — réintégrée ici après le retrait de la
+         section "Liste à faire" des Paramètres (elle vivait uniquement
+         là-bas, avec pour seul point d'accès un lien "Configurer" qui
+         pointait vers une section supprimée : plus aucun ouvrier ne pouvait
+         choisir de chef à suivre, cassant la synchro avec l'équipe). -->
+    <select id="chefTodoSelectorPopup" onchange="onChefTodoSelectorChange(this.value)"
+      style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:12.5px; margin-bottom:10px;">
+      <option value="">— Choisir un chef —</option>
+    </select>
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
       <span id="sharedTodoLabel" style="font-size:12px; font-weight:700; color:var(--wood);">Liste partagée</span>
       <button onclick="refreshSharedTodoInPopup()" style="background:none;border:none;font-size:13px;color:var(--wood);cursor:pointer;padding:2px 6px;" title="Resync">🔄</button>
     </div>
     <div id="sharedTodoItems" style="color:var(--ink-soft);font-size:12px;">
-      <span style="opacity:0.6;">Aucun chef · <button onclick="closePinnedNotePopup(); goTo('parametres'); setTimeout(()=>toggleParametresSection('pinnedNotes'),300);" style="background:none;border:none;color:var(--wood);font-size:12px;cursor:pointer;padding:0;font-weight:700;">Configurer</button></span>
+      <span style="opacity:0.6;">Aucun chef sélectionné.</span>
     </div>
   </div>
 </div>
