@@ -6137,8 +6137,10 @@
       <button class="photo-fullscreen-close" onclick="closeModal('photoFullscreen')">×</button>
       <button class="photo-fullscreen-action" id="photoFullscreenShareBtn" onclick="shareCurrentFullscreenPhoto()" title="Partager"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M12 14V4"/><path d="M8 8l4-4 4 4"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg></button>
     </div>
+    <button class="galerie-lb-arrow galerie-lb-arrow-left" id="photoFullscreenPrevBtn" onclick="event.stopPropagation(); photoFullscreenPrev();" style="display:none;">‹</button>
     <img id="photoFullscreenImg" src="" alt="Photo">
-    <div id="photoZoomHint">Double-tap ou pince pour zoomer</div>
+    <button class="galerie-lb-arrow galerie-lb-arrow-right" id="photoFullscreenNextBtn" onclick="event.stopPropagation(); photoFullscreenNext();" style="display:none;">›</button>
+    <div id="photoZoomHint">Double-tap ou pince pour zoomer · molette pour zoomer (PC)</div>
     <div class="photo-fullscreen-caption" id="photoFullscreenCaption"></div>
   </div>
 </div>
@@ -9953,6 +9955,50 @@ function _setupGalerieLbZoom(){
   img.addEventListener('touchend', function(e){
     if(e.touches.length === 0) _galerieLbZoom.panning = false;
   });
+
+  // Zoom molette (PC), centré sous le curseur — même logique que
+  // _photoZoom (visionneuse plein écran) : voir setupPhotoZoom.
+  img.addEventListener('wheel', function(e){
+    e.preventDefault(); e.stopPropagation();
+    const rect = img.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width/2;
+    const cy = e.clientY - rect.top - rect.height/2;
+    const oldScale = _galerieLbZoom.scale;
+    const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+    let newScale = Math.max(1, Math.min(oldScale * factor, 5));
+    if(newScale === oldScale) return;
+    if(newScale <= 1){
+      _resetGalerieLbZoom();
+      return;
+    }
+    const ratio = newScale / oldScale;
+    _galerieLbZoom.x = cx - (cx - _galerieLbZoom.x) * ratio;
+    _galerieLbZoom.y = cy - (cy - _galerieLbZoom.y) * ratio;
+    _galerieLbZoom.scale = newScale;
+    _galerieLbClampPan();
+    _applyGalerieLbZoom();
+  }, {passive:false});
+
+  // Glisser à la souris (PC) pour se déplacer dans l'image une fois zoomée.
+  img.addEventListener('mousedown', function(e){
+    if(_galerieLbZoom.scale <= 1) return;
+    _galerieLbZoom.panning = true;
+    _galerieLbZoom.lastX = e.clientX;
+    _galerieLbZoom.lastY = e.clientY;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function(e){
+    if(!_galerieLbZoom.panning) return;
+    const dx = e.clientX - _galerieLbZoom.lastX;
+    const dy = e.clientY - _galerieLbZoom.lastY;
+    _galerieLbZoom.x += dx;
+    _galerieLbZoom.y += dy;
+    _galerieLbZoom.lastX = e.clientX;
+    _galerieLbZoom.lastY = e.clientY;
+    _galerieLbClampPan();
+    _applyGalerieLbZoom();
+  });
+  window.addEventListener('mouseup', function(){ _galerieLbZoom.panning = false; });
 }
 function _galerieRenderLightbox(){
   const lb = document.getElementById('galerieLightbox');
@@ -10484,17 +10530,59 @@ function photoImgAttrs(ref){
   return `src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-media-ref="${escapeHtml(ref)}" loading="lazy" class="lazy-photo"`;
 }
 
+/* ── Navigation précédent/suivant dans la visionneuse plein écran ────────
+   Construit la liste ordonnée des photos "navigables" (même chantier,
+   même source que renderDetailPhotosSection) au moment de l'ouverture,
+   pour que les flèches ‹ › (et les flèches clavier ←/→) passent à la
+   photo suivante/précédente sans avoir à rouvrir la galerie. Liste vide
+   si l'appelant n'a pas fourni de siteId (ex: photo isolée boîte à clés,
+   corbeille) : les flèches restent alors masquées. */
+let _pfsNavList = [];
+let _pfsNavIndex = -1;
+
 async function openPhotoFullscreenByLogId(logId, caption){
   const entry = data.logs.find(l => l.id === logId);
   if(!entry || !entry.photo) return;
   const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
+  // Reconstruit la liste de navigation à partir de toutes les photos du
+  // même chantier (même ordre que l'affichage dans l'onglet Photos).
+  if(entry.siteId){
+    _pfsNavList = data.logs.filter(l => l.siteId === entry.siteId && l.photo);
+    _pfsNavIndex = _pfsNavList.findIndex(l => l.id === logId);
+  } else {
+    _pfsNavList = [];
+    _pfsNavIndex = -1;
+  }
   openPhotoFullscreen(src, caption || entry.time, logId);
+}
+
+async function _pfsGoTo(index){
+  if(index < 0 || index >= _pfsNavList.length) return;
+  const entry = _pfsNavList[index];
+  if(!entry) return;
+  _pfsNavIndex = index;
+  const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
+  const cap = escapeHtml(entry.time || '') + (entry.text ? ' — ' + escapeHtml(entry.text) : '');
+  openPhotoFullscreen(src, cap, entry.id);
+}
+function photoFullscreenPrev(){ _pfsGoTo(_pfsNavIndex - 1); }
+function photoFullscreenNext(){ _pfsGoTo(_pfsNavIndex + 1); }
+function _pfsUpdateArrows(){
+  const prevBtn = document.getElementById('photoFullscreenPrevBtn');
+  const nextBtn = document.getElementById('photoFullscreenNextBtn');
+  const show = _pfsNavList.length > 1 && _pfsNavIndex !== -1;
+  if(prevBtn) prevBtn.style.display = (show && _pfsNavIndex > 0) ? 'flex' : 'none';
+  if(nextBtn) nextBtn.style.display = (show && _pfsNavIndex < _pfsNavList.length - 1) ? 'flex' : 'none';
 }
 
 async function openTrashPhotoFullscreen(trashId){
   const item = (data.trash || []).find(t => t.id === trashId);
   if(!item || !item.logEntry || !item.logEntry.photo) return;
   const src = await resolveMediaUrl(item.logEntry.photo) || mediaUrl(item.logEntry.photo);
+  // Photo isolée (corbeille) : pas de navigation prev/next entre plusieurs
+  // éléments supprimés, les flèches restent masquées (_pfsUpdateArrows).
+  _pfsNavList = [];
+  _pfsNavIndex = -1;
   openPhotoFullscreen(src, 'Supprimée le ' + item.deletedAt, null);
 }
 
@@ -10581,6 +10669,8 @@ function openPhotoFullscreen(src, caption, logId){
   currentFullscreenLogId = logId || null;
   _resetPhotoZoom();
   setupPhotoZoom();
+  _pfsUpdateArrows();
+  _setupPhotoFullscreenNavKeys();
   const hint = document.getElementById('photoZoomHint');
   if(hint){ hint.classList.add('show'); setTimeout(function(){ hint.classList.remove('show'); }, 2000); }
 
@@ -10594,6 +10684,22 @@ function openPhotoFullscreen(src, caption, logId){
   if(shareBtn) shareBtn.style.display = '';
 
   openModal('photoFullscreen');
+}
+
+/* Navigation clavier ←/→ (et Échap) — attachée une seule fois au document,
+   n'agit que si la modale photoFullscreen est actuellement ouverte. Même
+   principe que la navigation clavier du lightbox galerie. */
+let _pfsNavKeysSetup = false;
+function _setupPhotoFullscreenNavKeys(){
+  if(_pfsNavKeysSetup) return;
+  _pfsNavKeysSetup = true;
+  document.addEventListener('keydown', function(e){
+    const modal = document.getElementById('modal-photoFullscreen');
+    if(!modal || !modal.classList.contains('open')) return;
+    if(e.key === 'ArrowLeft') photoFullscreenPrev();
+    else if(e.key === 'ArrowRight') photoFullscreenNext();
+    else if(e.key === 'Escape') closeModal('photoFullscreen');
+  });
 }
 
 function deleteCurrentFullscreenPhoto(){
@@ -15574,7 +15680,7 @@ function renderZincGallery(){
     const profiles = data.zincProfiles.filter(p=>p.siteId===site.id);
     return `
       <div class="card photo-folder-card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}" onclick="openZincFolder('${site.id}')">
-        <div class="photo-folder-thumb placeholder"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.1-2.1z"/></svg></div>
+        <div class="photo-folder-thumb placeholder"><img src="icons/zinc.png" alt="" style="width:32px;height:32px;object-fit:contain;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔧',style:'font-size:24px;'}))"></div>
         <div class="photo-folder-info">
           <h3>${escapeHtml(site.name)}</h3>
           <div class="count">${profiles.length} pliage${profiles.length===1?'':'s'}</div>
@@ -34703,6 +34809,54 @@ function setupPhotoZoom(){
   img.addEventListener('touchend', function(e){
     if(e.touches.length === 0) _photoZoom.panning = false;
   });
+
+  // Zoom molette (PC) : molette vers le haut = zoom avant, vers le bas =
+  // zoom arrière, centré exactement sous le curseur (même logique que le
+  // pinch tactile : on recalcule x/y pour garder le point sous la souris
+  // fixe à l'écran pendant que le scale change).
+  img.addEventListener('wheel', function(e){
+    e.preventDefault();
+    const rect = img.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width/2;
+    const cy = e.clientY - rect.top - rect.height/2;
+    const oldScale = _photoZoom.scale;
+    const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+    let newScale = Math.max(1, Math.min(oldScale * factor, 5));
+    if(newScale === oldScale) return;
+    if(newScale <= 1){
+      _resetPhotoZoom();
+      return;
+    }
+    // Point sous le curseur (en coordonnées image non zoomée) doit rester
+    // sous le curseur après le nouveau scale.
+    const ratio = newScale / oldScale;
+    _photoZoom.x = cx - (cx - _photoZoom.x) * ratio;
+    _photoZoom.y = cy - (cy - _photoZoom.y) * ratio;
+    _photoZoom.scale = newScale;
+    _clampPhotoPan();
+    _applyPhotoZoom();
+  }, {passive:false});
+
+  // Glisser à la souris (PC) pour se déplacer dans l'image une fois zoomée.
+  img.addEventListener('mousedown', function(e){
+    if(_photoZoom.scale <= 1) return;
+    _photoZoom.panning = true;
+    _photoZoom.lastX = e.clientX;
+    _photoZoom.lastY = e.clientY;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function(e){
+    if(!_photoZoom.panning) return;
+    const dx = e.clientX - _photoZoom.lastX;
+    const dy = e.clientY - _photoZoom.lastY;
+    _photoZoom.x += dx;
+    _photoZoom.y += dy;
+    _photoZoom.lastX = e.clientX;
+    _photoZoom.lastY = e.clientY;
+    _clampPhotoPan();
+    _applyPhotoZoom();
+  });
+  window.addEventListener('mouseup', function(){ _photoZoom.panning = false; });
 }
 
 function _clampPhotoPan(){
