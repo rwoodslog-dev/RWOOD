@@ -5420,7 +5420,15 @@
     <section class="view" id="view-notesdashboard">
       <div class="view-heading"><img src="icons/note.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-3px;"> Notes — tous les chantiers</div>
       <div class="hint" style="margin-bottom:12px;">Vue d'ensemble des notes de chaque chantier. Touche une note pour l'ouvrir directement, ou "+ Nouvelle note" pour en ajouter une sans changer de chantier actif.</div>
-      <input type="text" id="notesDashboardSearch" placeholder="Rechercher un chantier ou une note…" oninput="renderSiteNotesDashboard()" style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-elev);color:var(--ink);font-size:13.5px;margin-bottom:14px;">
+      <input type="text" id="notesDashboardSearch" placeholder="Rechercher un chantier ou une note…" oninput="renderSiteNotesDashboard()" style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-elev);color:var(--ink);font-size:13.5px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span class="hint" style="flex-shrink:0;">Trier par</span>
+        <select id="notesDashboardSort" onchange="renderSiteNotesDashboard()" style="flex:1;padding:8px 10px;border:1.5px solid var(--line);border-radius:10px;background:var(--bg-elev);color:var(--ink);font-size:13px;">
+          <option value="name">Nom</option>
+          <option value="zone">Zone de chantier</option>
+          <option value="status">Statut</option>
+        </select>
+      </div>
       <div id="notesDashboardList"></div>
     </section>
 
@@ -41366,17 +41374,26 @@ function _addSiteNote(siteId, catId){
 let _ndbNoteDrafts = {}; // { [catId]: text }
 let _ndbOpenAddCatFor = null; // id du chantier dont le formulaire "+ Nouvelle catégorie" est ouvert
 
+/* Ordre des statuts pour le tri "Statut" — même ordre que la liste des
+   chantiers (renderSites) : brouillon, en cours, à faire, terminé. */
+const NDB_STATUS_ORDER = {'brouillon':0, 'en-cours':1, 'a-faire':2, 'termine':3};
+
+/* Nombre de notes actives (non archivées) d'un chantier, tous critères de
+   tri en dépendent pour faire remonter "avec notes" avant "sans notes". */
+function _ndbNoteCount(site){
+  return (site.noteCategories||[]).filter(c => !c.archived)
+    .reduce((sum,c) => sum + (c.notes||[]).filter(n=>!n.archived).length, 0);
+}
+
 function renderSiteNotesDashboard(){
   const list = document.getElementById('notesDashboardList');
   if(!list) return;
 
   const search = (document.getElementById('notesDashboardSearch')?.value || '').trim().toLowerCase();
+  const sortBy = document.getElementById('notesDashboardSort')?.value || 'name';
   const canEdit = _canEditSiteNotes();
 
-  // Chantiers actifs uniquement (à-faire/en-cours), triés par nom — les
-  // chantiers terminés/brouillons n'encombrent pas ce tableau de bord.
-  let sites = (data.sites||[]).filter(s => s.status !== 'termine' && s.status !== 'brouillon');
-  sites = sites.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'));
+  let sites = (data.sites||[]).slice();
 
   if(search){
     sites = sites.filter(s => {
@@ -41388,8 +41405,29 @@ function renderSiteNotesDashboard(){
     });
   }
 
+  // Tri : 1) favoris d'abord, 2) chantiers AVEC notes avant ceux qui n'en ont
+  // pas (pour ne pas avoir à chercher), 3) critère choisi (nom / zone / statut).
+  sites.sort((a,b) => {
+    const favA = isFavSite(a.id) ? 0 : 1;
+    const favB = isFavSite(b.id) ? 0 : 1;
+    if(favA !== favB) return favA - favB;
+
+    const notesA = _ndbNoteCount(a) > 0 ? 0 : 1;
+    const notesB = _ndbNoteCount(b) > 0 ? 0 : 1;
+    if(notesA !== notesB) return notesA - notesB;
+
+    if(sortBy === 'zone'){
+      const zoneCmp = _compareZones(a.trajetZone, b.trajetZone);
+      if(zoneCmp !== 0) return zoneCmp;
+    } else if(sortBy === 'status'){
+      const statusCmp = (NDB_STATUS_ORDER[a.status]??9) - (NDB_STATUS_ORDER[b.status]??9);
+      if(statusCmp !== 0) return statusCmp;
+    }
+    return (a.name||'').localeCompare(b.name||'', 'fr');
+  });
+
   if(!sites.length){
-    list.innerHTML = `<div class="hint" style="text-align:center;padding:24px 0;">${search ? 'Aucun résultat pour cette recherche.' : 'Aucun chantier actif pour le moment.'}</div>`;
+    list.innerHTML = `<div class="hint" style="text-align:center;padding:24px 0;">${search ? 'Aucun résultat pour cette recherche.' : 'Aucun chantier pour le moment.'}</div>`;
     return;
   }
 
@@ -41398,9 +41436,15 @@ function renderSiteNotesDashboard(){
   }</div>`;
 }
 
+function _ndbToggleFavorite(siteId){
+  toggleFavSite(siteId);
+  renderSiteNotesDashboard();
+}
+
 function _ndbRenderColumn(site, canEdit){
   const cats = (site.noteCategories||[]).filter(c => !c.archived);
   const totalNotes = cats.reduce((sum,c) => sum + (c.notes||[]).filter(n=>!n.archived).length, 0);
+  const isFav = isFavSite(site.id);
 
   const catsHtml = cats.length ? cats.map(cat => _ndbRenderCategory(site, cat, canEdit)).join('')
     : `<div class="hint" style="padding:6px 0;">Aucune catégorie de notes pour ce chantier.</div>`;
@@ -41418,10 +41462,14 @@ function _ndbRenderColumn(site, canEdit){
 
   return `
     <div class="card" style="flex:0 0 260px;width:260px;border-top:3px solid ${escapeHtml(site.color||'var(--wood)')};align-self:stretch;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:6px;">
-        <div style="font-weight:800;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(site.name||'')}">${escapeHtml(site.name||'(sans nom)')}</div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:2px;gap:6px;">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+          <button onclick="_ndbToggleFavorite('${site.id}')" title="${isFav?'Retirer des favoris':'Mettre en favori'}" style="background:none;border:none;cursor:pointer;padding:0;font-size:15px;flex-shrink:0;line-height:1;">${isFav?'⭐':'☆'}</button>
+          <div style="font-weight:800;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(site.name||'')}">${escapeHtml(site.name||'(sans nom)')}</div>
+        </div>
         <div style="font-size:10.5px;color:var(--ink-soft);flex-shrink:0;">${totalNotes} note${totalNotes>1?'s':''}</div>
       </div>
+      <div style="font-size:10.5px;color:var(--ink-soft);margin-bottom:8px;">${escapeHtml(statusLabels[site.status]||'')}${site.trajetZone ? ' · Zone '+escapeHtml(String(site.trajetZone)) : ''}</div>
       ${catsHtml}
       ${addCatHtml}
     </div>`;
