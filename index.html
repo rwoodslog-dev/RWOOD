@@ -5263,7 +5263,10 @@
       </div>
 
       <!-- Section HISTORIQUE : visible pour tous les rôles -->
-      <div class="section-title" id="alertesHistoTitle">Mes alertes reçues</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div class="section-title" id="alertesHistoTitle" style="margin:0;">Mes alertes reçues</div>
+        <button class="btn btn-outline btn-sm" id="alertesHistoClearAllBtn" style="display:none;flex-shrink:0;" onclick="clearAllAlertesHisto()">🗑 Tout ranger dans l'historique</button>
+      </div>
       <div id="alertesHistoList"></div>
 
       <!-- Historique des alertes (perso, tous rôles) : réceptacle des alertes
@@ -5278,6 +5281,7 @@
           <span id="alertesArchiveCount" class="hint" style="font-weight:600;"></span>
         </summary>
         <div style="padding:0 14px 14px 14px;">
+          <button class="btn btn-outline btn-block" id="alertesArchiveClearAllBtn" style="display:none;margin-bottom:12px;color:var(--red);border-color:var(--red);" onclick="clearAllAlertesArchive()"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Tout supprimer définitivement</button>
           <div class="hint" style="margin-bottom:12px;">Les alertes que tu as supprimées de « Mes alertes reçues ». « Rétablir » les y renvoie ; « Supprimer définitivement » les efface pour de bon.</div>
           <div id="alertesArchiveList"></div>
         </div>
@@ -12217,7 +12221,16 @@ function openAlerteComposeGroup(){
     if(textarea) textarea.value = (src.text || '').replace(/^.*? : /,'');
   }
 
-  document.getElementById('alerteComposeSend').addEventListener('click', () => {
+  // Anti-double-envoi : un clic multiple (miss-click, doigt qui traîne sur
+  // l'écran) sur "Envoyer l'alerte" ne doit déclencher qu'UN SEUL envoi.
+  // Le bouton est désactivé dès le tout premier clic, avant même que
+  // sendAlerteToMembers (async, prend du temps le temps de résoudre les
+  // destinataires) ait fini.
+  document.getElementById('alerteComposeSend').addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    if(btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Envoi…';
     sendAlerteToMembers(authIds, names);
   });
 }
@@ -12304,10 +12317,19 @@ async function _resolveDeviceIdFromAuthId(authId){
 
 /* Envoi groupé nominatif : résout chaque authId en deviceId puis envoie UNE
    alerte partagée par tous les deviceIds résolus (recipientType='devices'). */
+/* Réactive le bouton "Envoyer l'alerte" quand sendAlerteToMembers s'arrête
+   avant d'avoir réellement envoyé quoi que ce soit (champ manquant) —
+   la modale reste ouverte dans ce cas, contrairement au succès/échec réel
+   de l'envoi où elle est retirée du DOM (voir fin de sendAlerteToMembers). */
+function _reenableAlerteSendBtn(){
+  const btn = document.getElementById('alerteComposeSend');
+  if(btn){ btn.disabled = false; btn.textContent = '🚀 Envoyer l\'alerte'; }
+}
+
 async function sendAlerteToMembers(authIds, names){
   const textEl = document.getElementById('alerteComposeText');
   const text = textEl ? textEl.value.trim() : '';
-  if(!text){ showToast(_alerteComposeType === 'depannage' ? 'Écris les instructions du dépannage' : 'Écris un message'); return; }
+  if(!text){ showToast(_alerteComposeType === 'depannage' ? 'Écris les instructions du dépannage' : 'Écris un message'); _reenableAlerteSendBtn(); return; }
 
   const type = _alerteComposeType || 'info';
   let eventData = null;
@@ -12315,7 +12337,7 @@ async function sendAlerteToMembers(authIds, names){
     const dateEl = document.getElementById('alerteEventDate');
     const siteEl = document.getElementById('alerteEventSite');
     const eventDate = dateEl ? dateEl.value : '';
-    if(!eventDate){ showToast('Choisis une date pour l\'événement'); return; }
+    if(!eventDate){ showToast('Choisis une date pour l\'événement'); _reenableAlerteSendBtn(); return; }
     eventData = { date: eventDate, siteId: siteEl && siteEl.value ? siteEl.value : null };
   }
 
@@ -12334,7 +12356,7 @@ async function sendAlerteToMembers(authIds, names){
       const s = (data.sites||[]).find(x=>x.id===depSiteId);
       siteName = s ? s.name : '';
     }
-    if(!siteName){ showToast('Indique le nom du chantier ou du client'); return; }
+    if(!siteName){ showToast('Indique le nom du chantier ou du client'); _reenableAlerteSendBtn(); return; }
 
     const keyboxEl = document.getElementById('alerteDepannageKeybox');
     depannageData = {
@@ -12364,6 +12386,7 @@ async function sendAlerteToMembers(authIds, names){
 
   if(!deviceIds.length){
     showToast('❌ Aucun destinataire n\'a encore synchronisé son compte (réessaie plus tard)');
+    _reenableAlerteSendBtn();
     return;
   }
 
@@ -33345,6 +33368,7 @@ function _getPinnedNote(){
   if(!data.settings) data.settings = {};
   if(!data.settings.pinnedNote) data.settings.pinnedNote = { tasks:[], emoji:'⚠️', corner:'bottom-right' };
   if(!data.settings.pinnedNote.tasks) data.settings.pinnedNote.tasks = [];
+  if(!data.settings.pinnedNote.removedTaskIds) data.settings.pinnedNote.removedTaskIds = [];
   return data.settings.pinnedNote;
 }
 
@@ -33931,38 +33955,98 @@ function _myTodoSyncKey(){
   return auth && auth.authId ? TODO_SYNC_KEY_PREFIX + auth.authId : null;
 }
 
-/* Chef : push sa liste à chaque modif */
-async function pushMyTodoList(){
+/* Détermine sous quelle clé pousser/lire la liste "à faire" pour l'utilisateur
+   courant : le chef pousse sous SA clé, l'ouvrier suivant un chef pousse sous
+   la clé de CE chef (liste partagée, collaboration temps réel). */
+function _activeTodoSyncKey(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  // Chef : pousse sous SA clé. Ouvrier suivant un chef : pousse sous la clé
-  // de CE chef (collaboration temps réel sur la même liste partagée).
-  let key = null;
-  if(role === 'chef'){
-    key = _myTodoSyncKey();
-  } else {
-    const followed = _getFollowedChefId();
-    if(followed) key = TODO_SYNC_KEY_PREFIX + followed;
-  }
-  if(!key) return;
+  if(role === 'chef') return _myTodoSyncKey();
+  const followed = _getFollowedChefId();
+  return followed ? TODO_SYNC_KEY_PREFIX + followed : null;
+}
+
+/* Fusionne deux listes de tâches par id : pour un id présent des deux côtés,
+   la version avec le `updatedAt` le plus récent gagne (une tâche sans
+   `updatedAt` — anciennes données — est traitée comme la plus ancienne
+   possible). Les ids listés dans `removedIds` sont exclus du résultat même
+   s'ils existent encore côté serveur (suppression explicite qui doit
+   survivre à la fusion, sans quoi la tâche supprimée d'un côté "repop" au
+   prochain push de l'autre appareil). */
+function _mergeTodoTasks(localTasks, serverTasks, removedIds){
+  const removedSet = new Set(removedIds || []);
+  const byId = new Map();
+  const ts = (t) => t && t.updatedAt ? new Date(t.updatedAt).getTime() : 0;
+  (serverTasks || []).forEach(t => { if(t && t.id && !removedSet.has(t.id)) byId.set(t.id, t); });
+  (localTasks || []).forEach(t => {
+    if(!t || !t.id || removedSet.has(t.id)) return;
+    const existing = byId.get(t.id);
+    if(!existing || ts(t) >= ts(existing)) byId.set(t.id, t);
+  });
+  return [...byId.values()];
+}
+
+/* Enregistre la liste "à faire" en fusionnant avec l'état serveur actuel
+   (re-fetch juste avant écriture, même principe que _saveAlerts pour les
+   alertes) au lieu d'écraser bêtement toute la ligne Supabase avec la seule
+   copie locale — c'est cet écrasement aveugle qui causait la perte de
+   données entre PC et téléphone (une tâche ajoutée sur l'un disparaissait
+   si l'autre appareil sauvegardait entre-temps sa propre copie, plus
+   ancienne, de la liste). `removedIds` (optionnel) liste les tâches
+   supprimées explicitement par CET appareil pendant cette opération, pour
+   qu'elles ne réapparaissent pas via la fusion. */
+async function _saveTodoList(key, localTasks, removedIds, extraFields){
+  if(!key) return false;
   try{
-    const pn = _getPinnedNote();
-    let name;
-    const mp = data.settings && data.settings.myProfile;
-    if(role === 'chef'){
-      name = ((mp && mp.firstName||'') + ' ' + (mp && mp.lastName||'')).trim() || (data.settings.teamName || 'Chef');
-    } else {
-      name = _notesCurrentUserName() || 'Ouvrier';
-    }
+    let serverTasks = [];
+    try{
+      const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+      if(res.ok){
+        const rows = await res.json();
+        if(rows && rows.length){
+          const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+          serverTasks = (d && Array.isArray(d.tasks)) ? d.tasks : [];
+        }
+      }
+    } catch(e){ /* pas de connexion : on écrit quand même la copie locale, mieux que rien */ }
+
+    const merged = _mergeTodoTasks(localTasks, serverTasks, removedIds);
     await supaFetch('/rest/v1/rwood_sync', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
         user_id: key,
         updated_at: new Date().toISOString(),
-        data: JSON.stringify({ chefName: name, tasks: pn.tasks })
+        data: JSON.stringify(Object.assign({ tasks: merged }, extraFields || {}))
       })
     });
-  } catch(e){ /* silencieux */ }
+    return merged;
+  } catch(e){ return false; }
+}
+
+/* Chef ou ouvrier suivant un chef : push sa liste à chaque modif, fusionnée
+   avec ce qui est déjà sur le serveur (voir _saveTodoList). */
+async function pushMyTodoList(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const key = _activeTodoSyncKey();
+  if(!key) return;
+  const pn = _getPinnedNote();
+  let name;
+  const mp = data.settings && data.settings.myProfile;
+  if(role === 'chef'){
+    name = ((mp && mp.firstName||'') + ' ' + (mp && mp.lastName||'')).trim() || (data.settings.teamName || 'Chef');
+  } else {
+    name = _notesCurrentUserName() || 'Ouvrier';
+  }
+  const removedIds = (pn.removedTaskIds || []).slice();
+  const merged = await _saveTodoList(key, pn.tasks, removedIds, { chefName: name });
+  if(merged){
+    // Adopter la liste fusionnée localement : sinon cet appareil resterait
+    // "en retard" par rapport à ce qui vient d'être écrit côté serveur
+    // jusqu'à la prochaine synchro, et pourrait re-écraser au push suivant.
+    pn.tasks = merged;
+    pn.removedTaskIds = [];
+    saveData(true); // skipSync : on vient de synchroniser nous-mêmes, pas besoin de rebouclé
+  }
 }
 
 /* Ouvrier : pull la liste du chef sélectionné */
@@ -34086,7 +34170,10 @@ async function initChefTodoParamsSection(){
 
 
 
-/* Ouvrier coche une tâche : push le changement sur la clé du chef */
+/* Ouvrier coche une tâche : push le changement sur la clé du chef.
+   Passe par _saveTodoList (fetch + fusion par id/updatedAt) au lieu d'un
+   pull-modifie-repush brut, pour ne pas écraser une tâche ajoutée par le
+   chef ou par un autre ouvrier entre notre lecture et notre écriture. */
 async function toggleChefTodoTask(chefAuthId, taskId, cbEl, evt){
   if(evt) evt.stopPropagation();
   const todoData = await pullChefTodoList(chefAuthId);
@@ -34094,17 +34181,11 @@ async function toggleChefTodoTask(chefAuthId, taskId, cbEl, evt){
   const task = todoData.tasks.find(t => t.id === taskId);
   if(!task) return;
   task.done = !task.done;
-  // Re-push sous la clé du chef (l'ouvrier écrit sur la même clé)
+  task.updatedAt = new Date().toISOString();
   try{
-    await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({
-        user_id: TODO_SYNC_KEY_PREFIX + chefAuthId,
-        updated_at: new Date().toISOString(),
-        data: JSON.stringify(todoData)
-      })
-    });
+    const key = TODO_SYNC_KEY_PREFIX + chefAuthId;
+    const merged = await _saveTodoList(key, todoData.tasks, [], { chefName: todoData.chefName });
+    if(!merged){ showToast('Erreur de synchro'); return; }
     if(cbEl){ cbEl.classList.toggle('done', task.done); }
     const textEl = cbEl && cbEl.nextElementSibling && cbEl.nextElementSibling.querySelector('.pinned-task-text');
     if(textEl) textEl.classList.toggle('done', task.done);
@@ -34113,11 +34194,20 @@ async function toggleChefTodoTask(chefAuthId, taskId, cbEl, evt){
 }
 
 
+/* Ajoute l'id d'une tâche supprimée à la liste des suppressions à propager
+   au prochain push, pour qu'elle ne "repop" pas via la fusion avec le
+   serveur (voir _mergeTodoTasks / _saveTodoList). */
+function _markTodoTaskRemoved(pn, taskId){
+  if(!pn.removedTaskIds) pn.removedTaskIds = [];
+  if(!pn.removedTaskIds.includes(taskId)) pn.removedTaskIds.push(taskId);
+}
+
 function togglePinnedTask(taskId){
   const pn = _getPinnedNote();
   const task = pn.tasks.find(t=>t.id===taskId);
   if(!task) return;
   task.done = !task.done;
+  task.updatedAt = new Date().toISOString();
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInPopup();
@@ -34129,18 +34219,22 @@ function reopenPinnedTask(taskId){
   const task = pn.tasks.find(t=>t.id===taskId);
   if(!task) return;
   task.done = false; // remettre à faire
+  task.updatedAt = new Date().toISOString();
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInPopup();
+  pushMyTodoList();
   showToast('↩ Remis à faire');
 }
 
 function deletePinnedTask(taskId){
   const pn = _getPinnedNote();
   pn.tasks = pn.tasks.filter(t=>t.id!==taskId);
+  _markTodoTaskRemoved(pn, taskId);
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInParams();
+  pushMyTodoList();
 }
 
 function addPinnedTaskFromPopup(){
@@ -34148,7 +34242,7 @@ function addPinnedTaskFromPopup(){
   const text = (inp ? inp.value : '').trim();
   if(!text) return;
   const pn = _getPinnedNote();
-  pn.tasks.push({id:uid(), text, done:false});
+  pn.tasks.push({id:uid(), text, done:false, updatedAt: new Date().toISOString()});
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInPopup();
@@ -34161,35 +34255,42 @@ function addPinnedTaskFromParams(){
   const text = (inp ? inp.value : '').trim();
   if(!text){ showToast("Écris une tâche d'abord"); return; }
   const pn = _getPinnedNote();
-  pn.tasks.push({id:uid(), text, done:false});
+  pn.tasks.push({id:uid(), text, done:false, updatedAt: new Date().toISOString()});
   pn.emoji  = _pinnedSelectedEmoji;
   pn.corner = _pinnedSelectedCorner;
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInParams();
   if(inp) inp.value = '';
+  pushMyTodoList();
   showToast('📌 Tâche ajoutée !');
 }
 
 function clearDonePinnedTasks(){
   const pn = _getPinnedNote();
   const before = pn.tasks.length;
+  const removed = pn.tasks.filter(t=>t.done).map(t=>t.id);
   pn.tasks = pn.tasks.filter(t=>!t.done);
+  removed.forEach(id => _markTodoTaskRemoved(pn, id));
   saveData();
   _renderPinnedBubble(pn);
   _renderPinnedTasksInParams();
+  pushMyTodoList();
   showToast((before - pn.tasks.length) + ' tâche(s) terminée(s) supprimée(s)');
 }
 
 function clearAllPinnedTasks(){
   if(!confirm('Supprimer toutes les tâches ?')) return;
   const pn = _getPinnedNote();
+  const removed = pn.tasks.map(t=>t.id);
   pn.tasks = [];
+  removed.forEach(id => _markTodoTaskRemoved(pn, id));
   saveData();
   const bubble = document.getElementById('pinnedNoteBubble');
   if(bubble) bubble.style.display='none';
   closePinnedNotePopup();
   _renderPinnedTasksInParams();
+  pushMyTodoList();
   showToast('Liste effacée');
 }
 
@@ -34535,9 +34636,11 @@ function editPinnedTask(taskId){
   const trimmed = newText.trim();
   if(!trimmed){ showToast('Texte vide — modification annulée'); return; }
   task.text = trimmed;
+  task.updatedAt = new Date().toISOString();
   saveData();
   _renderPinnedTasksInPopup();
   _renderPinnedTasksInParams();
+  pushMyTodoList();
   showToast('✏️ Tâche modifiée');
 }
 
@@ -35452,6 +35555,8 @@ async function _devDiagnoseSelfAlert(){
 /* Liste Dev de tous les dépannages existants, avec suppression DÉFINITIVE
    (contrairement à deleteAlertToTrash qui ne masque que localement pour le
    destinataire — ici l'entrée est retirée de la base partagée pour tous). */
+let _devAlertsAllCache = []; // dernière liste chargée par _renderDevDepannageList, réutilisée par clearAllDevAlertsPermanently
+
 async function _renderDevDepannageList(){
   const el = document.getElementById('devDepannageList');
   if(!el) return;
@@ -35459,6 +35564,7 @@ async function _renderDevDepannageList(){
 
   const all = await _fetchAlerts();
   const depannages = all.slice().sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  _devAlertsAllCache = depannages;
 
   if(!depannages.length){
     el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucune alerte dans la base.</div>';
@@ -35471,7 +35577,9 @@ async function _renderDevDepannageList(){
     'nouveau-chantier':'🏗️ Nouveau chantier','rappel':'🔔 Rappel','info':'📢 Info'
   }[k] || ('📢 ' + (k||'alerte')));
 
-  el.innerHTML = depannages.map(a => {
+  el.innerHTML = `
+    <button class="btn btn-outline btn-block" style="margin-bottom:12px;color:var(--red);border-color:var(--red);" onclick="clearAllDevAlertsPermanently()"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Tout supprimer définitivement (${depannages.length})</button>
+  ` + depannages.map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
     const who = a.recipientName || '—';
     const titleTxt = a.kind === 'depannage' ? (a.depannageSiteName || 'Sans chantier') : _kindLabel(a.kind);
@@ -35486,6 +35594,34 @@ async function _renderDevDepannageList(){
       </div>
     </div>`;
   }).join('');
+}
+
+/* Suppression DÉFINITIVE de TOUTE la base d'alertes en un seul geste (dev
+   uniquement) — même principe que _devDeleteDepannagePermanently, mais pour
+   l'ensemble de la liste. Passe tous les ids par removedIds à _saveAlerts
+   pour qu'aucune ne puisse "repop" via la fusion avec le serveur (voir le
+   commentaire sur removedIds au-dessus de _saveAlerts) : sans ça, une alerte
+   arrivée côté serveur entre notre lecture et notre écriture pourrait sinon
+   réapparaître, ou pire, une alerte qu'on vient de vider de la liste locale
+   mais encore connue du serveur redeviendrait visible après fusion. */
+async function clearAllDevAlertsPermanently(){
+  const all = (_devAlertsAllCache||[]).slice();
+  if(!all.length){ showToast('Aucune alerte dans la base'); return; }
+  if(!confirm(`Supprimer DÉFINITIVEMENT les ${all.length} alerte${all.length>1?'s':''} de la base ? Cette action est irréversible pour tout le monde — plus personne ne pourra les revoir, et elles ne réapparaîtront jamais.`)) return;
+  try{
+    const ids = all.map(a => a.id);
+    await _saveAlerts([], ids);
+    showToast(`🗑 ${ids.length} alerte${ids.length>1?'s':''} supprimée${ids.length>1?'s':''} définitivement`);
+    _devAlertsAllCache = [];
+    _renderDevDepannageList();
+    // Rafraîchir aussi les vues perso si le dev est lui-même destinataire de
+    // certaines de ces alertes (même logique que _devDeleteDepannagePermanently).
+    if(typeof checkForNewAlerts === 'function'){ try{ await checkForNewAlerts(); }catch(e){} }
+    if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList();
+    if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
+  }catch(e){
+    showToast('❌ Échec de la suppression');
+  }
 }
 
 async function _devResendDepannageToRecipient(alertId){
@@ -38713,6 +38849,9 @@ function _renderAlertesHistoList(){
   const myId = getDeviceSyncId();
   const mine = (_myAlertsCache || []).slice().sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
 
+  const clearAllBtn = document.getElementById('alertesHistoClearAllBtn');
+  if(clearAllBtn) clearAllBtn.style.display = mine.some(a => a.kind !== 'signature') ? '' : 'none';
+
   if(!mine.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucune alerte reçue pour le moment.</div>';
     return;
@@ -39127,6 +39266,60 @@ function deleteAlertToTrash(alertId){
   if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
   showToast('📁 Alerte rangée dans l\'historique');
 }
+/* "Tout ranger dans l'historique" — même effet que cliquer "Supprimer" sur
+   chaque alerte de "Mes alertes reçues" une par une (deleteAlertToTrash),
+   mais en UN SEUL geste : une seule confirmation, une seule sauvegarde/sync,
+   au lieu de devoir confirmer alerte par alerte. Les alertes "signature" non
+   signées sont volontairement épargnées : impossible de les fermer tant que
+   la signature n'a pas été faite (même règle que la suppression unitaire,
+   qui n'affiche même pas de bouton "Supprimer" pour elles). */
+function clearAllAlertesHisto(){
+  const all = (_myAlertsCache||[]).slice();
+  const clearable = all.filter(a => a.kind !== 'signature');
+  if(!clearable.length){ showToast('Rien à ranger dans l\'historique'); return; }
+  if(!confirm(`Envoyer les ${clearable.length} alerte${clearable.length>1?'s':''} dans l'historique ?\n\nElles quitteront « Mes alertes reçues » mais resteront consultables dans l'historique (« Rétablir » pour les remettre, une par une ou toutes à la fois).`)) return;
+
+  if(!data.settings) data.settings = {};
+  if(!data.settings.archivedAlertIds) data.settings.archivedAlertIds = [];
+  const clearableIds = clearable.map(a => a.id);
+  clearableIds.forEach(id => {
+    if(!data.settings.archivedAlertIds.includes(id)) data.settings.archivedAlertIds.push(id);
+  });
+  _myAlertsCache = (_myAlertsCache||[]).filter(a => a.kind === 'signature');
+  saveData();
+  Promise.all(clearableIds.map(id => _archiveAlertForMe(id).catch(()=>{}))).catch(()=>{});
+  _renderAlertesHistoList();
+  if(typeof _renderAlertesArchiveList === 'function') _renderAlertesArchiveList();
+  if(typeof checkForNewAlerts === 'function') checkForNewAlerts().catch(()=>{});
+  showToast(`📁 ${clearableIds.length} alerte${clearableIds.length>1?'s':''} rangée${clearableIds.length>1?'s':''} dans l'historique`);
+}
+
+/* "Tout supprimer définitivement" depuis l'Historique des alertes (côté
+   destinataire) — même effet que _deleteArchivedAlert sur chaque alerte de
+   la liste, en un seul geste. Comme pour la suppression unitaire, ceci ne
+   masque QUE localement chez ce destinataire (dismissedAlertIds) : la
+   donnée reste en base, seul le Dev peut l'effacer réellement pour tout le
+   monde (voir clearAllDevAlertsPermanently). */
+function clearAllAlertesArchive(){
+  const items = (_alertesArchiveCache||[]).slice();
+  if(!items.length){ showToast('Historique déjà vide'); return; }
+  if(!confirm(`Supprimer définitivement les ${items.length} alerte${items.length>1?'s':''} de ton historique ?\n\nElles disparaîtront de ta liste. En cas d'erreur, seul le développeur pourra te les renvoyer.`)) return;
+
+  if(!data.settings) data.settings = {};
+  if(!data.settings.dismissedAlertIds) data.settings.dismissedAlertIds = [];
+  const ids = items.map(a => a.id);
+  data.settings.archivedAlertIds = (data.settings.archivedAlertIds||[]).filter(id => !ids.includes(id));
+  ids.forEach(id => {
+    if(!data.settings.dismissedAlertIds.includes(id)) data.settings.dismissedAlertIds.push(id);
+  });
+  saveData();
+  // archivedBy (option A) reste volontairement en place sur chaque alerte —
+  // c'est lui qui garantit qu'aucune ne réapparaîtra chez moi, même après
+  // une resynchro sur un autre appareil (voir _deleteArchivedAlert).
+  showToast(`🗑 ${ids.length} alerte${ids.length>1?'s':''} supprimée${ids.length>1?'s':''} de ton historique`);
+  _renderAlertesArchiveList();
+}
+
 function restoreAlertFromTrash(trashId){
   ensureTrash();
   const item = data.trash.find(t=>t.id===trashId && t.kind==='alert');
@@ -39293,10 +39486,13 @@ function _setArchiveCount(n){
 async function _renderAlertesArchiveList(){
   const list = document.getElementById('alertesArchiveList');
   if(!list) return;
+  const clearAllBtn = document.getElementById('alertesArchiveClearAllBtn');
   const archived = (data.settings && data.settings.archivedAlertIds) || [];
   if(!archived.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte dans l\'historique.</div>';
     _setArchiveCount(0);
+    _alertesArchiveCache = [];
+    if(clearAllBtn) clearAllBtn.style.display = 'none';
     return;
   }
   list.innerHTML = '<div class="hint" style="text-align:center;padding:16px;">⏳ Chargement…</div>';
@@ -39311,6 +39507,7 @@ async function _renderAlertesArchiveList(){
                    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
   _alertesArchiveCache = items;
   _setArchiveCount(items.length);
+  if(clearAllBtn) clearAllBtn.style.display = items.length ? '' : 'none';
 
   if(!items.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:16px 0;">Aucune alerte dans l\'historique.</div>';
@@ -40306,11 +40503,13 @@ function notesToggle(id){
   const t = (pn.tasks||[]).find(x=>x.id===id);
   if(!t) return;
   t.done = !t.done;
+  t.updatedAt = new Date().toISOString();
   _notesCommit();
 }
 function notesDelete(id){
   const pn = _getPinnedNote();
   pn.tasks = (pn.tasks||[]).filter(x=>x.id!==id);
+  _markTodoTaskRemoved(pn, id);
   _notesCommit();
 }
 function notesAddManual(){
@@ -40319,14 +40518,19 @@ function notesAddManual(){
   if(!text.trim()) return;
   const pn = _getPinnedNote();
   const me = _notesCurrentUserName();
-  pn.tasks.push({ id:uid(), text, done:false, authorName: me, authorAuthId: _notesCurrentAuthId(), createdAt: new Date().toISOString() });
+  const now = new Date().toISOString();
+  pn.tasks.push({ id:uid(), text, done:false, authorName: me, authorAuthId: _notesCurrentAuthId(), createdAt: now, updatedAt: now });
   if(inp){ inp.value=''; inp.style.height='auto'; }
   _notesCommit();
 }
 
 /* Ouvrier suivant un chef : tire la liste partagée du chef AVANT d'afficher,
    pour éditer/compléter la même liste (collaboration). Chef ou non-suiveur :
-   affiche simplement sa propre liste. */
+   affiche simplement sa propre liste.
+   Fusionne (par id/updatedAt) au lieu d'écraser la copie locale : sinon une
+   tâche tout juste ajoutée/cochée ici mais pas encore repartie sur le
+   serveur (offline, ou push encore en vol) disparaissait à la réouverture
+   de l'onglet Notes, écrasée par l'ancienne version reçue du serveur. */
 async function notesSyncFollowedThenRender(){
   try{
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
@@ -40335,7 +40539,7 @@ async function notesSyncFollowedThenRender(){
       const todoData = await pullChefTodoList(followed);
       if(todoData && Array.isArray(todoData.tasks)){
         const pn = _getPinnedNote();
-        pn.tasks = todoData.tasks;   // travailler sur la liste partagée du chef
+        pn.tasks = _mergeTodoTasks(pn.tasks, todoData.tasks, pn.removedTaskIds);
         saveData();
       }
     }
@@ -40377,11 +40581,14 @@ function notesEditPrompt(id){
   t.text = clean;
   t.editedByName = _notesCurrentUserName();
   t.editedAt = new Date().toISOString();
+  t.updatedAt = t.editedAt;
   _notesCommit();
 }
 function notesClearDone(){
   const pn = _getPinnedNote();
+  const removed = (pn.tasks||[]).filter(t=>t.done).map(t=>t.id);
   pn.tasks = (pn.tasks||[]).filter(t=>!t.done);
+  removed.forEach(id => _markTodoTaskRemoved(pn, id));
   _notesCommit();
   showToast('Tâches faites effacées');
 }
