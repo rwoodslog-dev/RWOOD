@@ -20294,36 +20294,47 @@ async function _pointageCalcZone(){
   }catch(e){ if(hint) hint.textContent='Erreur de calcul, choisis la zone manuellement.'; }
 }
 
-/* Lignes de saisie "Multi chantier" pour un ouvrier donné : chaque ligne
-   choisit un chantier existant ou "Chantier libre", ses heures et sa
-   tâche. Le ZONES_TRAJET et les chantiers libres reprennent exactement le
-   même principe que le mode "Chantier" simple (voir pointageSite). */
+/* Bloc de saisie "Multi chantier" pour un ouvrier donné :
+   1) une rangée de chips — on TAPE directement les chantiers faits dans la
+      journée (plusieurs à la fois), dans l'ordre du tap : le 1er sert de
+      référence pour la prime de trajet. + un chip "Chantier libre" pour
+      ajouter un dépannage hors liste (peut être ajouté plusieurs fois).
+   2) pour chaque chantier ainsi choisi, un petit bloc en dessous demandant
+      les heures faites (et la tâche) sur CE chantier précis. */
 function _renderPointageMultiSiteRows(dateKey, workerId, entry){
   const rows = Array.isArray(entry.sites) ? entry.sites : [];
-  return rows.map((row, i) => {
+
+  const chips = `
+    <div class="chip-row" style="flex-wrap:wrap;margin-bottom:10px;">
+      ${(data.sites||[]).map(s=>{
+        const idx = rows.findIndex(r=>r && r.siteId===s.id);
+        const sel = idx>=0;
+        return `<div class="chip${sel?' selected':''}" onclick="togglePointageSiteChip('${dateKey}','${workerId}','${s.id}')">${sel?(idx+1)+'. ':''}${escapeHtml(s.name)}</div>`;
+      }).join('')}
+      <div class="chip" onclick="addPointageCustomSiteRow('${dateKey}','${workerId}')">✏️ + Chantier libre</div>
+    </div>`;
+
+  const blocks = rows.map((row, i) => {
+    if(!row || !row.siteId) return '';
     const isCustom = row.siteId === '__custom__';
+    const label = isCustom ? (row.customName ? escapeHtml(row.customName) : 'Chantier libre') : (_pointageSiteRowName(row) || '—');
     return `
     <div class="card" style="padding:10px;margin-bottom:8px;background:var(--bg-elev);">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-        <div style="font-size:11px;font-weight:800;color:var(--ink-soft);flex-shrink:0;">#${i+1}${i===0?' (trajet)':''}</div>
-        <select style="flex:1;" onchange="updatePointageSiteRowAndRerender('${dateKey}','${workerId}',${i},'siteId', this.value)">
-          <option value=""${!row.siteId?' selected':''}>— Choisir un chantier —</option>
-          ${(data.sites||[]).map(s=>`<option value="${s.id}"${row.siteId===s.id?' selected':''}>${escapeHtml(s.name)}</option>`).join('')}
-          <option value="__custom__"${isCustom?' selected':''}>✏️ Chantier libre (dépannage)…</option>
-        </select>
-        ${rows.length > 1 ? `<button type="button" class="remove-worker" style="flex-shrink:0;" onclick="removePointageSiteRow('${dateKey}','${workerId}',${i})" title="Retirer ce chantier">×</button>` : ''}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:800;">#${i+1}${i===0?' · prime de trajet':''} — ${label}</div>
+        <button type="button" class="remove-worker" style="flex-shrink:0;" onclick="removePointageSiteRow('${dateKey}','${workerId}',${i})" title="Retirer ce chantier">×</button>
       </div>
       ${isCustom ? `
       <div style="display:flex;gap:6px;margin-bottom:8px;">
         <input type="text" placeholder="Nom du chantier / client" style="flex:2;" value="${escapeHtml(row.customName||'')}"
-          onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customName', this.value)">
+          onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customName', this.value); renderPointage();">
         <select style="flex:1;" onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customZone', this.value)">
           <option value="">— Zone —</option>
           ${ZONES_TRAJET.map(z=>`<option value="${z}"${row.customZone===z?' selected':''}>Zone ${z}</option>`).join('')}
         </select>
       </div>` : ''}
       <div style="display:flex;gap:6px;">
-        <input type="number" min="0" max="24" step="0.5" placeholder="Heures" style="flex:1;" value="${row.hours||''}"
+        <input type="number" min="0" max="24" step="0.5" placeholder="Heures faites" style="flex:1;" value="${row.hours||''}"
           onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'hours', this.value)">
         <select style="flex:2;" onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'task', this.value)">
           <option value=""${!row.task?' selected':''}>— Tâche —</option>
@@ -20332,6 +20343,41 @@ function _renderPointageMultiSiteRows(dateKey, workerId, entry){
       </div>
     </div>`;
   }).join('');
+
+  return chips + (blocks || `<div class="hint">Tape un ou plusieurs chantiers ci-dessus pour commencer.</div>`);
+}
+
+/* Ajoute/retire un chantier réel de la liste multi via un simple tap sur
+   son chip. Toujours ajouté en fin de liste (donc en dernière position
+   dans l'ordre de trajet) ; retirer puis reprendre un chantier le remet
+   en fin de liste. */
+function togglePointageSiteChip(dateKey, workerId, siteId){
+  const today = data.attendance[dateKey];
+  if(!today.workers[workerId]) today.workers[workerId] = {hours: '', panier: false, task: ''};
+  const entry = today.workers[workerId];
+  if(!Array.isArray(entry.sites)) entry.sites = [];
+  const idx = entry.sites.findIndex(r=>r && r.siteId===siteId);
+  if(idx >= 0){
+    entry.sites.splice(idx, 1);
+  } else {
+    entry.sites.push({ siteId, hours: '', task: '' });
+  }
+  saveData();
+  schedulePointageSync();
+  renderPointage();
+}
+
+/* Ajoute une nouvelle ligne "chantier libre" (dépannage hors liste) — on
+   peut en ajouter plusieurs dans la même journée si besoin. */
+function addPointageCustomSiteRow(dateKey, workerId){
+  const today = data.attendance[dateKey];
+  if(!today.workers[workerId]) today.workers[workerId] = {hours: '', panier: false, task: ''};
+  const entry = today.workers[workerId];
+  if(!Array.isArray(entry.sites)) entry.sites = [];
+  entry.sites.push({ siteId: '__custom__', customName: '', customZone: '', hours: '', task: '' });
+  saveData();
+  schedulePointageSync();
+  renderPointage();
 }
 
 function renderPointage(){
@@ -20485,9 +20531,8 @@ function renderPointage(){
             ${renderTacheSelector(dateKey, w.id, entry)}
           </div>` : `
           <div style="grid-column:1/-1;">
-            <div class="hint" style="margin-bottom:8px;">Ajoute chaque chantier fait aujourd'hui, <strong>dans l'ordre</strong> — le premier de la liste sert de référence pour la prime de trajet du jour.</div>
+            <div class="hint" style="margin-bottom:8px;">Tape les chantiers faits aujourd'hui <strong>dans l'ordre</strong> — le premier tapé sert de référence pour la prime de trajet du jour.</div>
             ${_renderPointageMultiSiteRows(dateKey, w.id, entry)}
-            <button type="button" class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="addPointageSiteRow('${dateKey}','${w.id}')">+ Ajouter un chantier</button>
             <div style="margin-top:10px;font-size:13px;font-weight:700;">Total du jour : ${_entryTotalHours(entry).toLocaleString('fr-FR')} h</div>
           </div>
           <div class="field-mini" style="grid-column:1/-1;">
@@ -20613,19 +20658,9 @@ function setPointageWorkerMode(dateKey, workerId, mode){
   if(!today.workers[workerId]) today.workers[workerId] = {hours: '', panier: false, task: ''};
   const entry = today.workers[workerId];
   entry.mode = mode;
-  if(mode === 'multi' && (!Array.isArray(entry.sites) || !entry.sites.length)){
-    entry.sites = [{ siteId: '', customName: '', customZone: '', hours: '', task: '' }];
+  if(mode === 'multi' && !Array.isArray(entry.sites)){
+    entry.sites = [];
   }
-  saveData();
-  schedulePointageSync();
-  renderPointage();
-}
-
-function addPointageSiteRow(dateKey, workerId){
-  const entry = data.attendance[dateKey].workers[workerId];
-  if(!entry) return;
-  if(!Array.isArray(entry.sites)) entry.sites = [];
-  entry.sites.push({ siteId: '', customName: '', customZone: '', hours: '', task: '' });
   saveData();
   schedulePointageSync();
   renderPointage();
@@ -20635,7 +20670,6 @@ function removePointageSiteRow(dateKey, workerId, index){
   const entry = data.attendance[dateKey].workers[workerId];
   if(!entry || !Array.isArray(entry.sites)) return;
   entry.sites.splice(index, 1);
-  if(!entry.sites.length) entry.sites.push({ siteId: '', customName: '', customZone: '', hours: '', task: '' });
   saveData();
   schedulePointageSync();
   renderPointage();
@@ -20647,13 +20681,6 @@ function updatePointageSiteRow(dateKey, workerId, index, field, value){
   entry.sites[index][field] = value;
   saveData();
   schedulePointageSync();
-}
-
-/* Changement structurel (site choisi sur une ligne) : ré-affiche pour faire
-   apparaître/disparaître les champs "chantier libre" le cas échéant. */
-function updatePointageSiteRowAndRerender(dateKey, workerId, index, field, value){
-  updatePointageSiteRow(dateKey, workerId, index, field, value);
-  renderPointage();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -29846,9 +29873,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.32.0';
+const APP_VERSION = '5.32.1';
 
 const CHANGELOG = [
+  {
+    version: '5.32.1',
+    date: '09/09/2026',
+    entries: [
+      { icon: '🏗️', text: "Pointage — le mode \"Multi chantier\" se choisit maintenant en tapant directement les chantiers de la journée (plusieurs chips à la fois), puis en renseignant les heures de chacun en dessous, dans le cadre équipe" },
+    ]
+  },
   {
     version: '5.32.0',
     date: '09/09/2026',
