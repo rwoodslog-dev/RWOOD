@@ -19452,7 +19452,7 @@ function renderPaie(){
         const d = new Date(dateKey + 'T00:00:00');
         if(d.getFullYear()===year && (d.getMonth()+1)===month){
           const entry = data.attendance[dateKey].workers[profile.workerId];
-          if(entry && entry.hours) monthTotal += parseFloat(entry.hours) || 0;
+          if(entry) monthTotal += _entryTotalHours(entry);
         }
       });
     }
@@ -19716,21 +19716,30 @@ function _computeRecap(workerId, weekBuckets, ctx){
         parMotif[label] = (parMotif[label] || 0) + 1;
         return;
       }
-      const h = parseFloat(entry.hours) || 0;
+      const h = _entryTotalHours(entry);
       heuresSemaine += h;
       totalHeures += h;
       if(entry.panier) paniers++;
-      const zoneOv = entry.zoneOverride;
-      if(zoneOv === 'none'){
-      } else if(zoneOv && zoneOv !== 'auto'){
-        zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
+      if(_entryHasMultiSites(entry)){
+        // Multi chantier : la prime de trajet se calcule sur le PREMIER
+        // chantier de la liste de l'ouvrier pour ce jour-là.
+        const info = _entryFirstSiteInfo(entry);
+        if(info && info.zone && info.zone !== 'GD'){
+          zonesCount[info.zone] = (zonesCount[info.zone] || 0) + 1;
+        }
       } else {
-        // Site : priorité au site mémorisé par ouvrier (contexte équipe fusionné),
-        // sinon le siteId du jour (récap perso local).
-        const sid = (entry._siteId != null) ? entry._siteId : day.siteId;
-        const site = sites.find(s => s.id === sid);
-        if(site && site.trajetZone && site.trajetZone !== 'GD'){
-          zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
+        const zoneOv = entry.zoneOverride;
+        if(zoneOv === 'none'){
+        } else if(zoneOv && zoneOv !== 'auto'){
+          zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + 1;
+        } else {
+          // Site : priorité au site mémorisé par ouvrier (contexte équipe fusionné),
+          // sinon le siteId du jour (récap perso local).
+          const sid = (entry._siteId != null) ? entry._siteId : day.siteId;
+          const site = sites.find(s => s.id === sid);
+          if(site && site.trajetZone && site.trajetZone !== 'GD'){
+            zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + 1;
+          }
         }
       }
     });
@@ -20150,11 +20159,22 @@ function _buildRecapDoc(jsPDFLib, opts){
       if(!e) return {empty:true};
       const tj=e.typeJournee||'normal';
       if(tj!=='normal') return {abs:(TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].short)||'Abs'};
-      const h=parseFloat(e.hours)||0; wkTotal+=h;
-      let trajet='—'; const zov=e.zoneOverride;
-      const zone = (zov&&zov!=='auto'&&zov!=='none')?zov:(zov==='none'?null:(site&&site.trajetZone));
-      if(zone&&zone!=='GD'){ const r=getTrajetRates(zone); if(r) trajet=`Z${r.zone}/${r.trajet.toFixed(2).replace('.',',')}`; }
-      return {empty:false, site:(e.customSite&&e.customSite.name)||(site?site.name:'—'), hours:(e.hours||'0')+'h', panier:e.panier?'Oui':'Non', trajet, task:e.task||'—'};
+      const h=_entryTotalHours(e); wkTotal+=h;
+      let trajet='—', siteLabel, taskLabel;
+      const multiLines = _entrySiteLines(e);
+      if(multiLines){
+        siteLabel = multiLines.map(l=>l.name).join(' / ') || '—';
+        taskLabel = multiLines.map(l=>l.task||'—').join(' / ');
+        const info = _entryFirstSiteInfo(e);
+        if(info && info.zone && info.zone !== 'GD'){ const r=getTrajetRates(info.zone); if(r) trajet=`Z${r.zone}/${r.trajet.toFixed(2).replace('.',',')}`; }
+      } else {
+        const zov=e.zoneOverride;
+        const zone = (zov&&zov!=='auto'&&zov!=='none')?zov:(zov==='none'?null:(site&&site.trajetZone));
+        if(zone&&zone!=='GD'){ const r=getTrajetRates(zone); if(r) trajet=`Z${r.zone}/${r.trajet.toFixed(2).replace('.',',')}`; }
+        siteLabel = (e.customSite&&e.customSite.name)||(site?site.name:'—');
+        taskLabel = e.task||'—';
+      }
+      return {empty:false, site:siteLabel, hours:h+'h', panier:e.panier?'Oui':'Non', trajet, task:taskLabel};
     });
     grandTotal += wkTotal;
 
@@ -20272,6 +20292,46 @@ async function _pointageCalcZone(){
     if(zEl && zone){ zEl.value = zone; _pointageSaveCustom(); }
     if(hint) hint.textContent = zone ? `${kmR} km → Zone ${zone}` : `${kmR} km — hors barème`;
   }catch(e){ if(hint) hint.textContent='Erreur de calcul, choisis la zone manuellement.'; }
+}
+
+/* Lignes de saisie "Multi chantier" pour un ouvrier donné : chaque ligne
+   choisit un chantier existant ou "Chantier libre", ses heures et sa
+   tâche. Le ZONES_TRAJET et les chantiers libres reprennent exactement le
+   même principe que le mode "Chantier" simple (voir pointageSite). */
+function _renderPointageMultiSiteRows(dateKey, workerId, entry){
+  const rows = Array.isArray(entry.sites) ? entry.sites : [];
+  return rows.map((row, i) => {
+    const isCustom = row.siteId === '__custom__';
+    return `
+    <div class="card" style="padding:10px;margin-bottom:8px;background:var(--bg-elev);">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:800;color:var(--ink-soft);flex-shrink:0;">#${i+1}${i===0?' (trajet)':''}</div>
+        <select style="flex:1;" onchange="updatePointageSiteRowAndRerender('${dateKey}','${workerId}',${i},'siteId', this.value)">
+          <option value=""${!row.siteId?' selected':''}>— Choisir un chantier —</option>
+          ${(data.sites||[]).map(s=>`<option value="${s.id}"${row.siteId===s.id?' selected':''}>${escapeHtml(s.name)}</option>`).join('')}
+          <option value="__custom__"${isCustom?' selected':''}>✏️ Chantier libre (dépannage)…</option>
+        </select>
+        ${rows.length > 1 ? `<button type="button" class="remove-worker" style="flex-shrink:0;" onclick="removePointageSiteRow('${dateKey}','${workerId}',${i})" title="Retirer ce chantier">×</button>` : ''}
+      </div>
+      ${isCustom ? `
+      <div style="display:flex;gap:6px;margin-bottom:8px;">
+        <input type="text" placeholder="Nom du chantier / client" style="flex:2;" value="${escapeHtml(row.customName||'')}"
+          onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customName', this.value)">
+        <select style="flex:1;" onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customZone', this.value)">
+          <option value="">— Zone —</option>
+          ${ZONES_TRAJET.map(z=>`<option value="${z}"${row.customZone===z?' selected':''}>Zone ${z}</option>`).join('')}
+        </select>
+      </div>` : ''}
+      <div style="display:flex;gap:6px;">
+        <input type="number" min="0" max="24" step="0.5" placeholder="Heures" style="flex:1;" value="${row.hours||''}"
+          onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'hours', this.value)">
+        <select style="flex:2;" onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'task', this.value)">
+          <option value=""${!row.task?' selected':''}>— Tâche —</option>
+          ${TRANCHES.map(t=>`<option value="${t.label}"${row.task===t.label?' selected':''}>${t.label}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderPointage(){
@@ -20392,7 +20452,15 @@ function renderPointage(){
                 </select>
               </div>`;
             }
+            const isMulti = entry.mode === 'multi';
             return `
+          <div class="field-mini" style="grid-column:1/-1;margin-bottom:2px;">
+            <div class="chip-row" style="margin-bottom:0;">
+              <div class="chip${!isMulti?' selected':''}" onclick="setPointageWorkerMode('${dateKey}','${w.id}','single')">Chantier</div>
+              <div class="chip${isMulti?' selected':''}" onclick="setPointageWorkerMode('${dateKey}','${w.id}','multi')">Multi chantier</div>
+            </div>
+          </div>
+          ${!isMulti ? `
           <div class="field-mini">
             <label>Heures faites</label>
             <input type="number" min="0" max="24" step="0.5" placeholder="0"
@@ -20415,7 +20483,26 @@ function renderPointage(){
           <div class="task-row" style="grid-column:1/-1;">
             <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--ink-soft);font-weight:700;margin-bottom:6px;">Tâche effectuée</div>
             ${renderTacheSelector(dateKey, w.id, entry)}
-          </div>`;
+          </div>` : `
+          <div style="grid-column:1/-1;">
+            <div class="hint" style="margin-bottom:8px;">Ajoute chaque chantier fait aujourd'hui, <strong>dans l'ordre</strong> — le premier de la liste sert de référence pour la prime de trajet du jour.</div>
+            ${_renderPointageMultiSiteRows(dateKey, w.id, entry)}
+            <button type="button" class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="addPointageSiteRow('${dateKey}','${w.id}')">+ Ajouter un chantier</button>
+            <div style="margin-top:10px;font-size:13px;font-weight:700;">Total du jour : ${_entryTotalHours(entry).toLocaleString('fr-FR')} h</div>
+          </div>
+          <div class="field-mini" style="grid-column:1/-1;">
+            <label>Type de journée</label>
+            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+              ${_typeJourneeOptions(tj)}
+            </select>
+          </div>
+          <div class="panier-row">
+            <label>
+              <input type="checkbox" ${entry.panier ? 'checked' : ''}
+                onchange="updateAttendance('${dateKey}','${w.id}','panier', this.checked)">
+              Panier repas
+            </label>
+          </div>`}`;
           })()}
         </div>
         <div class="worker-phone-row">
@@ -20445,6 +20532,128 @@ function updateAttendance(dateKey, workerId, field, value){
   today.workers[workerId][field] = value;
   saveData();
   schedulePointageSync();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MULTI-CHANTIER PAR OUVRIER (pointage)
+   Un ouvrier peut avoir fait PLUSIEURS chantiers le même jour (ex: 4h
+   bardage à Guanxi, 2h toiture à Marchal, 2h mise en place à Falgoux).
+   Ça se règle ouvrier par ouvrier (entry.mode==='multi'), pas pour toute
+   l'équipe — les autres ouvriers du même jour restent sur le chantier du
+   jour classique (today.siteId), sans aucun changement.
+
+   entry.sites = [{ siteId, customName, customZone, hours, task }, ...]
+   — tableau ORDONNÉ : le PREMIER chantier de la liste sert de référence
+   pour la prime de trajet du jour (zone de ce chantier), exactement comme
+   demandé : l'ouvrier doit saisir ses chantiers dans l'ordre où il les a
+   faits. siteId==='__custom__' désigne une ligne "chantier libre" (nom +
+   zone saisis à la main, comme le permet déjà le mode simple).
+
+   Tous les champs historiques (entry.hours, entry.task, entry.
+   zoneOverride, today.siteId/customSite) restent inchangés et continuent
+   de faire référence pour tout ouvrier resté en mode simple — aucune
+   donnée existante n'est réinterprétée différemment.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function _entryHasMultiSites(entry){
+  return !!(entry && entry.mode === 'multi' && Array.isArray(entry.sites) && entry.sites.length);
+}
+
+/* Heures totales d'une entrée, qu'elle soit en mode simple ou multi —
+   TOUT endroit qui totalise les heures d'un ouvrier pour un jour doit
+   passer par cette fonction plutôt que lire entry.hours directement,
+   sans quoi un ouvrier en mode multi serait compté pour 0h. */
+function _entryTotalHours(entry){
+  if(!entry) return 0;
+  if(_entryHasMultiSites(entry)){
+    return entry.sites.reduce((sum, row) => sum + (parseFloat(String(row && row.hours != null ? row.hours : '').replace(',','.')) || 0), 0);
+  }
+  return parseFloat(String(entry.hours != null ? entry.hours : '').replace(',','.')) || 0;
+}
+
+/* Nom affichable d'une ligne de chantier multi (site réel ou chantier libre). */
+function _pointageSiteRowName(row){
+  if(!row) return '';
+  if(row.siteId === '__custom__') return (row.customName || '').trim() || 'Chantier libre';
+  const site = (data.sites || []).find(s => s.id === row.siteId);
+  return site ? site.name : '—';
+}
+
+/* Zone de trajet d'une ligne de chantier multi (site réel ou chantier libre). */
+function _pointageSiteRowZone(row){
+  if(!row) return '';
+  if(row.siteId === '__custom__') return row.customZone || '';
+  const site = (data.sites || []).find(s => s.id === row.siteId);
+  return (site && site.trajetZone) || '';
+}
+
+/* Infos du PREMIER chantier d'une entrée multi — sert à calculer la prime
+   de trajet du jour pour cet ouvrier (zone du 1er chantier de sa liste) et
+   à l'afficher. Retourne null si pas en mode multi ou 1ère ligne incomplète. */
+function _entryFirstSiteInfo(entry){
+  if(!_entryHasMultiSites(entry)) return null;
+  const row = entry.sites[0];
+  if(!row || !row.siteId) return null;
+  return { name: _pointageSiteRowName(row), zone: _pointageSiteRowZone(row) };
+}
+
+/* Lignes affichables d'une entrée multi : {name, hours, task} par chantier,
+   dans l'ordre saisi — utilisé pour empiler l'affichage (Fiches, PDF). */
+function _entrySiteLines(entry){
+  if(!_entryHasMultiSites(entry)) return null;
+  return entry.sites.map(row => ({
+    name: _pointageSiteRowName(row),
+    hours: parseFloat(String(row && row.hours != null ? row.hours : '').replace(',','.')) || 0,
+    task: (row && row.task) || ''
+  }));
+}
+
+function setPointageWorkerMode(dateKey, workerId, mode){
+  const today = data.attendance[dateKey];
+  if(!today.workers[workerId]) today.workers[workerId] = {hours: '', panier: false, task: ''};
+  const entry = today.workers[workerId];
+  entry.mode = mode;
+  if(mode === 'multi' && (!Array.isArray(entry.sites) || !entry.sites.length)){
+    entry.sites = [{ siteId: '', customName: '', customZone: '', hours: '', task: '' }];
+  }
+  saveData();
+  schedulePointageSync();
+  renderPointage();
+}
+
+function addPointageSiteRow(dateKey, workerId){
+  const entry = data.attendance[dateKey].workers[workerId];
+  if(!entry) return;
+  if(!Array.isArray(entry.sites)) entry.sites = [];
+  entry.sites.push({ siteId: '', customName: '', customZone: '', hours: '', task: '' });
+  saveData();
+  schedulePointageSync();
+  renderPointage();
+}
+
+function removePointageSiteRow(dateKey, workerId, index){
+  const entry = data.attendance[dateKey].workers[workerId];
+  if(!entry || !Array.isArray(entry.sites)) return;
+  entry.sites.splice(index, 1);
+  if(!entry.sites.length) entry.sites.push({ siteId: '', customName: '', customZone: '', hours: '', task: '' });
+  saveData();
+  schedulePointageSync();
+  renderPointage();
+}
+
+function updatePointageSiteRow(dateKey, workerId, index, field, value){
+  const entry = data.attendance[dateKey].workers[workerId];
+  if(!entry || !Array.isArray(entry.sites) || !entry.sites[index]) return;
+  entry.sites[index][field] = value;
+  saveData();
+  schedulePointageSync();
+}
+
+/* Changement structurel (site choisi sur une ligne) : ré-affiche pour faire
+   apparaître/disparaître les champs "chantier libre" le cas échéant. */
+function updatePointageSiteRowAndRerender(dateKey, workerId, index, field, value){
+  updatePointageSiteRow(dateKey, workerId, index, field, value);
+  renderPointage();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -22797,6 +23006,14 @@ function openFichesEdit(workerId, dateKey){
   const dayData = data.attendance[dateKey];
   const entry = dayData.workers[workerId] || {hours:'', panier:false, task:''};
 
+  // Les jours "Multi chantier" se modifient depuis l'onglet Pointage (liste
+  // de chantiers) — cette modale ne gère qu'un seul chantier par jour et
+  // n'aurait aucun effet sur entry.sites, ce qui serait trompeur.
+  if(_entryHasMultiSites(entry)){
+    showToast('Ce jour est en "Multi chantier" — modifie-le depuis l\'onglet Pointage');
+    return;
+  }
+
   editFicheContext = {workerId, dateKey};
 
   const d = new Date(dateKey + 'T00:00:00');
@@ -23036,37 +23253,60 @@ function renderFiches(){
       const site = entryDay ? data.sites.find(s=>s.id===entryDay.siteId) : null;
 
       const hasTypeJournee = entry && entry.typeJournee && entry.typeJournee !== 'normal';
-      if(!entry || (!entry.hours && !entry.task && !entry.panier && !hasTypeJournee)){
+      const hasMulti = _entryHasMultiSites(entry);
+      if(!entry || (!entry.hours && !entry.task && !entry.panier && !hasTypeJournee && !hasMulti)){
         return {empty:true, key};
       }
-      const hours = parseFloat(entry.hours) || 0;
+      const hours = _entryTotalHours(entry);
       if(!hasTypeJournee) totalHours += hours;
       let trajetRates = null;
       const custom = entry.customSite;
-      // Zone : chantier libre > override par jour > zone du chantier.
-      const zoneOv = entry.zoneOverride;
-      if(!hasTypeJournee && custom && custom.zone){
-        trajetRates = getTrajetRates(custom.zone);
-        if(trajetRates){ totalTrajet += trajetRates.trajet; }
-      } else if(!hasTypeJournee && zoneOv === 'none'){
-        trajetRates = null; // journée payée sans trajet
-      } else if(!hasTypeJournee && zoneOv && zoneOv !== 'auto'){
-        trajetRates = getTrajetRates(zoneOv);
-        if(trajetRates){ totalTrajet += trajetRates.trajet; }
-      } else if(!hasTypeJournee && site && site.trajetZone && site.trajetZone !== 'GD'){
-        trajetRates = getTrajetRates(site.trajetZone);
-        if(trajetRates){ totalTrajet += trajetRates.trajet; }
+      let siteLabel, hoursLabel, taskLabel;
+      const multiLines = _entrySiteLines(entry);
+      if(!hasTypeJournee && multiLines){
+        // Multi chantier : on empile un chantier par ligne (nom, heures,
+        // tâche alignés), et la prime de trajet se base sur le PREMIER
+        // chantier saisi par l'ouvrier ce jour-là.
+        siteLabel = multiLines.map(l => escapeHtml(l.name)).join('<br>') || '—';
+        hoursLabel = multiLines.map(l => l.hours.toLocaleString('fr-FR') + 'h').join('<br>');
+        taskLabel = multiLines.map(l => escapeHtml(l.task || '—')).join('<br>');
+        const info = _entryFirstSiteInfo(entry);
+        if(info && info.zone && info.zone !== 'GD'){
+          trajetRates = getTrajetRates(info.zone);
+          if(trajetRates){ totalTrajet += trajetRates.trajet; }
+        }
+      } else {
+        // Zone : chantier libre > override par jour > zone du chantier.
+        const zoneOv = entry.zoneOverride;
+        if(!hasTypeJournee && custom && custom.zone){
+          trajetRates = getTrajetRates(custom.zone);
+          if(trajetRates){ totalTrajet += trajetRates.trajet; }
+        } else if(!hasTypeJournee && zoneOv === 'none'){
+          trajetRates = null; // journée payée sans trajet
+        } else if(!hasTypeJournee && zoneOv && zoneOv !== 'auto'){
+          trajetRates = getTrajetRates(zoneOv);
+          if(trajetRates){ totalTrajet += trajetRates.trajet; }
+        } else if(!hasTypeJournee && site && site.trajetZone && site.trajetZone !== 'GD'){
+          trajetRates = getTrajetRates(site.trajetZone);
+          if(trajetRates){ totalTrajet += trajetRates.trajet; }
+        }
+        siteLabel = custom && custom.name ? custom.name : (site ? site.name : '—');
+        hoursLabel = (entry.hours || '0') + 'h';
+        taskLabel = entry.task || '';
       }
       const tj = entry.typeJournee || 'normal';
       const tjInfo = TYPE_JOURNEE[tj] || TYPE_JOURNEE.normal;
       return {
         empty:false,
         key,
-        site: custom && custom.name ? custom.name : (site ? site.name : '—'),
+        site: siteLabel,
+        siteIsHtml: !!multiLines,
         color: custom ? 'var(--wood)' : (site ? site.color : null),
-        hours: entry.hours || '0',
+        hours: hasMulti ? hoursLabel : (entry.hours || '0'),
+        hoursIsHtml: hasMulti,
         panier: !!entry.panier,
-        task: entry.task || '',
+        task: taskLabel,
+        taskIsHtml: hasMulti,
         trajetRates,
         voiturePerso: !!(entryDay && entryDay.voiturePerso),
         voiturePersoKm: entryDay && entryDay.voiturePersoKm ? entryDay.voiturePersoKm : null,
@@ -23078,10 +23318,10 @@ function renderFiches(){
 
     const _absCell = (c) => `<td style="text-align:center;font-size:11px;font-weight:700;color:${c.tjInfo.color};background:${c.tjInfo.color}12;">${c.tjInfo.emoji} ${c.tjInfo.short}</td>`;
     const rowEdit = cells.map(c => `<td><button class="edit-cell-btn" onclick="openFichesEdit('${w.id}','${c.key}')" title="Modifier ce jour"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button></td>`).join('');
-    const rowSite = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? _absCell(c) : `<td class="site-cell" style="${c.color ? `background:${colorWithAlpha(c.color, 0.2)}; border-left:3px solid ${c.color};` : ''}">${escapeHtml(c.site)}</td>`).join('');
-    const rowHours = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">${escapeHtml(String(c.hours))}h</td>`).join('');
+    const rowSite = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? _absCell(c) : `<td class="site-cell" style="${c.color ? `background:${colorWithAlpha(c.color, 0.2)}; border-left:3px solid ${c.color};` : ''}">${c.siteIsHtml ? c.site : escapeHtml(c.site)}</td>`).join('');
+    const rowHours = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">${c.hoursIsHtml ? c.hours : escapeHtml(String(c.hours))+'h'}</td>`).join('');
     const rowPanier = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td>${c.panier ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4.5 12.5l4.5 4.5L19.5 6"/></svg>' : '—'}</td>`).join('');
-    const rowTask = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${escapeHtml(c.task) || '—'}</td>`).join('');
+    const rowTask = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${(c.taskIsHtml ? c.task : escapeHtml(c.task)) || '—'}</td>`).join('');
     const rowTrajet = cells.map(c => (c.empty || c.isAbsence || !c.trajetRates) ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">Z${escapeHtml(c.trajetRates.zone)}/${c.trajetRates.trajet.toFixed(2).replace('.',',')}</td>`).join('');
     const rowVoiture = cells.map(c => {
       if(c.empty || !c.voiturePerso) return `<td class="empty-cell">—</td>`;
@@ -23156,23 +23396,32 @@ function buildFicheData(workerId, weekNum, year){
     const entryDay = data.attendance[key];
     const entry = entryDay ? entryDay.workers[workerId] : null;
     const site = entryDay ? data.sites.find(s=>s.id===entryDay.siteId) : null;
-    if(!entry || (!entry.hours && !entry.task && !entry.panier)){
+    const hasMulti = _entryHasMultiSites(entry);
+    if(!entry || (!entry.hours && !entry.task && !entry.panier && !hasMulti)){
       return {date: key, empty: true};
     }
-    const hours = parseFloat(entry.hours) || 0;
+    const hours = _entryTotalHours(entry);
     totalHours += hours;
     let trajet = null, trajetZone = null;
-    if(site && site.trajetZone && site.trajetZone !== 'GD'){
+    const multiLines = hasMulti ? _entrySiteLines(entry) : null;
+    if(multiLines){
+      const info = _entryFirstSiteInfo(entry);
+      if(info && info.zone && info.zone !== 'GD'){
+        const rates = getTrajetRates(info.zone);
+        if(rates){ trajet = rates.trajet; trajetZone = info.zone; totalTrajet += trajet; }
+      }
+    } else if(site && site.trajetZone && site.trajetZone !== 'GD'){
       const rates = getTrajetRates(site.trajetZone);
       if(rates){ trajet = rates.trajet; trajetZone = site.trajetZone; totalTrajet += trajet; }
     }
     return {
       date: key,
       empty: false,
-      site: site ? site.name : null,
-      hours: entry.hours || '0',
+      site: multiLines ? multiLines.map(l=>l.name).join(' / ') : (site ? site.name : null),
+      hours: hours,
       panier: !!entry.panier,
-      task: entry.task || '',
+      task: multiLines ? multiLines.map(l=>l.task||'—').join(' / ') : (entry.task || ''),
+      sites: multiLines || null, // détail chantier par chantier, quand multi
       trajetZone,
       trajet
     };
@@ -23253,13 +23502,21 @@ async function buildFichePDF(workerId, weekNum, year){
     const entryDay = data.attendance[key];
     const entry = entryDay ? entryDay.workers[workerId] : null;
     const site = entryDay ? data.sites.find(s=>s.id===entryDay.siteId) : null;
-    if(!entry || (!entry.hours && !entry.task && !entry.panier)){
+    const hasMulti = _entryHasMultiSites(entry);
+    if(!entry || (!entry.hours && !entry.task && !entry.panier && !hasMulti)){
       return {empty:true};
     }
-    const hours = parseFloat(entry.hours) || 0;
+    const hours = _entryTotalHours(entry);
     totalHours += hours;
     let trajetLabel = '—';
-    if(site && site.trajetZone && site.trajetZone !== 'GD'){
+    const multiLines = hasMulti ? _entrySiteLines(entry) : null;
+    if(multiLines){
+      const info = _entryFirstSiteInfo(entry);
+      if(info && info.zone && info.zone !== 'GD'){
+        const rates = getTrajetRates(info.zone);
+        if(rates){ totalTrajet += rates.trajet; trajetLabel = `Z${rates.zone}/${rates.trajet.toFixed(2).replace('.',',')}`; }
+      }
+    } else if(site && site.trajetZone && site.trajetZone !== 'GD'){
       const rates = getTrajetRates(site.trajetZone);
       if(rates){
         totalTrajet += rates.trajet;
@@ -23268,10 +23525,10 @@ async function buildFichePDF(workerId, weekNum, year){
     }
     return {
       empty:false,
-      site: site ? site.name : '—',
-      hours: entry.hours || '0',
+      site: multiLines ? multiLines.map(l=>l.name).join(' / ') : (site ? site.name : '—'),
+      hours: hours,
       panier: entry.panier ? 'Oui' : 'Non',
-      task: entry.task || '—',
+      task: multiLines ? multiLines.map(l=>l.task||'—').join(' / ') : (entry.task || '—'),
       trajetLabel,
       voiture: !!(entryDay && entryDay.voiturePerso),
       voitureKm: entryDay && entryDay.voiturePersoKm ? entryDay.voiturePersoKm : null
@@ -23478,7 +23735,8 @@ function _computeWorkerWeekData(aw, offset){
       const ov = comptaEditApplyOverride(device.deviceId || aw.device.deviceId, aw.workerId, dKey, entry, ed);
       if(ov){ entry = ov.entry; ed = ov.ed; }
     }
-    const h = entry ? parseFloat(entry.hours||0) : 0;
+    const isMulti = _entryHasMultiSites(entry);
+    const h = entry ? _entryTotalHours(entry) : 0;
     const tj = entry ? (entry.typeJournee || 'normal') : 'normal';
     const isAbsence = tj !== 'normal';
     // Total : uniquement les heures des journées normales de travail
@@ -23509,8 +23767,14 @@ function _computeWorkerWeekData(aw, offset){
       if(off && off.color) siteColor = off.color;
     }
     // Trajet : chantier libre > override par jour > zone du chantier
+    // [multichantier] en mode multi, le trajet se base sur le PREMIER chantier saisi.
     let trajetRates = null;
-    if(!isAbsence){
+    let multiZone = '';
+    if(isMulti){
+      const first = _entryFirstSiteInfo(entry);
+      multiZone = (first && first.zone) || '';
+      if(multiZone && multiZone!=='GD' && typeof getTrajetRates==='function'){ trajetRates = getTrajetRates(multiZone); }
+    } else if(!isAbsence){
       const zov = entry && entry.zoneOverride;
       let zone = (custom && custom.zone) ? custom.zone
                : (zov && zov!=='auto' && zov!=='none') ? zov
@@ -23518,21 +23782,26 @@ function _computeWorkerWeekData(aw, offset){
                : (site && site.trajetZone);
       if(zone && zone!=='GD' && typeof getTrajetRates==='function'){ trajetRates = getTrajetRates(zone); }
     }
+    // [multichantier] noms/tâches empilés (un chantier par ligne saisie)
+    const multiLines = isMulti ? _entrySiteLines(entry) : null;
+    const multiSiteName = multiLines ? multiLines.map(l=>l.name).filter(Boolean).join(' / ') : '';
+    const multiTask = multiLines ? multiLines.map(l=>l.task).filter(Boolean).join(' / ') : '';
     // hasContent : le jour a-t-il quelque chose à afficher ?
-    const hasContent = !!entry && (h>0 || isAbsence || (entry.task) || entry.panier);
+    const hasContent = !!entry && (h>0 || isAbsence || (entry.task) || isMulti || entry.panier);
     return {
       date: d, dateKey: dKey,
       label: dayFullLabels[i], h,
-      task: entry ? (entry.task||'') : '',
+      task: isMulti ? multiTask : (entry ? (entry.task||'') : ''),
       panier: entry ? !!entry.panier : false,
       typeJournee: tj,
       isAbsence,
       hasContent,
+      isMulti,
       siteId: ed ? (ed.siteId||'') : '',
-      siteName: (custom && custom.name) ? custom.name : _ovName,
+      siteName: isMulti ? multiSiteName : ((custom && custom.name) ? custom.name : _ovName),
       siteColor,
       trajetRates,
-      zone: site ? (site.trajetZone||'') : '',
+      zone: isMulti ? multiZone : (site ? (site.trajetZone||'') : ''),
       workerId: aw.workerId,
       deviceId: device.deviceId || aw.device.deviceId,
       workerKey: aw.key
@@ -23569,7 +23838,7 @@ function _computeWorkerMonthData(aw, monthOffset){
       if(ov){ entry = ov.entry; ed = ov.ed; }
     }
     if(entry){
-      const h = parseFloat(entry.hours||0) || 0;
+      const h = _entryTotalHours(entry);
       if(h > 0){
         const monday = getMondayOfWeek(cursor, 0);
         const wn = getISOWeekNumber(monday);
@@ -24091,7 +24360,7 @@ async function generateSalaryXlsx(){
         if(tj==='cp'){ cp.push(k); continue; }
         if(tj==='css'){ css.push(k); continue; }
         if(tj!=='normal'){ absAutre.push({date:k, motif:(TYPE_JOURNEE[tj]&&TYPE_JOURNEE[tj].label)||tj}); continue; }
-        const h=parseFloat(e.hours)||0; perWeekHours[wi]+=h; perWeekWorked[wi]=true;
+        const h=_entryTotalHours(e); perWeekHours[wi]+=h; perWeekWorked[wi]=true;
         if(e.panier) paniers++;
         const site=sites.find(s=>s.id===ad.siteId);
         const zov=e.zoneOverride;
@@ -24399,7 +24668,7 @@ async function printComptableWeekPDF(){
   _comptableLiveData.forEach(device=>{
     let workersWithHours = (device.workers||[]).filter(w=> days.some(d=>{
       const ed = device.attendance[dateKeyOf(d)];
-      return ed && ed.workers && ed.workers[w.id] && parseFloat(ed.workers[w.id].hours||0)>0;
+      return ed && ed.workers && ed.workers[w.id] && _entryTotalHours(ed.workers[w.id])>0;
     }));
     // Filtrer sur le seul ouvrier ouvert, si applicable
     if(onlyWorkerKey){
@@ -24411,13 +24680,22 @@ async function printComptableWeekPDF(){
       const dayRows = days.map((d,i)=>{
         const ed = device.attendance[dateKeyOf(d)];
         const entry = ed && ed.workers && ed.workers[w.id];
-        const h = entry ? parseFloat(entry.hours||0) : 0;
-        const site = (ed && ed.siteId) ? (device.sites||[]).find(s=>s.id===ed.siteId) : null;
-        const siteLabel = site ? (site.name + (site.trajetZone ? ' (Z' + site.trajetZone + ')' : '')) : '';
+        const h = entry ? _entryTotalHours(entry) : 0;
+        const isMulti = _entryHasMultiSites(entry);
+        let siteLabel = '';
+        let taskLabel = entry ? (entry.task||'') : '';
+        if(isMulti){
+          const lines = _entrySiteLines(entry);
+          siteLabel = lines.map(l=>l.name).filter(Boolean).join(' / ');
+          taskLabel = lines.map(l=>l.task).filter(Boolean).join(' / ');
+        } else {
+          const site = (ed && ed.siteId) ? (device.sites||[]).find(s=>s.id===ed.siteId) : null;
+          siteLabel = site ? (site.name + (site.trajetZone ? ' (Z' + site.trajetZone + ')' : '')) : '';
+        }
         return {
           label: dayFullLabels[i].slice(0,3) + ' ' + String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0'),
           h,
-          task: entry ? (entry.task||'') : '',
+          task: taskLabel,
           siteLabel: siteLabel
         };
       }).filter(r=>r.h>0);
@@ -27179,8 +27457,8 @@ async function downloadMonthlyRecapPDF(){
 
       data.workers.forEach(w=>{
         const entry = entryDay.workers[w.id];
-        if(entry && entry.hours){
-          const h = parseFloat(entry.hours) || 0;
+        if(entry && (entry.hours || _entryHasMultiSites(entry))){
+          const h = _entryTotalHours(entry);
           weekTotals[wkKey][w.id] = (weekTotals[wkKey][w.id] || 0) + h;
         }
       });
@@ -27220,8 +27498,16 @@ async function downloadMonthlyRecapPDF(){
       data.workers.forEach(w=>{
         const entry = entryDay.workers[w.id];
         if(entry && entry.panier) workerStats[w.id].panierCount += 1;
-        if(entry && entry.hours && rates){
-          workerStats[w.id].trajetTotal = (workerStats[w.id].trajetTotal || 0) + rates.trajet;
+        // [multichantier] la prime de trajet se base sur le PREMIER chantier
+        // saisi par l'ouvrier ce jour-là quand il est en mode multi-chantier.
+        let effRates = rates;
+        if(entry && _entryHasMultiSites(entry)){
+          const first = _entryFirstSiteInfo(entry);
+          const mz = first && first.zone;
+          effRates = (mz && mz!=='GD' && typeof getTrajetRates==='function') ? getTrajetRates(mz) : null;
+        }
+        if(entry && (entry.hours || _entryHasMultiSites(entry)) && effRates){
+          workerStats[w.id].trajetTotal = (workerStats[w.id].trajetTotal || 0) + effRates.trajet;
         }
       });
     }
@@ -27381,7 +27667,7 @@ async function downloadMonthlyRecapPDF(){
           const dd = new Date(monday); dd.setDate(dd.getDate()+i);
           const ed = data.attendance[dateKeyOf(dd)];
           const entry = ed && ed.workers[w.id];
-          const h = (entry && entry.hours) ? parseFloat(entry.hours) : 0;
+          const h = _entryTotalHours(entry);
           weekTotal += h;
           dayVals.push(h);
         }
@@ -29560,9 +29846,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.31.9';
+const APP_VERSION = '5.32.0';
 
 const CHANGELOG = [
+  {
+    version: '5.32.0',
+    date: '09/09/2026',
+    entries: [
+      { icon: '🏗️', text: "Pointage — nouveau mode \"Multi chantier\" par ouvrier : ajoute plusieurs chantiers dans la même journée, chacun avec ses propres heures et sa tâche (chantier libre possible par ligne), la prime de trajet est calculée sur le 1er chantier saisi" },
+      { icon: '📋', text: "Fiches d'heures — les journées multi-chantier affichent tous les chantiers, heures et tâches empilés au lieu d'un seul nom" },
+      { icon: '📊', text: "Suivi — les heures d'une journée multi-chantier sont désormais réparties sur chaque chantier avec sa propre tâche, au lieu d'être créditées en bloc à un seul chantier" },
+    ]
+  },
   {
     version: '1.8.0',
     date: '22/06/2026',
@@ -41413,9 +41708,18 @@ function _cabHoursTotal(siteId){
   const att = data.attendance || {};
   Object.keys(att).forEach(dateKey => {
     const day = att[dateKey];
-    if(!day || day.siteId !== siteId || !day.workers) return;
+    if(!day || !day.workers) return;
     Object.values(day.workers).forEach(w => {
-      if(w && (!w.typeJournee || w.typeJournee === 'normal')) total += parseFloat(w.hours) || 0;
+      if(!w || (w.typeJournee && w.typeJournee !== 'normal')) return;
+      if(_entryHasMultiSites(w)){
+        // [multichantier] chaque ligne crédite SON chantier, pas le chantier
+        // du jour — nécessaire même si day.siteId !== siteId.
+        (w.sites||[]).forEach(row => {
+          if(row && row.siteId === siteId) total += (parseFloat(row.hours) || 0);
+        });
+      } else if(day.siteId === siteId){
+        total += _entryTotalHours(w);
+      }
     });
   });
   return total;
@@ -42322,10 +42626,14 @@ function _cabWorkersCount(siteId){
   const att = data.attendance || {};
   Object.keys(att).forEach(dateKey => {
     const day = att[dateKey];
-    if(!day || day.siteId !== siteId || !day.workers) return;
+    if(!day || !day.workers) return;
     Object.keys(day.workers).forEach(workerId => {
       const w = day.workers[workerId];
-      if(w && (!w.typeJournee || w.typeJournee === 'normal') && (parseFloat(w.hours)||0) > 0){
+      if(!w || (w.typeJournee && w.typeJournee !== 'normal')) return;
+      if(_entryHasMultiSites(w)){
+        const onSite = (w.sites||[]).some(row => row && row.siteId === siteId && (parseFloat(row.hours)||0) > 0);
+        if(onSite) seen.add(workerId);
+      } else if(day.siteId === siteId && _entryTotalHours(w) > 0){
         seen.add(workerId);
       }
     });
@@ -42770,46 +43078,65 @@ function _suiviAggregate(sources){
         // [typejournee] Les absences (CP, CSS, férié, maladie) ne comptent
         // PAS dans les heures de production d'un chantier. On ignore la fiche.
         if(typeof typeJourneeIsAbsence === 'function' && typeJourneeIsAbsence(entry.typeJournee)) return;
-        const rawSiteId = ed.siteId || siteId;
-        if(!rawSiteId) return;              // toujours aucun chantier (même après correction) : ignoré
-        if(!sitesById[rawSiteId]) return;   // chantier inconnu : ignoré
-        const effSiteId = _canon(rawSiteId); // [dedup] regroupe sous le canonique
+        // [multichantier] Crédite un chantier donné (heures + tâche) pour cet
+        // ouvrier/date — utilisé une fois en mode simple, plusieurs fois
+        // (une par ligne) en mode multi-chantier.
+        const _creditSite = (creditSiteId, h, taskRaw, dedupSuffix) => {
+          if(!isFinite(h) || h <= 0) return;
+          if(!sitesById[creditSiteId]) return; // chantier inconnu (ou libre) : ignoré
+          const siteEffId = _canon(creditSiteId);
 
-        // [antidoublon] Une fiche = un ouvrier + une date + un chantier.
-        // La même fiche peut remonter via plusieurs sources (appareil de
-        // l'ouvrier + copie locale du patron + re-synchro). On ne la compte
-        // qu'UNE SEULE FOIS, sinon les heures sont gonflées (bug 330h vs 140h).
-        const _ficheKey = wId + '|' + dateKey + '|' + effSiteId;
-        if(_countedFiches.has(_ficheKey)) return; // déjà comptée : on ignore la copie
-        _countedFiches.add(_ficheKey);
+          // [antidoublon] Une fiche = un ouvrier + une date + un chantier (+ ligne
+          // en mode multi). La même fiche peut remonter via plusieurs sources
+          // (appareil de l'ouvrier + copie locale du patron + re-synchro). On ne
+          // la compte qu'UNE SEULE FOIS, sinon les heures sont gonflées.
+          const _ficheKey = wId + '|' + dateKey + '|' + siteEffId + (dedupSuffix ? ('|' + dedupSuffix) : '');
+          if(_countedFiches.has(_ficheKey)) return; // déjà comptée : on ignore la copie
+          _countedFiches.add(_ficheKey);
 
-        const h = parseFloat(String(entry.hours).replace(',','.'));
-        if(!isFinite(h) || h <= 0) return;
+          if(!bySite[siteEffId]) bySite[siteEffId] = { total:0, tasks:{}, uncat:[], workers:{} };
+          bySite[siteEffId].total += h;
 
-        if(!bySite[effSiteId]) bySite[effSiteId] = { total:0, tasks:{}, uncat:[], workers:{} };
-        bySite[effSiteId].total += h;
+          // Ouvriers ayant travaillé sur ce chantier (nom + heures cumulées)
+          const _wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
+          if(!bySite[siteEffId].workers[wId]) bySite[siteEffId].workers[wId] = { name:_wName, hours:0 };
+          bySite[siteEffId].workers[wId].hours += h;
 
-        // Ouvriers ayant travaillé sur ce chantier (nom + heures cumulées)
-        const _wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
-        if(!bySite[effSiteId].workers[wId]) bySite[effSiteId].workers[wId] = { name:_wName, hours:0 };
-        bySite[effSiteId].workers[wId].hours += h;
+          // [recat] override de catégorie prioritaire (s'applique à la fiche
+          // entière, pas par ligne — un ouvrier ne recatégorise pas ligne par ligne)
+          let cat;
+          const ov = overrides[_suiviOvKey(dateKey, wId)];
+          if(ov){
+            const known = SUIVI_TASK_MAP.find(c => c.label === ov);
+            cat = { label: ov, icon: known ? known.icon : '📋' };
+          } else {
+            cat = _suiviTaskCategory(taskRaw);
+          }
 
-        // [recat] override de catégorie prioritaire
-        let cat;
-        const ov = overrides[_suiviOvKey(dateKey, wId)];
-        if(ov){
-          const known = SUIVI_TASK_MAP.find(c => c.label === ov);
-          cat = { label: ov, icon: known ? known.icon : '📋' };
+          if(!bySite[siteEffId].tasks[cat.label]) bySite[siteEffId].tasks[cat.label] = { icon:cat.icon, hours:0 };
+          bySite[siteEffId].tasks[cat.label].hours += h;
+
+          if(!ov && cat.label === 'Non catégorisé'){
+            const wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
+            bySite[siteEffId].uncat.push({ dateKey, wId, wName, hours:h, raw:(taskRaw||'') });
+          }
+        };
+
+        if(_entryHasMultiSites(entry)){
+          // [multichantier] Une ligne = un chantier : chaque ligne crédite SON
+          // propre chantier avec SES propres heures et SA propre tâche. Les
+          // lignes "chantier libre" (sans fiche chantier réelle) sont ignorées,
+          // comme une fiche sans siteId en mode simple.
+          (entry.sites||[]).forEach((row, idx) => {
+            if(!row || row.siteId === '__custom__' || !row.siteId) return;
+            const rh = parseFloat(row.hours) || 0;
+            _creditSite(row.siteId, rh, row.task, 'L' + idx);
+          });
         } else {
-          cat = _suiviTaskCategory(entry.task);
-        }
-
-        if(!bySite[effSiteId].tasks[cat.label]) bySite[effSiteId].tasks[cat.label] = { icon:cat.icon, hours:0 };
-        bySite[effSiteId].tasks[cat.label].hours += h;
-
-        if(!ov && cat.label === 'Non catégorisé'){
-          const wName = (workersById[wId] && workersById[wId].name) || _suiviWorkerName(wId);
-          bySite[effSiteId].uncat.push({ dateKey, wId, wName, hours:h, raw:(entry.task||'') });
+          const rawSiteId = ed.siteId || siteId;
+          if(!rawSiteId) return;            // toujours aucun chantier (même après correction) : ignoré
+          const h = _entryTotalHours(entry);
+          _creditSite(rawSiteId, h, entry.task);
         }
       });
     });
