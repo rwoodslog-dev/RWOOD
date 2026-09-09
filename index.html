@@ -102,7 +102,7 @@
   .logo-icon{
     width: 40px;
     height: 40px;
-    border-radius: 10px;
+    border-radius: 50%; /* logo arrondi façon bouton (demande Rémi 09/2026) */
     flex-shrink:0;
     filter: drop-shadow(0 0 8px rgba(232,172,61,0.4));
   }
@@ -521,6 +521,71 @@
     padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 12px);
   }
   @keyframes fadeIn{ from{ opacity:0; transform: translateY(6px);} to{opacity:1; transform: translateY(0);} }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     MODULE — ParametresDrawer (Rémi 09/2026)
+     ---------------------------------------------------------------------
+     Paramètres s'ouvre désormais comme un menu déroulant "sidebar" en
+     haut à gauche (façon Google), par-dessus la page courante, plutôt
+     que comme une vue plein écran qui remplace tout (goTo). On peut donc
+     l'ouvrir et interagir avec depuis n'importe où dans l'app.
+     Implémentation : #view-parametres garde EXACTEMENT le même contenu,
+     les mêmes ids, les mêmes fonctions de rendu (renderParametres,
+     applyOpenParametresSections, etc.) — seul son habillage visuel change
+     via .view-drawer + body.parametres-drawer-open, complètement
+     indépendant du système .view.active piloté par goTo(). Fermeture :
+     bouton ×, clic sur le fond, ou touche Échap (voir closeParametresDrawer).
+     ═══════════════════════════════════════════════════════════════════ */
+  /* z-index 290/291, sous les modales (.modal-overlay = 300) : le contenu
+     de Paramètres ouvre plusieurs modales existantes (sélecteur de couleur,
+     corbeille, modifier catégorie...) qui doivent rester visibles/cliquables
+     PAR-DESSUS le tiroir, jamais cachées dessous. */
+  #parametresDrawerBackdrop{
+    position: fixed; inset: 0; z-index: 290;
+    background: rgba(0,0,0,0.45);
+    opacity: 0; pointer-events: none;
+    transition: opacity .22s ease;
+  }
+  body.parametres-drawer-open #parametresDrawerBackdrop{
+    opacity: 1; pointer-events: auto;
+  }
+  .view-drawer{
+    position: fixed !important;
+    top: 0; left: 0; bottom: 0;
+    z-index: 291;
+    width: min(420px, 88vw);
+    max-width: 88vw;
+    background: var(--bg);
+    box-shadow: 4px 0 24px rgba(0,0,0,0.35);
+    transform: translateX(-100%);
+    transition: transform .24s cubic-bezier(.2,.8,.2,1);
+    overflow-y: auto;
+    padding: 16px 16px calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 24px) !important;
+    display: block !important; /* toujours dans le DOM, indépendant de .active */
+    animation: none !important;
+    /* Toujours 1 seule colonne dans le tiroir : les règles column-count
+       (2 ou 3 colonnes) ciblant #view-parametres pour l'ancien plein écran
+       PC ne conviennent plus à une largeur de tiroir fixe ~420px. */
+    column-count: 1 !important;
+  }
+  body.parametres-drawer-open .view-drawer{
+    transform: translateX(0);
+  }
+  #parametresDrawerHeader{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--line);
+  }
+  #parametresDrawerHeader h2{
+    font-size:20px; font-weight:800; margin:0; color:var(--ink);
+  }
+  #parametresDrawerClose{
+    width:34px; height:34px; border-radius:50%;
+    border:1px solid var(--line); background:var(--card); color:var(--ink);
+    font-size:18px; line-height:1; cursor:pointer; flex-shrink:0;
+  }
+  @media (min-width: 860px){
+    .view-drawer{ width: min(440px, 40vw); }
+  }
 
 
   /* SECTION TITLES */
@@ -3923,6 +3988,11 @@
 
 <div id="app">
 
+  <!-- MODULE — ParametresDrawer : fond assombri derrière le tiroir Paramètres,
+       cliquable pour fermer. En dehors de #app pour rester au-dessus de tout,
+       quelle que soit la vue affichée en dessous. -->
+  <div id="parametresDrawerBackdrop" onclick="closeParametresDrawer()"></div>
+
   <header class="top">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
       <img src="icons/logo-header.png" alt="RWOOD" class="logo-icon" onclick="logoTap()" style="cursor:pointer;">
@@ -4034,7 +4104,13 @@
 
       <!-- MODULE — DevAccess : onglet DEV, visible si is_dev=true (flag dynamique).
            Vraie page de navigation (comme toutes les autres tuiles), plus une
-           modale qui "pop" par-dessus — cohérent avec le reste de l'app. -->
+           modale qui "pop" par-dessus — cohérent avec le reste de l'app.
+           [Rémi — 09/2026] C'est déjà exactement le principe demandé pour
+           Stock (voir FORCE_HIDDEN_TABS) : invisible par défaut pour tout
+           le monde, réaffiché uniquement pour les comptes marqués "dev"
+           (case à cocher dans le panneau Dev → Comptes), avec un accès de
+           secours via 8 appuis rapides sur le logo en haut à gauche
+           (voir logoTap() / devAccessOpenPanel()). Rien à changer ici. -->
       <button class="nav-btn" data-view="dev" id="devNavBtn" style="display:none;" onclick="goTo('dev')">
         <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6M13 4l-2 16"/></svg></span><span class="lbl">DEV</span>
       </button>
@@ -4492,7 +4568,16 @@
     </section>
 
     <!-- VUE PARAMÈTRES -->
-    <section class="view" id="view-parametres">
+    <section class="view view-drawer" id="view-parametres">
+
+      <!-- MODULE — ParametresDrawer : en-tête avec bouton de fermeture,
+           puisque Paramètres n'est plus une vue "goTo" plein écran mais
+           un tiroir latéral ouvrable depuis n'importe où (voir CSS
+           .view-drawer + toggleParametres()/closeParametresDrawer()). -->
+      <div id="parametresDrawerHeader">
+        <h2>Paramètres</h2>
+        <button id="parametresDrawerClose" onclick="closeParametresDrawer()" title="Fermer">×</button>
+      </div>
 
       <!-- Bannière compte actif -->
       <div id="activeAccountBanner" style="margin-bottom:14px; padding:10px 14px; background:var(--card); border-radius:12px; border-left:3px solid var(--wood); display:flex; align-items:center; gap:10px;">
@@ -6635,6 +6720,28 @@
       <button class="modal-close" onclick="closeModal('contactActions')">×</button>
     </div>
     <div id="contactActionsList"></div>
+  </div>
+</div>
+
+<!-- MODAL : Modifier une catégorie de contacts (renommer + recolorer tous les contacts du groupe) -->
+<div class="modal-overlay" id="modal-editContactRole">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Modifier la catégorie</h2>
+      <button class="modal-close" onclick="closeModal('editContactRole')">×</button>
+    </div>
+    <div class="field">
+      <label>Nom de la catégorie</label>
+      <input type="text" id="editContactRoleName" placeholder="Ex : Chef d'équipe">
+    </div>
+    <div class="field" style="margin-bottom:0;">
+      <label>Couleur</label>
+      <div class="color-row">
+        <button class="color-swatch" id="editContactRoleColorSwatch" style="--swatch-color:var(--line);" onclick="openColorPicker(document.getElementById('editContactRoleColorSwatch').dataset.color || '#A084CA', (val)=>{ document.getElementById('editContactRoleColorSwatch').style.setProperty('--swatch-color', val); document.getElementById('editContactRoleColorSwatch').dataset.color = val; })" title="Choisir une couleur"></button>
+      </div>
+      <div class="hint" style="margin-top:6px;">Applique cette couleur à tous les contacts de la catégorie.</div>
+    </div>
+    <button class="btn btn-primary btn-block" style="margin-top:16px;" onclick="saveEditContactRole()">Enregistrer</button>
   </div>
 </div>
 
@@ -8984,31 +9091,49 @@ function updateFab(view, siteId){
 
 /* ═══ MODULE — FabRouter  (fin) ═══ */
 
-/* Bascule l'ouverture des paramètres depuis l'engrenage du header.
-   Si on est déjà dans les paramètres → on ressort vers la vue précédente.
-   Sinon → on ouvre les paramètres en mémorisant d'où on vient. */
-let _viewBeforeParametres = null;
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ParametresDrawer (Rémi 09/2026)
+   ---------------------------------------------------------------------
+   Paramètres s'ouvre en tiroir latéral (façon menu Google) par-dessus la
+   page courante, plutôt qu'en vue plein écran qui remplace tout (goTo).
+   La page du dessous reste affichée et utilisable — on peut donc ouvrir
+   les Paramètres depuis n'importe où dans l'app et continuer à naviguer
+   dessous une fois refermé, sans jamais avoir "perdu" l'endroit où l'on
+   était. #view-parametres garde tout son contenu/id/fonctions habituels
+   (renderParametres, etc.) — seul l'habillage visuel change (voir CSS
+   .view-drawer). goTo('parametres') reste utilisable par compatibilité
+   (anciens appels ailleurs dans le code) et ouvre aussi ce tiroir.
+   ═══════════════════════════════════════════════════════════════════ */
 function toggleParametres(){
-  const active = document.querySelector('.view.active');
-  const inParams = active && active.id === 'view-parametres';
-  if(inParams){
-    // Sortie : revenir à la vue précédente, sinon dashboard simple / chantiers
-    let back = _viewBeforeParametres;
-    if(!back || back === 'parametres'){
-      back = (typeof simpleModeIsActive === 'function' && simpleModeIsActive()) ? 'simpleDash' : 'chantiers';
-    }
-    _viewBeforeParametres = null;
-    goTo(back);
-  } else {
-    _viewBeforeParametres = active ? active.id.replace('view-','') : null;
-    goTo('parametres');
-  }
+  if(document.body.classList.contains('parametres-drawer-open')) closeParametresDrawer();
+  else openParametresDrawer();
+}
+
+function openParametresDrawer(){
+  document.body.classList.add('parametres-drawer-open');
+  renderParametres();
+  document.addEventListener('keydown', _parametresDrawerEscHandler);
+}
+
+function closeParametresDrawer(){
+  document.body.classList.remove('parametres-drawer-open');
+  document.removeEventListener('keydown', _parametresDrawerEscHandler);
+}
+
+function _parametresDrawerEscHandler(e){
+  if(e.key === 'Escape') closeParametresDrawer();
 }
 
 function goTo(viewName, siteId){
   try{ history.pushState({rwoodView:viewName, siteId:siteId||null}, ''); }catch(e){}
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
+  // MODULE — ParametresDrawer : Paramètres n'est plus une vue plein écran
+  // remplaçant tout (goTo classique) mais un tiroir latéral par-dessus la
+  // page courante — voir openParametresDrawer(). On redirige tout appel
+  // goTo('parametres') restant (ex: tour guidé) vers le tiroir, sans
+  // toucher à la vue actuellement affichée en dessous.
+  if(viewName === 'parametres'){ openParametresDrawer(); return; }
   // Badge de notif (Chantier/Galerie) : marquer comme vu dès qu'on navigue dessus,
   // quel que soit le chemin emprunté (tuile, sidebar PC, nav classique).
   if(typeof DASH_BADGE_VIEWS !== 'undefined' && DASH_BADGE_VIEWS.includes(viewName)){
@@ -21340,7 +21465,9 @@ function saveSignature(){
 
   closeModal('signature');
   renderPointage();
-  if(document.getElementById('view-parametres').classList.contains('active')) renderMyAccount();
+  // [ParametresDrawer] Paramètres n'est plus une .view "active" classique
+  // (tiroir latéral) : on vérifie l'état du tiroir plutôt que la classe.
+  if(document.body.classList.contains('parametres-drawer-open')) renderMyAccount();
   showToast('Signature enregistrée');
 }
 
@@ -22496,6 +22623,7 @@ function renderContactCard(c){
         <div style="display:flex; align-items:center; gap:8px;">
           ${c.color ? `<span class="worker-color-dot" style="background:${c.color};"></span>` : ''}
           ${!contactSelectMode ? `<button class="contact-fav-btn ${isFav ? 'active':''}" onclick="event.stopPropagation(); toggleContactFavorite('${c.id}')" title="Favori"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M12 3.5l2.5 5.6 6.1.6-4.6 4.1 1.3 6-5.3-3.2-5.3 3.2 1.3-6-4.6-4.1 6.1-.6z"/></svg></button>` : ''}
+          ${!contactSelectMode ? `<button class="contact-fav-btn" onclick="event.stopPropagation(); openContactModal('${c.id}')" title="Modifier"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button>` : ''}
         </div>
       </div>
     </div>
@@ -22553,16 +22681,26 @@ function renderContacts(){
   });
   const roleNames = Object.keys(groups).sort((a,b)=>a.localeCompare(b));
 
-  html += roleNames.map(role=>{
+  // [Point contacts] Registre des noms de rôle réels, indexé par une clé
+  // DOM-safe (data-role-i="i") : évite d'injecter le nom du rôle brut dans
+  // un attribut onclick="...('${role}')", qui cassait le clic (accordéon
+  // "impossible à enrouler") dès que le rôle contenait une apostrophe —
+  // ex. "Chef d'équipe" — l'apostrophe fermait prématurément la chaîne JS.
+  window._contactRoleRegistry = roleNames.slice();
+
+  html += roleNames.map((role, roleIdx)=>{
     const contacts = groups[role].slice().sort((a,b)=>a.name.localeCompare(b.name));
     const groupColor = (contacts.find(c=>c.color) || {}).color || 'var(--line)';
     const sectionId = 'role-section-' + role.replace(/[^a-zA-Z0-9]/g,'_');
     const isCollapsed = !!(data.collapsedRoles && data.collapsedRoles[role]);
 
     return `
-      <div class="contact-role-header ${isCollapsed ? 'collapsed':''}" style="background:${groupColor.startsWith('var(') ? groupColor : colorFull(groupColor)}; border-left:4px solid ${groupColor.startsWith('var(') ? groupColor : colorFull(groupColor)}; color:#fff;" onclick="toggleRoleSection('${role}')">
-        <span>${escapeHtml(role)} (${contacts.length})</span>
-        <span class="contact-role-toggle">${isCollapsed ? '▸' : '▾'}</span>
+      <div class="contact-role-header ${isCollapsed ? 'collapsed':''}" data-role-i="${roleIdx}" style="background:${groupColor.startsWith('var(') ? groupColor : colorFull(groupColor)}; border-left:4px solid ${groupColor.startsWith('var(') ? groupColor : colorFull(groupColor)}; color:#fff;">
+        <span class="contact-role-header-click" data-role-i="${roleIdx}" style="flex:1;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <span>${escapeHtml(role)} (${contacts.length})</span>
+          <span class="contact-role-toggle">${isCollapsed ? '▸' : '▾'}</span>
+        </span>
+        <button class="contact-role-edit-btn" data-role-i="${roleIdx}" title="Modifier la catégorie" style="background:rgba(255,255,255,0.18);border:none;border-radius:8px;color:#fff;width:28px;height:28px;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:8px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button>
       </div>
       <div class="contact-role-body" id="${sectionId}" style="display:${isCollapsed ? 'none':'block'};">
         ${contacts.map(renderContactCard).join('')}
@@ -22571,6 +22709,22 @@ function renderContacts(){
   }).join('');
 
   container.innerHTML = html;
+  // Délégation d'événements (voir commentaire ci-dessus) : plie/déplie et
+  // ouvre la modale de modification, sans jamais injecter le nom du rôle
+  // dans un attribut HTML.
+  container.querySelectorAll('.contact-role-header-click').forEach(el => {
+    el.addEventListener('click', () => {
+      const role = window._contactRoleRegistry[+el.dataset.roleI];
+      if(role != null) toggleRoleSection(role);
+    });
+  });
+  container.querySelectorAll('.contact-role-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const role = window._contactRoleRegistry[+btn.dataset.roleI];
+      if(role != null) openEditContactRole(role);
+    });
+  });
   updateSelectionBar();
 }
 
@@ -22579,6 +22733,63 @@ function toggleRoleSection(role){
   data.collapsedRoles[role] = !data.collapsedRoles[role];
   saveData();
   renderContacts();
+}
+
+/* [Point contacts] Modification d'une catégorie entière : renomme le rôle
+   (appliqué à tous les contacts du groupe, + entrée data.customRoles si
+   nécessaire pour qu'elle reste proposée dans les chips) et/ou recolore
+   tous les contacts du groupe d'un coup. */
+let _editContactRoleOriginal = null;
+
+function openEditContactRole(role){
+  _editContactRoleOriginal = role;
+  const nameEl = document.getElementById('editContactRoleName');
+  const swatchEl = document.getElementById('editContactRoleColorSwatch');
+  if(nameEl) nameEl.value = role;
+  const contacts = (data.contacts || []).filter(c => c.role === role);
+  const currentColor = (contacts.find(c => c.color) || {}).color || '#A084CA';
+  if(swatchEl){
+    swatchEl.style.setProperty('--swatch-color', currentColor.startsWith('var(') ? currentColor : currentColor);
+    swatchEl.dataset.color = currentColor;
+  }
+  openModal('editContactRole');
+}
+
+function saveEditContactRole(){
+  if(_editContactRoleOriginal == null) return;
+  const nameEl = document.getElementById('editContactRoleName');
+  const swatchEl = document.getElementById('editContactRoleColorSwatch');
+  const newName = (nameEl ? nameEl.value.trim() : '') || _editContactRoleOriginal;
+  const newColor = swatchEl ? swatchEl.dataset.color : null;
+  const oldName = _editContactRoleOriginal;
+
+  (data.contacts || []).forEach(c => {
+    if(c.role === oldName){
+      c.role = newName;
+      if(newColor) c.color = newColor;
+    }
+  });
+
+  // Si le rôle a été renommé et que ce n'est pas un des rôles de base,
+  // on le garde disponible dans les chips de choix de rôle (comme un
+  // rôle personnalisé), et on retire l'ancien nom s'il y était.
+  if(newName !== oldName){
+    if(!Array.isArray(data.customRoles)) data.customRoles = [];
+    data.customRoles = data.customRoles.filter(r => r !== oldName);
+    if(!BASE_CONTACT_ROLES.includes(newName) && !data.customRoles.includes(newName)){
+      data.customRoles.push(newName);
+    }
+    // Le pliage/dépliage est mémorisé par nom de rôle : on transfère l'état.
+    if(data.collapsedRoles && Object.prototype.hasOwnProperty.call(data.collapsedRoles, oldName)){
+      data.collapsedRoles[newName] = data.collapsedRoles[oldName];
+      delete data.collapsedRoles[oldName];
+    }
+  }
+
+  saveData();
+  closeModal('editContactRole');
+  renderContacts();
+  showToast('Catégorie mise à jour');
 }
 
 function toggleContactFavorite(contactId){
@@ -25621,7 +25832,11 @@ async function installApp(){
 })();
 
 /* ============ PARAMÈTRES ============ */
-let openParametresSections = new Set(['mode']);
+// [Rémi — 09/2026] Toutes les sections démarrent fermées par défaut,
+// y compris "Mode" (avant : "mode" était forcé ouvert au premier chargement,
+// ce qui donnait l'impression que "tout le reste" était fermé par défaut
+// après une fermeture complète de l'app).
+let openParametresSections = new Set();
 
 function toggleParametresSection(mode){
   const section = document.getElementById('parametresMode-' + mode);
@@ -27454,7 +27669,8 @@ function deleteWorkerProfile(workerId){
 
   saveData();
   if(document.getElementById('view-heures').classList.contains('active')) renderHeures();
-  if(document.getElementById('view-parametres').classList.contains('active')) renderTeamRoster();
+  // [ParametresDrawer] idem : tiroir latéral, plus une .view "active".
+  if(document.body.classList.contains('parametres-drawer-open')) renderTeamRoster();
   showToast('Profil supprimé');
 }
 
@@ -30008,6 +30224,25 @@ const NAV_LABELS = {
   'alertes-conducteur':'Alertes', 'zone-chantier':'Zone',
 };
 
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ForceHiddenTabs (masquage global, indépendant de chaque
+   téléphone/utilisateur)
+   ---------------------------------------------------------------------
+   Liste des onglets rendus invisibles pour TOUT LE MONDE (barre du bas +
+   dashboard Mode Simple + sidebar PC + Paramètres), quel que soit le
+   rôle ou les préférences locales (data.settings.navHidden) de chaque
+   appareil. Différent de navHidden : navHidden est un masquage PAR
+   utilisateur qu'il peut réactiver lui-même dans Paramètres ; un onglet
+   listé ICI reste masqué pour tout le monde tant qu'il n'est pas retiré
+   de ce tableau par le développeur.
+   → Pour réafficher un onglet : retirer sa valeur de ce tableau.
+   → Pour en masquer un autre : ajouter sa valeur (même id que data-view
+     dans la nav du bas / que "view" dans SIMPLE_ALL_TILES).
+   Actuellement masqué : Stock camion ("stock"), à la demande de Rémi
+   (09/2026) — fonctionnalité gardée dans le code, juste invisible.
+   ═══════════════════════════════════════════════════════════════════ */
+const FORCE_HIDDEN_TABS = ['stock'];
+
 // Onglets qu'on ne peut pas masquer (indispensables)
 const NAV_PROTECTED = ['chantiers', 'parametres'];
 
@@ -30031,6 +30266,9 @@ function applyNavHidden(){
     // systématiquement leur visibilité juste après (ordre d'exécution),
     // affichant "Utilisateurs" à un ouvrier ou le masquant à un patron.
     if(view === 'utilisateurs' || view === 'dev' || view === 'notesdashboard') return;
+    // MODULE — ForceHiddenTabs : masquage global prioritaire sur tout le
+    // reste (rôle, navHidden local...). Voir FORCE_HIDDEN_TABS.
+    if(FORCE_HIDDEN_TABS.includes(view)){ btn.style.display = 'none'; return; }
     if(isComptable){
       btn.style.display = comptableOnly.has(view) ? '' : 'none';
     } else {
@@ -30100,7 +30338,9 @@ function renderHiddenNavList(){
 
   // Onglets réels depuis la barre (source de vérité = le DOM),
   // moins les protégés/pilotés par rôle. 'recap-patron' n'existe plus.
-  const skip = new Set(['parametres','suivi','zone-chantier']);
+  // MODULE — ForceHiddenTabs : un onglet masqué globalement (FORCE_HIDDEN_TABS)
+  // n'apparaît pas ici — le cocher n'aurait aucun effet visible, ce serait trompeur.
+  const skip = new Set(['parametres','suivi','zone-chantier', ...FORCE_HIDDEN_TABS]);
   const views = [];
   document.querySelectorAll('nav.bottom .nav-btn').forEach(btn => {
     const v = btn.dataset.view;
@@ -30148,9 +30388,21 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.33.1';
+const APP_VERSION = '5.34.0';
 
 const CHANGELOG = [
+  {
+    version: '5.34.0',
+    date: '10/09/2026',
+    entries: [
+      { icon: '📦', text: "Onglet Stock camion masqué pour tout le monde (fonctionnalité conservée dans le code, réactivable à la demande)" },
+      { icon: '⚙️', text: "Paramètres s'ouvre maintenant en tiroir latéral depuis l'icône engrenage, utilisable de n'importe où dans l'app sans quitter la page en cours" },
+      { icon: '🔘', text: "Logo RWOOD en haut à gauche arrondi façon bouton" },
+      { icon: '📂', text: "Paramètres — toutes les sections démarrent fermées par défaut à l'ouverture de l'app" },
+      { icon: '📇', text: "Contacts — correction : certaines catégories (ex. \"Chef d'équipe\") ne pouvaient plus être repliées/dépliées" },
+      { icon: '✏️', text: "Contacts — bouton Modifier visible directement sur chaque contact, et nouvelle possibilité de modifier une catégorie entière (nom + couleur)" },
+    ]
+  },
   {
     version: '5.33.1',
     date: '09/09/2026',
@@ -41712,6 +41964,10 @@ function _simpleGetTiles(){
     sel = sel.filter(v => v !== 'alerte');
     if(data.settings){ data.settings.simpleTiles = sel.slice(); saveData(); }
   }
+  // MODULE — ForceHiddenTabs : une tuile masquée globalement (FORCE_HIDDEN_TABS)
+  // ne doit jamais apparaître sur le dashboard, même si un appareil l'avait
+  // déjà sélectionnée avant son masquage.
+  sel = sel.filter(v => !FORCE_HIDDEN_TABS.includes(v));
   return sel;
 }
 
@@ -43052,7 +43308,10 @@ function simpleModeRenderConfig(){
     .filter(t => canDev || t.view !== 'dev')
     // "À faire" (chef/ouvrier) et "Notes" (conducteur/patron/comptable) sont
     // réservés à leurs rôles respectifs — voir _simpleTileAllowedForRole.
-    .filter(t => _simpleTileAllowedForRole(t.view));
+    .filter(t => _simpleTileAllowedForRole(t.view))
+    // MODULE — ForceHiddenTabs : masquage global, ne doit pas être proposé
+    // à la personnalisation tant qu'il n'est pas retiré de FORCE_HIDDEN_TABS.
+    .filter(t => !FORCE_HIDDEN_TABS.includes(t.view));
   list.innerHTML = availableTiles.map(t => {
     const on = selected.includes(t.view);
     const iconHtml = t.img
@@ -43126,6 +43385,13 @@ function _initBackHandler(){
         return;
       }
       openModal.classList.remove('open');
+      history.pushState({}, '');
+      return;
+    }
+    // MODULE — ParametresDrawer : le tiroir Paramètres se ferme comme une
+    // modale au bouton retour, sans changer la page affichée en dessous.
+    if(document.body.classList.contains('parametres-drawer-open')){
+      closeParametresDrawer();
       history.pushState({}, '');
       return;
     }
