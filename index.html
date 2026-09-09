@@ -704,12 +704,21 @@
   .accordion-section.open .accordion-arrow{
     transform: rotate(180deg);
   }
+  /* Animation d'ouverture/fermeture fluide (Rémi 09/2026) : on anime
+     max-height (0 → hauteur réelle du contenu, calculée en JS au moment
+     du clic — voir toggleParametresSection). Le contenu prend sa place
+     naturelle dans la page et pousse les onglets suivants vers le bas au
+     fur et à mesure qu'il se déploie ; jamais de position fixe/overlay. */
   .accordion-body{
-    display: none;
-    padding: 4px 12px 14px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.32s cubic-bezier(.4,0,.2,1);
   }
   .accordion-section.open .accordion-body{
-    display: block;
+    /* Valeur de secours si le JS n'a pas pu mesurer (ex: contenu ajouté
+       dynamiquement après coup) — très large pour ne jamais couper le
+       contenu ; le JS pose une valeur précise pour l'animation fluide. */
+    max-height: 4000px;
   }
   .accordion-body .section-title:first-child{ margin-top: 10px; }
 
@@ -25939,10 +25948,42 @@ let openParametresSections = new Set();
 // (les onglets suivants sont poussés plus bas, normalement, comme n'importe
 // quel accordéon). Aucune fermeture automatique des autres onglets, aucun
 // scroll auto, aucune hauteur limitée : rien ne doit jamais disparaître.
+// Anime l'ouverture/fermeture d'un .accordion-body en posant un max-height
+// précis (mesuré via scrollHeight) juste avant/après le toggle de la classe
+// .open, pour que la transition CSS max-height soit fluide. Une fois
+// l'ouverture terminée, on repasse à une valeur large (voir CSS) pour que
+// le contenu dynamique (wheel-pickers, listes qui se remplissent après
+// coup...) ne soit jamais coupé.
+function _animateAccordionBody(section, opening){
+  const body = section.querySelector(':scope > .accordion-body');
+  if(!body) return;
+  if(opening){
+    const target = body.scrollHeight;
+    body.style.maxHeight = target + 'px';
+    // Après la transition, on repasse à la valeur CSS large (fallback),
+    // au cas où le contenu grandirait ensuite (ex: liste chargée async).
+    const onEnd = (e)=>{
+      if(e.propertyName !== 'max-height') return;
+      body.style.maxHeight = '';
+      body.removeEventListener('transitionend', onEnd);
+    };
+    body.addEventListener('transitionend', onEnd);
+  } else {
+    // Repart de la hauteur actuelle (scrollHeight courant) pour permettre
+    // une transition vers 0 au lieu d'un saut instantané.
+    body.style.maxHeight = body.scrollHeight + 'px';
+    // Force reflow pour que le navigateur enregistre la valeur de départ
+    // avant de la ramener à 0 (sinon la transition ne se joue pas).
+    void body.offsetHeight;
+    body.style.maxHeight = '0px';
+  }
+}
+
 function toggleParametresSection(mode){
   const section = document.getElementById('parametresMode-' + mode);
   if(!section) return;
   const isOpen = section.classList.toggle('open');
+  _animateAccordionBody(section, isOpen);
   if(isOpen){
     openParametresSections.add(mode);
     // Init la section todo au moment où l'accordéon s'ouvre (async safe)
@@ -25957,6 +25998,10 @@ function applyOpenParametresSections(){
     const mode = section.id.replace('parametresMode-', '');
     const wasOpen = openParametresSections.has(mode);
     section.classList.toggle('open', wasOpen);
+    // Pas d'animation ici (état initial posé au rendu, sans transition) :
+    // on laisse le fallback CSS (max-height large) faire son travail.
+    const body = section.querySelector(':scope > .accordion-body');
+    if(body) body.style.maxHeight = '';
     if(wasOpen && mode === 'pinnedNotes') initChefTodoParamsSection();
   });
 }
@@ -30637,9 +30682,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.36.7';
+const APP_VERSION = '5.36.8';
 
 const CHANGELOG = [
+  {
+    version: '5.36.8',
+    date: '09/09/2026',
+    entries: [
+      { icon: '✨', text: "Paramètres : animation fluide à l'ouverture/fermeture des onglets — le contenu se déploie progressivement vers le bas et repousse naturellement les onglets suivants (et remonte à la fermeture), sans jamais se superposer" },
+    ]
+  },
   {
     version: '5.36.7',
     date: '09/09/2026',
