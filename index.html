@@ -5485,6 +5485,12 @@
 
       <!-- Actions rapides -->
       <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
+        <div style="font-weight:700; margin-bottom:6px;">🎤 Présentation guidée</div>
+        <div class="hint" style="margin-bottom:10px;">Lance une visite commentée de l'app, écran par écran, pour la montrer à l'équipe (comptable, patron, conducteur, chef d'équipe…). Suivant/Précédent au clic, tu gardes la main sur le rythme.</div>
+        <button class="btn btn-primary btn-block" onclick="startPresentationTour()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5"/></svg> Lancer la présentation</button>
+      </div>
+
+      <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
         <div style="font-weight:700; margin-bottom:6px;"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Mode Spectateur</div>
         <div class="hint" style="margin-bottom:10px;">Simule n'importe quel rôle sans modifier ton compte. Ta session réelle reste intacte en arrière-plan.</div>
         <button class="btn btn-primary btn-block" onclick="enterSpectatorMode()">Entrer en Mode Spectateur</button>
@@ -25945,7 +25951,7 @@ function updateMyAccount(){
   showToast('✅ Compte enregistré définitivement');
   _pushAccountData(); // backup Supabase en plus
 
-  if(tourActive && TOUR_STEPS[tourStepIndex] && TOUR_STEPS[tourStepIndex].waitForSave){
+  if(tourActive && _activeTourSteps[tourStepIndex] && _activeTourSteps[tourStepIndex].waitForSave){
     setTimeout(()=>tourNext(), 400);
   }
 }
@@ -28546,11 +28552,133 @@ const TOUR_STEPS = [
   }
 ];
 
+/* ═══════════════════════════════════════════════════════════════════
+   PRÉSENTATION GUIDÉE DE L'APP (mode Dev)
+   Réutilise le moteur de la visite d'accueil ci-dessus (spotlight + bulle
+   + Suivant/Précédent), avec un scénario pensé pour être présenté à voix
+   haute devant l'équipe : chaque étape ouvre le vrai écran concerné et
+   entoure l'élément qui illustre le point du discours, dans l'ordre où
+   ils doivent être montrés. Le texte est volontairement différent de la
+   présentation écrite — il sert de fil visuel pendant que le présentateur
+   parle, pas de script à lire mot pour mot. Voir startPresentationTour().
+   ═══════════════════════════════════════════════════════════════════ */
+const PRESENTATION_TOUR_STEPS = [
+  {
+    title: '👋 Pourquoi RWOOD existe',
+    text: "Avant : des fiches d'heures papier égarées ou oubliées, des infos de chantier qui circulent par SMS ou par mémoire. RWOOD est né pour régler ça, puis a grandi pour couvrir tout le chantier."
+  },
+  {
+    view: 'chantiers',
+    selector: '#chantierActifBanner',
+    title: '🏗️ Le chantier actif, visible par tous',
+    text: "Adresse, zone de trajet, notes, code de la boîte à clés : tout ce dont chacun a besoin sur ce chantier est ici, à jour pour toute l'équipe en même temps — sans un coup de fil."
+  },
+  {
+    // "Listes à faire" est réservé chef/ouvrier (voir goTo → viewName==='notes') :
+    // on simule le rôle chef le temps de cette étape pour pouvoir la montrer
+    // même si le présentateur est patron/conducteur/comptable.
+    beforeNav: () => { if(typeof applySpectatorRole === 'function') applySpectatorRole('chef'); },
+    view: 'notes',
+    selector: '#notesList',
+    title: '✅ Une liste à faire qui reste juste',
+    text: "Le chef pose une tâche, l'ouvrier la voit et la coche depuis le chantier. Les deux écrans restent alignés, sur PC comme sur téléphone."
+  },
+  {
+    // Tableau de bord Notes : réservé conducteur/patron/comptable.
+    beforeNav: () => { if(typeof applySpectatorRole === 'function') applySpectatorRole('conducteur'); },
+    view: 'notesdashboard',
+    selector: '#notesDashboardSort',
+    title: '📋 Toutes les notes, d\'un coup d\'œil',
+    text: "Pour le conducteur, le patron ou la comptable : les notes de chaque chantier réunies au même endroit, triables par favoris, zone ou statut — plus besoin d'ouvrir chaque fiche une par une."
+  },
+  {
+    // On revient au rôle réel du présentateur pour la suite de la présentation.
+    beforeNav: () => { if(typeof applySpectatorRole === 'function') applySpectatorRole(_presentationOriginalRole || 'patron'); },
+    view: 'alertes-conducteur',
+    selector: '#view-alertes-conducteur .view-heading',
+    title: '🔔 Une alerte, toute l\'équipe prévenue',
+    text: "Un imprévu sur un chantier ? Une alerte part directement aux bonnes personnes, dans l'instant — plus fiable qu'un message qui se perd dans une conversation."
+  },
+  {
+    view: 'galerie',
+    selector: '#galerieGrid',
+    title: '📷 La preuve en photo, toujours là',
+    text: "Chaque photo est horodatée et rattachée à son chantier. Rien n'est supprimé pour de bon, seulement archivé — en cas de doute ou de question d'un client, la réponse est immédiate."
+  },
+  {
+    view: 'heures',
+    before: () => { if(typeof setHeuresMode === 'function') setHeuresMode('pointage'); },
+    selector: '#heuresModeTabs',
+    title: '⏱ Le pointage, prime de trajet comprise',
+    text: "L'ouvrier pointe sa journée, et la zone de trajet calcule seule l'indemnité correspondante — plus personne ne recompte ça à la main en fin de mois."
+  },
+  {
+    view: 'heures',
+    before: () => { if(typeof setHeuresMode === 'function') setHeuresMode('fiches'); },
+    selector: '[data-mode="fiches"]',
+    title: '📄 Des fiches d\'heures prêtes pour la paye',
+    text: "Le mois de pointage se transforme en fiche exportable en un clic. Zéro ressaisie côté comptabilité, zéro oubli de journée."
+  },
+  {
+    view: 'stock',
+    selector: '#stockCatTabs',
+    title: '🚛 Le stock du camion, à jour',
+    text: "Visserie, outillage, matériel de prêt : chaque équipe sait ce qu'elle a sous la main avant de repartir sur un chantier — moins d'allers-retours inutiles."
+  },
+  {
+    view: 'zinc',
+    selector: '#zincGalleryRoot .view-heading',
+    title: '⬡ Zinc, le métier sans erreur de calcul',
+    text: "Les pliages zinc avec développé calculé automatiquement, chantier par chantier — un outil pensé par et pour le métier, pas une case en plus à remplir."
+  },
+  {
+    view: 'calcul',
+    selector: '#calcModeTabs',
+    title: '🧮 Calcul, le complément terrain',
+    text: "Cotes, Pythagore, répartitions : la calculatrice métier reste accessible même hors connexion, directement depuis le chantier."
+  },
+  {
+    view: 'agenda',
+    selector: '#agendaModeTabs',
+    title: '📅 Anticiper plutôt que subir',
+    text: "Livraisons, rendez-vous, tâches planifiées par chantier : de quoi voir venir la semaine au lieu de la découvrir au jour le jour."
+  },
+  {
+    title: '🧑‍🤝‍🧑 Un outil différent pour chaque rôle',
+    text: "Chef, ouvrier, conducteur, patron, comptable : chacun voit ce qui le concerne, rien de superflu. Personne n'a besoin d'apprendre tout l'outil pour s'en servir."
+  },
+  {
+    view: 'parametres',
+    selector: '[data-view="parametres"]',
+    title: '🔒 Fiable, même sans réseau',
+    text: "Tout se synchronise en temps réel entre les appareils, et continue de fonctionner hors connexion — les données ne dépendent jamais d'un seul téléphone."
+  },
+  {
+    title: '🚀 Et maintenant ?',
+    text: "Plus on l'utilise, plus tout le monde y gagne — du chantier jusqu'à la compta. Chaque remarque de terrain peut devenir la prochaine amélioration."
+  }
+];
+
 let tourStepIndex = 0;
 let tourActive = false;
+// Jeu d'étapes actuellement joué par le moteur de visite guidée : la visite
+// d'accueil (TOUR_STEPS) par défaut, ou la présentation commerciale
+// (PRESENTATION_TOUR_STEPS) quand elle est lancée depuis le mode Dev — voir
+// startPresentationTour(). Le moteur (showTourStep, tourNext, tourPrev,
+// positionTourHighlight) est entièrement réutilisé, un seul endroit à
+// maintenir pour les deux visites.
+let _activeTourSteps = TOUR_STEPS;
+// Rôle réel du présentateur, capturé AVANT d'entrer en Mode Spectateur pour
+// la présentation guidée — certains écrans (Listes à faire, Notes du
+// tableau de bord) sont réservés à des rôles précis, la présentation doit
+// pouvoir les montrer même si le présentateur n'a pas ce rôle. Voir
+// startPresentationTour() et les étapes correspondantes dans
+// PRESENTATION_TOUR_STEPS.
+let _presentationOriginalRole = null;
 
 function startTour(){
   closeModal('tourWelcome');
+  _activeTourSteps = TOUR_STEPS;
   tourActive = true;
   tourStepIndex = 0;
   document.getElementById('tourOverlay').classList.remove('locked');
@@ -28568,14 +28696,50 @@ function skipTourEntirely(){
   localStorage.setItem('rwood-tour-done', '1');
 }
 
+/* Présentation guidée de l'App (mode Dev) : rejoue le même moteur de visite
+   que l'accueil (spotlight + bulle + Suivant/Précédent), mais avec un
+   scénario différent — pensé pour être présenté à voix haute devant
+   l'équipe (comptable, patron, conducteur, chef d'équipe), écran par écran,
+   dans l'ordre du discours. Chaque étape attend un clic sur "Suivant" :
+   c'est le présentateur qui garde la main sur le rythme, pas un minuteur. */
+function startPresentationTour(){
+  const devModal = document.getElementById('modal-tourWelcome');
+  if(devModal) closeModal('tourWelcome');
+
+  // Certaines étapes (Listes à faire, Notes du tableau de bord) sont
+  // réservées à un rôle précis — on capture le vrai rôle du présentateur
+  // puis on passe par le Mode Spectateur existant pour pouvoir les montrer
+  // quel que soit son propre rôle. Le rôle réel n'est jamais modifié, voir
+  // _installSpectatorRoleProxy.
+  _presentationOriginalRole = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(typeof enterSpectatorMode === 'function') enterSpectatorMode();
+
+  _activeTourSteps = PRESENTATION_TOUR_STEPS;
+  tourActive = true;
+  tourStepIndex = 0;
+  document.getElementById('tourOverlay').classList.remove('locked');
+  document.getElementById('tourOverlay').classList.add('active');
+  goTo('chantiers');
+  showTourStep();
+}
+
 function endTour(){
+  const wasPresentation = (_activeTourSteps === PRESENTATION_TOUR_STEPS);
   tourActive = false;
   document.getElementById('tourOverlay').classList.remove('active');
-  localStorage.setItem('rwood-tour-done', '1');
+  // Ne marque la visite d'accueil comme "vue" que si c'est bien elle qui
+  // vient de tourner — sinon lancer la présentation commerciale depuis le
+  // mode Dev supprimerait à tort la visite d'accueil pour ce compte.
+  if(_activeTourSteps === TOUR_STEPS) localStorage.setItem('rwood-tour-done', '1');
+  // La présentation a activé le Mode Spectateur elle-même pour montrer des
+  // écrans réservés à d'autres rôles (voir startPresentationTour) — elle le
+  // quitte proprement en terminant, pour ne pas laisser le présentateur
+  // bloqué sur une vue simulée après la démo.
+  if(wasPresentation && typeof exitSpectatorMode === 'function') exitSpectatorMode();
 }
 
 function tourNext(){
-  if(tourStepIndex < TOUR_STEPS.length - 1){
+  if(tourStepIndex < _activeTourSteps.length - 1){
     tourStepIndex++;
     showTourStep();
   } else {
@@ -28591,8 +28755,16 @@ function tourPrev(){
 }
 
 function showTourStep(){
-  const step = TOUR_STEPS[tourStepIndex];
+  const step = _activeTourSteps[tourStepIndex];
 
+  // beforeNav s'exécute AVANT goTo() — nécessaire pour les étapes qui
+  // doivent changer un état (ex: rôle simulé) dont goTo() lui-même dépend
+  // pour décider si la vue demandée est accessible (plusieurs vues se
+  // redirigent vers 'chantiers' si le rôle courant n'y a pas accès, voir
+  // les gardes dans goTo() pour 'notes' et 'notesdashboard').
+  if(step.beforeNav){
+    try{ step.beforeNav(); } catch(err){}
+  }
   if(step.view){
     goTo(step.view);
   }
@@ -28602,12 +28774,12 @@ function showTourStep(){
 
   document.getElementById('tourTitle').textContent = step.title;
   document.getElementById('tourText').textContent = step.text;
-  document.getElementById('tourProgress').textContent = `Étape ${tourStepIndex + 1} / ${TOUR_STEPS.length}`;
+  document.getElementById('tourProgress').textContent = `Étape ${tourStepIndex + 1} / ${_activeTourSteps.length}`;
 
   document.getElementById('tourPrevBtn').style.visibility = (tourStepIndex === 0) ? 'hidden' : 'visible';
-  document.getElementById('tourNextBtn').innerHTML = (tourStepIndex === TOUR_STEPS.length - 1) ? 'Terminer <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4.5 12.5l4.5 4.5L19.5 6"/></svg>' : 'Suivant →';
+  document.getElementById('tourNextBtn').innerHTML = (tourStepIndex === _activeTourSteps.length - 1) ? 'Terminer <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4.5 12.5l4.5 4.5L19.5 6"/></svg>' : 'Suivant →';
   document.getElementById('tourNextBtn').style.display = step.hideNext ? 'none' : '';
-  document.getElementById('tourSkipStepBtn').style.display = (tourStepIndex === TOUR_STEPS.length - 1 || step.interactive || step.hideNext) ? 'none' : '';
+  document.getElementById('tourSkipStepBtn').style.display = (tourStepIndex === _activeTourSteps.length - 1 || step.interactive || step.hideNext) ? 'none' : '';
 
   document.getElementById('tourOverlay').classList.toggle('locked', !!step.locked);
 
@@ -28690,7 +28862,7 @@ function positionTourHighlight(step){
 }
 
 window.addEventListener('resize', () => {
-  if(tourActive) positionTourHighlight(TOUR_STEPS[tourStepIndex]);
+  if(tourActive) positionTourHighlight(_activeTourSteps[tourStepIndex]);
 });
 
 /* Au redimensionnement (ou bascule PC↔téléphone), réappliquer la position
@@ -29388,7 +29560,7 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.31.7';
+const APP_VERSION = '5.31.9';
 
 const CHANGELOG = [
   {
@@ -35214,8 +35386,13 @@ function _installSpectatorRoleProxy(){
 function _uninstallSpectatorRoleProxy(){
   const profile = data.settings.myProfile;
   if(!profile || !profile.__spectatorProxied) return;
-  const currentReal = profile.role; // déclenche le getter → retourne _realRole si proxy actif
-  _devSpectatorRole = null; // désactive le proxy en premier
+  // BUG corrigé : _devSpectatorRole doit être remis à null AVANT de lire
+  // profile.role, sinon le getter renvoie encore le rôle SIMULÉ (pas le vrai
+  // rôle) et celui-ci se retrouve réinstallé comme rôle réel ci-dessous —
+  // ça "gelait" le compte sur le dernier rôle simulé en sortant du Mode
+  // Spectateur dès qu'un rôle différent du rôle réel avait été choisi.
+  _devSpectatorRole = null; // désactive le proxy AVANT de lire
+  const currentReal = profile.role; // déclenche le getter → retourne bien _realRole maintenant
   // Réinstaller comme valeur simple
   delete profile.role;
   profile.role = currentReal;
