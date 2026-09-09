@@ -4178,7 +4178,7 @@
         <div id="detailLog"></div>
         <div class="hint" id="photoEmptyHint" style="display:none;padding:8px 0;">Aucune photo dans le journal pour le moment.</div>
         <div id="detailPhotos" class="photo-grid" style="margin-top:8px;"></div>
-        <div id="siteZincList" style="display:none;"></div>
+        <div id="detailTile"></div>
       </div>
 
       <!-- Panel Synchro Équipe -->
@@ -4219,6 +4219,21 @@
           <span class="modal-title">📅 Événements</span>
           <button class="modal-close" onclick="closeModal('detailEvenement')">×</button>
         </div>
+
+        <!-- Point 4 : ajout d'un événement lié à ce chantier, directement
+             depuis la catégorie Événement (réutilise addCustomEvent). -->
+        <div class="card" style="margin-bottom:14px;">
+          <div class="field"><label>Nouvel événement</label>
+            <input type="text" id="detailNewEventInput" placeholder="Ex : Livraison bois, Inspection…">
+          </div>
+          <div class="field" style="margin-bottom:0;"><label>Date (optionnel)</label>
+            <div style="display:flex; gap:8px;">
+              <input type="date" id="detailNewEventDate" style="flex:1;">
+              <button class="btn btn-primary" onclick="addDetailEvent()">+ Ajouter</button>
+            </div>
+          </div>
+        </div>
+
         <div class="section-title" style="margin-top:0;display:flex;align-items:center;gap:6px;">
           Événements <span id="cloudEventsCount" style="font-size:11px;color:var(--ink-soft);font-weight:400;"></span>
         </div>
@@ -4246,17 +4261,6 @@
       </div>
     </div>
 
-    <!-- Modale TUILES -->
-    <div class="modal-overlay" id="modal-detailTuiles">
-      <div class="modal">
-        <div class="modal-header">
-          <span class="modal-title">🧱 Tuile du chantier</span>
-          <button class="modal-close" onclick="closeModal('detailTuiles')">×</button>
-        </div>
-        <div id="detailTile"></div>
-      </div>
-    </div>
-
     <!-- Modale NOTE — affichage "grande page" (Point 2e) -->
     <div class="modal-overlay" id="modal-detailNote">
       <div class="modal" style="max-height:94vh;">
@@ -4272,43 +4276,17 @@
       </div>
     </div>
 
-    <!-- Panneau média Cloud (Documents/Photos/Import) : conservé pour compatibilité
-         avec renderCloudMedia (utilisé dans la modale Document ci-dessus). -->
-    <div id="detailMediaPanel" style="display:none;">
-      <div class="detail-tab active" id="detailTab-cloud">
-        <div id="cloudMediaContent">
-          <button id="cloudImportZone" class="media-import-zone" style="display:none;"
-            onclick="openMediaFabSheet(currentDetailSite)">
-            <span class="miz-ico"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"></span>
-            <span class="miz-title">Ajouter un média</span>
-            <span class="miz-sub">Fichier / PDF · Photo · Galerie · Pliage zinc</span>
-          </button>
-          <div id="cloudExportRow" class="media-import-actions" style="display:none;">
-            <button class="btn btn-outline"
-              onclick="exportAllSharedMedia(currentDetailSite)">📦 Exporter les rapports</button>
-          </div>
-          <div id="btnSendToWorkerWrap" style="margin-bottom:12px;display:none;">
-            <button class="btn btn-outline btn-block" id="btnSendToWorker"
-              onclick="openSendMediaToWorker(currentDetailSite)">👷 Envoyer à un ouvrier</button>
-          </div>
-          <div id="cloudPdfSection">
-            <div class="section-title" style="margin-top:0;display:flex;align-items:center;gap:6px;position:relative;">
-              <img src="icons/fichiers.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Documents (cloud) <span id="cloudPdfCount" style="font-size:11px;color:var(--ink-soft);font-weight:400;"></span>
-              <span id="detailDocBadge" class="site-card-badge" style="display:none;position:static;margin-left:4px;"></span>
-            </div>
-            <div id="cloudPdfList"></div>
-          </div>
-          <div id="cloudZincSection" style="margin-top:8px;">
-            <div class="section-title" style="display:flex;align-items:center;gap:6px;">
-              ⚙️ Pliages Zinc <span id="cloudZincCount" style="font-size:11px;color:var(--ink-soft);font-weight:400;"></span>
-            </div>
-            <div id="cloudZincCreateWrap" style="display:none;margin-bottom:10px;">
-              <button class="btn btn-primary btn-block"
-                onclick="createFreeformZincProfileFromDetail()">+ Créer un pliage</button>
-            </div>
-            <div id="cloudZincList"></div>
-          </div>
+    <!-- Modale PLIAGE — liste des pliages zinc de ce chantier (Point 3, format fenêtre
+         comme Document / Photo / Tuiles), réutilise renderSiteZincList tel quel. -->
+    <div class="modal-overlay" id="modal-detailPliage">
+      <div class="modal">
+        <div class="modal-header">
+          <span class="modal-title">⚙️ Pliages</span>
+          <button class="modal-close" onclick="closeModal('detailPliage')">×</button>
         </div>
+        <button class="btn btn-primary btn-block" style="margin-bottom:12px;"
+          onclick="createFreeformZincProfileFromDetail()">+ Créer un pliage</button>
+        <div id="siteZincList"></div>
       </div>
     </div>
 
@@ -9309,17 +9287,80 @@ function openDetailCategory(cat){
     return;
   }
   if(cat === 'tuiles'){
-    renderDetailTile(siteId);
-    openModal('detailTuiles');
+    // Point 3 : clic direct sur la fiche technique PDF de la tuile déjà
+    // assignée au chantier ; si aucune tuile n'est encore choisie, on ouvre
+    // le menu déroulant du catalogue pour en choisir une et l'enregistrer
+    // (mêmes fonctions que celles déjà utilisées par renderDetailTile).
+    const site = data.sites.find(s => s.id === siteId);
+    const tile = site ? (data.tiles || []).find(t => t.id === site.tileId) : null;
+    if(tile){
+      openTileRecap(siteId);
+    } else {
+      openSelectTileModal(siteId);
+    }
     return;
   }
   if(cat === 'pliage'){
-    // Les pliages zinc vivent dans leur propre vue (view-zinc) : on y navigue
-    // puis on ouvre directement le dossier du chantier (motif déjà utilisé
-    // ailleurs dans l'app pour deep-linker vers une vue tierce).
-    goTo('zinc');
-    setTimeout(() => { if(typeof openZincFolder === 'function') openZincFolder(siteId); }, 50);
+    // Point 3 : liste des pliages du chantier en fenêtre (format modale),
+    // comme Document / Photo / Tuiles — réutilise renderSiteZincList tel quel.
+    if(typeof ensureZincProfiles === 'function') ensureZincProfiles();
+    renderSiteZincList(siteId);
+    openModal('detailPliage');
     return;
+  }
+}
+
+/* [Point 4] Ajoute un événement lié au chantier depuis la modale Événement
+   de la fiche chantier (#detailNewEventInput / #detailNewEventDate).
+   Reprend exactement la logique de données/synchro d'addCustomEvent
+   (site.customEvents, push + notif chefs si synchro active), mais rafraîchit
+   ensuite l'affichage de la modale Événement (renderCloudEvents) plutôt que
+   le panneau Synchro Équipe. */
+async function addDetailEvent(){
+  const siteId = currentDetailSite;
+  if(!siteId) return;
+  const input = document.getElementById('detailNewEventInput');
+  const dateInput = document.getElementById('detailNewEventDate');
+  if(!input || !input.value.trim()){ showToast("Décris l'événement"); return; }
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  if(!site.customEvents) site.customEvents = [];
+  const ev = {
+    id: uid(),
+    label: input.value.trim(),
+    date: dateInput ? dateInput.value : '',
+    createdAt: new Date().toISOString()
+  };
+  site.customEvents.push(ev);
+  input.value = ''; if(dateInput) dateInput.value = '';
+  site.lastSyncAt = new Date().toISOString();
+  saveData();
+  renderCloudEvents(siteId);
+  showToast('Événement ajouté');
+
+  if(site.syncLive){
+    await pushSharedSite(site);
+
+    // Notifier les chefs assignés + payload événement pour injection dans leur agenda
+    const chefIds = _getChefAuthIdsForSite(site);
+    const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+                          ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+    const dateLabel = ev.date ? new Date(ev.date+'T00:00:00').toLocaleDateString('fr-FR') : '';
+    const alertText = 'Le conducteur ' + conductorName.trim() +
+      ' a ajouté' + (dateLabel ? ' la date ' + dateLabel : ' un événement') +
+      ' pour le chantier ' + site.name + ' : "' + ev.label + '"';
+
+    chefIds.forEach(chefAuthId => {
+      sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+      _pushAgendaEventToChef(chefAuthId, {
+        id: ev.id,
+        date: ev.date,
+        siteId: site.id,
+        siteName: site.name,
+        siteColor: site.color || '',
+        text: ev.label
+      });
+    });
   }
 }
 
@@ -16086,8 +16127,9 @@ function closeZincEditor(){
     // MODULE ZincSync : pousse le pliage au conducteur (comme photos/docs)
     if(profile) syncZincToSite(profile);
     goTo('detail', siteId);
-    // Pliages fusionnés dans le menu Média unique → on ouvre l'onglet cloud
-    setTimeout(()=>{ setDetailMain('media'); setDetailTab('cloud'); }, 0);
+    // [Point 3] Le pliage a sa propre modale de catégorie (voir openDetailCategory) :
+    // on la rouvre pour retrouver le contexte d'où l'utilisateur venait.
+    setTimeout(()=>{ if(typeof openDetailCategory === 'function') openDetailCategory('pliage'); }, 0);
     return;
   }
 
@@ -30106,9 +30148,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.33.0';
+const APP_VERSION = '5.33.1';
 
 const CHANGELOG = [
+  {
+    version: '5.33.1',
+    date: '09/09/2026',
+    entries: [
+      { icon: '⚙️', text: "Fiche chantier — la catégorie Pliage ouvre maintenant directement la liste des pliages du chantier, en fenêtre (comme Document, Photo et Tuiles)" },
+      { icon: '🧱', text: "Fiche chantier — la catégorie Tuiles ouvre directement la fiche technique PDF de la tuile déjà choisie, ou le catalogue pour en choisir une si aucune n'est encore définie" },
+      { icon: '📅', text: "Fiche chantier — la catégorie Événement permet maintenant d'ajouter directement un nouvel événement lié au chantier" },
+      { icon: '🧹', text: "Fiche chantier — suppression des anciens blocs \"Pliage zinc\" / \"Documents (cloud)\", du bouton \"Envoyer à un ouvrier\" et du cadre \"Ajouter un média\" devenus inutiles" },
+    ]
+  },
   {
     version: '5.33.0',
     date: '09/09/2026',
