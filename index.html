@@ -19996,13 +19996,25 @@ function _setRecapRange(which, value){
    Calcule le récap d'un ouvrier sur un ensemble de "semaines" (chaque
    semaine = { keys:[dateKey…], base:heuresHebdo }) pour un découpage
    correct des heures sup (par semaine). Retourne {totalHeures, heuresSup,
-   paniers, zonesLignes:[{z,n,rate,sous}], cumulTrajet, parMotif}. */
+   paniers, zonesLignes:[{z,n,rate,sous}], zonesLignesPerso:[{z,n,rate,sous}],
+   cumulTrajet, parMotif}.
+
+   [voiturePerso] Une journée en voiture personnelle compte 1× dans la zone
+   normale du chantier (zonesLignes, comme n'importe quel autre jour) ET EN
+   PLUS 1× dans une ligne séparée "Trajet véhicule personnel" pour cette
+   même zone (zonesLignesPerso) — au lieu de doubler silencieusement le
+   compteur de la zone normale (ancien comportement, qui noyait l'usage du
+   véhicule perso dans le total de la zone sans le distinguer). Le montant
+   total (cumulTrajet) ne change pas : toujours 2× le tarif de la zone pour
+   une journée en voiture perso, juste réparti sur deux lignes au lieu
+   d'une seule. */
 function _computeRecap(workerId, weekBuckets, ctx){
   const attendance = (ctx && ctx.attendance) || data.attendance || {};
   const sites = (ctx && ctx.sites) || data.sites || [];
   const weeklyBase = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
   let totalHeures = 0, paniers = 0, heuresSup = 0;
   const zonesCount = {};
+  const zonesCountPerso = {};
   const parMotif = {};
 
   weekBuckets.forEach(bucket => {
@@ -20022,28 +20034,34 @@ function _computeRecap(workerId, weekBuckets, ctx){
       heuresSemaine += h;
       totalHeures += h;
       if(entry.panier) paniers++;
-      // [voiturePerso] cette journée compte double dans le tally de zones
-      // (donc double prime de trajet) si la voiture perso était activée.
-      const voitureFactor = _trajetDayFactor(day);
+      // [voiturePerso] cette journée est comptée 1× dans la zone normale,
+      // et EN PLUS 1× dans le compteur "véhicule perso" de cette même zone
+      // si la voiture perso était activée ce jour-là (voir commentaire
+      // au-dessus de la fonction).
+      const isPerso = !!(day && day.voiturePerso);
+      const addZone = (zone) => {
+        zonesCount[zone] = (zonesCount[zone] || 0) + 1;
+        if(isPerso) zonesCountPerso[zone] = (zonesCountPerso[zone] || 0) + 1;
+      };
       if(_entryHasMultiSites(entry)){
         // Multi chantier : la prime de trajet se calcule sur le PREMIER
         // chantier de la liste de l'ouvrier pour ce jour-là.
         const info = _entryFirstSiteInfo(entry);
         if(info && info.zone && info.zone !== 'GD'){
-          zonesCount[info.zone] = (zonesCount[info.zone] || 0) + voitureFactor;
+          addZone(info.zone);
         }
       } else {
         const zoneOv = entry.zoneOverride;
         if(zoneOv === 'none'){
         } else if(zoneOv && zoneOv !== 'auto'){
-          zonesCount[zoneOv] = (zonesCount[zoneOv] || 0) + voitureFactor;
+          addZone(zoneOv);
         } else {
           // Site : priorité au site mémorisé par ouvrier (contexte équipe fusionné),
           // sinon le siteId du jour (récap perso local).
           const sid = (entry._siteId != null) ? entry._siteId : day.siteId;
           const site = sites.find(s => s.id === sid);
           if(site && site.trajetZone && site.trajetZone !== 'GD'){
-            zonesCount[site.trajetZone] = (zonesCount[site.trajetZone] || 0) + voitureFactor;
+            addZone(site.trajetZone);
           }
         }
       }
@@ -20063,8 +20081,18 @@ function _computeRecap(workerId, weekBuckets, ctx){
       cumulTrajet += sous;
       return { z:o.z, n:o.n, rate:tj, sous };
     });
+  const zonesLignesPerso = ZONES_TRAJET
+    .map(z => ({ z, n: zonesCountPerso[z] || 0 }))
+    .filter(o => o.n > 0)
+    .map(o => {
+      const rate = getTrajetRates(o.z);
+      const tj = rate ? rate.trajet : 0;
+      const sous = tj * o.n;
+      cumulTrajet += sous;
+      return { z:o.z, n:o.n, rate:tj, sous };
+    });
 
-  return { totalHeures, heuresSup, paniers, zonesLignes, cumulTrajet, parMotif };
+  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif };
 }
 
 /* Rendu d'une fiche récap (carte) à partir du résultat de _computeRecap.
@@ -20073,6 +20101,13 @@ function _recapCardHtml(r, title, nameLabel){
   const zonesHtml = r.zonesLignes.length
     ? r.zonesLignes.map(o => `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${o.rate.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${o.sous.toFixed(2).replace('.',',')} €</strong></div>`).join('')
     : `<div class="recap-line" style="opacity:.5;"><span>Aucune zone</span><strong>—</strong></div>`;
+  // [voiturePerso] Ligne séparée pour les jours où le véhicule personnel a
+  // été utilisé : n'apparaît que s'il y en a au moins un, pour ne pas
+  // alourdir le récap des ouvriers qui ne prennent jamais leur voiture.
+  const zonesPersoHtml = (r.zonesLignesPerso && r.zonesLignesPerso.length)
+    ? `<div class="recap-sub">Trajet véhicule personnel</div>`
+      + r.zonesLignesPerso.map(o => `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${o.rate.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${o.sous.toFixed(2).replace('.',',')} €</strong></div>`).join('')
+    : '';
   const motifHtml = Object.keys(r.parMotif).length
     ? Object.keys(r.parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${r.parMotif[m]} j</strong></div>`).join('')
     : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
@@ -20088,6 +20123,7 @@ function _recapCardHtml(r, title, nameLabel){
       <div class="recap-line"><span>Paniers repas</span><strong>${r.paniers}</strong></div>
       <div class="recap-sub">Zones de trajet (tarif/jour)</div>
       ${zonesHtml}
+      ${zonesPersoHtml}
       <div class="recap-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px;"><span><strong>Cumul primes de trajet</strong></span><strong>${r.cumulTrajet.toFixed(2).replace('.',',')} €</strong></div>
       <div class="recap-sub">Absences / congés</div>
       ${motifHtml}
@@ -24818,6 +24854,14 @@ async function generateSalaryXlsx(){
     const perWeekWorked = weekKeys.map(()=>false); // au moins un jour pointé (normal) dans la semaine
     const perWeekAbs = weekKeys.map(()=>({})); // {type: nbJours} des jours d'absence (cp/css/maladie/...)
     const zones = {'1A':0,'1B':0,'2':0,'3':0,'4':0,'5':0};
+    // [voiturePerso] Compteur séparé des jours en véhicule personnel, par
+    // zone — au lieu de doubler silencieusement le compteur `zones`
+    // ci-dessus. `zones` compte désormais 1× par jour normalement (jamais
+    // doublé), et `zonesPerso` ajoute 1× en plus pour chaque jour où la
+    // voiture perso était activée, afin d'avoir deux lignes distinctes
+    // dans le tableau Excel (nombre de transport zone / trajet véhicule
+    // personnel), cohérent avec le récap dans l'app.
+    const zonesPerso = {'1A':0,'1B':0,'2':0,'3':0,'4':0,'5':0};
     let paniers = 0;
     const cp = [], css = [], absAutre = [];
     weekKeys.forEach((wk,wi)=>{
@@ -24835,9 +24879,10 @@ async function generateSalaryXlsx(){
         const site=sites.find(s=>s.id===ad.siteId);
         const zov=e.zoneOverride;
         let zone = (e.customSite&&e.customSite.zone) || (zov&&zov!=='auto'&&zov!=='none'?zov:(zov==='none'?null:(site&&site.trajetZone)));
-        // [voiturePerso] cette journée compte double dans le tableau des
-        // zones (donc double prime de trajet) si la voiture perso était activée.
-        if(zone && zones[zone]!==undefined) zones[zone] += _trajetDayFactor(ad);
+        if(zone && zones[zone]!==undefined){
+          zones[zone] += 1;
+          if(ad && ad.voiturePerso) zonesPerso[zone] += 1;
+        }
       }
     });
     const totalMois = perWeekHours.reduce((a,b)=>a+b,0);
@@ -24845,7 +24890,7 @@ async function generateSalaryXlsx(){
     const heuresSup = perWeekHours.reduce((a,h,i)=> a + (perWeekWorked[i] ? (h - 35) : 0), 0);
     // regrouper CP et CSS en périodes (première/dernière date consécutive)
     const groupPeriods = arr => { if(!arr.length) return []; arr.sort(); const p=[]; let s=arr[0],prev=arr[0]; for(let i=1;i<arr.length;i++){ const d1=new Date(prev),d2=new Date(arr[i]); if((d2-d1)/86400000>1){ p.push([s,prev]); s=arr[i]; } prev=arr[i]; } p.push([s,prev]); return p; };
-    return { perWeekHours, perWeekWorked, perWeekAbs, totalMois, heuresSup, paniers, zones, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
+    return { perWeekHours, perWeekWorked, perWeekAbs, totalMois, heuresSup, paniers, zones, zonesPerso, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
   }
   const wd = workers.map(computeWorker);
 
@@ -24952,6 +24997,16 @@ async function generateSalaryXlsx(){
     setVal(col, 53, d.zones['3']||'');
     setVal(col, 55, d.zones['4']||'');
     setVal(col, 57, d.zones['5']||'');
+    // [voiturePerso] Trajet véhicule personnel par zone, ligne juste en
+    // dessous de chaque zone normale : 1A=L48, 1B=L50, 2=L52, 3=L54, 4=L56,
+    // 5=L58 (mêmes zones que ci-dessus, mais uniquement les jours où la
+    // voiture perso était activée — ne compte plus dans les lignes 47-57).
+    setVal(col, 48, d.zonesPerso['1A']||'');
+    setVal(col, 50, d.zonesPerso['1B']||'');
+    setVal(col, 52, d.zonesPerso['2']||'');
+    setVal(col, 54, d.zonesPerso['3']||'');
+    setVal(col, 56, d.zonesPerso['4']||'');
+    setVal(col, 58, d.zonesPerso['5']||'');
   });
 
   // Titre du mois (A1) — forcer le format texte pour ne pas hériter d'un format date
@@ -30509,9 +30564,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.38.0';
+const APP_VERSION = '5.39.0';
 
 const CHANGELOG = [
+  {
+    version: '5.39.0',
+    date: '10/09/2026',
+    entries: [
+      { icon: '🚗', text: "Voiture personnelle — récap et tableau Excel : le jour où un ouvrier a pris sa voiture perso n'est plus fondu (doublé) dans le compteur de la zone normale. Il apparaît maintenant sur une ligne séparée « Trajet véhicule personnel » (récap de l'app) et dans les cases dédiées du tableau Excel, juste sous chaque zone (ex. zone 2 : nombre de trajets normaux, puis nombre de trajets en véhicule perso pour cette même zone, en dessous). Le montant total de la prime de trajet ne change pas, seule la répartition est désormais visible en détail" },
+    ]
+  },
+  {
+    version: '5.38.1',
+    date: '10/09/2026',
+    entries: [
+      { icon: '🐛', text: "Liste « À faire » : correction d'un bug où une tâche supprimée (y compris dans une liste partagée avec un chef/ouvrier) pouvait réapparaître après synchronisation — la suppression n'était mémorisée que sur l'appareil qui avait supprimé, et un autre appareil ayant encore l'ancienne copie la faisait revivre en sauvegardant à son tour. La suppression est maintenant mémorisée de façon permanente et partagée entre tous les appareils : une fois supprimée, une tâche ne peut plus revenir" },
+    ]
+  },
   {
     version: '5.38.0',
     date: '09/09/2026',
@@ -35288,12 +35357,22 @@ function _mergeTodoTasks(localTasks, serverTasks, removedIds){
    données entre PC et téléphone (une tâche ajoutée sur l'un disparaissait
    si l'autre appareil sauvegardait entre-temps sa propre copie, plus
    ancienne, de la liste). `removedIds` (optionnel) liste les tâches
-   supprimées explicitement par CET appareil pendant cette opération, pour
-   qu'elles ne réapparaissent pas via la fusion. */
+   supprimées explicitement par CET appareil pendant cette opération.
+
+   Suppression DÉFINITIVE (tombstone) : un id une fois supprimé est écrit
+   dans `deletedTaskIds` CÔTÉ SERVEUR (persistant, jamais vidé), pas
+   seulement retenu localement sur l'appareil qui a supprimé. Sans ça, un
+   autre appareil (ex. le chef) qui a encore l'ancienne tâche en mémoire et
+   qui repousse sa propre copie (même sans rien supprimer lui-même) la
+   faisait réapparaître — c'était la cause du bug "la tâche supprimée
+   revient". En fusionnant à chaque sauvegarde avec le tombstone déjà sur le
+   serveur, la suppression devient permanente et increvable, quel que soit
+   l'appareil qui écrit après. */
 async function _saveTodoList(key, localTasks, removedIds, extraFields){
   if(!key) return false;
   try{
     let serverTasks = [];
+    let serverDeletedIds = [];
     try{
       const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
       if(res.ok){
@@ -35301,21 +35380,26 @@ async function _saveTodoList(key, localTasks, removedIds, extraFields){
         if(rows && rows.length){
           const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
           serverTasks = (d && Array.isArray(d.tasks)) ? d.tasks : [];
+          serverDeletedIds = (d && Array.isArray(d.deletedTaskIds)) ? d.deletedTaskIds : [];
         }
       }
     } catch(e){ /* pas de connexion : on écrit quand même la copie locale, mieux que rien */ }
 
-    const merged = _mergeTodoTasks(localTasks, serverTasks, removedIds);
+    // Tombstone cumulé : tout id déjà marqué supprimé côté serveur + toute
+    // nouvelle suppression faite par cet appareil. Ne diminue jamais.
+    const allDeletedIds = [...new Set([...(serverDeletedIds||[]), ...(removedIds||[])])];
+
+    const merged = _mergeTodoTasks(localTasks, serverTasks, allDeletedIds);
     await supaFetch('/rest/v1/rwood_sync', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
         user_id: key,
         updated_at: new Date().toISOString(),
-        data: JSON.stringify(Object.assign({ tasks: merged }, extraFields || {}))
+        data: JSON.stringify(Object.assign({ tasks: merged, deletedTaskIds: allDeletedIds }, extraFields || {}))
       })
     });
-    return merged;
+    return { tasks: merged, deletedTaskIds: allDeletedIds };
   } catch(e){ return false; }
 }
 
@@ -35334,13 +35418,18 @@ async function pushMyTodoList(){
     name = _notesCurrentUserName() || 'Ouvrier';
   }
   const removedIds = (pn.removedTaskIds || []).slice();
-  const merged = await _saveTodoList(key, pn.tasks, removedIds, { chefName: name });
-  if(merged){
+  const result = await _saveTodoList(key, pn.tasks, removedIds, { chefName: name });
+  if(result){
     // Adopter la liste fusionnée localement : sinon cet appareil resterait
     // "en retard" par rapport à ce qui vient d'être écrit côté serveur
     // jusqu'à la prochaine synchro, et pourrait re-écraser au push suivant.
-    pn.tasks = merged;
-    pn.removedTaskIds = [];
+    pn.tasks = result.tasks;
+    // On NE vide PAS removedTaskIds : on le remplace par le tombstone complet
+    // renvoyé par le serveur (fusion de ce que cet appareil a supprimé + ce
+    // que tout autre appareil a déjà supprimé avant). Ça garde la mémoire
+    // des suppressions même après ce push, pour que cet appareil ne puisse
+    // jamais lui-même faire revivre une tâche supprimée ailleurs.
+    pn.removedTaskIds = result.deletedTaskIds || [];
     saveData(true); // skipSync : on vient de synchroniser nous-mêmes, pas besoin de rebouclé
   }
 }
@@ -41840,6 +41929,12 @@ async function notesSyncFollowedThenRender(){
       const todoData = await pullChefTodoList(followed);
       if(todoData && Array.isArray(todoData.tasks)){
         const pn = _getPinnedNote();
+        // On retient aussi le tombstone déjà présent côté serveur (tâches
+        // supprimées par le chef ou un autre ouvrier) : sinon cet appareil,
+        // ignorant cette suppression, pourrait la faire réapparaître à son
+        // prochain push (voir _saveTodoList).
+        const serverDeletedIds = Array.isArray(todoData.deletedTaskIds) ? todoData.deletedTaskIds : [];
+        pn.removedTaskIds = [...new Set([...(pn.removedTaskIds||[]), ...serverDeletedIds])];
         pn.tasks = _mergeTodoTasks(pn.tasks, todoData.tasks, pn.removedTaskIds);
         saveData();
       }
