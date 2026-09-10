@@ -9103,6 +9103,10 @@ function goTo(viewName, siteId){
   // Maintenir la bannière canicule visible même en changeant de vue
   restoreCaniculeBanner();
   const _prevView = document.querySelector('.view.active');
+  // [sync-fiabilite] Le flush du Pointage en attente (case Panier, voiture
+  // perso, heures, tâche…) se fait dans setHeuresMode() — Pointage/Fiches
+  // sont des sous-onglets internes à "Heures", pas des .view séparées
+  // atteintes via goTo(). Voir flushPointageSync.
   // Quitter la tuile Alertes réinitialise toute sélection de destinataires
   // en cours (personnes cochées non envoyées) et fait disparaître la barre
   // flottante "Composer pour N personnes" qui, sinon, restait visible en
@@ -19849,6 +19853,16 @@ function renderHeures(){
 }
 
 function setHeuresMode(mode){
+  // [sync-fiabilite] Pointage/Fiches/Récap sont des SOUS-onglets internes à
+  // "Heures" (changés ici, pas via goTo) : quitter Pointage pousse donc
+  // immédiatement toute modif en attente (case Panier, voiture perso,
+  // heures, tâche…) au lieu d'attendre le debounce de 2.5s. Sans ça, une
+  // modif faite juste avant de passer sur l'onglet Fiches pouvait ne
+  // jamais partir vers le serveur, et la comptable restait bloquée sur
+  // l'ancienne version (voir flushPointageSync).
+  if(currentHeuresMode === 'pointage' && mode !== 'pointage' && typeof flushPointageSync === 'function'){
+    flushPointageSync();
+  }
   currentHeuresMode = mode;
   document.querySelectorAll('#heuresModeTabs .chip').forEach(c=>c.classList.toggle('selected', c.dataset.mode===mode));
   document.querySelectorAll('.heures-mode').forEach(el=>{
@@ -30568,9 +30582,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.39.1';
+const APP_VERSION = '5.39.2';
 
 const CHANGELOG = [
+  {
+    version: '5.39.2',
+    date: '10/09/2026',
+    entries: [
+      { icon: '🔄', text: "Pointage — correction d'un bug de synchro qui pouvait laisser la comptable avec une ancienne version de la fiche d'un ouvrier : une modif (case Panier, voiture perso, heures…) n'était envoyée au serveur qu'après un court délai (2,5s) ; si l'ouvrier changeait d'onglet, mettait l'app en arrière-plan ou la fermait pendant ce délai, l'envoi n'avait jamais lieu et la comptable restait bloquée sur l'ancienne version indéfiniment. Toute modif en attente est désormais envoyée immédiatement dès qu'on quitte l'onglet Pointage, que l'app passe en arrière-plan, ou juste avant sa fermeture — la dernière modif de l'ouvrier est maintenant toujours celle qui arrive sur le serveur" },
+    ]
+  },
   {
     version: '5.39.1',
     date: '10/09/2026',
@@ -36383,6 +36404,29 @@ function schedulePointageSync(){
   clearTimeout(_pointageSyncTimer);
   _pointageSyncTimer = setTimeout(()=> pushPointageToSupabase(), 2500); // debounce 2.5s
 }
+
+/* [sync-fiabilite] Si une modif vient d'être faite (case Panier, voiture
+   perso, heures, tâche…) le push réel n'a lieu que 2.5s plus tard (debounce
+   ci-dessus, pour ne pas spammer le réseau à chaque frappe). Problème
+   corrigé ici : si l'ouvrier quitte l'onglet Pointage, met l'app en arrière-
+   plan ou ferme l'app DANS ces 2.5s, le timer ne se déclenche jamais →
+   la modification reste correcte en LOCAL (visible dans ses propres
+   Fiches) mais n'est JAMAIS poussée vers le serveur, donc la comptable
+   continue de voir l'ancienne version indéfiniment (discordance qui ne se
+   corrige jamais toute seule). On "flush" donc immédiatement tout push en
+   attente : dès qu'on quitte l'onglet Pointage (voir goTo), quand l'app
+   passe en arrière-plan (visibilitychange) et juste avant une fermeture
+   (pagehide) — pour que la dernière modif de l'ouvrier soit toujours celle
+   qui arrive sur le serveur, sans attendre le debounce ni un hasard de
+   timing. */
+function flushPointageSync(){
+  if(!_pointageSyncTimer) return;
+  clearTimeout(_pointageSyncTimer);
+  _pointageSyncTimer = null;
+  try{ pushPointageToSupabase(); }catch(e){}
+}
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') flushPointageSync(); });
+window.addEventListener('pagehide', flushPointageSync);
 
 /* Identifiant unique de cet appareil/utilisateur pour ne pas ecraser les autres */
 function getDeviceSyncId(){
