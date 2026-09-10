@@ -5705,6 +5705,12 @@
             <input type="checkbox" id="comptaEditPanier" style="width:22px;height:22px;accent-color:var(--wood);">
           </label>
         </div>
+        <div class="ce-field">
+          <label>Voiture personnelle</label>
+          <label class="ce-panier"><span><img src="icons/voiture.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Trajet en véhicule personnel ce jour-là</span>
+            <input type="checkbox" id="comptaEditVoiturePerso" style="width:22px;height:22px;accent-color:var(--wood);">
+          </label>
+        </div>
         <button class="btn btn-primary" style="width:100%;margin-top:6px;" onclick="comptaEditSave()">Enregistrer la correction</button>
         <button class="ce-reset" onclick="comptaEditReset()">↩️ Annuler la correction (revenir à la saisie d'origine)</button>
       </div>
@@ -6489,6 +6495,13 @@
         <input type="checkbox" id="editFichePanier">
         Panier repas
       </label>
+    </div>
+    <div class="panier-row" style="margin-bottom:12px;">
+      <label>
+        <input type="checkbox" id="editFicheVoiturePerso">
+        <img src="icons/voiture.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Voiture personnelle ce jour-là
+      </label>
+      <div class="hint" style="margin-top:2px;">Double la prime de trajet de cette journée pour toute l'équipe pointée ce jour-là (même réglage que dans Pointage).</div>
     </div>
     <div class="field">
       <label>Tâche effectuée</label>
@@ -23566,6 +23579,11 @@ function openFichesEdit(workerId, dateKey){
     _editFicheToggleAbsence();
   }
   document.getElementById('editFichePanier').checked = !!entry.panier;
+  // [voiturePerso] Réglage au niveau du JOUR (pas de l'ouvrier) — même champ
+  // que le toggle de l'onglet Pointage, exposé ici par confort pour ne pas
+  // avoir à changer d'onglet pour le modifier.
+  const vpEl = document.getElementById('editFicheVoiturePerso');
+  if(vpEl) vpEl.checked = !!dayData.voiturePerso;
   document.getElementById('editFicheTask').value = entry.task || '';
   // Remplir les chips de tâche prédéfinies (même liste que le Pointage : TRANCHES)
   const chips = document.getElementById('editFicheTaskChips');
@@ -23687,8 +23705,12 @@ function saveFichesEdit(){
     if(zv === 'auto') delete dayData.workers[workerId].zoneOverride;
     else dayData.workers[workerId].zoneOverride = zv;
   }
+  // [voiturePerso] Réglage au niveau du jour, voir openFichesEdit ci-dessus.
+  const vpSel = document.getElementById('editFicheVoiturePerso');
+  if(vpSel) dayData.voiturePerso = vpSel.checked;
 
   saveData();
+  schedulePointageSync();
   closeModal('editFiche');
   renderFiches();
   showToast('Journée mise à jour');
@@ -24541,6 +24563,17 @@ function _renderComptableWorkerWeek(aw){
     const amt = r.trajetRates.trajet * (r.voiturePerso ? 2 : 1);
     return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.',',')}${r.voiturePerso?' ×2':''}</td>`;
   }).join('');
+  // [voiturePerso] Ligne dédiée "Voiture" (icône seule, même rendu que
+  // l'onglet Fiches) — jusqu'ici cette grille comptable n'affichait AUCUN
+  // indicateur visible : la voiture perso ne se voyait que via le "×2"
+  // caché dans le libellé de la ligne Trajet, que la comptable ne pouvait
+  // pas voir d'un coup d'œil. N'apparaît que si au moins un jour l'a
+  // utilisée cette semaine.
+  const hasAnyVoiture = dayRows.some(r => r.hasContent && !r.isAbsence && r.voiturePerso);
+  const rowVoiture = dayRows.map(r => {
+    if(!r.hasContent || r.isAbsence || !r.voiturePerso) return `<td class="empty-cell">—</td>`;
+    return `<td style="font-size:11px;"><img src="icons/voiture.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"></td>`;
+  }).join('');
   const rowTask = dayRows.map(r => (!r.hasContent || r.isAbsence) ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
   const rowEdit = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button></td>`).join('') : '';
 
@@ -24585,6 +24618,7 @@ function _renderComptableWorkerWeek(aw){
           <tr><td class="row-label">Heures</td>${rowHours}</tr>
           <tr><td class="row-label">Panier</td>${rowPanier}</tr>
           ${hasAnyTrajet ? `<tr><td class="row-label">Trajet</td>${rowTrajet}</tr>` : ''}
+          ${hasAnyVoiture ? `<tr><td class="row-label">Voiture <img src="icons/voiture.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"></td>${rowVoiture}</tr>` : ''}
           <tr><td class="row-label">Tâche</td>${rowTask}</tr>
           ${editEnabled ? `<tr><td class="row-label">Corriger</td>${rowEdit}</tr>` : ''}
         </tbody>
@@ -30582,9 +30616,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.39.2';
+const APP_VERSION = '5.39.4';
 
 const CHANGELOG = [
+  {
+    version: '5.39.4',
+    date: '10/09/2026',
+    entries: [
+      { icon: '🚗', text: "Corriger une journée (crayon ✏️) — on peut désormais choisir ou ajouter « Voiture personnelle » directement depuis cette fenêtre, aussi bien côté ouvrier/chef (onglet Fiches) que côté comptable (« Corriger la fiche ») : plus besoin de repasser par l'onglet Pointage. Côté comptable, la correction s'applique uniquement à la fiche de cet ouvrier ce jour-là (sans toucher aux autres pointés le même jour)" },
+    ]
+  },
+  {
+    version: '5.39.3',
+    date: '10/09/2026',
+    entries: [
+      { icon: '🚗', text: "Fiches d'heures (vue comptable) — ajout d'une ligne « Voiture » qui affiche l'icône 🚗 les jours où l'ouvrier a pris son véhicule personnel. Jusqu'ici cette grille ne montrait aucun indicateur visible : seul un « ×2 » discret dans le libellé de la ligne Trajet le signalait, invisible d'un coup d'œil. La ligne n'apparaît que les semaines où le véhicule perso a été utilisé au moins une fois" },
+    ]
+  },
   {
     version: '5.39.2',
     date: '10/09/2026',
@@ -45152,6 +45200,11 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
   const newEd = Object.assign({}, ed || {}, {
     siteId: (ov.siteId != null ? ov.siteId : (ed ? ed.siteId : null)),
     siteName: (ov.siteName != null ? ov.siteName : (ed ? ed.siteName : undefined)),
+    // [voiturePerso] Contrairement au réglage de l'onglet Pointage (au
+    // niveau du jour, pour toute l'équipe), la correction comptable est
+    // PAR OUVRIER : elle ne change la voiture perso que pour CETTE fiche,
+    // sans toucher aux autres ouvriers pointés le même jour.
+    voiturePerso: (ov.voiturePerso != null ? ov.voiturePerso : (ed ? !!ed.voiturePerso : false)),
     workers: Object.assign({}, (ed && ed.workers) || {}, { [workerId]: newEntry })
   });
   return { entry:newEntry, ed:newEd };
@@ -45212,6 +45265,11 @@ function comptaEditOpen(deviceId, workerId, dateKey){
 
   // Panier
   document.getElementById('comptaEditPanier').checked = entry ? !!entry.panier : false;
+  // [voiturePerso] Calque déjà appliqué au-dessus (comptaEditApplyOverride) :
+  // ed.voiturePerso reflète soit la correction précédente de la comptable,
+  // soit le réglage d'origine de l'ouvrier pour ce jour.
+  const vpEl = document.getElementById('comptaEditVoiturePerso');
+  if(vpEl) vpEl.checked = ed ? !!ed.voiturePerso : false;
 
   openModal('comptaEdit');
 }
@@ -45288,6 +45346,10 @@ async function comptaEditSave(){
   // [typejournee] type de journée corrigé par la comptable
   const tjEl = document.getElementById('comptaEditTypeJournee');
   const typeJournee = tjEl ? tjEl.value : 'normal';
+  // [voiturePerso] correction PAR OUVRIER (contrairement au toggle Pointage
+  // qui vaut pour toute l'équipe du jour) — voir comptaEditApplyOverride.
+  const vpEl = document.getElementById('comptaEditVoiturePerso');
+  const voiturePerso = vpEl ? vpEl.checked : false;
 
   // Chantier : le select ne renvoie QUE des valeurs officielles.
   //  - '' (option neutre)  → aucun chantier assigné
@@ -45295,7 +45357,7 @@ async function comptaEditSave(){
   // (l'ancien nom libre "__free__" est disabled, donc jamais renvoyé ici)
   const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
-  const ovData = { hours, task, panier, typeJournee, ts: Date.now() };
+  const ovData = { hours, task, panier, typeJournee, voiturePerso, ts: Date.now() };
   if(rawSel && rawSel !== '__free__'){
     const chosen = _comptaEditAllSites().find(s => s.id === rawSel);
     ovData.siteId = rawSel;                              // ID synchronisé officiel
