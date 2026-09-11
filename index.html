@@ -6501,7 +6501,7 @@
         <input type="checkbox" id="editFicheVoiturePerso">
         <img src="icons/voiture.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Voiture personnelle ce jour-là
       </label>
-      <div class="hint" style="margin-top:2px;">Double la prime de trajet de cette journée pour toute l'équipe pointée ce jour-là (même réglage que dans Pointage).</div>
+      <div class="hint" style="margin-top:2px;">La zone de trajet compte double ce jour-là pour toute l'équipe pointée (même réglage que dans Pointage).</div>
     </div>
     <div class="field">
       <label>Tâche effectuée</label>
@@ -9263,7 +9263,7 @@ function goTo(viewName, siteId){
     _galerieSelectMode = false; _galerieSelected.clear();
     _galerieOpenSiteId = null; _galerieLastCount = -1;
     _galerieCurrentPhotos = [];
-    if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+    _galerieTeardownSentinel();
     const gsb = document.getElementById('galerieSelectBtn'); if(gsb){ gsb.textContent = 'Sélectionner'; gsb.style.display = ''; }
   }
   if(viewName === 'zinc') renderZincGallery();
@@ -9896,7 +9896,8 @@ function _galerieRenderFolders(root){
 const _GALERIE_BATCH = 12; // nombre de photos chargées par lot
 let _galerieRenderedCount = 0; // photos déjà dans le DOM
 let _galerieCurrentPhotos = []; // tableau filtré+trié de la session
-let _galerieSentinelObs = null; // IntersectionObserver pour le scroll infini
+let _galerieSentinelObs = null; // ancien IntersectionObserver (conservé pour compat, plus utilisé)
+let _galerieScrollCheck = null; // fonction de vérification scroll infini actuellement active (voir _galerieSetupSentinel)
 
 function _galerieRenderFolder(root, siteId){
   const site = (data.sites || []).find(s => s.id === siteId);
@@ -9969,18 +9970,48 @@ function _galerieAppendBatch(site){
   _galerieRenderedCount = to;
 }
 
-/* Sentinelle en bas de la grille : charge le lot suivant au scroll. */
+/* Sentinelle en bas de la grille : charge le lot suivant au scroll.
+   [galerieScrollFix] Remplace l'ancien IntersectionObserver : sur certains
+   appareils (notamment iOS/PWA où #app est en position:fixed + overflow-y:auto,
+   donc la VRAIE zone qui défile n'est pas la fenêtre), l'IntersectionObserver
+   par défaut (root=fenêtre) ne redéclenchait plus après les deux premiers
+   lots — la galerie restait bloquée à 24 photos (12+12) quel que soit le
+   nombre réel de photos du chantier. On vérifie maintenant la position de
+   la sentinelle "à la main" sur l'évènement scroll, en écoutant À LA FOIS
+   la fenêtre ET #app (quel que soit celui qui défile réellement sur cet
+   appareil), ce qui est plus robuste que de compter sur un root implicite. */
 function _galerieSetupSentinel(site){
-  if(_galerieSentinelObs) _galerieSentinelObs.disconnect();
+  _galerieTeardownSentinel();
   const sentinel = document.getElementById('galerieSentinel');
   if(!sentinel) return;
 
-  _galerieSentinelObs = new IntersectionObserver((entries)=>{
-    if(entries[0].isIntersecting && _galerieRenderedCount < _galerieCurrentPhotos.length){
+  const check = () => {
+    if(_galerieRenderedCount >= _galerieCurrentPhotos.length){ _galerieTeardownSentinel(); return; }
+    const rect = sentinel.getBoundingClientRect();
+    if(rect.top < window.innerHeight + 300){
       _galerieAppendBatch(site);
+      // Le bas de la grille vient de bouger (nouvelles cases ajoutées) :
+      // revérifier immédiatement, sans attendre un nouvel évènement scroll,
+      // pour pouvoir charger plusieurs lots d'un coup si l'écran est grand.
+      requestAnimationFrame(check);
     }
-  }, { rootMargin: '300px 0px' }); // déclenche 300px avant d'atteindre le bas
-  _galerieSentinelObs.observe(sentinel);
+  };
+  _galerieScrollCheck = check;
+  window.addEventListener('scroll', check, { passive:true });
+  window.addEventListener('resize', check);
+  const app = document.getElementById('app');
+  if(app) app.addEventListener('scroll', check, { passive:true });
+  check(); // cas où tout tient déjà dans l'écran visible dès l'ouverture
+}
+
+function _galerieTeardownSentinel(){
+  if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+  if(!_galerieScrollCheck) return;
+  window.removeEventListener('scroll', _galerieScrollCheck);
+  window.removeEventListener('resize', _galerieScrollCheck);
+  const app = document.getElementById('app');
+  if(app) app.removeEventListener('scroll', _galerieScrollCheck);
+  _galerieScrollCheck = null;
 }
 
 /* Ouvre le dossier d'un chantier (charge ses photos à la demande). */
@@ -10004,7 +10035,7 @@ function galerieCloseFolder(){
   _galerieSelected.clear();
   _galerieLastCount = -1; // recalcul du compteur global (dossiers)
   _galerieCurrentPhotos = [];
-  if(_galerieSentinelObs){ _galerieSentinelObs.disconnect(); _galerieSentinelObs = null; }
+  _galerieTeardownSentinel();
   const btn = document.getElementById('galerieSelectBtn');
   if(btn){ btn.textContent = 'Sélectionner'; }
   const root = document.getElementById('galerieContent');
@@ -10863,11 +10894,19 @@ function photoImgAttrs(ref){
    corbeille) : les flèches restent alors masquées. */
 let _pfsNavList = [];
 let _pfsNavIndex = -1;
+// [cloudPhotoNav] 'log' = liste issue de data.logs (journal/onglet Photos du
+// chantier, comportement historique) ; 'cloud' = liste issue des photos
+// importées dans Documents (site.sharedMedia, voir renderCloudMedia), qui
+// n'ont pas de logId/texte/heure mais une url + un nom.
+let _pfsNavKind = 'log';
+let _pfsCloudSiteId = null;
 
 async function openPhotoFullscreenByLogId(logId, caption){
   const entry = data.logs.find(l => l.id === logId);
   if(!entry || !entry.photo) return;
   const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
+  _pfsNavKind = 'log';
+  _pfsCloudSiteId = null;
   // Reconstruit la liste de navigation à partir de toutes les photos du
   // même chantier (même ordre que l'affichage dans l'onglet Photos).
   if(entry.siteId){
@@ -10880,11 +10919,36 @@ async function openPhotoFullscreenByLogId(logId, caption){
   openPhotoFullscreen(src, caption || entry.time, logId);
 }
 
+/* [cloudPhotoNav] Ouvre en plein écran une photo de la section "Documents"
+   du chantier (photos importées, site.sharedMedia) — jusqu'ici ces photos
+   s'ouvraient dans un nouvel onglet du navigateur (openPdfNativeByUrl) sans
+   aucune navigation ‹ › possible. On réutilise la même visionneuse que le
+   journal/l'onglet Photos, avec sa propre liste de navigation. */
+function openCloudPhotoFullscreen(photos, index, siteId){
+  if(!photos || !photos.length || index < 0 || index >= photos.length) return;
+  _pfsNavKind = 'cloud';
+  _pfsCloudSiteId = siteId || null;
+  _pfsNavList = photos;
+  _pfsNavIndex = index;
+  const m = photos[index];
+  openPhotoFullscreen(m.url || m.thumbUrl, m.name || '', null);
+  // Pas d'édition possible sur une photo Documents (pas de sauvegarde prévue
+  // vers sharedMedia) : on masque le crayon, contrairement au journal/Photos.
+  const editBtn = document.getElementById('photoFullscreenEditBtn');
+  if(editBtn) editBtn.style.display = 'none';
+}
+
 async function _pfsGoTo(index){
   if(index < 0 || index >= _pfsNavList.length) return;
   const entry = _pfsNavList[index];
   if(!entry) return;
   _pfsNavIndex = index;
+  if(_pfsNavKind === 'cloud'){
+    openPhotoFullscreen(entry.url || entry.thumbUrl, entry.name || '', null);
+    const editBtn = document.getElementById('photoFullscreenEditBtn');
+    if(editBtn) editBtn.style.display = 'none';
+    return;
+  }
   const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
   const cap = escapeHtml(entry.time || '') + (entry.text ? ' — ' + escapeHtml(entry.text) : '');
   openPhotoFullscreen(src, cap, entry.id);
@@ -10905,6 +10969,8 @@ async function openTrashPhotoFullscreen(trashId){
   const src = await resolveMediaUrl(item.logEntry.photo) || mediaUrl(item.logEntry.photo);
   // Photo isolée (corbeille) : pas de navigation prev/next entre plusieurs
   // éléments supprimés, les flèches restent masquées (_pfsUpdateArrows).
+  _pfsNavKind = 'log';
+  _pfsCloudSiteId = null;
   _pfsNavList = [];
   _pfsNavIndex = -1;
   openPhotoFullscreen(src, 'Supprimée le ' + item.deletedAt, null);
@@ -19245,8 +19311,12 @@ function renderCloudMedia(siteId){
         </div>`).join('');
       // Délégation événements propre
       photoListEl.querySelectorAll('.cloud-photo-view').forEach(btn => btn.addEventListener('click', () => {
-        const m = window._cloudPhotoCache[+btn.dataset.pi];
-        if(m) openPdfNativeByUrl(m.url, m.name, 'photo');
+        const i = +btn.dataset.pi;
+        const m = window._cloudPhotoCache[i];
+        // [cloudPhotoNav] Visionneuse interne (avec flèches ‹ › pour passer
+        // aux autres photos de ce chantier) plutôt que d'ouvrir un nouvel
+        // onglet du navigateur sans aucune navigation possible.
+        if(m) openCloudPhotoFullscreen(window._cloudPhotoCache, i, siteId);
       }));
       photoListEl.querySelectorAll('.cloud-photo-share').forEach(btn => btn.addEventListener('click', () => {
         const m = window._cloudPhotoCache[+btn.dataset.pi];
@@ -30671,9 +30741,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.40.0';
+const APP_VERSION = '5.40.2';
 
 const CHANGELOG = [
+  {
+    version: '5.40.2',
+    date: '11/09/2026',
+    entries: [
+      { icon: '📸', text: "Galerie — correction d'un bug où, pour un chantier avec beaucoup de photos (ex. 58), seules les 24 premières s'affichaient et le défilement ne chargeait jamais la suite. Le chargement progressif au scroll est refait pour être fiable sur tous les appareils, toutes les photos du chantier apparaissent maintenant" },
+      { icon: '🚗', text: "Corriger une journée (crayon ✏️) — reformulation du texte sous « Voiture personnelle » : « la zone de trajet compte double » au lieu de « double la prime de trajet », pour éviter l'impression (à tort) que le montant est doublé alors que c'est bien 2 zones comptées au lieu d'une" },
+    ]
+  },
+  {
+    version: '5.40.1',
+    date: '11/09/2026',
+    entries: [
+      { icon: '📷', text: "Chantier → Documents → Photos — en cliquant sur l'œil 👁 pour visionner une photo, on a maintenant les flèches ‹ › (et les flèches clavier) pour passer à la photo suivante/précédente, comme dans le journal et dans la galerie. Avant, ça ouvrait la photo dans un nouvel onglet du navigateur, sans aucun moyen de naviguer entre les photos" },
+    ]
+  },
   {
     version: '5.40.0',
     date: '10/09/2026',
