@@ -8099,6 +8099,22 @@ async function supaFetch(path, options={}){
   return res;
 }
 
+/* Déclenche une vraie notification système (push) chez un ou plusieurs
+   destinataires via la Edge Function send-push (voir rwood-push/).
+   Appel "fire and forget" : n'importe quel souci réseau ou fonction non
+   déployée ne doit jamais bloquer/casser l'action en cours (alerte,
+   agenda...), donc tout est avalé silencieusement. */
+async function notifyPush(userIds, title, body, tag, url){
+  try{
+    if(!userIds || !userIds.length) return;
+    await fetch(SUPA_URL + '/functions/v1/send-push', {
+      method: 'POST',
+      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_ids: userIds, title, body, tag, url })
+    });
+  } catch(e){ /* silencieux : la Edge Function peut ne pas (encore) être déployée */ }
+}
+
 // Pousse les données locales vers Supabase (upsert)
 async function syncPush(){
   const userId = getSupaUserId();
@@ -9448,6 +9464,8 @@ async function addDetailEvent(){
         siteColor: site.color || '',
         text: ev.label
       });
+      // 3. Notification système immédiate (push natif) — voir rwood-push/.
+      notifyPush([chefAuthId], 'RWOOD — Nouvel événement', ev.label + ' — ' + site.name, 'agenda-' + ev.id, 'agenda');
     });
   }
 }
@@ -12799,6 +12817,15 @@ async function sendAlerteToMembers(authIds, names){
     alertText,
     'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData
   );
+
+  // Notification système immédiate (push natif) chez les destinataires,
+  // en plus de l'alerte in-app ci-dessus — voir rwood-push/.
+  if(ok){
+    const pushTitle = type === 'depannage' ? 'RWOOD — Dépannage'
+      : type === 'evenement' ? 'RWOOD — Nouvel événement'
+      : 'RWOOD — Alerte';
+    notifyPush(authIds, pushTitle, text, type, type === 'depannage' ? 'depannages' : (type === 'evenement' ? 'agenda' : 'alertes'));
+  }
 
   const modal = document.getElementById('modal-alerteCompose');
   if(modal) modal.remove();
@@ -26644,7 +26671,7 @@ function requestNotifPermission(){
 }
 
 /* ── Clé publique VAPID (doit correspondre à celle de la Edge Function) ── */
-const VAPID_PUBLIC_KEY = 'BIYI9drigdpgnymrSpVuzAe3jK7wuTg3i5IR7eeM7m1dwwuC00lzBuiV51lnq5D-eb6tpC0d795u92QE1YslSy4';
+const VAPID_PUBLIC_KEY = 'BGIdnQ_HCFwjta_sQTyKedGfobafhL9lS-skKcbdJX2-lTqbm00TgBDt5dKT8Ek5hKspaIbh9vyVHYuUZ2f7oQM';
 
 function urlBase64ToUint8Array(base64String){
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -26657,11 +26684,21 @@ function urlBase64ToUint8Array(base64String){
 async function subscribeToPush(reg){
   try{
     let sub = await reg.pushManager.getSubscription();
+    // Si on a déjà un abonnement mais qu'il a été créé avec une ANCIENNE clé
+    // VAPID (changement de clé côté serveur, ex: remise à zéro du système de
+    // push), il faut le jeter et se réabonner avec la clé actuelle, sinon les
+    // envois échouent silencieusement (mismatch de clé côté service de push).
+    const storedKey = localStorage.getItem('rwood_vapid_key');
+    if(sub && storedKey !== VAPID_PUBLIC_KEY){
+      try{ await sub.unsubscribe(); }catch(e){}
+      sub = null;
+    }
     if(!sub){
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
       });
+      localStorage.setItem('rwood_vapid_key', VAPID_PUBLIC_KEY);
     }
     // Sauvegarder la subscription dans Supabase (table rwood_push_subscriptions)
     const userId = getSupaUserId();
@@ -30741,9 +30778,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.40.3';
+const APP_VERSION = '5.41.0';
 
 const CHANGELOG = [
+  {
+    version: '5.41.0',
+    date: '12/09/2026',
+    entries: [
+      { icon: '🔔', text: "Notifications push natives refaites entièrement : une vraie notification système (comme Insta/Messages) arrive désormais même si l'app est fermée, pour un dépannage, une alerte mégaphone ou un nouvel événement d'agenda envoyé par le conducteur. Un rappel automatique « remplis ta fiche d'heures » est aussi envoyé chaque soir à celles et ceux qui n'ont pas encore pointé (nécessite la mise en place côté serveur — voir le dossier fourni séparément)" },
+    ]
+  },
   {
     version: '5.40.3',
     date: '12/09/2026',
@@ -38922,6 +38966,8 @@ async function addCustomEvent(siteId){
         siteColor: site.color || '',
         text: ev.label
       });
+      // 3. Notification système immédiate (push natif) — voir rwood-push/.
+      notifyPush([chefAuthId], 'RWOOD — Nouvel événement', ev.label + ' — ' + site.name, 'agenda-' + ev.id, 'agenda');
     });
   }
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v746';
+const CACHE_NAME = 'rwood-cache-v747';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -151,8 +151,15 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const view = event.notification.data && event.notification.data.url;
   event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
-    for(const c of list){ if('focus' in c){ c.focus(); return; } }
-    if(clients.openWindow) return clients.openWindow('./index.html');
+    for(const c of list){
+      if('focus' in c){
+        c.focus();
+        if(view) c.postMessage({type:'navigate', view});
+        return;
+      }
+    }
+    if(clients.openWindow) return clients.openWindow(view ? './index.html#' + view : './index.html');
   }));
 });
