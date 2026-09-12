@@ -4694,6 +4694,29 @@
            réglages de dossier de stockage restent en mémoire (mémoire
            interne par défaut), gérés par le code sans UI dédiée. -->
 
+      <!-- ACCORDÉON : NOTIFICATIONS (push natif — recréé en v5.41.2) -->
+      <div class="accordion-section" id="parametresMode-notifications">
+        <div class="accordion-header" onclick="toggleParametresSection('notifications')">
+          <span>Notifications</span><span class="accordion-arrow">▾</span>
+        </div>
+        <div class="accordion-body">
+          <div class="card">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div>
+                <div style="font-weight:700; font-size:14px;">Notifications sur ce téléphone</div>
+                <div class="hint" style="margin-top:2px;">Alertes, dépannages, événements d'agenda et rappel de fiche d'heures — activées par défaut.</div>
+              </div>
+              <label class="toggle-switch" style="flex-shrink:0;">
+                <input type="checkbox" id="pushNotifToggle" checked onchange="setPushNotifEnabled(this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div id="notifPermStatus" class="hint" style="margin-top:10px;"></div>
+            <button class="btn btn-outline btn-block" id="notifPermBtn" style="margin-top:10px; display:none;" onclick="requestNotifPermission()">🔔 Activer les notifications</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ACCORDÉON : SAUVEGARDE -->
       <div class="accordion-section" id="parametresMode-sauvegarde">
         <div class="accordion-header" onclick="toggleParametresSection('sauvegarde')">
@@ -25849,6 +25872,8 @@ if('serviceWorker' in navigator){
       // l'utilisateur au-delà d'accepter la popup du navigateur/téléphone.
       defer(() => {
         if(!('Notification' in window)) return;
+        ensureNotifSettings();
+        if(!data.settings.notifications.pushEnabled) return; // désactivé via l'interrupteur Paramètres → Notifications
         if(Notification.permission === 'granted'){
           subscribeToPush(reg); // ré-abonne si besoin (ex: nouvelle clé VAPID)
         } else if(Notification.permission === 'default'){
@@ -26160,8 +26185,8 @@ function renderParametres(){
   document.getElementById('settingsCompanyCode').value = data.settings.companyCode || '';
   updateSecurityStatusLabel();
 
-  // Onglet Notifications retiré de l'UI (v2.53.0) — plus d'init DOM notif ici.
-  // Les réglages data.settings.notifications restent en mémoire (non affichés).
+  // Onglet Notifications (push natif) : recréé en v5.41.2 — voir ensurePushNotifSettings()
+  renderPushNotifSection();
 
   applyOpenParametresSections();
   if(typeof _purgeOldTrashItems === 'function') _purgeOldTrashItems();
@@ -26546,9 +26571,13 @@ function ensureNotifSettings(){
       siteFollowup: false,
       backup: false,
       backupHour: 19*60,
-      minutesMigrationDone: true
+      minutesMigrationDone: true,
+      pushEnabled: true
     };
   }
+  // Activées par défaut pour tout le monde (y compris les comptes déjà
+  // existants créés avant l'ajout de ce réglage).
+  if(data.settings.notifications.pushEnabled === undefined) data.settings.notifications.pushEnabled = true;
   // Migration depuis l'ancien format (2h / morning / evening_before)
   const n = data.settings.notifications;
   if(n.agendaTiming === '2h' || n.agendaTiming === 'morning'){
@@ -26645,10 +26674,53 @@ function updateNotifSettings(){
   }
 }
 
+/* Initialise l'onglet Paramètres → Notifications (recréé en v5.41.2) :
+   reflète l'état actuel (interrupteur app + permission navigateur) à
+   chaque ouverture des Paramètres. */
+function renderPushNotifSection(){
+  ensureNotifSettings();
+  const toggle = document.getElementById('pushNotifToggle');
+  if(toggle) toggle.checked = !!data.settings.notifications.pushEnabled;
+  updateNotifPermStatus();
+}
+
+/* Interrupteur "Notifications sur ce téléphone" dans Paramètres.
+   ON  → redemande la permission navigateur si besoin + (ré)abonne au push.
+   OFF → désabonne cet appareil (aucune notification tant qu'il reste décoché),
+         sans toucher à la permission navigateur elle-même (on la laisse
+         accordée pour ne pas avoir à la redemander si l'utilisateur réactive). */
+async function setPushNotifEnabled(enabled){
+  ensureNotifSettings();
+  data.settings.notifications.pushEnabled = enabled;
+  saveData();
+
+  if(enabled){
+    if(!('Notification' in window)){ showToast('Notifications non supportées sur cet appareil'); return; }
+    if(Notification.permission === 'granted'){
+      if('serviceWorker' in navigator){
+        const reg = await navigator.serviceWorker.getRegistration();
+        if(reg) subscribeToPush(reg);
+      }
+      showToast('Notifications activées');
+    } else if(Notification.permission === 'default'){
+      requestNotifPermission();
+    } else {
+      showToast('Notifications bloquées dans les réglages du téléphone — réactive-les là-bas puis réessaie');
+    }
+  } else {
+    try{
+      if('serviceWorker' in navigator){
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = reg && await reg.pushManager.getSubscription();
+        if(sub) await sub.unsubscribe();
+      }
+    } catch(e){ /* tant pis */ }
+    showToast('Notifications désactivées sur cet appareil');
+  }
+  updateNotifPermStatus();
+}
+
 function updateNotifPermStatus(){
-  // L'onglet Paramètres "Notifications" a été retiré de l'UI (v2.53.0) :
-  // ces éléments n'existent donc plus dans le DOM dans le cas normal. On ne
-  // met à jour l'affichage que si, un jour, cet onglet réapparaît.
   const status = document.getElementById('notifPermStatus');
   const btn = document.getElementById('notifPermBtn');
   if(!status || !btn) return;
@@ -30795,9 +30867,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.1';
+const APP_VERSION = '5.41.2';
 
 const CHANGELOG = [
+  {
+    version: '5.41.2',
+    date: '12/09/2026',
+    entries: [
+      { icon: '🔔', text: "Un onglet « Notifications » réapparaît dans Paramètres : activées par défaut pour tout le monde, avec un interrupteur pour les désactiver/réactiver sur son téléphone et un bouton pour relancer l'autorisation si besoin" },
+    ]
+  },
   {
     version: '5.41.1',
     date: '12/09/2026',
