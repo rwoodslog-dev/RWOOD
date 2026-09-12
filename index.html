@@ -26803,9 +26803,15 @@ async function subscribeToPush(reg){
       showToast('⚠️ Notifications : crée/synchronise d\'abord ton compte (Paramètres → Compte)');
       return null;
     }
-    const saveRes = await supaFetch('/rest/v1/rwood_push_subscriptions?on_conflict=user_id,subscription', {
+    // Pas de paramètre on_conflict ici : ça forcerait un vrai upsert, qui a
+    // besoin en coulisses d'un droit de LECTURE sur la table pour comparer
+    // la ligne existante — droit volontairement refusé à "anon" pour la
+    // sécurité (seules les Edge Functions, via la clé service_role, lisent
+    // cette table). Un simple POST suffit : la contrainte unique évite les
+    // doublons, et un conflit (409) veut juste dire "déjà abonné", pas une erreur.
+    const saveRes = await supaFetch('/rest/v1/rwood_push_subscriptions', {
       method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({
         user_id:      userId,
         subscription: sub.toJSON(),
@@ -26813,7 +26819,7 @@ async function subscribeToPush(reg){
         updated_at:   new Date().toISOString()
       })
     });
-    if(!saveRes.ok){
+    if(!saveRes.ok && saveRes.status !== 409){
       const errTxt = await saveRes.text().catch(()=>'');
       console.error('Push subscription: échec enregistrement serveur', saveRes.status, errTxt);
       showToast('⚠️ Notifications : échec enregistrement serveur (' + saveRes.status + ')');
@@ -30884,9 +30890,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.4';
+const APP_VERSION = '5.41.5';
 
 const CHANGELOG = [
+  {
+    version: '5.41.5',
+    date: '12/09/2026',
+    entries: [
+      { icon: '🔧', text: "Correction du vrai blocage : l'enregistrement de l'abonnement notifications était refusé par la sécurité de la base (demandait un droit de lecture volontairement interdit). Les notifications peuvent maintenant s'enregistrer correctement" },
+    ]
+  },
   {
     version: '5.41.4',
     date: '12/09/2026',
