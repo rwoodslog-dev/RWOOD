@@ -5377,9 +5377,16 @@
         </label>
       </div>
 
-      <!-- Section ENVOI : visible uniquement conducteur / patron / comptable -->
+      <!-- Section ENVOI : visible uniquement conducteur / patron / comptable / chef -->
       <div id="alertesSendSection" style="display:none;">
-        <div class="section-title" style="margin-top:0;">Envoyer une alerte</div>
+
+        <!-- Conversations (v5.41.7) : historique de MES envois, classé par
+             personne façon messagerie — pour retrouver facilement ce qu'on a
+             déjà envoyé à quelqu'un et lui en renvoyer une en 2 clics. -->
+        <div class="section-title" style="margin-top:0;">Conversations</div>
+        <div id="alertesChatList" style="margin-bottom:20px;"></div>
+
+        <div class="section-title">Nouveau destinataire</div>
         <div style="margin-bottom:12px;">
           <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
             oninput="renderAlertesConducteurList()"
@@ -12806,10 +12813,11 @@ async function sendAlerteToMembers(authIds, names){
 
   showToast('⏳ Envoi en cours…');
   const deviceIds = [];
+  const resolvedAuthIds = []; // parallèle à deviceIds — pour le classement "chat par personne" (v5.41.7)
   const unresolved = [];
   for(let i=0;i<authIds.length;i++){
     const did = await _resolveDeviceIdFromAuthId(authIds[i]);
-    if(did) deviceIds.push(did);
+    if(did){ deviceIds.push(did); resolvedAuthIds.push(authIds[i]); }
     else unresolved.push(names[i]);
   }
 
@@ -12838,7 +12846,7 @@ async function sendAlerteToMembers(authIds, names){
 
   const ok = await sendAlert(
     alertText,
-    'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData
+    'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData, resolvedAuthIds
   );
 
   // Notification système immédiate (push natif) chez les destinataires,
@@ -12861,6 +12869,7 @@ async function sendAlerteToMembers(authIds, names){
   if(ok){
     try{ if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList(); }catch(e){}
     try{ if(typeof renderDepannageHistory === 'function') renderDepannageHistory(); }catch(e){}
+    try{ if(typeof renderAlertesChatList === 'function') renderAlertesChatList(); }catch(e){} // v5.41.7 — nouvelle conversation/message visible tout de suite
   }
 
   if(ok){
@@ -12886,6 +12895,165 @@ async function sendAlerteToMembers(authIds, names){
     _updateAlerteSelectionBar();
     renderAlertesConducteurList();
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CONVERSATIONS — historique d'envoi classé "par personne" (v5.41.7)
+   Vue façon messagerie : une conversation par destinataire déjà contacté,
+   pour retrouver facilement ce qu'on lui a envoyé et lui renvoyer une
+   alerte en 2 clics — au lieu de tout revoir dans une longue liste plate.
+   Concerne UNIQUEMENT mes propres envois (conducteur/patron/comptable/
+   chef) ; la réception (ouvrier/chef qui reçoivent) garde son affichage
+   actuel (Mes alertes reçues), inchangé.
+   ═══════════════════════════════════════════════════════════════════ */
+let _alertesChatRowsCache = []; // [{type:'person'|'broadcast', key, authId, name, alerts:[...]}]
+
+async function _mySentAlertsGroupedByPerson(){
+  const myAuthId = _myAlertAuthId();
+  if(!myAuthId) return { people: [], broadcast: [] };
+  const all = await _fetchAlerts();
+  const mine = all.filter(a => a.senderAuthId === myAuthId);
+  const users = await _fetchUsersRegistry();
+  const nameByAuthId = {};
+  users.forEach(u => { if(u.authId) nameByAuthId[u.authId] = u.name; });
+
+  const byPerson = {};
+  const broadcast = [];
+
+  mine.forEach(a => {
+    if(a.recipientType === 'all' || a.recipientType === 'roles'){
+      broadcast.push(a);
+      return;
+    }
+    const ids = (a.recipientAuthIds && a.recipientAuthIds.length) ? a.recipientAuthIds : null;
+    if(ids){
+      ids.forEach(authId => {
+        const key = 'id:' + authId;
+        if(!byPerson[key]) byPerson[key] = { key, authId, name: nameByAuthId[authId] || authId, alerts: [] };
+        byPerson[key].alerts.push(a);
+      });
+    } else {
+      // Anciennes alertes (avant v5.41.7) ou envoi direct sans authId connu
+      // (dépannage assigné à un chef, demande de signature...) : on
+      // regroupe par nom affiché, à défaut de mieux.
+      const label = a.recipientName || 'Destinataire inconnu';
+      const key = 'name:' + label;
+      if(!byPerson[key]) byPerson[key] = { key, authId: null, name: label, alerts: [] };
+      byPerson[key].alerts.push(a);
+    }
+  });
+
+  const people = Object.values(byPerson).map(p => {
+    p.alerts.sort((x,y) => new Date(y.createdAt) - new Date(x.createdAt));
+    return p;
+  }).sort((a,b) => new Date(b.alerts[0].createdAt) - new Date(a.alerts[0].createdAt));
+
+  broadcast.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  return { people, broadcast };
+}
+
+async function renderAlertesChatList(){
+  const el = document.getElementById('alertesChatList');
+  if(!el) return;
+  const { people, broadcast } = await _mySentAlertsGroupedByPerson();
+
+  if(!people.length && !broadcast.length){
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucune alerte envoyée pour le moment — choisis un destinataire ci-dessous pour commencer.</div>';
+    _alertesChatRowsCache = [];
+    return;
+  }
+
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️' };
+  const rows = [];
+  if(broadcast.length) rows.push({ type:'broadcast', key:'__broadcast__', authId:null, name:'Toute l\'équipe', alerts: broadcast });
+  people.forEach(p => rows.push({ type:'person', ...p }));
+  _alertesChatRowsCache = rows;
+
+  el.innerHTML = rows.map((r, idx) => {
+    const last = r.alerts[0];
+    const dateLabel = new Date(last.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+    const preview = (last.text||'').replace(/^.*? : /,'');
+    const avatar = r.type === 'broadcast'
+      ? `<div style="width:38px;height:38px;border-radius:50%;background:var(--wood);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">🌍</div>`
+      : `<div style="width:38px;height:38px;border-radius:50%;background:var(--bg-elev);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">👤</div>`;
+    return `
+    <div class="card" data-chat-idx="${idx}" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;">
+      ${avatar}
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.name)}</div>
+          <div class="meta" style="flex-shrink:0;">${dateLabel}</div>
+        </div>
+        <div style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${kindIcon[last.kind]||'💬'} ${escapeHtml(preview.substring(0,60))}</div>
+      </div>
+      ${r.alerts.length>1 ? `<span style="background:var(--wood);color:#fff;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;flex-shrink:0;">${r.alerts.length}</span>` : ''}
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-chat-idx]').forEach(card => {
+    card.addEventListener('click', () => openAlertesChatThread(parseInt(card.dataset.chatIdx)));
+  });
+}
+
+/* Ouvre le "fil" d'une conversation : toutes MES alertes envoyées à cette
+   personne (ou au groupe "Toute l'équipe"), en bulles chronologiques, avec
+   un bouton pour lui en renvoyer une nouvelle directement. */
+function openAlertesChatThread(idx){
+  const row = _alertesChatRowsCache[idx];
+  if(!row) return;
+
+  const ex = document.getElementById('modal-alertesChatThread');
+  if(ex) ex.remove();
+
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️' };
+  const bubblesHtml = row.alerts.slice().reverse().map(a => {
+    const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+    const txt = (a.text||'').replace(/^.*? : /,'');
+    return `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <div style="max-width:80%;background:var(--wood);color:#fff;border-radius:14px 14px 3px 14px;padding:10px 13px;">
+          <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
+          <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:right;">${dateLabel}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Bouton "Nouvelle alerte" : ne fonctionne directement que si on connaît
+  // l'authId du destinataire (envois faits depuis v5.41.7, ou retrouvé par
+  // nom dans le répertoire déjà chargé) — sinon on renvoie vers la
+  // recherche classique, plus fiable que de deviner.
+  let resendAuthId = row.authId;
+  if(!resendAuthId && row.type === 'person'){
+    const match = (_alerteMembersCache||[]).find(u => u.name === row.name);
+    if(match) resendAuthId = match.authId;
+  }
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-alertesChatThread';
+  div.innerHTML = `
+    <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
+      <div class="modal-header">
+        <h2>${row.type==='broadcast' ? '🌍' : '👤'} ${escapeHtml(row.name)}</h2>
+        <button class="modal-close" onclick="closeModal('alertesChatThread')">×</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
+      ${resendAuthId
+        ? `<button class="btn btn-primary btn-block" onclick="_resendAlertToChatPerson('${resendAuthId}')">🔔 Nouvelle alerte</button>`
+        : `<div class="hint" style="text-align:center;">Pour renvoyer une alerte à cette personne, choisis-la dans « Nouveau destinataire » ci-dessous.</div>`}
+    </div>`;
+  document.body.appendChild(div);
+}
+
+/* Depuis le fil d'une conversation : pré-sélectionne CE destinataire puis
+   ouvre directement le compositeur d'alerte habituel (openAlerteComposeGroup),
+   sans rien changer à la façon dont l'alerte est réellement composée/envoyée. */
+function _resendAlertToChatPerson(authId){
+  const modal = document.getElementById('modal-alertesChatThread');
+  if(modal) modal.remove();
+  _alerteSelectedAuthIds = new Set([authId]);
+  openAlerteComposeGroup();
 }
 
 /* ============ ITINÉRAIRES ============ */
@@ -30890,9 +31058,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.6';
+const APP_VERSION = '5.41.7';
 
 const CHANGELOG = [
+  {
+    version: '5.41.7',
+    date: '12/09/2026',
+    entries: [
+      { icon: '💬', text: "Alertes — nouvel onglet « Conversations » : l'historique de tes envois est maintenant classé par personne, façon messagerie, pour retrouver facilement ce que tu as déjà envoyé à quelqu'un et lui en renvoyer une nouvelle en 2 clics" },
+      { icon: '🔕', text: "Le bip sonore des alertes est retiré (redondant avec la vraie notification du téléphone) — la bulle flottante reste inchangée" },
+    ]
+  },
   {
     version: '5.41.6',
     date: '12/09/2026',
@@ -37904,7 +38080,7 @@ async function _unarchiveAlertForMe(alertId){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
@@ -37917,8 +38093,10 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       recipientType: recipientType,           // 'all' | 'device' | 'roles' | 'devices'
       recipientDeviceId: recipientDeviceId || null,
       recipientDeviceIds: recipientDeviceIds || null, // ex: ['dev_abc','dev_xyz'] — alerte groupée nominative
+      recipientAuthIds: recipientAuthIds || null, // ex: ['jean.dupont','marie.martin'] — identifiants stables (v5.41.7, vue "chat par personne")
       recipientRoles: recipientRoles || null,  // ex: ['conducteur','patron']
       recipientName: recipientName || null,    // pour affichage dans l'historique comptable
+      senderAuthId: (data.settings && data.settings.auth && data.settings.auth.authId) || null, // v5.41.7 — identifie fiablement MES envois (vue "chat par personne")
       siteId: siteId || null,                  // pour le bouton "Visionner" (alertes type 'photo')
       eventDate: (eventData && eventData.date) || null,     // pour les alertes type 'evenement'
       eventSiteId: (eventData && eventData.siteId) || null, // chantier lié à l'événement (optionnel)
@@ -40281,9 +40459,13 @@ document.addEventListener('click', _unlockAudioContext, { once:true });
 /* Joue un petit signal sonore type notification (deux bips ascendants) */
 let _lastAlertSoundTime = 0;
 
-/* Son d'alarme critique : onde carree stridente, alternance rapide de 2 frequences,
-   volume maximal — concu pour etre difficile a ignorer. */
+/* Son d'alarme retiré à la demande (v5.41.7) : la notification native du
+   téléphone (vraie notif système, voir rwood-push/) + la bulle flottante
+   suffisent, le bip strident en plus était redondant. Fonction gardée en
+   no-op pour ne pas casser les appels existants (_playAlertSound(...)). */
 function _playAlertSound(){
+  return;
+  // eslint-disable-next-line no-unreachable
   // Garde-fou anti-doublons rapproches (evenements visibilitychange parfois multiples)
   const nowMs = Date.now();
   if(nowMs - _lastAlertSoundTime < 2000) return;
@@ -40651,7 +40833,10 @@ function renderAlertesTuile(){
 
   const sendSection = document.getElementById('alertesSendSection');
   if(sendSection) sendSection.style.display = canSend ? 'block' : 'none';
-  if(canSend) renderAlertesConducteurList();
+  if(canSend){
+    renderAlertesConducteurList();
+    if(typeof renderAlertesChatList === 'function') renderAlertesChatList();
+  }
 
   // Alertesmega : synchroniser le visuel de la pilule avec le réglage.
   const megaOn = _alertesMegaEnabled();
