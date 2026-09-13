@@ -4152,9 +4152,6 @@
       <!-- MODULE — PCDashboard : bandeau Chantier actif (desktop uniquement, ≥860px).
            Rempli dynamiquement par renderChantierActifBanner(). -->
       <div id="chantierActifBanner"></div>
-      <!-- MODULE — RéunionChantier (v5.41.20) : réunion hebdomadaire récurrente
-           du chantier actif, affichée juste sous le bandeau "Chantier actif". -->
-      <div id="chantierActifReunionZone"></div>
       <div class="view-heading" style="display:flex;align-items:center;justify-content:space-between;">
         <span>Chantiers en cours</span>
         <button id="chefSyncBtn" style="display:none; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink-soft); font-size:12px; padding:4px 10px; cursor:pointer;"
@@ -31269,14 +31266,21 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.22';
+const APP_VERSION = '5.41.23';
 
 const CHANGELOG = [
+  {
+    version: '5.41.23',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🗓️', text: "Nouveau bouton « Réunion » directement dans le bandeau « Chantier actif » (à côté de Fiche tuile, Pointer, etc.) : il ouvre une fenêtre pour choisir le jour et l'heure de la réunion hebdomadaire, avec un bouton « Ajouter le rappel récurrent »" },
+    ]
+  },
   {
     version: '5.41.22',
     date: '13/09/2026',
     entries: [
-      { icon: '🐛', text: "Correctif : la carte « Réunion de chantier » du bandeau « Chantier actif » n'apparaissait pas sur PC car le bandeau se déplace automatiquement vers la page affichée — elle est maintenant bien collée au bandeau où qu'il aille" },
+      { icon: '🐛', text: "Correctif : la carte « Réunion de chantier » du bandeau « Chantier actif » n'apparaissait pas sur PC car le bandeau se déplace automatiquement vers la page affichée" },
     ]
   },
   {
@@ -39601,6 +39605,108 @@ async function _checkReunionChantierReminders(){
   }
 }
 
+/* ── Bouton "Réunion" du bandeau "Chantier actif" (v5.41.23) ──────────
+   Ouvre une fenêtre dédiée (créée dynamiquement, comme openTaskReminderPicker)
+   demandant le jour + l'heure de la réunion récurrente, avec un bouton
+   « Ajouter le rappel récurrent » — plus fiable que d'accrocher une carte
+   à côté du bandeau, qui se déplace tout seul d'une vue à l'autre. */
+function openReunionChantierModal(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  const _profile = (data.settings && data.settings.myProfile) || {};
+  const canEdit = _profile.role === 'conducteur' || _profile.role === 'patron';
+  const r = site.reunionChantier || { enabled:false, weekday:1, time:'15:00' };
+
+  const ex = document.getElementById('modal-reunionChantier');
+  if(ex) ex.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-reunionChantier';
+
+  if(!canEdit){
+    // Chef/ouvrier : lecture seule, rien à configurer.
+    div.innerHTML = `
+      <div class="modal">
+        <div class="modal-header">
+          <h2>🗓️ Réunion de chantier</h2>
+          <button class="modal-close" onclick="document.getElementById('modal-reunionChantier').remove()">✕</button>
+        </div>
+        ${r.enabled
+          ? `<div class="hint">Réunion hebdomadaire : tous les ${REUNION_WEEKDAYS[r.weekday]} à ${r.time||'15:00'} — chantier ${escapeHtml(site.name)}.</div>`
+          : `<div class="hint">Aucune réunion récurrente programmée pour ce chantier.</div>`}
+      </div>`;
+    document.body.appendChild(div);
+    return;
+  }
+
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🗓️ Réunion de chantier</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-reunionChantier').remove()">✕</button>
+      </div>
+      <div class="hint" style="margin-bottom:14px;">Programme le jour et l'heure de la réunion hebdomadaire pour « ${escapeHtml(site.name)} ». Une alerte de rappel sera envoyée automatiquement la veille.</div>
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <div class="field" style="flex:1; margin-bottom:0;">
+          <label>Jour</label>
+          <select id="reunionModalWeekday">
+            ${REUNION_WEEKDAYS.map((d,i) => `<option value="${i}" ${i==r.weekday?'selected':''}>${d.charAt(0).toUpperCase()+d.slice(1)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:1; margin-bottom:0;">
+          <label>Heure</label>
+          <input type="time" id="reunionModalTime" value="${r.time||'15:00'}">
+        </div>
+      </div>
+      <button class="btn btn-primary btn-block" onclick="_reunionChantierModalSave('${site.id}')">
+        ${r.enabled ? '🔄 Mettre à jour le rappel récurrent' : '➕ Ajouter le rappel récurrent'}
+      </button>
+      ${r.enabled ? `<button class="btn btn-outline btn-block" style="margin-top:8px; color:var(--red); border-color:var(--red);" onclick="_reunionChantierModalDisable('${site.id}')">🔕 Désactiver la réunion récurrente</button>` : ''}
+    </div>`;
+  document.body.appendChild(div);
+}
+
+function _reunionChantierModalSave(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  const weekdayEl = document.getElementById('reunionModalWeekday');
+  const timeEl = document.getElementById('reunionModalTime');
+  const weekday = weekdayEl ? Number(weekdayEl.value) : 1;
+  const time = (timeEl && timeEl.value) ? timeEl.value : '15:00';
+
+  if(!site.reunionChantier) site.reunionChantier = { enabled:false, weekday:1, time:'15:00' };
+  site.reunionChantier.enabled = true;
+  site.reunionChantier.weekday = weekday;
+  site.reunionChantier.time = time;
+  saveData();
+  _reunionChantierSync(site);
+  if(site.syncLive){
+    site.lastSyncAt = new Date().toISOString();
+    if(typeof pushSharedSite === 'function') pushSharedSite(site);
+  }
+  const modal = document.getElementById('modal-reunionChantier');
+  if(modal) modal.remove();
+  if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
+  showToast('✅ Rappel récurrent enregistré — tous les ' + REUNION_WEEKDAYS[weekday] + ' à ' + time);
+}
+
+function _reunionChantierModalDisable(siteId){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site || !site.reunionChantier) return;
+  site.reunionChantier.enabled = false;
+  saveData();
+  _reunionChantierRemoveUpcoming(site);
+  if(site.syncLive){
+    site.lastSyncAt = new Date().toISOString();
+    if(typeof pushSharedSite === 'function') pushSharedSite(site);
+  }
+  const modal = document.getElementById('modal-reunionChantier');
+  if(modal) modal.remove();
+  if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
+  showToast('Réunion hebdomadaire désactivée');
+}
+
 /* Génère le HTML de la liste des événements personnalisés d'un chantier.
    canEdit=true uniquement côté conducteur (false pour les chefs qui voient en lecture). */
 function _renderCustomEventsList(site, canEdit){
@@ -44177,25 +44283,7 @@ const PC_BANNER_EXCLUDED_VIEWS = ['qcScan','ferme','parametres'];
 function _pcSyncBannerToView(viewName){
   const banner = document.getElementById('chantierActifBanner');
   if(!banner) return;
-  // MODULE — RéunionChantier (v5.41.21) : la zone réunion est un second nœud
-  // DOM UNIQUE, elle aussi déplacée pour toujours rester collée juste après
-  // le bandeau — sinon elle reste immobile dans #view-chantiers pendant que
-  // le bandeau, lui, se déplace vers la vue active (cas réel : Mode Simple
-  // est désormais permanent sur PC, donc la vue active n'est presque jamais
-  // #view-chantiers, et la zone y restait invisible, détachée du bandeau).
-  const reunionZone = document.getElementById('chantierActifReunionZone');
-  // La fiche chantier (vue "detail") a déjà sa PROPRE zone réunion dédiée
-  // (#detailReunionZone, juste sous le statut) : on masque celle du bandeau
-  // sur cette vue précise pour éviter d'afficher la carte en double.
-  if(viewName === 'detail'){
-    if(reunionZone) reunionZone.style.display = 'none';
-    return;
-  }
-  if(PC_BANNER_EXCLUDED_VIEWS.includes(viewName)){
-    banner.style.display = 'none';
-    if(reunionZone) reunionZone.style.display = 'none';
-    return;
-  }
+  if(PC_BANNER_EXCLUDED_VIEWS.includes(viewName)){ banner.style.display = 'none'; return; }
   // display:block forcé en inline (au lieu de laisser la cascade CSS décider) :
   // le style inline a toujours priorité sur les règles de classe, donc le
   // bandeau reste visible quel que soit l'état de pc-mode/simple-mode.
@@ -44203,10 +44291,6 @@ function _pcSyncBannerToView(viewName){
   const target = document.getElementById('view-' + viewName);
   if(!target) return;
   if(target.firstElementChild !== banner) target.insertBefore(banner, target.firstChild);
-  if(reunionZone){
-    reunionZone.style.display = '';
-    if(banner.nextElementSibling !== reunionZone) banner.insertAdjacentElement('afterend', reunionZone);
-  }
   renderChantierActifBanner();
 }
 
@@ -44343,18 +44427,9 @@ function renderChantierActifBanner(){
       <button onclick="dashOpenPointage('${site.id}')"><img src="icons/heures.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'⏱️'}))"> Pointer</button>
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
       <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.noteCategories||[]).filter(c=>!c.archived).reduce((sum,c)=>sum+(c.notes||[]).filter(x=>!x.archived).length,0); return n ? ` (${n})` : ''; })()}</button>
+      <button onclick="openReunionChantierModal('${site.id}')"><img src="icons/agenda.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🗓️'}))"> Réunion${(site.reunionChantier && site.reunionChantier.enabled) ? ' ✅' : ''}</button>
     </div>
   `;
-
-  // MODULE — RéunionChantier (v5.41.20) : juste sous le bandeau "Chantier actif".
-  const reunionZone = document.getElementById('chantierActifReunionZone');
-  if(reunionZone){
-    const _profile2 = (data.settings && data.settings.myProfile) || {};
-    const isConducteurBanner = _profile2.role === 'conducteur' || _profile2.role === 'patron';
-    reunionZone.innerHTML = (typeof _renderReunionChantierCard === 'function')
-      ? _renderReunionChantierCard(site, !!site.syncLive, isConducteurBanner)
-      : '';
-  }
 }
 
 /* Aperçu compact des notes du chantier actif, affiché directement dans le
