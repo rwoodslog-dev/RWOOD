@@ -31269,9 +31269,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.21';
+const APP_VERSION = '5.41.22';
 
 const CHANGELOG = [
+  {
+    version: '5.41.22',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : la carte « Réunion de chantier » du bandeau « Chantier actif » n'apparaissait pas sur PC car le bandeau se déplace automatiquement vers la page affichée — elle est maintenant bien collée au bandeau où qu'il aille" },
+    ]
+  },
   {
     version: '5.41.21',
     date: '13/09/2026',
@@ -44170,7 +44177,25 @@ const PC_BANNER_EXCLUDED_VIEWS = ['qcScan','ferme','parametres'];
 function _pcSyncBannerToView(viewName){
   const banner = document.getElementById('chantierActifBanner');
   if(!banner) return;
-  if(PC_BANNER_EXCLUDED_VIEWS.includes(viewName)){ banner.style.display = 'none'; return; }
+  // MODULE — RéunionChantier (v5.41.21) : la zone réunion est un second nœud
+  // DOM UNIQUE, elle aussi déplacée pour toujours rester collée juste après
+  // le bandeau — sinon elle reste immobile dans #view-chantiers pendant que
+  // le bandeau, lui, se déplace vers la vue active (cas réel : Mode Simple
+  // est désormais permanent sur PC, donc la vue active n'est presque jamais
+  // #view-chantiers, et la zone y restait invisible, détachée du bandeau).
+  const reunionZone = document.getElementById('chantierActifReunionZone');
+  // La fiche chantier (vue "detail") a déjà sa PROPRE zone réunion dédiée
+  // (#detailReunionZone, juste sous le statut) : on masque celle du bandeau
+  // sur cette vue précise pour éviter d'afficher la carte en double.
+  if(viewName === 'detail'){
+    if(reunionZone) reunionZone.style.display = 'none';
+    return;
+  }
+  if(PC_BANNER_EXCLUDED_VIEWS.includes(viewName)){
+    banner.style.display = 'none';
+    if(reunionZone) reunionZone.style.display = 'none';
+    return;
+  }
   // display:block forcé en inline (au lieu de laisser la cascade CSS décider) :
   // le style inline a toujours priorité sur les règles de classe, donc le
   // bandeau reste visible quel que soit l'état de pc-mode/simple-mode.
@@ -44178,6 +44203,10 @@ function _pcSyncBannerToView(viewName){
   const target = document.getElementById('view-' + viewName);
   if(!target) return;
   if(target.firstElementChild !== banner) target.insertBefore(banner, target.firstChild);
+  if(reunionZone){
+    reunionZone.style.display = '';
+    if(banner.nextElementSibling !== reunionZone) banner.insertAdjacentElement('afterend', reunionZone);
+  }
   renderChantierActifBanner();
 }
 
@@ -45389,6 +45418,13 @@ function _simpleModeWelcomePopup(){
     overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'modal-simpleWelcome';
+    // v5.41.20 — Sur PC, le mode simple est désormais obligatoire (impossible
+    // de revenir à la navigation classique) : la dernière phrase de ce popup
+    // ne s'applique plus dans ce cas, on l'adapte.
+    const isPcWelcome = typeof _isPcLayout === 'function' && _isPcLayout();
+    const lastLine = isPcWelcome
+      ? 'Sur ordinateur, le Mode Simple est la navigation permanente — plus besoin de le désactiver.'
+      : 'Pour revenir à la navigation classique, désactive simplement le Mode Simple dans les paramètres.';
     overlay.innerHTML = `<div class="modal" style="text-align:center; padding:28px 22px;">
       <div style="font-size:52px; margin-bottom:12px;">🚀</div>
       <h2 style="font-family:var(--font-display); font-size:20px; margin-bottom:10px;">Nouveau : Mode Simple</h2>
@@ -45396,7 +45432,7 @@ function _simpleModeWelcomePopup(){
         Ton écran d'accueil affiche maintenant <strong>4 raccourcis rapides</strong> vers tes outils essentiels.<br><br>
         Tu peux <strong>ajouter ou retirer des onglets</strong> à tout moment depuis :<br>
         <span style="color:var(--wood); font-weight:700;">⚙️ Paramètres → Mode simple</span><br><br>
-        Pour revenir à la navigation classique, désactive simplement le Mode Simple dans les paramètres.
+        ${lastLine}
       </p>
       <button class="btn btn-primary btn-block" onclick="closeModal('simpleWelcome'); try{localStorage.setItem('${_SIMPLE_WELCOME_KEY}','1')}catch(e){}">C'est compris !</button>
     </div>`;
