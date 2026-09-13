@@ -3151,6 +3151,26 @@
     width:min(480px, 60vw) !important;
   }
 
+  /* Musique : même zone centrale que la météo qu'elle remplace (Rémi 09/2026) */
+  body.pc-mode #musicWidget{
+    order:2;
+    position:static !important; transform:none !important;
+    flex:1 1 auto !important; width:auto !important;
+    min-width:0 !important; max-width:none !important;
+    margin:0 !important;
+    padding:10px 18px !important;
+    box-shadow:none !important;
+  }
+  body.pc-mode #musicEmoji{ font-size:26px !important; }
+  body.pc-mode #musicStationName{ font-size:15px !important; }
+  body.pc-mode .music-hdr-btn{ font-size:20px !important; }
+  body.pc-mode #musicDropdown{
+    position:fixed !important; top:78px !important;
+    left:auto !important; right:24px !important;
+    transform:none !important;
+    width:min(480px, 60vw) !important;
+  }
+
   /* ── Nav en bas, horizontale — identique téléphone, juste élargie ── */
   body.pc-mode nav.bottom{
     position:fixed !important;
@@ -31342,9 +31362,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.26';
+const APP_VERSION = '5.41.27';
 
 const CHANGELOG = [
+  {
+    version: '5.41.27',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🐛', text: "Mode musique — corrigé : sur PC, le bandeau musique ne remplaçait pas correctement le bandeau météo au centre de l'écran (il gardait l'ancien positionnement, trop petit, mal placé)" },
+      { icon: '🐛', text: "Mode musique — corrigé : Pure Rock Radio utilisait une URL incomplète (jamais lisible) et la radio Reggae utilisait un lien de playlist (.pls) que le lecteur ne sait pas lire directement — l'app sait maintenant résoudre ce type de lien vers le vrai flux audio" },
+    ]
+  },
   {
     version: '5.41.26',
     date: '13/09/2026',
@@ -32541,7 +32569,7 @@ const MUSIC_STATIONS = {
       { id: 'classic-rock',  name: 'GotRadio — Classic Rock',        url: 'https://pureplay.cdnstream1.com/6047_128.mp3' },
       { id: '90s-alt',       name: 'GotRadio — 90s Alternative',     url: 'https://pureplay.cdnstream1.com/6039_64.aac' },
       { id: 'oldies-50s',    name: 'GotRadio — Oldies But Goodies 50s', url: 'https://pureplay.cdnstream1.com/6005_64.aac' },
-      { id: 'pure-rock',     name: 'Pure Rock Radio',                url: 'https://s6.citrus3.com/AudioPlayer/purerockradio?mount=&' },
+      { id: 'pure-rock',     name: 'Pure Rock Radio',                url: 'https://s6.citrus3.com:8536/stream' },
     ]
   },
   country: {
@@ -32690,6 +32718,29 @@ function musicRenderHeaderWidget(){
   if(ddBtn) ddBtn.textContent = _musicIsPlaying ? '⏸️' : '▶️';
 }
 
+// Certaines radios (ex: Reggae Jamaicana) ne donnent qu'un lien de
+// "playlist" (.pls/.m3u/.m3u8/.asx) — un fichier texte qui liste la
+// vraie URL du flux audio, illisible directement par <audio>. On le
+// télécharge et on en extrait la première URL utilisable.
+function _musicIsPlaylistUrl(url){
+  return /\.(pls|m3u8?|asx)(\?.*)?$/i.test(url);
+}
+async function _musicResolvePlaylistUrl(url){
+  try{
+    const res = await fetch(url, { mode: 'cors' });
+    const text = await res.text();
+    // .pls : lignes "File1=http://..."  |  .m3u/.m3u8 : lignes d'URL brutes
+    // .asx : balises <ref href="..."/>
+    let match = text.match(/File\d*\s*=\s*(\S+)/i);
+    if(match) return match[1].trim();
+    match = text.match(/<ref\s+href=["']([^"']+)["']/i);
+    if(match) return match[1].trim();
+    match = text.split(/\r?\n/).map(l => l.trim()).find(l => /^https?:\/\//i.test(l) && !l.startsWith('#'));
+    if(match) return match;
+  }catch(e){ /* CORS ou réseau : on retente avec l'URL d'origine, au pire */ }
+  return null;
+}
+
 function musicPlayStation(stationId){
   const st = _musicFindStation(stationId);
   if(!st) return;
@@ -32697,16 +32748,29 @@ function musicPlayStation(stationId){
   try{ localStorage.setItem('rwood-music-last-station', stationId); }catch(e){}
   const audio = document.getElementById('musicAudioPlayer');
   if(!audio) return;
-  audio.src = st.url;
-  audio.play().then(() => {
-    _musicIsPlaying = true;
-    musicRenderHeaderWidget();
-    _musicRenderGenreList();
-  }).catch(() => {
+
+  const playUrl = (url) => {
+    audio.src = url;
+    return audio.play().then(() => {
+      _musicIsPlaying = true;
+      musicRenderHeaderWidget();
+      _musicRenderGenreList();
+    });
+  };
+
+  const onFail = () => {
     _musicIsPlaying = false;
     musicRenderHeaderWidget();
     if(typeof showToast === 'function') showToast('Impossible de lancer cette radio — réseau ou flux indisponible');
-  });
+  };
+
+  if(_musicIsPlaylistUrl(st.url)){
+    _musicResolvePlaylistUrl(st.url).then(resolved => {
+      playUrl(resolved || st.url).catch(onFail);
+    });
+  } else {
+    playUrl(st.url).catch(onFail);
+  }
 }
 
 function musicTogglePlay(){
@@ -32722,8 +32786,11 @@ function musicTogglePlay(){
     _musicIsPlaying = false;
   } else {
     if(!audio.src){
-      const st = _musicFindStation(_musicCurrentStationId);
-      if(st) audio.src = st.url;
+      // Pas encore de flux chargé (ex: juste après le démarrage de l'app) :
+      // on repart par musicPlayStation pour bénéficier de la résolution
+      // des playlists .pls/.m3u si besoin.
+      musicPlayStation(_musicCurrentStationId);
+      return;
     }
     audio.play().then(() => { _musicIsPlaying = true; musicRenderHeaderWidget(); }).catch(() => {
       if(typeof showToast === 'function') showToast('Impossible de lancer cette radio — réseau ou flux indisponible');
