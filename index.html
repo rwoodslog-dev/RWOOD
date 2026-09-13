@@ -5382,22 +5382,45 @@
 
         <!-- Conversations (v5.41.7) : historique de MES envois, classé par
              personne façon messagerie — pour retrouver facilement ce qu'on a
-             déjà envoyé à quelqu'un et lui en renvoyer une en 2 clics. -->
-        <div class="section-title" style="margin-top:0;">Conversations</div>
-        <div id="alertesChatList" style="margin-bottom:20px;"></div>
+             déjà envoyé à quelqu'un et lui en renvoyer une en 2 clics.
+             v5.41.8 — le bouton "+" à droite du titre ouvre directement le
+             choix du destinataire (_openNewRecipientPicker) : la section
+             "Nouveau destinataire" qui était toujours affichée ci-dessous
+             est maintenant masquée par défaut et ne sert plus que de
+             conteneur technique réutilisé par ce picker. -->
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <div class="section-title" style="margin-top:0;margin-bottom:0;">Conversations</div>
+          <button class="btn btn-outline btn-sm" onclick="_openNewRecipientPicker()" title="Nouveau destinataire" style="flex-shrink:0;">+ Nouveau</button>
+        </div>
+        <div id="alertesChatList" style="margin:12px 0 20px 0;"></div>
 
-        <div class="section-title">Nouveau destinataire</div>
-        <div style="margin-bottom:12px;">
-          <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
-            oninput="renderAlertesConducteurList()"
-            style="width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; color:var(--ink); font-size:14px;">
+        <!-- "Nouveau destinataire" — masqué par défaut (v5.41.8), affiché
+             uniquement à l'intérieur de la modale ouverte par le bouton "+"
+             ci-dessus (voir _openNewRecipientPicker). -->
+        <div id="alertesNewRecipientSection" style="display:none;">
+          <div class="section-title">Nouveau destinataire</div>
+          <div style="margin-bottom:12px;">
+            <input type="text" id="alertesSearchInput" placeholder="Rechercher un membre…"
+              oninput="renderAlertesConducteurList()"
+              style="width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; color:var(--ink); font-size:14px;">
+          </div>
+          <div class="chip-row" style="margin-bottom:14px;">
+            <div class="chip selected" id="alerteFilterAll"   onclick="setAlerteFilter('all')">Tous</div>
+            <div class="chip"          id="alerteFilterChef"  onclick="setAlerteFilter('chef')">Chefs</div>
+            <div class="chip"          id="alerteFilterOuvrier" onclick="setAlerteFilter('ouvrier')">Ouvriers</div>
+          </div>
+          <div id="alertesMemberList"></div>
         </div>
-        <div class="chip-row" style="margin-bottom:14px;">
-          <div class="chip selected" id="alerteFilterAll"   onclick="setAlerteFilter('all')">Tous</div>
-          <div class="chip"          id="alerteFilterChef"  onclick="setAlerteFilter('chef')">Chefs</div>
-          <div class="chip"          id="alerteFilterOuvrier" onclick="setAlerteFilter('ouvrier')">Ouvriers</div>
-        </div>
-        <div id="alertesMemberList"></div>
+      </div>
+
+      <!-- Section RÉCEPTION (ouvriers/chefs qui ne peuvent pas envoyer) :
+           v5.41.8 — conversations groupées PAR EXPÉDITEUR, façon messagerie,
+           pour retrouver facilement ce qu'on nous a envoyé. Visible
+           uniquement quand la section ENVOI ci-dessus est masquée (rôle sans
+           droit d'envoi) — voir renderAlertesTuile(). -->
+      <div id="alertesReceivedSection" style="display:none;">
+        <div class="section-title" style="margin-top:0;">Conversations</div>
+        <div id="alertesReceivedChatList" style="margin-bottom:20px;"></div>
       </div>
 
       <!-- Section HISTORIQUE : masquée à la demande de Rémi (v5.43.0-visuel) —
@@ -12136,13 +12159,23 @@ async function renderAlertesConducteurList(){
       const idx = parseInt(card.dataset.alerteIdx);
       const member = _alerteMembersCache[idx];
       if(!member) return;
+
+      // v5.41.8 — picker "+ Nouveau" (_openNewRecipientPicker) : un clic
+      // choisit directement cette personne (pas de sélection multiple) —
+      // si une conversation existe déjà avec elle, on la rouvre au lieu de
+      // repartir sur une composition vierge.
+      if(_alertePickerSingleMode){
+        _pickRecipientFromNewRecipientPicker(member.authId, member.name);
+        return;
+      }
+
       if(_alerteSelectedAuthIds.has(member.authId)) _alerteSelectedAuthIds.delete(member.authId);
       else _alerteSelectedAuthIds.add(member.authId);
       renderAlertesConducteurList();
       _updateAlerteSelectionBar();
     });
   });
-  _updateAlerteSelectionBar();
+  if(!_alertePickerSingleMode) _updateAlerteSelectionBar();
 }
 
 /* Barre flottante "X sélectionné(s) — Composer l'alerte" */
@@ -12799,7 +12832,18 @@ async function sendAlerteToMembers(authIds, names){
       const s = (data.sites||[]).find(x=>x.id===depSiteId);
       siteName = s ? s.name : '';
     }
-    if(!siteName){ showToast('Indique le nom du chantier ou du client'); _reenableAlerteSendBtn(); return; }
+    // v5.41.8 — correctif « le dépannage ne s'envoie pas » : auparavant,
+    // ne RIEN choisir dans le menu « Nom du chantier » (valeur par défaut
+    // "") bloquait l'envoi avec un toast d'erreur facilement manqué sur
+    // téléphone — alors qu'un expéditeur qui tape juste une adresse + des
+    // notes s'attend à ce que ça parte. On n'exige donc plus un chantier
+    // choisi explicitement : si rien n'est sélectionné/tapé, on se rabat
+    // sur l'adresse comme intitulé, sinon sur un intitulé générique —
+    // l'envoi n'est plus jamais bloqué silencieusement pour ce champ.
+    if(!siteName){
+      const addrVal = addressEl ? addressEl.value.trim() : '';
+      siteName = addrVal || 'Dépannage';
+    }
 
     const keyboxEl = document.getElementById('alerteDepannageKeybox');
     depannageData = {
@@ -13059,6 +13103,82 @@ function openAlertesChatThread(idx){
 function _resendAlertToChatPerson(authId){
   const modal = document.getElementById('modal-alertesChatThread');
   if(modal) modal.remove();
+  _alerteSelectedAuthIds = new Set([authId]);
+  openAlerteComposeGroup();
+}
+
+/* ── Picker "+ Nouveau" (v5.41.8) ──────────────────────────────────────
+   Ouvre le choix de destinataire (recherche + liste des membres, déjà
+   présent dans #alertesNewRecipientSection, habituellement masqué) dans
+   une modale dédiée. On RÉUTILISE le DOM existant (même ids, même logique
+   de recherche/filtre) en le déplaçant temporairement dans la modale au
+   lieu de dupliquer le HTML/JS — au clic sur la modale fermée, le bloc
+   retourne à sa place d'origine dans la section Envoi.
+   _alertePickerSingleMode bascule renderAlertesConducteurList() en mode
+   "un clic = un choix direct" (voir plus haut) plutôt que coche multiple. */
+let _alertePickerSingleMode = false;
+
+function _openNewRecipientPicker(){
+  const section = document.getElementById('alertesNewRecipientSection');
+  if(!section) return;
+
+  const ex = document.getElementById('modal-newRecipientPicker');
+  if(ex) ex.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-newRecipientPicker';
+  div.innerHTML = `
+    <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
+      <div class="modal-header">
+        <h2>💬 Nouveau destinataire</h2>
+        <button class="modal-close" id="newRecipientPickerClose">×</button>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Choisis une personne pour ouvrir sa conversation, ou lui envoyer une nouvelle alerte si aucune n'existe encore.</div>
+      <div id="newRecipientPickerSlot" style="flex:1;overflow-y:auto;"></div>
+    </div>`;
+  document.body.appendChild(div);
+
+  // Déplace le bloc existant (recherche + chips + liste) dans la modale,
+  // le rend visible, et passe en mode sélection simple.
+  document.getElementById('newRecipientPickerSlot').appendChild(section);
+  section.style.display = 'block';
+  _alertePickerSingleMode = true;
+  _alerteSelectedAuthIds.clear();
+  document.getElementById('alertesSearchInput').value = '';
+  renderAlertesConducteurList();
+
+  document.getElementById('newRecipientPickerClose').addEventListener('click', _closeNewRecipientPicker);
+  div.addEventListener('click', (e) => { if(e.target === div) _closeNewRecipientPicker(); });
+}
+
+function _closeNewRecipientPicker(){
+  const section = document.getElementById('alertesNewRecipientSection');
+  const sendSection = document.getElementById('alertesSendSection');
+  const modal = document.getElementById('modal-newRecipientPicker');
+  // Remet le bloc "Nouveau destinataire" à sa place d'origine (masqué) dans
+  // la section Envoi, juste après la liste des conversations.
+  if(section && sendSection) sendSection.appendChild(section);
+  if(section) section.style.display = 'none';
+  _alertePickerSingleMode = false;
+  if(modal) modal.remove();
+}
+
+/* Un seul destinataire choisi dans le picker "+ Nouveau" : si une
+   conversation existe déjà avec lui (_alertesChatRowsCache, déjà calculée
+   par renderAlertesChatList), on la rouvre directement ; sinon on ouvre la
+   composition d'une nouvelle alerte pour cette personne. */
+function _pickRecipientFromNewRecipientPicker(authId, name){
+  _closeNewRecipientPicker();
+
+  const existingIdx = (_alertesChatRowsCache||[]).findIndex(r =>
+    r.type === 'person' && (r.authId === authId || (!r.authId && r.name === name))
+  );
+  if(existingIdx !== -1){
+    openAlertesChatThread(existingIdx);
+    return;
+  }
+
   _alerteSelectedAuthIds = new Set([authId]);
   openAlerteComposeGroup();
 }
@@ -31065,9 +31185,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.8';
+const APP_VERSION = '5.41.9';
 
 const CHANGELOG = [
+  {
+    version: '5.41.9',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🐛', text: "Corrigé : une alerte « Dépannage » ne s'envoyait pas (sans message d'erreur visible) quand le menu « Nom du chantier » était laissé sur sa valeur par défaut — il n'est plus obligatoire de choisir explicitement un chantier, l'adresse sert d'intitulé si rien n'est choisi" },
+      { icon: '👥', text: "« Nouveau destinataire » n'est plus affiché en permanence sous Conversations — un bouton « + Nouveau » à côté du titre ouvre la liste des destinataires : choisir une personne avec qui une conversation existe déjà la rouvre directement, sinon ça ouvre une nouvelle alerte pour elle" },
+      { icon: '💬', text: "Les ouvriers (et tout rôle sans droit d'envoi) voient maintenant leurs alertes reçues groupées par expéditeur façon messagerie, avec les mêmes actions (Signer, Détails, Pointer…) directement dans la conversation" },
+    ]
+  },
   {
     version: '5.41.8',
     date: '13/09/2026',
@@ -40852,6 +40981,15 @@ function renderAlertesTuile(){
     if(typeof renderAlertesChatList === 'function') renderAlertesChatList();
   }
 
+  // v5.41.8 — pour les rôles qui ne peuvent PAS envoyer (ouvrier, et tout
+  // rôle sans droit d'envoi), on affiche à la place les alertes reçues
+  // groupées PAR EXPÉDITEUR façon messagerie (symétrique de "Conversations"
+  // côté envoi), avec possibilité d'ouvrir chaque conversation et d'agir
+  // sur les alertes qu'elle contient (Signer, Détails, Pointer…).
+  const receivedSection = document.getElementById('alertesReceivedSection');
+  if(receivedSection) receivedSection.style.display = canSend ? 'none' : 'block';
+  if(!canSend && typeof renderAlertesReceivedChatList === 'function') renderAlertesReceivedChatList();
+
   // Alertesmega : synchroniser le visuel de la pilule avec le réglage.
   const megaOn = _alertesMegaEnabled();
   const toggle = document.getElementById('alertesMegaToggle');
@@ -40895,6 +41033,172 @@ function _alertSiteLabel(a){
   return null;
 }
 
+/* Construit le HTML des boutons d'action pour une alerte REÇUE, selon son
+   type (kind) — factorisé (v5.41.8) pour être partagé entre
+   _renderAlertesHistoList (liste groupée par chantier, existante) et les
+   nouvelles "Conversations" groupées par expéditeur (voir plus bas).
+   refreshFn : fonction à rappeler après certaines actions (ex: Alertesmega)
+   pour rafraîchir la vue appelante. */
+function _alertReceivedActionsHtml(a, isRead, myId, refreshFn){
+  let closeHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>`;
+  let mainActionHtml = '';
+
+  if(a.kind === 'signature'){
+    if(isRead){
+      mainActionHtml = `<span class="hint" style="align-self:center;">✅ Signature envoyée</span>`;
+    } else {
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')"><img src="icons/stylo.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Signer</button>`;
+      closeHtml = '';
+    }
+  } else if(a.kind === 'photo'){
+    mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
+  } else if(a.kind === 'heures' || a.kind === 'rappel-heures'){
+    mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Pointer</button>`;
+  } else if(a.kind === 'evenement'){
+    const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
+    mainActionHtml = alreadyAdded
+      ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
+      : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
+  } else if(a.kind === 'nouveau-chantier'){
+    mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
+  } else if(a.kind === 'depannage'){
+    const refreshName = (typeof refreshFn === 'function' && refreshFn.name) ? refreshFn.name : '_renderAlertesHistoList';
+    mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
+      ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', ${refreshName})"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>`;
+  }
+
+  return [mainActionHtml, closeHtml].filter(Boolean).join(' ');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CONVERSATIONS REÇUES (v5.41.8) — pour les rôles qui ne peuvent PAS
+   envoyer (ouvrier, etc.) : mêmes alertes que _myAlertsCache (déjà
+   filtrées pour moi par _filterAlertsForMe/checkForNewAlerts), mais
+   regroupées PAR EXPÉDITEUR façon messagerie, symétrique de
+   "Conversations" côté envoi — pour visualiser facilement ce que chaque
+   personne nous a envoyé plutôt qu'une longue liste plate groupée par
+   chantier.
+   ═══════════════════════════════════════════════════════════════════ */
+let _alertesReceivedRowsCache = []; // [{senderAuthId, name, alerts:[...]}]
+
+function _myReceivedAlertsGroupedBySender(){
+  const mine = (_myAlertsCache || []).slice();
+  const byPerson = {};
+  mine.forEach(a => {
+    const key = a.senderAuthId ? ('id:' + a.senderAuthId) : ('name:' + (a.senderName || 'Expéditeur inconnu'));
+    if(!byPerson[key]) byPerson[key] = { key, senderAuthId: a.senderAuthId || null, name: a.senderName || 'Expéditeur inconnu', alerts: [] };
+    byPerson[key].alerts.push(a);
+  });
+  return Object.values(byPerson).map(p => {
+    p.alerts.sort((x,y) => new Date(y.createdAt) - new Date(x.createdAt));
+    return p;
+  }).sort((a,b) => new Date(b.alerts[0].createdAt) - new Date(a.alerts[0].createdAt));
+}
+
+function renderAlertesReceivedChatList(){
+  const el = document.getElementById('alertesReceivedChatList');
+  if(!el) return;
+  const rows = _myReceivedAlertsGroupedBySender();
+  _alertesReceivedRowsCache = rows;
+
+  if(!rows.length){
+    el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucune alerte reçue pour le moment.</div>';
+    return;
+  }
+
+  const myId = getDeviceSyncId();
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', photo:'📷', 'nouveau-chantier':'🏗️' };
+
+  el.innerHTML = rows.map((r, idx) => {
+    const last = r.alerts[0];
+    const dateLabel = new Date(last.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short'});
+    const preview = (last.text||'').replace(/^.*? : /,'');
+    const unreadCount = r.alerts.filter(a => !(a.readBy||[]).includes(myId)).length;
+    return `
+    <div class="card" data-received-chat-idx="${idx}" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;">
+      <div style="width:38px;height:38px;border-radius:50%;background:var(--bg-elev);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">👤</div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.name)}</div>
+          <div class="meta" style="flex-shrink:0;">${dateLabel}</div>
+        </div>
+        <div style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${kindIcon[last.kind]||'💬'} ${escapeHtml(preview.substring(0,60))}</div>
+      </div>
+      ${unreadCount>0 ? `<span style="background:#E05555;color:#fff;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;flex-shrink:0;">${unreadCount}</span>` : ''}
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-received-chat-idx]').forEach(card => {
+    card.addEventListener('click', () => openAlertesReceivedChatThread(parseInt(card.dataset.receivedChatIdx)));
+  });
+}
+
+/* Ouvre le "fil" d'une conversation reçue : toutes les alertes de CET
+   expéditeur, en bulles chronologiques avec les mêmes boutons d'action
+   que dans "Mes alertes reçues" (Signer, Détails, Pointer…). Marque les
+   alertes affichées comme lues (comme le ferait l'ouverture de la tuile). */
+async function openAlertesReceivedChatThread(idx){
+  const row = _alertesReceivedRowsCache[idx];
+  if(!row) return;
+
+  const ex = document.getElementById('modal-alertesReceivedChatThread');
+  if(ex) ex.remove();
+
+  const myId = getDeviceSyncId();
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', photo:'📷', 'nouveau-chantier':'🏗️' };
+
+  const bubblesHtml = row.alerts.slice().reverse().map(a => {
+    const isRead = a.readBy && a.readBy.includes(myId);
+    const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+    const txt = (a.text||'').replace(/^.*? : /,'');
+    const actionHtml = _alertReceivedActionsHtml(a, isRead, myId, renderAlertesReceivedChatList);
+    return `
+      <div style="display:flex;justify-content:flex-start;margin-bottom:10px;">
+        <div style="max-width:85%;background:var(--bg-elev);border:1px solid var(--line);border-radius:14px 14px 14px 3px;padding:10px 13px;">
+          <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
+          <div style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">${dateLabel}</div>
+          ${actionHtml ? `<div class="row-actions-wrap" style="margin-top:8px;">${actionHtml}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-alertesReceivedChatThread';
+  div.innerHTML = `
+    <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
+      <div class="modal-header">
+        <h2>👤 ${escapeHtml(row.name)}</h2>
+        <button class="modal-close" onclick="closeModal('alertesReceivedChatThread')">×</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;">${bubblesHtml}</div>
+    </div>`;
+  document.body.appendChild(div);
+
+  // Marquer comme lues toutes les alertes de cette conversation, puis
+  // rafraîchir la liste (fait disparaître le badge de non-lus) — sans
+  // modifier le système global de notifications/bulle, juste readBy.
+  try{
+    const unread = row.alerts.filter(a => !(a.readBy||[]).includes(myId));
+    if(unread.length){
+      const all = await _fetchAlerts();
+      let changed = false;
+      unread.forEach(u => {
+        const real = all.find(x => x.id === u.id);
+        if(real){
+          if(!real.readBy) real.readBy = [];
+          if(!real.readBy.includes(myId)){ real.readBy.push(myId); changed = true; }
+        }
+      });
+      if(changed){
+        await _saveAlerts(all);
+        unread.forEach(u => { if(!u.readBy) u.readBy = []; if(!u.readBy.includes(myId)) u.readBy.push(myId); });
+      }
+    }
+  }catch(e){ /* silencieux */ }
+  renderAlertesReceivedChatList();
+}
+
 function _renderAlertesHistoList(){
   const list = document.getElementById('alertesHistoList');
   if(!list) return;
@@ -40924,49 +41228,7 @@ function _renderAlertesHistoList(){
   const renderCard = (a) => {
     const isRead = a.readBy && a.readBy.includes(myId);
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
-
-    // Bouton de fermeture : par défaut "Supprimer" (comportement générique),
-    // sauf cas particuliers ci-dessous où la fermeture doit être garantie
-    // par une vraie action (signature) ou prendre la forme d'une croix
-    // discrète (événement, à côté du bouton d'action principal).
-    let closeHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>`;
-    let mainActionHtml = '';
-    let cardCloseCross = '';
-
-    if(a.kind === 'signature'){
-      if(isRead){
-        // Déjà signée (readBy contient mon id, posé par _signatureFromAlertConfirm
-        // → _clearAlert) : on arrête d'imposer "Signer" pour toujours — elle
-        // devient supprimable comme les autres, sinon elle ressurgit sans fin
-        // dans la bulle/l'historique après avoir déjà été signée.
-        mainActionHtml = `<span class="hint" style="align-self:center;">✅ Signature envoyée</span>`;
-      } else {
-        // Obligatoire tant que non signée : pas de moyen de fermer/supprimer.
-        mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSignatureFromAlert('${a.id}')"><img src="icons/stylo.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Signer</button>`;
-        closeHtml = '';
-      }
-    } else if(a.kind === 'photo'){
-      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openGalleryFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
-    } else if(a.kind === 'heures' || a.kind === 'rappel-heures'){
-      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openHeuresFromAlert('${a.id}')">⏱ Pointer</button>`;
-    } else if(a.kind === 'evenement'){
-      const alreadyAdded = a.addedToAgendaBy && a.addedToAgendaBy.includes(myId);
-      mainActionHtml = alreadyAdded
-        ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
-        : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
-      // La carte reste visible tant qu'on ne la supprime pas (→ historique).
-    } else if(a.kind === 'nouveau-chantier'){
-      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
-    } else if(a.kind === 'depannage'){
-      // "Détails" ouvre la fiche complète (photos, checklist, itinéraire).
-      // "Alertesmega" remet une copie dans la bulle. La carte reste TOUJOURS
-      // visible ici : seul "Supprimer" (avec confirmation) la range dans
-      // l'historique.
-      mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
-        ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertesHistoList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>`;
-    }
-
-    const actionHtml = [mainActionHtml, closeHtml].filter(Boolean).join(' ');
+    const actionHtml = _alertReceivedActionsHtml(a, isRead, myId, _renderAlertesHistoList);
 
     return `
       <div class="card" style="margin-bottom:8px; ${isRead ? 'opacity:.75;' : ''}">
@@ -40976,7 +41238,6 @@ function _renderAlertesHistoList(){
             <div style="font-size:14px;line-height:1.5;">${escapeHtml(a.text)}</div>
             <div class="meta" style="margin-top:4px;">${dateLabel}${a.senderName ? ' · ' + escapeHtml(a.senderName) : ''}</div>
           </div>
-          ${cardCloseCross}
         </div>
         <div class="row-actions-wrap" style="margin-top:10px;">${actionHtml}</div>
       </div>`;
