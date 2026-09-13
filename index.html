@@ -31224,9 +31224,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.18';
+const APP_VERSION = '5.41.19';
 
 const CHANGELOG = [
+  {
+    version: '5.41.19',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🔔', text: "Nouveau : une fenêtre propose d'activer les notifications (bouton « Activer les notifications ») à toute personne qui n'a pas encore autorisé les notifications sur son téléphone — utile pour toute l'équipe qui n'avait pas rouvert l'app depuis les dernières mises à jour" },
+      { icon: '🧰', text: "Nouveau : les chefs d'équipe et les conducteurs de travaux reçoivent maintenant une notification quand quelqu'un emprunte ou rend une machine du magasin (« [Nom] a pris/posé [Machine] le [date] »)" },
+    ]
+  },
   {
     version: '5.41.18',
     date: '13/09/2026',
@@ -42517,6 +42525,38 @@ async function magasinPromptBorrow(machineId){
     + chefs.map(c => '<option value="'+escapeHtml(c.authId||c.name)+'" data-name="'+escapeHtml(c.name)+'">'+escapeHtml(c.name)+'</option>').join('');
 }
 
+/* v5.41.19 — Notification (in-app + push natif) quand une machine du
+   magasin est empruntée ou rendue, envoyée aux chefs d'équipe ET aux
+   conducteurs de travaux (choix de Rémi — pas aux ouvriers/comptable/
+   patron, pour ne pas les noyer sous ces événements). "Silencieux" en cas
+   d'échec : ne doit jamais bloquer l'emprunt/la restitution elle-même. */
+async function _magasinNotifyToolEvent(machine, actorName, actionLabel){
+  try{
+    const dateLabel = new Date().toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit', year:'numeric'});
+    const toolLabel = [machine.name, machine.ref].filter(Boolean).join(' ') || 'une machine';
+    const text = `🧰 ${actorName} a ${actionLabel} ${toolLabel} le ${dateLabel}`;
+
+    // Alerte in-app (visible dans la bulle Alertesmega des chefs/conducteurs
+    // via _filterAlertsForMe, qui sait déjà matcher recipientType:'roles').
+    if(typeof sendAlert === 'function'){
+      await sendAlert(text, 'roles', null, null, 'magasin', ['chef','conducteur']);
+    }
+
+    // Notification système (push natif), en plus de l'alerte in-app —
+    // même principe que pour les autres alertes (voir notifyPush).
+    if(typeof _fetchUsersRegistry === 'function' && typeof notifyPush === 'function'){
+      const users = await _fetchUsersRegistry();
+      const targetAuthIds = (users||[])
+        .filter(u => u.role === 'chef' || u.role === 'conducteur')
+        .map(u => u.authId)
+        .filter(Boolean);
+      if(targetAuthIds.length){
+        notifyPush(targetAuthIds, 'RWOOD — Magasin', text.replace(/^🧰\s*/, ''), 'magasin', 'magasin');
+      }
+    }
+  }catch(e){ /* silencieux : ne doit jamais bloquer l'emprunt/la restitution */ }
+}
+
 /* ── Confirmer l'emprunt → maj instantanée + push ────────────────── */
 async function magasinConfirmBorrow(){
   const machineId = _magasinPendingBorrowId;
@@ -42548,6 +42588,7 @@ async function magasinConfirmBorrow(){
   magasinRender();
   showToast('✓ ' + (m.name||'Machine') + ' — camion de ' + chefName);
   magasinPush(); // synchro automatique immédiate
+  _magasinNotifyToolEvent(m, borrowerName, 'pris');
 }
 
 /* ── Restitution (n'importe qui peut rendre) ─────────────────────── */
@@ -42561,6 +42602,10 @@ function magasinReturn(machineId){
   magasinRender();
   showToast('✓ ' + (m.name||'Machine') + ' rendue');
   magasinPush(); // synchro automatique immédiate
+
+  const p = (data.settings && data.settings.myProfile) || {};
+  const returnerName = ((p.firstName||'') + ' ' + (p.lastName||'')).trim() || p.name || 'Quelqu\'un';
+  _magasinNotifyToolEvent(m, returnerName, 'posé');
 }
 
 /* ── Ajout machine (ouvert à tous) ───────────────────────────────── */
@@ -44974,6 +45019,71 @@ function _simpleModeWelcomePopup(){
 }
 
 /* ═══ MODULE — SimpleMode (JS)  ·  fin ═══ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   RAPPEL D'ACTIVATION DES NOTIFICATIONS (v5.41.19)
+   Pour les comptes qui n'ont pas encore de vraie notification système
+   active (n'ont jamais répondu à la demande d'autorisation du
+   navigateur, ou l'ont fermée sans choisir) — typiquement des personnes
+   qui n'ont pas rouvert l'app depuis l'ajout des notifications natives.
+   Popup avec un seul bouton "Activer les notifications" qui déclenche le
+   même chemin que l'interrupteur de Paramètres → Notifications.
+   Ne s'affiche PAS si :
+   - navigateur sans support Notification,
+   - permission déjà accordée (déjà actif, rien à faire),
+   - permission explicitement refusée (bloqué au niveau système — un
+     bouton ici ne changerait rien, seuls les réglages du téléphone
+     peuvent le débloquer ; Paramètres → Notifications l'explique déjà),
+   - pas encore de compte créé (authId manquant — rien à activer pour
+     personne en particulier),
+   - déjà proposé récemment (cadence : au plus une fois tous les 3 jours,
+     pour ne pas harceler quelqu'un qui a déjà vu et ignoré le message —
+     mais on continue à redemander périodiquement tant que ce n'est pas
+     réglé, plutôt qu'une seule fois pour toujours comme le message
+     d'accueil du Mode Simple).
+   - une autre modale est déjà ouverte à cet instant (évite d'empiler). */
+const _NOTIF_NUDGE_KEY = 'rwood_notif_nudge_last_shown';
+const _NOTIF_NUDGE_INTERVAL_MS = 3 * 24 * 3600 * 1000; // 3 jours
+
+function _maybeShowNotifNudgePopup(){
+  try{
+    if(!('Notification' in window)) return;
+    if(Notification.permission !== 'default') return; // déjà accordée ou refusée : rien à proposer ici
+    if(typeof getSupaUserId === 'function' && !getSupaUserId()) return; // pas de compte créé
+    if(document.querySelector('.modal-overlay.open')) return; // ne pas empiler sur une autre modale déjà ouverte
+
+    const last = Number(localStorage.getItem(_NOTIF_NUDGE_KEY) || 0);
+    if(Date.now() - last < _NOTIF_NUDGE_INTERVAL_MS) return;
+    localStorage.setItem(_NOTIF_NUDGE_KEY, String(Date.now()));
+  }catch(e){ return; }
+
+  let overlay = document.getElementById('modal-notifNudge');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'modal-notifNudge';
+    overlay.innerHTML = `<div class="modal" style="text-align:center; padding:28px 22px;">
+      <div style="font-size:52px; margin-bottom:12px;">🔔</div>
+      <h2 style="font-family:var(--font-display); font-size:20px; margin-bottom:10px;">Active tes notifications</h2>
+      <p style="font-size:14px; color:var(--ink-soft); line-height:1.6; margin-bottom:18px;">
+        Reçois directement sur ton téléphone les alertes, dépannages, demandes de signature et rappels de fiche d'heures — même app fermée.
+      </p>
+      <button class="btn btn-primary btn-block" style="margin-bottom:8px;" onclick="_notifNudgeActivate()">🔔 Activer les notifications</button>
+      <button class="btn btn-outline btn-block" onclick="closeModal('notifNudge')">Plus tard</button>
+    </div>`;
+    document.body.appendChild(overlay);
+  }
+  setTimeout(() => openModal('notifNudge'), 400);
+}
+
+async function _notifNudgeActivate(){
+  closeModal('notifNudge');
+  if(typeof setPushNotifEnabled === 'function') await setPushNotifEnabled(true);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(_maybeShowNotifNudgePopup, 1800);
+});
 
 /* ═══════════════════════════════════════════════════════════════════
    MODULE — SuiviHeures (JS)  ·  début
