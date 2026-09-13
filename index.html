@@ -889,6 +889,16 @@
     border-radius: 18px 18px 0 0;
     padding: 18px 18px calc(20px + env(safe-area-inset-bottom,0));
     max-height: 88vh;
+    /* v5.41.9 — correctif « la modale ne remplit pas tout le bas de
+       l'écran sur iPhone » : 88vh se calcule sur la hauteur de viewport
+       "statique" de Safari (barre d'adresse déployée), qui est plus
+       PETITE que la hauteur réelle une fois la barre repliée — laissant
+       un vide sous la modale (fond nu, ni #app ni l'overlay ne le
+       couvrent puisque tout est déjà à sa taille finale). 88dvh (hauteur
+       de viewport DYNAMIQUE, ignorée par les navigateurs qui ne la
+       supportent pas — donc 88vh reste le repli sûr partout ailleurs)
+       se recalcule avec la barre repliée et comble bien tout l'espace. */
+    max-height: 88dvh;
     overflow-y:auto;
     overflow-x:hidden;
     box-sizing:border-box;
@@ -1854,7 +1864,7 @@
   /* Toast */
   .toast{
     position: fixed;
-    bottom: 90px;
+    bottom: calc(90px + env(safe-area-inset-bottom, 0px));
     left: 50%;
     transform: translateX(-50%) translateY(20px);
     background: var(--wood);
@@ -31185,9 +31195,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.9';
+const APP_VERSION = '5.41.10';
 
 const CHANGELOG = [
+  {
+    version: '5.41.10',
+    date: '13/09/2026',
+    entries: [
+      { icon: '📱', text: "Corrigé : sur iPhone, certaines fenêtres (ex: « Nouveau destinataire ») ne remplissaient pas tout le bas de l'écran, laissant un vide sous la fenêtre — recalcul de la hauteur pour s'adapter à la barre d'adresse de Safari" },
+      { icon: '🏗️', text: "Corrigé : le message « Nouveau chantier reçu de… » réapparaissait à chaque synchronisation au lieu de s'afficher une seule fois par chantier" },
+    ]
+  },
   {
     version: '5.41.9',
     date: '13/09/2026',
@@ -39586,14 +39604,28 @@ async function pullSitesFromChefs(){
     if(!remoteSites.length) return;
     let changed = false;
     const _isPatron = (role === 'patron'); // MODULE — PatronSync
+    // v5.41.9 — correctif « le toast "Nouveau chantier reçu" repop à chaque
+    // synchro » : on note les ids déjà annoncés une fois pour ne plus jamais
+    // re-notifier le même chantier (même si data.sites ne le contenait pas
+    // encore au moment précis de ce pull — ex: si les deux polls tombent
+    // trop près l'un de l'autre, ou si le chantier est reçu à nouveau après
+    // avoir été localement supprimé) — indépendant du système de
+    // notifications (Messagerie/dépannage), non touché ici.
+    if(!data.settings) data.settings = {};
+    if(!Array.isArray(data.settings._chefPushNotifiedSiteIds)) data.settings._chefPushNotifiedSiteIds = [];
+    const notifiedIds = data.settings._chefPushNotifiedSiteIds;
     remoteSites.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
       if(idx === -1){
         // Patron : syncLive activé pour que ses modifications repartent au serveur global
         data.sites.push({ ...remote, shared: true, syncLive: _isPatron ? true : remote.syncLive, fromChef: remote.fromChef, stockNeeds:{}, stockTaken:{} });
         changed = true;
-        showToast('🏗 Nouveau chantier reçu de ' + (remote.fromChef||'un chef'));
+        if(!notifiedIds.includes(remote.id)){
+          notifiedIds.push(remote.id);
+          showToast('🏗 Nouveau chantier reçu de ' + (remote.fromChef||'un chef'));
+        }
       } else {
+        if(!notifiedIds.includes(remote.id)) notifiedIds.push(remote.id);
         // Mettre à jour les champs du chef — même règle de décision partagée
         // que syncAllSitesPull/pullSharedSites (voir _applyRemoteSiteIfNewer) :
         // AVANT, ces champs (dont "status") étaient écrasés sans jamais
