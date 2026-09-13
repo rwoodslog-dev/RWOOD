@@ -31224,9 +31224,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.15';
+const APP_VERSION = '5.41.16';
 
 const CHANGELOG = [
+  {
+    version: '5.41.16',
+    date: '13/09/2026',
+    entries: [
+      { icon: '💬', text: "Corrigé : supprimer une notification depuis la bulle flottante Alertesmega la fait maintenant disparaître UNIQUEMENT de la bulle — elle reste visible dans la conversation avec l'expéditeur, pour pouvoir la revoir plus tard" },
+    ]
+  },
   {
     version: '5.41.15',
     date: '13/09/2026',
@@ -40872,6 +40879,17 @@ async function _checkForNewAlertsInner(){
 
     const dismissed = (data.settings && data.settings.dismissedAlertIds) || [];
     if(dismissed.length) mine = mine.filter(a => !dismissed.includes(a.id));
+
+    // v5.41.16 — "Conversations" (côté ouvrier) doit continuer à montrer
+    // TOUT ce qu'on nous a envoyé, même après avoir "Supprimé" une alerte
+    // depuis la bulle flottante Alertesmega : supprimer là-bas ne doit
+    // faire disparaître l'alerte QUE de la bulle/"Mes alertes reçues", pas
+    // de l'historique de conversation avec l'expéditeur. On capture donc
+    // l'ensemble "pour moi" ICI (avant les filtres d'archivage ci-dessous,
+    // qui eux ne concernent que la bulle) dans un cache séparé, dédié aux
+    // Conversations — voir _myReceivedAlertsGroupedBySender.
+    _myAllReceivedAlertsCache = mine.slice();
+
     // Exclure les alertes rangées dans "Historique des alertes" (bouton
     // "Supprimer") — elles quittent les alertes reçues et la bulle, mais
     // restent récupérables via "Rétablir" (voir archivedAlertIds).
@@ -40947,6 +40965,10 @@ function toggleAlertesMega(on){
 }
 
 let _myAlertsCache = [];
+// v5.41.16 — cache dédié aux Conversations reçues (ouvrier) : contient TOUT
+// ce qui nous a été envoyé, y compris ce qui a été "Supprimé" (archivé) de
+// la bulle Alertesmega — voir _checkForNewAlertsInner.
+let _myAllReceivedAlertsCache = [];
 
 /* Rappel J-1 : parcourt les tâches d'agenda ajoutées depuis une alerte
    événement (fromAlertId) et dont la date tombe demain. Envoie une alerte
@@ -41204,7 +41226,11 @@ function _alertReceivedActionsHtml(a, isRead, myId, refreshFn){
 let _alertesReceivedRowsCache = []; // [{senderAuthId, name, alerts:[...]}]
 
 function _myReceivedAlertsGroupedBySender(){
-  const mine = (_myAlertsCache || []).slice();
+  // v5.41.16 — _myAllReceivedAlertsCache (pas _myAlertsCache) : une alerte
+  // "Supprimée" depuis la bulle Alertesmega reste visible ici, dans la
+  // conversation avec son expéditeur — seule la bulle/"Mes alertes reçues"
+  // doit la perdre.
+  const mine = (_myAllReceivedAlertsCache || []).slice();
   const byPerson = {};
   mine.forEach(a => {
     const key = a.senderAuthId ? ('id:' + a.senderAuthId) : ('name:' + (a.senderName || 'Expéditeur inconnu'));
