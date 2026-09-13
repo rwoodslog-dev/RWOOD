@@ -31224,9 +31224,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.16';
+const APP_VERSION = '5.41.17';
 
 const CHANGELOG = [
+  {
+    version: '5.41.17',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🗑️', text: "Corrigé : le bouton « Supprimer » sur un message DANS une conversation ne faisait rien de visible — il supprime maintenant vraiment ce message, définitivement, juste pour cette conversation (indépendant de la bulle Alertesmega). La conversation avec cette personne reste toujours ouverte et consultable, même une fois vidée de tous ses messages" },
+    ]
+  },
   {
     version: '5.41.16',
     date: '13/09/2026',
@@ -38312,6 +38319,36 @@ async function _unarchiveAlertForMe(alertId){
   }catch(e){ /* silencieux */ }
 }
 
+/* v5.41.17 — Suppression DÉFINITIVE d'une alerte depuis SA conversation
+   (indépendante de "Supprimer" dans la bulle Alertesmega, qui ne fait que
+   l'archiver — voir _archiveAlertForMe/archivedBy). Ici, un marqueur séparé
+   (convDeletedBy) retire l'alerte pour de bon de la conversation avec son
+   expéditeur, sans jamais toucher à ce que l'expéditeur voit de son côté
+   ni à la bulle. Même mécanique (liste d'authIds portée par l'alerte
+   elle-même) que l'archivage, pour résister à une resynchro. La
+   conversation elle-même (avec cette personne) reste toujours accessible
+   même une fois toutes ses alertes supprimées : elle est reconstruite à la
+   volée à partir des alertes restantes, jamais stockée séparément — voir
+   _myReceivedAlertsGroupedBySender. */
+function _isAlertDeletedFromMyConv(alert){
+  const myId = _myAlertAuthId();
+  if(!myId) return false;
+  return Array.isArray(alert.convDeletedBy) && alert.convDeletedBy.includes(myId);
+}
+
+async function _deleteAlertFromMyConversation(alertId){
+  const myId = _myAlertAuthId();
+  if(!myId) return;
+  try{
+    const alerts = await _fetchAlerts();
+    const alert = alerts.find(a => a.id === alertId);
+    if(!alert) return;
+    if(!Array.isArray(alert.convDeletedBy)) alert.convDeletedBy = [];
+    if(!alert.convDeletedBy.includes(myId)) alert.convDeletedBy.push(myId);
+    await _saveAlerts(alerts);
+  }catch(e){ /* silencieux */ }
+}
+
 /* Envoyer une nouvelle alerte (cote comptable) */
 async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds){
   if(!text || !text.trim()) return false;
@@ -40888,7 +40925,9 @@ async function _checkForNewAlertsInner(){
     // l'ensemble "pour moi" ICI (avant les filtres d'archivage ci-dessous,
     // qui eux ne concernent que la bulle) dans un cache séparé, dédié aux
     // Conversations — voir _myReceivedAlertsGroupedBySender.
-    _myAllReceivedAlertsCache = mine.slice();
+    // v5.41.17 — seul le marqueur convDeletedBy (suppression VOULUE depuis
+    // la conversation elle-même) retire une alerte de ce cache-ci.
+    _myAllReceivedAlertsCache = mine.filter(a => !_isAlertDeletedFromMyConv(a));
 
     // Exclure les alertes rangées dans "Historique des alertes" (bouton
     // "Supprimer") — elles quittent les alertes reçues et la bulle, mais
@@ -41183,8 +41222,14 @@ function _alertSiteLabel(a){
    nouvelles "Conversations" groupées par expéditeur (voir plus bas).
    refreshFn : fonction à rappeler après certaines actions (ex: Alertesmega)
    pour rafraîchir la vue appelante. */
-function _alertReceivedActionsHtml(a, isRead, myId, refreshFn){
-  let closeHtml = `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>`;
+function _alertReceivedActionsHtml(a, isRead, myId, refreshFn, deleteMode){
+  // v5.41.17 — deleteMode 'conv' (vue Conversations) supprime DÉFINITIVEMENT
+  // cette alerte de la conversation (_deleteAlertFromConvBtn) ; par défaut
+  // (bulle Alertesmega / "Mes alertes reçues"), on garde l'archivage
+  // habituel (deleteAlertToTrash) qui ne fait que la ranger côté bulle.
+  let closeHtml = deleteMode === 'conv'
+    ? `<button class="btn btn-outline btn-sm" onclick="_deleteAlertFromConvBtn('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>`
+    : `<button class="btn btn-outline btn-sm" onclick="deleteAlertToTrash('${a.id}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Supprimer</button>`;
   let mainActionHtml = '';
 
   if(a.kind === 'signature'){
@@ -41284,22 +41329,39 @@ function renderAlertesReceivedChatList(){
 /* Ouvre le "fil" d'une conversation reçue : toutes les alertes de CET
    expéditeur, en bulles chronologiques avec les mêmes boutons d'action
    que dans "Mes alertes reçues" (Signer, Détails, Pointer…). Marque les
-   alertes affichées comme lues (comme le ferait l'ouverture de la tuile). */
+   alertes affichées comme lues (comme le ferait l'ouverture de la tuile).
+   v5.41.17 — on retient QUI est affiché (_currentReceivedThreadSender),
+   pas seulement l'index dans la liste du moment : après suppression d'une
+   ou plusieurs alertes depuis ce fil, on peut ainsi le redessiner EN PLACE
+   (fenêtre toujours ouverte, jamais fermée automatiquement) même si son
+   dernier message a disparu et qu'il ne reste donc plus de ligne pour lui
+   dans la liste des conversations — voir _refreshOpenReceivedChatThread. */
+let _currentReceivedThreadSender = null; // {senderAuthId, name}
+
 async function openAlertesReceivedChatThread(idx){
   const row = _alertesReceivedRowsCache[idx];
   if(!row) return;
+  _currentReceivedThreadSender = { senderAuthId: row.senderAuthId, name: row.name };
+  await _renderReceivedChatThreadModal(row);
+}
 
-  const ex = document.getElementById('modal-alertesReceivedChatThread');
-  if(ex) ex.remove();
+async function _renderReceivedChatThreadModal(row){
+  let ex = document.getElementById('modal-alertesReceivedChatThread');
+  if(!ex){
+    ex = document.createElement('div');
+    ex.className = 'modal-overlay open';
+    ex.id = 'modal-alertesReceivedChatThread';
+    document.body.appendChild(ex);
+  }
 
   const myId = getDeviceSyncId();
   const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', photo:'📷', 'nouveau-chantier':'🏗️' };
 
-  const bubblesHtml = row.alerts.slice().reverse().map(a => {
+  const bubblesHtml = row.alerts.length ? row.alerts.slice().reverse().map(a => {
     const isRead = a.readBy && a.readBy.includes(myId);
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
     const txt = (a.text||'').replace(/^.*? : /,'');
-    const actionHtml = _alertReceivedActionsHtml(a, isRead, myId, renderAlertesReceivedChatList);
+    const actionHtml = _alertReceivedActionsHtml(a, isRead, myId, renderAlertesReceivedChatList, 'conv');
     return `
       <div style="display:flex;justify-content:flex-start;margin-bottom:10px;">
         <div style="max-width:85%;background:var(--bg-elev);border:1px solid var(--line);border-radius:14px 14px 14px 3px;padding:10px 13px;">
@@ -41308,20 +41370,16 @@ async function openAlertesReceivedChatThread(idx){
           ${actionHtml ? `<div class="row-actions-wrap" style="margin-top:8px;">${actionHtml}</div>` : ''}
         </div>
       </div>`;
-  }).join('');
+  }).join('') : `<div class="hint" style="text-align:center;padding:20px 0;">Aucun message pour le moment.</div>`;
 
-  const div = document.createElement('div');
-  div.className = 'modal-overlay open';
-  div.id = 'modal-alertesReceivedChatThread';
-  div.innerHTML = `
+  ex.innerHTML = `
     <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
       <div class="modal-header">
         <h2>👤 ${escapeHtml(row.name)}</h2>
-        <button class="modal-close" onclick="closeModal('alertesReceivedChatThread')">×</button>
+        <button class="modal-close" onclick="_currentReceivedThreadSender=null; closeModal('alertesReceivedChatThread')">×</button>
       </div>
       <div style="flex:1;overflow-y:auto;">${bubblesHtml}</div>
     </div>`;
-  document.body.appendChild(div);
 
   // Marquer comme lues toutes les alertes de cette conversation, puis
   // rafraîchir la liste (fait disparaître le badge de non-lus) — sans
@@ -41345,6 +41403,31 @@ async function openAlertesReceivedChatThread(idx){
     }
   }catch(e){ /* silencieux */ }
   renderAlertesReceivedChatList();
+}
+
+/* v5.41.17 — appelé après suppression d'une alerte DEPUIS le fil ouvert :
+   reconstruit le fil de CE même expéditeur à partir des alertes restantes
+   (même si elles sont maintenant à zéro), sans jamais fermer la fenêtre —
+   la conversation reste active et consultable, juste vide. */
+async function _refreshOpenReceivedChatThread(){
+  if(!document.getElementById('modal-alertesReceivedChatThread')) return;
+  if(!_currentReceivedThreadSender) return;
+  await checkForNewAlerts().catch(()=>{});
+  const rows = _myReceivedAlertsGroupedBySender();
+  const key = _currentReceivedThreadSender.senderAuthId ? ('id:' + _currentReceivedThreadSender.senderAuthId) : ('name:' + _currentReceivedThreadSender.name);
+  let row = rows.find(r => (r.senderAuthId ? ('id:' + r.senderAuthId) : ('name:' + r.name)) === key);
+  if(!row) row = { senderAuthId: _currentReceivedThreadSender.senderAuthId, name: _currentReceivedThreadSender.name, alerts: [] };
+  await _renderReceivedChatThreadModal(row);
+}
+
+/* v5.41.17 — Supprimer une alerte DEPUIS sa conversation (bouton dans le
+   fil) : suppression définitive pour CETTE conversation uniquement (voir
+   _deleteAlertFromMyConversation/convDeletedBy), indépendante de "Supprimer"
+   dans la bulle Alertesmega. La fenêtre du fil reste ouverte après coup. */
+async function _deleteAlertFromConvBtn(alertId){
+  if(!confirm('Supprimer définitivement ce message de la conversation ?\n\nIl ne réapparaîtra plus jamais ici, même après resynchronisation.')) return;
+  await _deleteAlertFromMyConversation(alertId);
+  await _refreshOpenReceivedChatThread();
 }
 
 function _renderAlertesHistoList(){
