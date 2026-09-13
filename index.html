@@ -10884,13 +10884,13 @@ function renderDetail(siteId){
     </div>
   `;
 
-  // MODULE — RéunionChantier (v5.41.20) : juste sous le statut. Éditable par
-  // le conducteur/patron uniquement (chef/ouvrier voient la réunion en lecture
-  // si elle est activée, mais ne peuvent pas la modifier).
+  // MODULE — RéunionChantier (v5.41.24) : juste sous le statut. Éditable par
+  // conducteur, patron ET chef (seul l'ouvrier reste en lecture seule) —
+  // voir _reunionCanEdit().
   const detailReunionZone = document.getElementById('detailReunionZone');
   if(detailReunionZone){
     detailReunionZone.innerHTML = (typeof _renderReunionChantierCard === 'function')
-      ? _renderReunionChantierCard(site, !!site.syncLive, isConducteurDetail)
+      ? _renderReunionChantierCard(site, !!site.syncLive, (typeof _reunionCanEdit === 'function') && _reunionCanEdit())
       : '';
   }
 
@@ -13562,6 +13562,14 @@ function setSiteStatus(siteId, status){
   if(!site) return;
   site.status = status;
   if(status === 'termine') site.progress = 100;
+  // MODULE — RéunionChantier (v5.41.24) : la récurrence s'arrête automatiquement
+  // dès que le chantier passe en "Terminé" — demande explicite : la réunion
+  // hebdomadaire tourne "tous les lundis jusqu'à ce que le statut passe en
+  // terminé, ou que quelqu'un enlève la récurrence à la main".
+  if(status === 'termine' && site.reunionChantier && site.reunionChantier.enabled){
+    site.reunionChantier.enabled = false;
+    if(typeof _reunionChantierRemoveUpcoming === 'function') _reunionChantierRemoveUpcoming(site);
+  }
   // Horodatage + synchro immédiate : INDISPENSABLE, exactement comme pour
   // l'adresse, la photo de couverture et la tuile assignée. Sans ça, un
   // changement de statut (ex. passer "Terminé") restait purement local et
@@ -31266,9 +31274,25 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.23';
+const APP_VERSION = '5.41.25';
 
 const CHANGELOG = [
+  {
+    version: '5.41.25',
+    date: '13/09/2026',
+    entries: [
+      { icon: '📅', text: "La réunion de chantier récurrente remplit maintenant tout le calendrier à l'avance (1 an, toutes les semaines) au lieu de n'ajouter que la prochaine occurrence — les semaines suivantes sont donc déjà visibles dans l'agenda" },
+      { icon: '✏️', text: "Le texte de l'événement est simplifié : « Réunion NOM_DU_CHANTIER à 15:00 » au lieu de « Réunion tous les lundi à 15h00 chantier … »" },
+    ]
+  },
+  {
+    version: '5.41.24',
+    date: '13/09/2026',
+    entries: [
+      { icon: '👷', text: "Les chefs d'équipe peuvent maintenant eux aussi créer/modifier la réunion de chantier récurrente (auparavant réservé au conducteur de travaux et au patron)" },
+      { icon: '🏁', text: "La réunion récurrente s'arrête automatiquement dès que le chantier passe en statut « Terminé », en plus de pouvoir être retirée manuellement à tout moment" },
+    ]
+  },
   {
     version: '5.41.23',
     date: '13/09/2026',
@@ -39515,33 +39539,48 @@ function _reunionChantierNextDateKey(weekday, time){
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
 
-/* (Re)génère l'occurrence de la semaine en cours pour ce chantier dans
-   data.tasks, en respectant les anciennes occurrences déjà passées (on ne
-   touche jamais une tâche dont la date est déjà derrière nous, elle reste
-   dans l'historique de l'agenda). Idempotent : recalculé à chaque appel, un
-   seul événement "ouvert" par chantier à la fois (identifié par
-   reunionSiteId). */
+// Nombre de semaines à l'avance à générer d'un coup (v5.41.25 — demande
+// explicite : "sur le calendrier tous les lundi du calendrier (semaine
+// 37/38/39/40/41 etc)" doivent déjà être visibles, pas juste la semaine
+// prochaine régénérée au compte-goutte à chaque ouverture de l'app).
+const REUNION_HORIZON_WEEKS = 52;
+
+/* (Re)génère TOUTES les occurrences futures (jusqu'à REUNION_HORIZON_WEEKS
+   semaines à l'avance) pour ce chantier dans data.tasks — une tâche par
+   lundi (ou jour choisi) de chaque semaine, texte "Réunion <NOM CHANTIER
+   EN MAJUSCULES> à <heure>". Les occurrences déjà passées ne sont jamais
+   touchées, elles restent dans l'historique de l'agenda. Idempotent :
+   recalculé à chaque appel (retire d'abord toutes les occurrences futures
+   de ce chantier, puis régénère tout l'horizon) — donc un changement de
+   jour/heure remplace bien toutes les occurrences à venir, sans dupliquer.
+   L'arrêt se fait par reunionChantierToggle(false) (bouton "Désactiver") ou
+   automatiquement quand le chantier passe "Terminé" (voir setSiteStatus). */
 function _reunionChantierSync(site){
   if(!site || !site.reunionChantier || !site.reunionChantier.enabled) return;
   if(!data.tasks) data.tasks = [];
   const { weekday, time } = site.reunionChantier;
-  const dateKey = _reunionChantierNextDateKey(weekday, time);
-  const text = 'Réunion tous les ' + REUNION_WEEKDAYS[weekday] + ' à ' + (time||'15:00') + ' chantier ' + site.name;
+  const text = 'Réunion ' + site.name.toUpperCase() + ' à ' + (time||'15:00');
 
-  // Retire l'ancienne occurrence future (pas encore passée) pour ce
-  // chantier, au cas où le jour/heure vient de changer — on la remplace par
-  // la nouvelle occurrence recalculée, sans jamais toucher celles du passé.
+  // Retire toutes les anciennes occurrences futures (pas encore passées) de
+  // ce chantier, au cas où le jour/heure vient de changer — remplacées par
+  // l'horizon complet recalculé, sans jamais toucher celles du passé.
   const todayKey = (() => { const n = new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); })();
   data.tasks = data.tasks.filter(t => !(t.reunionSiteId === site.id && t.date >= todayKey));
 
-  data.tasks.push({
-    id: uid(),
-    date: dateKey,
-    time: time,
-    siteId: site.id,
-    text: text,
-    reunionSiteId: site.id, // marqueur dédié (distinct de fromAlertId) pour le rappel J-1
-  });
+  const firstDateKey = _reunionChantierNextDateKey(weekday, time);
+  const firstDate = new Date(firstDateKey + 'T00:00:00');
+  for(let i = 0; i < REUNION_HORIZON_WEEKS; i++){
+    const d = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() + i * 7);
+    const dateKey = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    data.tasks.push({
+      id: uid(),
+      date: dateKey,
+      time: time,
+      siteId: site.id,
+      text: text,
+      reunionSiteId: site.id, // marqueur dédié (distinct de fromAlertId) pour le rappel J-1
+    });
+  }
   saveData();
   if(typeof renderAgenda === 'function') renderAgenda();
 }
@@ -39554,7 +39593,17 @@ function _reunionChantierSync(site){
 function _reunionChantierSyncAll(){
   if(!data.sites || !data.sites.length) return;
   data.sites.forEach(site => {
-    if(site.reunionChantier && site.reunionChantier.enabled) _reunionChantierSync(site);
+    if(!site.reunionChantier || !site.reunionChantier.enabled) return;
+    // Garde-fou (v5.41.24) : un chantier passé "Terminé" sur UN appareil peut
+    // arriver ici avec reunionChantier encore actif sur un AUTRE appareil pas
+    // encore resynchronisé — on coupe la récurrence au lieu de continuer à
+    // générer des occurrences pour un chantier fini.
+    if(site.status === 'termine'){
+      site.reunionChantier.enabled = false;
+      if(typeof _reunionChantierRemoveUpcoming === 'function') _reunionChantierRemoveUpcoming(site);
+      return;
+    }
+    _reunionChantierSync(site);
   });
 }
 document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
@@ -39605,6 +39654,15 @@ async function _checkReunionChantierReminders(){
   }
 }
 
+/* Conducteur, patron ET chef peuvent créer/modifier/supprimer la réunion
+   récurrente d'un chantier (v5.41.24 — demande explicite : les chefs
+   d'équipe doivent pouvoir changer la récurrence eux aussi). Seul l'ouvrier
+   reste en lecture seule. */
+function _reunionCanEdit(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return role === 'conducteur' || role === 'patron' || role === 'chef';
+}
+
 /* ── Bouton "Réunion" du bandeau "Chantier actif" (v5.41.23) ──────────
    Ouvre une fenêtre dédiée (créée dynamiquement, comme openTaskReminderPicker)
    demandant le jour + l'heure de la réunion récurrente, avec un bouton
@@ -39613,8 +39671,7 @@ async function _checkReunionChantierReminders(){
 function openReunionChantierModal(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
-  const _profile = (data.settings && data.settings.myProfile) || {};
-  const canEdit = _profile.role === 'conducteur' || _profile.role === 'patron';
+  const canEdit = _reunionCanEdit();
   const r = site.reunionChantier || { enabled:false, weekday:1, time:'15:00' };
 
   const ex = document.getElementById('modal-reunionChantier');
@@ -39625,7 +39682,7 @@ function openReunionChantierModal(siteId){
   div.id = 'modal-reunionChantier';
 
   if(!canEdit){
-    // Chef/ouvrier : lecture seule, rien à configurer.
+    // Ouvrier uniquement : lecture seule, rien à configurer.
     div.innerHTML = `
       <div class="modal">
         <div class="modal-header">
