@@ -5377,15 +5377,17 @@
         </label>
       </div>
 
-      <!-- Section ENVOI : visible uniquement conducteur / patron / comptable / chef
-           Refonte v5.41.8 : visuel messagerie — une barre de recherche pour
-           choisir un destinataire (ou "toute l'équipe"), qui ouvre directement
-           un fil de discussion pour lui envoyer une alerte ; la liste des
-           conversations déjà commencées est juste en dessous. Plus de liste à
-           cocher permanente : la recherche ne s'affiche que pendant la saisie. -->
+      <!-- Section DISCUSSION : visible pour TOUS les rôles depuis v5.42.0
+           (texte + photo à double sens) ; la diffusion "toute l'équipe" et le
+           "+" (alerte structurée : dépannage, signature, heures, événement)
+           restent réservés à conducteur/patron/comptable/chef, voir
+           window._rwCanSendAlerts. Refonte v5.41.8 : visuel messagerie — une
+           barre de recherche pour choisir un destinataire (ou "toute
+           l'équipe"), qui ouvre directement un fil de discussion ; la liste
+           des conversations déjà commencées est juste en dessous. -->
       <div id="alertesSendSection" style="display:none;">
         <div style="margin-bottom:12px;position:relative;">
-          <input type="text" id="alertesSearchInput" placeholder="🔎 Rechercher un destinataire, ou « tous »…"
+          <input type="text" id="alertesSearchInput" placeholder="🔎 Rechercher une personne à qui écrire…"
             oninput="_alertesSearchShow(); renderAlertesConducteurList();"
             onfocus="_alertesSearchShow(); renderAlertesConducteurList();"
             onblur="_alertesSearchHideDeferred()"
@@ -12106,7 +12108,10 @@ async function renderAlertesConducteurList(){
   // vise clairement pas quelqu'un en particulier (champ vide ou mots-clés
   // évoquant tout le monde).
   const broadcastWords = ['tous','tou','toute','équipe','equipe'];
-  const showBroadcast = !q || broadcastWords.some(w => w.includes(q) || q.includes(w));
+  // v5.42.0 — la diffusion "Toute l'équipe" reste réservée aux rôles qui
+  // pouvaient déjà envoyer des alertes groupées (conducteur/patron/comptable/
+  // chef) même maintenant que la recherche+conversations est ouverte à tous.
+  const showBroadcast = !!window._rwCanSendAlerts && (!q || broadcastWords.some(w => w.includes(q) || q.includes(w)));
 
   let html = '';
   if(showBroadcast){
@@ -12919,13 +12924,14 @@ async function sendAlerteToMembers(authIds, names){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   CONVERSATIONS — historique d'envoi classé "par personne" (v5.41.7)
-   Vue façon messagerie : une conversation par destinataire déjà contacté,
-   pour retrouver facilement ce qu'on lui a envoyé et lui renvoyer une
-   alerte en 2 clics — au lieu de tout revoir dans une longue liste plate.
-   Concerne UNIQUEMENT mes propres envois (conducteur/patron/comptable/
-   chef) ; la réception (ouvrier/chef qui reçoivent) garde son affichage
-   actuel (Mes alertes reçues), inchangé.
+   CONVERSATIONS — fil de discussion "par personne" (v5.41.7, devenu à
+   double sens en v5.42.0).
+   Vue façon messagerie : une conversation par personne avec qui j'ai déjà
+   échangé (envoyé OU reçu), pour retrouver facilement l'historique et
+   répondre en 2 clics — au lieu de tout revoir dans une longue liste plate.
+   Accessible à TOUS les rôles désormais (texte + photo) ; seule la
+   diffusion "Toute l'équipe" et le "+" (alertes structurées) restent
+   réservés à canSend — voir window._rwCanSendAlerts.
    ═══════════════════════════════════════════════════════════════════ */
 let _alertesChatRowsCache = []; // [{type:'person'|'broadcast', key, authId, name, alerts:[...]}]
 
@@ -12933,7 +12939,6 @@ async function _mySentAlertsGroupedByPerson(){
   const myAuthId = _myAlertAuthId();
   if(!myAuthId) return { people: [], broadcast: [] };
   const all = await _fetchAlerts();
-  const mine = all.filter(a => a.senderAuthId === myAuthId);
   const users = await _fetchUsersRegistry();
   const nameByAuthId = {};
   users.forEach(u => { if(u.authId) nameByAuthId[u.authId] = u.name; });
@@ -12941,25 +12946,42 @@ async function _mySentAlertsGroupedByPerson(){
   const byPerson = {};
   const broadcast = [];
 
-  mine.forEach(a => {
+  all.forEach(a => {
+    const isMine = a.senderAuthId === myAuthId;
+    const isToMe = Array.isArray(a.recipientAuthIds) && a.recipientAuthIds.includes(myAuthId);
+    if(!isMine && !isToMe) return; // ne me concerne pas du tout
+
     if(a.recipientType === 'all' || a.recipientType === 'roles'){
-      broadcast.push(a);
+      // Les diffusions groupées ("Toute l'équipe"/par rôle) restent dans
+      // l'onglet "Mes alertes reçues" classique côté destinataire ; ici on
+      // ne garde que MES propres diffusions envoyées (vue "Toute l'équipe").
+      if(isMine) broadcast.push(a);
       return;
     }
-    const ids = (a.recipientAuthIds && a.recipientAuthIds.length) ? a.recipientAuthIds : null;
-    if(ids){
-      ids.forEach(authId => {
-        const key = 'id:' + authId;
-        if(!byPerson[key]) byPerson[key] = { key, authId, name: nameByAuthId[authId] || authId, alerts: [] };
+
+    if(isMine){
+      const ids = (a.recipientAuthIds && a.recipientAuthIds.length) ? a.recipientAuthIds : null;
+      if(ids){
+        ids.forEach(authId => {
+          const key = 'id:' + authId;
+          if(!byPerson[key]) byPerson[key] = { key, authId, name: nameByAuthId[authId] || authId, alerts: [] };
+          byPerson[key].alerts.push(a);
+        });
+      } else {
+        // Anciennes alertes (avant v5.41.7) ou envoi direct sans authId connu
+        // (dépannage assigné à un chef, demande de signature...) : on
+        // regroupe par nom affiché, à défaut de mieux.
+        const label = a.recipientName || 'Destinataire inconnu';
+        const key = 'name:' + label;
+        if(!byPerson[key]) byPerson[key] = { key, authId: null, name: label, alerts: [] };
         byPerson[key].alerts.push(a);
-      });
+      }
     } else {
-      // Anciennes alertes (avant v5.41.7) ou envoi direct sans authId connu
-      // (dépannage assigné à un chef, demande de signature...) : on
-      // regroupe par nom affiché, à défaut de mieux.
-      const label = a.recipientName || 'Destinataire inconnu';
-      const key = 'name:' + label;
-      if(!byPerson[key]) byPerson[key] = { key, authId: null, name: label, alerts: [] };
+      // Reçu d'une autre personne (v5.42.0 — double sens) : l'autre partie
+      // de la conversation est l'EXPÉDITEUR.
+      const otherAuthId = a.senderAuthId || null;
+      const key = otherAuthId ? 'id:' + otherAuthId : 'name:' + (a.senderName || 'Expéditeur inconnu');
+      if(!byPerson[key]) byPerson[key] = { key, authId: otherAuthId, name: (otherAuthId && nameByAuthId[otherAuthId]) || a.senderName || 'Expéditeur inconnu', alerts: [] };
       byPerson[key].alerts.push(a);
     }
   });
@@ -13023,37 +13045,60 @@ async function renderAlertesChatList(){
    directement — que la conversation existe déjà ou soit vide (premier envoi).
    Fonction partagée par la liste "Conversations" ET par la recherche
    (v5.41.8) : les deux mènent au MÊME visuel de fil de discussion. */
+let _currentChatThreadRow = null; // fil actuellement ouvert — lu par le bouton "+"/📷/envoi texte (v5.42.0)
+
 function _buildChatThreadModal(row){
   const ex = document.getElementById('modal-alertesChatThread');
   if(ex) ex.remove();
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️' };
+  _currentChatThreadRow = row;
+  const myAuthId = _myAlertAuthId();
+  const canSendAlert = !!window._rwCanSendAlerts;
+
+  const kindIcon = { info:'💬', texte:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', photo:'📷' };
   const bubblesHtml = row.alerts.length ? row.alerts.slice().reverse().map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+    const mine = a.senderAuthId === myAuthId;
     const txt = (a.text||'').replace(/^.*? : /,'');
+    const isPhoto = a.kind === 'photo' && a.photoUrl;
+    const bodyHtml = isPhoto
+      ? `<img src="${a.photoThumbUrl || a.photoUrl}" style="max-width:180px;max-height:220px;border-radius:10px;display:block;cursor:pointer;" onclick="window.open('${a.photoUrl}','_blank')" onerror="this.style.display='none'">`
+      : `<div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>`;
     return `
-      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
-        <div style="max-width:80%;background:var(--wood);color:#fff;border-radius:14px 14px 3px 14px;padding:10px 13px;">
-          <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
-          <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:right;">${dateLabel}</div>
+      <div style="display:flex;justify-content:${mine?'flex-end':'flex-start'};margin-bottom:10px;">
+        <div style="max-width:80%;background:${mine?'var(--wood)':'var(--bg-elev)'};color:${mine?'#fff':'var(--ink)'};border-radius:${mine?'14px 14px 3px 14px':'14px 14px 14px 3px'};padding:10px 13px;${mine?'':'border:1px solid var(--line);'}">
+          ${!mine ? `<div style="font-size:11px;font-weight:700;margin-bottom:3px;opacity:.8;">${escapeHtml(a.senderName || row.name)}</div>` : ''}
+          ${bodyHtml}
+          <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:${mine?'right':'left'};">${dateLabel}</div>
         </div>
       </div>`;
-  }).join('') : '<div class="hint" style="text-align:center;padding:24px 0;">Aucune alerte envoyée pour le moment — utilise le bouton ci-dessous pour commencer la conversation.</div>';
+  }).join('') : '<div class="hint" style="text-align:center;padding:24px 0;">Aucun message pour le moment — écris ci-dessous pour commencer la conversation.</div>';
 
-  // Bouton "Nouvelle alerte" : ne fonctionne directement que si on connaît
-  // l'authId du destinataire — sinon (anciennes alertes sans authId connu)
-  // on retrouve par nom dans le répertoire déjà chargé.
+  // Bouton "+"/renvoi d'alerte structurée : ne fonctionne directement que si
+  // on connaît l'authId du destinataire — sinon (anciennes alertes sans
+  // authId connu) on retrouve par nom dans le répertoire déjà chargé.
   let resendAuthId = row.authId;
   if(!resendAuthId && row.type === 'person'){
     const match = (_alerteMembersCache||[]).find(u => u.name === row.name);
     if(match) resendAuthId = match.authId;
   }
 
-  const sendBtnHtml = row.type === 'broadcast'
+  // v5.42.0 — le fil "Toute l'équipe" reste un simple envoi groupé (pas une
+  // vraie discussion à double sens) ; les fils "personne" gagnent une barre
+  // de message (texte + "+" alerte structurée + photo).
+  const composerHtml = row.type === 'broadcast'
     ? `<button class="btn btn-primary btn-block" onclick="_resendAlertToEveryone()">🔔 Nouvelle alerte à toute l'équipe</button>`
-    : (resendAuthId
-        ? `<button class="btn btn-primary btn-block" onclick="_resendAlertToChatPerson('${resendAuthId}')">🔔 Nouvelle alerte</button>`
-        : `<div class="hint" style="text-align:center;">Ce destinataire n'a pas encore synchronisé son compte — réessaie plus tard.</div>`);
+    : `
+      <div style="display:flex;gap:8px;align-items:center;">
+        ${canSendAlert ? `<button class="btn btn-outline" style="padding:10px 12px;flex-shrink:0;border-radius:50%;" title="Alerte (dépannage, signature, événement…)" onclick="_resendAlertToChatPerson('${resendAuthId||''}')">➕</button>` : ''}
+        <button class="btn btn-outline" style="padding:10px 12px;flex-shrink:0;border-radius:50%;" title="Envoyer une photo" onclick="_openChatPhotoAttach()">📷</button>
+        <input type="text" id="chatMsgInput" placeholder="Écrire un message…"
+          style="flex:1;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:10px 14px;color:var(--ink);font-size:14px;"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();_sendChatMsgFromInput();}">
+        <button class="btn btn-primary" style="padding:10px 16px;flex-shrink:0;border-radius:20px;" onclick="_sendChatMsgFromInput()">➤</button>
+      </div>
+      ${!resendAuthId ? `<div class="hint" style="text-align:center;margin-top:6px;">⚠️ Ce destinataire n'a pas encore synchronisé son compte — le message pourrait échouer.</div>` : ''}
+    `;
 
   const div = document.createElement('div');
   div.className = 'modal-overlay open';
@@ -13065,9 +13110,68 @@ function _buildChatThreadModal(row){
         <button class="modal-close" onclick="closeModal('alertesChatThread')">×</button>
       </div>
       <div style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
-      ${sendBtnHtml}
+      ${composerHtml}
     </div>`;
   document.body.appendChild(div);
+}
+
+/* Recharge le fil actuellement ouvert (après envoi d'un message/photo),
+   pour que le nouveau message apparaisse immédiatement sans fermer la
+   modale (v5.42.0). */
+async function _refreshCurrentChatThread(){
+  const row = _currentChatThreadRow;
+  if(!row) return;
+  if(row.type === 'broadcast'){ await openAlertesChatThreadForBroadcast(); return; }
+  if(row.authId){ await openAlertesChatThreadForPerson(row.authId, row.name); return; }
+  _buildChatThreadModal(row);
+}
+
+/* Envoi d'un message texte léger (pas une alerte structurée) depuis la
+   barre du bas d'un fil de discussion — à double sens, v5.42.0. Réutilise
+   le même mécanisme que les alertes (sendAlert + notifyPush) pour que tout
+   le reste (historique, push natif, bulle) fonctionne à l'identique. */
+async function sendChatMessage(row, text){
+  if(!text || !text.trim()) return false;
+  const myAuthId = _myAlertAuthId();
+  if(!myAuthId){ showToast('Profil non synchronisé'); return false; }
+  let targetAuthId = row.authId;
+  if(!targetAuthId && row.type === 'person'){
+    const match = (_alerteMembersCache||[]).find(u => u.name === row.name);
+    if(match) targetAuthId = match.authId;
+  }
+  if(!targetAuthId){ showToast('Destinataire introuvable'); return false; }
+  const deviceId = await _resolveDeviceIdFromAuthId(targetAuthId);
+  if(!deviceId){ showToast("Ce destinataire n'a pas encore synchronisé son compte — réessaie plus tard"); return false; }
+
+  const p = data.settings && data.settings.myProfile;
+  const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'Moi';
+  const alertText = senderName + ' : ' + text.trim();
+
+  const ok = await sendAlert(alertText, 'devices', null, row.name, 'info', null, null, [deviceId], null, null, [targetAuthId]);
+  if(ok){
+    notifyPush([targetAuthId], 'RWOOD — ' + senderName, text.trim(), 'info', 'alertes');
+    try{ if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList(); }catch(e){}
+    try{ if(typeof renderAlertesChatList === 'function') renderAlertesChatList(); }catch(e){}
+  } else {
+    showToast('❌ Échec de l\'envoi');
+  }
+  return ok;
+}
+
+/* Lit la barre de saisie du fil ouvert, envoie, puis rafraîchit le fil. */
+async function _sendChatMsgFromInput(){
+  const input = document.getElementById('chatMsgInput');
+  if(!input) return;
+  const text = input.value.trim();
+  if(!text) return;
+  const row = _currentChatThreadRow;
+  if(!row) return;
+  input.value = '';
+  input.disabled = true;
+  const ok = await sendChatMessage(row, text);
+  if(ok) await _refreshCurrentChatThread();
+  else { input.disabled = false; input.value = text; input.focus(); }
 }
 
 /* Ouvre le fil d'une conversation déjà listée (clic dans "Conversations"). */
@@ -13083,10 +13187,15 @@ function openAlertesChatThread(idx){
 async function openAlertesChatThreadForPerson(authId, name){
   const myAuthId = _myAlertAuthId();
   const all = myAuthId ? await _fetchAlerts() : [];
+  // v5.42.0 — double sens : j'inclus aussi ce que CETTE personne m'a envoyé,
+  // pas seulement mes propres envois.
   const alerts = all.filter(a =>
-    a.senderAuthId === myAuthId &&
     a.recipientType !== 'all' && a.recipientType !== 'roles' &&
-    ((a.recipientAuthIds && a.recipientAuthIds.includes(authId)) || (!a.recipientAuthIds && a.recipientName === name))
+    (
+      (a.senderAuthId === myAuthId && ((a.recipientAuthIds && a.recipientAuthIds.includes(authId)) || (!a.recipientAuthIds && a.recipientName === name)))
+      ||
+      (a.senderAuthId === authId && Array.isArray(a.recipientAuthIds) && a.recipientAuthIds.includes(myAuthId))
+    )
   );
   alerts.sort((x,y) => new Date(y.createdAt) - new Date(x.createdAt));
   _buildChatThreadModal({ type:'person', key:'id:'+authId, authId, name, alerts });
@@ -13124,6 +13233,140 @@ async function _resendAlertToEveryone(){
   _alerteMembersCache = valid; // pour que openAlerteComposeGroup() retrouve les noms
   _alerteSelectedAuthIds = new Set(valid.map(u => u.authId));
   openAlerteComposeGroup();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PHOTO DANS LE CHAT — lié à un chantier (v5.42.0)
+   La photo envoyée dans une conversation DOIT être liée à un chantier :
+   elle s'enregistre UNE SEULE FOIS dans la Galerie/Documents partagés de
+   ce chantier (addSharedMediaToSite, réutilisée telle quelle — aucun
+   second upload), et le même url/thumbUrl est simplement référencé dans le
+   message de chat. On peut soit envoyer une photo toute neuve (prise/choisie
+   sur le téléphone), soit repartager une photo déjà présente dans un
+   chantier (aucun upload dans ce cas).
+   ═══════════════════════════════════════════════════════════════════ */
+function _openChatPhotoAttach(){
+  const row = _currentChatThreadRow;
+  if(!row) return;
+  const ex = document.getElementById('modal-chatPhotoAttach');
+  if(ex) ex.remove();
+
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-chatPhotoAttach';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>📷 Envoyer une photo</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-chatPhotoAttach').remove()">×</button>
+      </div>
+      <div class="hint" style="margin-bottom:12px;">La photo s'enregistre aussi dans la Galerie du chantier choisi — une seule fois.</div>
+      <div class="field" style="margin-bottom:14px;">
+        <label>Chantier concerné</label>
+        <select id="chatPhotoSiteSelect" onchange="_renderChatPhotoExistingGrid()">
+          <option value="">— Choisir un chantier —</option>
+          ${(data.sites||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+        </select>
+      </div>
+      <button type="button" class="btn btn-outline btn-block" style="margin-bottom:14px;" onclick="document.getElementById('chatPhotoFileInput').click()">
+        <img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Prendre / choisir une nouvelle photo
+      </button>
+      <input type="file" id="chatPhotoFileInput" accept="image/*" style="display:none;" onchange="_sendChatNewPhoto(this.files[0])">
+      <div class="section-title" style="margin-top:0;">Ou choisir une photo déjà dans ce chantier</div>
+      <div id="chatPhotoExistingGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;"></div>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+function _renderChatPhotoExistingGrid(){
+  const grid = document.getElementById('chatPhotoExistingGrid');
+  const select = document.getElementById('chatPhotoSiteSelect');
+  if(!grid || !select) return;
+  const siteId = select.value;
+  if(!siteId){ grid.innerHTML = ''; return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  const media = ((site && site.sharedMedia) || []).filter(m => m.type === 'photo');
+  if(!media.length){
+    grid.innerHTML = '<div class="hint" style="grid-column:1/-1;text-align:center;padding:8px;">Aucune photo dans ce chantier.</div>';
+    return;
+  }
+  grid.innerHTML = media.slice().reverse().map(m => `
+    <img src="${m.thumbUrl || m.url}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;" onerror="this.style.display='none'" onclick="_sendChatExistingPhoto('${siteId}','${m.id}')">
+  `).join('');
+}
+
+/* Nouvelle photo (prise/choisie sur le téléphone) : un seul upload, via la
+   même fonction que la Galerie du chantier (addSharedMediaToSite). */
+async function _sendChatNewPhoto(file){
+  if(!file) return;
+  const row = _currentChatThreadRow;
+  const siteSelect = document.getElementById('chatPhotoSiteSelect');
+  const siteId = siteSelect ? siteSelect.value : '';
+  if(!row) return;
+  if(!siteId){ showToast('Choisis un chantier pour enregistrer la photo'); return; }
+  const modal = document.getElementById('modal-chatPhotoAttach');
+  if(modal) modal.remove();
+  try{
+    await addSharedMediaToSite(siteId, file, { silent:true });
+    const site = data.sites.find(s => s.id === siteId);
+    const media = site && site.sharedMedia && site.sharedMedia[site.sharedMedia.length - 1];
+    if(!media){ showToast('❌ Échec de l\'envoi de la photo'); return; }
+    await _sendChatPhotoAlert(row, siteId, media);
+  } catch(e){
+    showToast('Erreur upload : ' + (e.message||''));
+  }
+}
+
+/* Photo déjà présente dans le chantier : aucun ré-upload, on référence
+   simplement le même url/thumbUrl dans le message de chat. */
+async function _sendChatExistingPhoto(siteId, mediaId){
+  const row = _currentChatThreadRow;
+  if(!row) return;
+  const modal = document.getElementById('modal-chatPhotoAttach');
+  if(modal) modal.remove();
+  const site = data.sites.find(s => s.id === siteId);
+  const media = site && (site.sharedMedia||[]).find(m => m.id === mediaId);
+  if(!media){ showToast('Photo introuvable'); return; }
+  await _sendChatPhotoAlert(row, siteId, media);
+}
+
+/* Crée l'alerte type 'photo' qui porte le message de chat, en référençant
+   le média déjà uploadé (une seule fois, via addSharedMediaToSite) — le
+   bouton "Visionner" existant sur ce type d'alerte ouvre directement la
+   Galerie du chantier, ce qui reste cohérent ici. */
+async function _sendChatPhotoAlert(row, siteId, media){
+  const myAuthId = _myAlertAuthId();
+  if(!myAuthId){ showToast('Profil non synchronisé'); return false; }
+  let targetAuthId = row.authId;
+  if(!targetAuthId && row.type === 'person'){
+    const match = (_alerteMembersCache||[]).find(u => u.name === row.name);
+    if(match) targetAuthId = match.authId;
+  }
+  if(!targetAuthId){ showToast('Destinataire introuvable'); return false; }
+  const deviceId = await _resolveDeviceIdFromAuthId(targetAuthId);
+  if(!deviceId){ showToast("Ce destinataire n'a pas encore synchronisé son compte — réessaie plus tard"); return false; }
+
+  const p = data.settings && data.settings.myProfile;
+  const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'Moi';
+  const site = data.sites.find(s => s.id === siteId);
+  const alertText = `${senderName} : 📷 Photo — ${site ? site.name : ''}`;
+
+  const ok = await sendAlert(alertText, 'devices', null, row.name, 'photo', null, siteId, [deviceId], null, null, [targetAuthId], {
+    photoUrl: media.url,
+    photoThumbUrl: media.thumbUrl || null,
+    photoMediaId: media.id
+  });
+  if(ok){
+    notifyPush([targetAuthId], 'RWOOD — ' + senderName, '📷 Nouvelle photo', 'photo', 'alertes');
+    showToast('✅ Photo envoyée — enregistrée dans ' + (site ? site.name : 'le chantier'));
+    try{ if(typeof _renderAlertesHistoList === 'function') _renderAlertesHistoList(); }catch(e){}
+    try{ if(typeof renderAlertesChatList === 'function') renderAlertesChatList(); }catch(e){}
+    await _refreshCurrentChatThread();
+  } else {
+    showToast('❌ Échec de l\'envoi de l\'alerte (la photo reste dans le chantier)');
+  }
+  return ok;
 }
 
 /* ============ ITINÉRAIRES ============ */
@@ -31128,9 +31371,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.8';
+const APP_VERSION = '5.42.0';
 
 const CHANGELOG = [
+  {
+    version: '5.42.0',
+    date: '13/09/2026',
+    entries: [
+      { icon: '💬', text: "Alertes — les conversations deviennent de vraies discussions à double sens : tout le monde peut désormais écrire à qui il veut (pas seulement conducteur/patron/comptable/chef), et répondre directement depuis le fil. Une barre en bas du fil permet d'écrire un message, le bouton 📷 d'envoyer une photo, et le bouton ➕ (réservé à conducteur/patron/comptable/chef) d'éditer une alerte complète (dépannage, signature, heures, événement)." },
+      { icon: '📷', text: "Photo dans une conversation : choisis le chantier concerné, puis prends une nouvelle photo OU repartage-en une déjà présente dans sa Galerie — elle ne s'enregistre qu'une seule fois dans les Documents partagés du chantier, jamais en double." },
+      { icon: '🌍', text: "La diffusion « Toute l'équipe » reste réservée à conducteur/patron/comptable/chef, comme avant." },
+    ]
+  },
   {
     version: '5.41.8',
     date: '13/09/2026',
@@ -38157,7 +38409,7 @@ async function _unarchiveAlertForMe(alertId){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds, extraFields){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
@@ -38189,7 +38441,8 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       depannageMedia: _depannageMediaTagged, // médias de l'expéditeur (fusionnés avec ceux du destinataire via _addDepannageMedia)
       senderName: _senderName,
       createdAt: new Date().toISOString(),
-      readBy: []
+      readBy: [],
+      ...(extraFields || {}) // v5.42.0 — ex: photoUrl/photoThumbUrl/photoMediaId pour le chat "photo liée à un chantier"
     });
     await _saveAlerts(alerts);
     // Met à jour immédiatement la bulle/badge (sans attendre le prochain
@@ -40908,12 +41161,18 @@ function renderAlertesTuile(){
   const canSendDepannage = canSendFull || myRole === 'chef';
   const canSend = canSendFull || canSendDepannage;
 
+  // v5.42.0 — Conversations à double sens : TOUT le monde peut discuter
+  // (texte + photo) avec n'importe qui, donc cette section reste visible
+  // pour tous les rôles désormais. canSend continue de contrôler UNIQUEMENT
+  // l'accès à la diffusion "Toute l'équipe" et au bouton "+" (alertes
+  // structurées : dépannage, signature, heures, événement) dans un fil —
+  // voir window._rwCanSendAlerts, lu par renderAlertesConducteurList() et
+  // _buildChatThreadModal().
   const sendSection = document.getElementById('alertesSendSection');
-  if(sendSection) sendSection.style.display = canSend ? 'block' : 'none';
-  if(canSend){
-    renderAlertesConducteurList();
-    if(typeof renderAlertesChatList === 'function') renderAlertesChatList();
-  }
+  if(sendSection) sendSection.style.display = 'block';
+  window._rwCanSendAlerts = canSend;
+  renderAlertesConducteurList();
+  if(typeof renderAlertesChatList === 'function') renderAlertesChatList();
 
   // Alertesmega : synchroniser le visuel de la pilule avec le réglage.
   const megaOn = _alertesMegaEnabled();
