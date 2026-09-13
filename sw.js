@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v787';
+const CACHE_NAME = 'rwood-cache-v788';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -79,7 +79,7 @@ const ASSETS = [
   './icons/musique/radio.png',
   './icons/musique/country.png',
   './icons/musique/casque.png',
-  './icons/musique/note.png',
+  './icons/musique/note-de-musique.png',
   './icons/musique/pause.png',
   './icons/musique/play.png',
   './icons/musique/precedent.png',
