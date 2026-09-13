@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v784';
+const CACHE_NAME = 'rwood-cache-v786';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -76,6 +76,19 @@ const ASSETS = [
   './icons/bulle-gyrophare.png',
   './icons/bulle-ampoule.png',
   './icons/bulle-cone.png',
+  './icons/musique/radio.png',
+  './icons/musique/country.png',
+  './icons/musique/casque.png',
+  './icons/musique/note.png',
+  './icons/musique/pause.png',
+  './icons/musique/play.png',
+  './icons/musique/precedent.png',
+  './icons/musique/micro.png',
+  './icons/musique/reggae.png',
+  './icons/musique/guitare.png',
+  './icons/musique/suivant.png',
+  './icons/musique/volume.png',
+  './icons/musique/meteo.png',
   './exceljs.min.js',
   './modele_salaire.xlsx',
 ];
