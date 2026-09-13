@@ -4152,6 +4152,9 @@
       <!-- MODULE — PCDashboard : bandeau Chantier actif (desktop uniquement, ≥860px).
            Rempli dynamiquement par renderChantierActifBanner(). -->
       <div id="chantierActifBanner"></div>
+      <!-- MODULE — RéunionChantier (v5.41.20) : réunion hebdomadaire récurrente
+           du chantier actif, affichée juste sous le bandeau "Chantier actif". -->
+      <div id="chantierActifReunionZone"></div>
       <div class="view-heading" style="display:flex;align-items:center;justify-content:space-between;">
         <span>Chantiers en cours</span>
         <button id="chefSyncBtn" style="display:none; background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--ink-soft); font-size:12px; padding:4px 10px; cursor:pointer;"
@@ -4173,6 +4176,9 @@
 
       <!-- Statut + couleur : seuls éléments d'info gardés visibles en permanence. -->
       <div id="detailHeader"></div>
+
+      <!-- MODULE — RéunionChantier (v5.41.20) : juste sous le statut du chantier. -->
+      <div id="detailReunionZone"></div>
 
       <!-- Point 2c : barre d'avancement déplacée juste sous Statut. -->
       <div class="section-title" style="margin-top:18px;">Avancement</div>
@@ -10880,6 +10886,16 @@ function renderDetail(siteId){
       </div>
     </div>
   `;
+
+  // MODULE — RéunionChantier (v5.41.20) : juste sous le statut. Éditable par
+  // le conducteur/patron uniquement (chef/ouvrier voient la réunion en lecture
+  // si elle est activée, mais ne peuvent pas la modifier).
+  const detailReunionZone = document.getElementById('detailReunionZone');
+  if(detailReunionZone){
+    detailReunionZone.innerHTML = (typeof _renderReunionChantierCard === 'function')
+      ? _renderReunionChantierCard(site, !!site.syncLive, isConducteurDetail)
+      : '';
+  }
 
   // Bouton Supprimer : tout en bas de la page (action rare, volontairement isolée).
   const _deleteZone = document.getElementById('detailDeleteZone');
@@ -31253,9 +31269,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.20';
+const APP_VERSION = '5.41.21';
 
 const CHANGELOG = [
+  {
+    version: '5.41.21',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🗓️', text: "La carte « Réunion de chantier » est maintenant affichée directement sous le statut du chantier (fiche détaillée) et sous le bandeau « Chantier actif », au lieu de l'onglet Synchro Équipe" },
+    ]
+  },
   {
     version: '5.41.20',
     date: '13/09/2026',
@@ -39389,9 +39412,18 @@ function _generateRandomCompanyCode(){
    ══════════════════════════════════════════════════════════════════ */
 const REUNION_WEEKDAYS = ['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'];
 
-function _renderReunionChantierCard(site, syncLive){
+function _renderReunionChantierCard(site, syncLive, canEdit){
   const r = site.reunionChantier || { enabled:false, weekday:1, time:'15:00' };
+  // Si aucune réunion n'est activée ET qu'on n'a pas le droit de la créer
+  // (chef/ouvrier), pas la peine d'afficher une carte vide en lecture seule.
+  if(!r.enabled && !canEdit) return '';
   const updateFn = syncLive ? 'reunionChantierUpdateAndPush' : 'reunionChantierUpdateLocal';
+  const toggleHtml = canEdit
+    ? `<label class="toggle-switch" style="flex-shrink:0;">
+         <input type="checkbox" ${r.enabled?'checked':''} onchange="reunionChantierToggle('${site.id}', this.checked, ${syncLive})">
+         <span class="toggle-slider"></span>
+       </label>`
+    : `<span class="badge ${r.enabled?'en-cours':''}" style="font-size:10.5px; flex-shrink:0;">${r.enabled?'Activée':'Désactivée'}</span>`;
   return `
     <div class="card" style="margin-top:12px;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:${r.enabled?'10px':'0'};">
@@ -39399,12 +39431,9 @@ function _renderReunionChantierCard(site, syncLive){
           <div style="font-weight:700; font-size:14px;">🗓️ Réunion de chantier</div>
           <div class="hint" style="margin-top:2px;">Réunion hebdomadaire récurrente + rappel automatique la veille</div>
         </div>
-        <label class="toggle-switch" style="flex-shrink:0;">
-          <input type="checkbox" ${r.enabled?'checked':''} onchange="reunionChantierToggle('${site.id}', this.checked, ${syncLive})">
-          <span class="toggle-slider"></span>
-        </label>
+        ${toggleHtml}
       </div>
-      ${r.enabled ? `
+      ${r.enabled ? (canEdit ? `
         <div style="display:flex; gap:8px;">
           <div class="field" style="flex:1; margin-bottom:0;">
             <label>Jour</label>
@@ -39418,7 +39447,9 @@ function _renderReunionChantierCard(site, syncLive){
           </div>
         </div>
         <div class="hint" style="margin-top:8px;">Ex : réunion tous les ${REUNION_WEEKDAYS[r.weekday]} à ${r.time||'15:00'} — chantier ${escapeHtml(site.name)}</div>
-      ` : ''}
+      ` : `
+        <div class="hint">Tous les ${REUNION_WEEKDAYS[r.weekday]} à ${r.time||'15:00'} — chantier ${escapeHtml(site.name)}</div>
+      `) : ''}
     </div>
   `;
 }
@@ -39657,8 +39688,6 @@ function renderSynchroEquipe(siteId){
         </div>
       </div>
 
-      ${_renderReunionChantierCard(site, false)}
-
       <div class="section-title" style="margin-top:16px;">Événements chantier</div>
       <div id="customEventsList_${siteId}">${_renderCustomEventsList(site, false)}</div>
       <div class="card" style="margin-top:8px;">
@@ -39706,8 +39735,6 @@ function renderSynchroEquipe(siteId){
           <input type="date" value="${site.dueDate||''}" onchange="updateSiteFieldAndPush('${siteId}','dueDate',this.value)">
         </div>
       </div>
-
-      ${_renderReunionChantierCard(site, true)}
 
       <div class="section-title" style="margin-top:16px;">Événements chantier (→ temps réel)</div>
       <div id="customEventsList_${siteId}">${_renderCustomEventsList(site, true)}</div>
@@ -44289,6 +44316,16 @@ function renderChantierActifBanner(){
       <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.noteCategories||[]).filter(c=>!c.archived).reduce((sum,c)=>sum+(c.notes||[]).filter(x=>!x.archived).length,0); return n ? ` (${n})` : ''; })()}</button>
     </div>
   `;
+
+  // MODULE — RéunionChantier (v5.41.20) : juste sous le bandeau "Chantier actif".
+  const reunionZone = document.getElementById('chantierActifReunionZone');
+  if(reunionZone){
+    const _profile2 = (data.settings && data.settings.myProfile) || {};
+    const isConducteurBanner = _profile2.role === 'conducteur' || _profile2.role === 'patron';
+    reunionZone.innerHTML = (typeof _renderReunionChantierCard === 'function')
+      ? _renderReunionChantierCard(site, !!site.syncLive, isConducteurBanner)
+      : '';
+  }
 }
 
 /* Aperçu compact des notes du chantier actif, affiché directement dans le
