@@ -12874,18 +12874,25 @@ async function sendAlerteToMembers(authIds, names){
 
   showToast('⏳ Envoi en cours…');
   const deviceIds = [];
-  const resolvedAuthIds = []; // parallèle à deviceIds — pour le classement "chat par personne" (v5.41.7)
+  // v5.41.10 — correctif « le dépannage ne s'envoie toujours pas » : avant,
+  // un destinataire dont le deviceId n'était pas encore résolu (via
+  // _comptableLiveData/pullAllPointagesForComptable — dépend d'un pointage
+  // déjà synchronisé, un lien fragile et sans rapport avec le fait qu'il
+  // soit un membre connu de l'équipe) était purement et simplement EXCLU de
+  // l'envoi, et l'envoi entier échouait si ÇA arrivait pour tout le monde —
+  // avec un toast facile à manquer. Or depuis les Conversations (v5.41.7),
+  // la visibilité côté destinataire repose sur recipientAuthIds (authId),
+  // pas sur le deviceId (qui ne sert plus qu'à l'ancienne bulle flottante).
+  // On inclut donc TOUJOURS l'authId du destinataire choisi dans la
+  // picker (il est forcément un membre connu, sinon il n'apparaîtrait pas
+  // dans la liste), avec ou sans deviceId résolu — l'envoi ne peut plus
+  // échouer silencieusement pour cette raison.
+  const resolvedAuthIds = authIds.slice();
   const unresolved = [];
   for(let i=0;i<authIds.length;i++){
     const did = await _resolveDeviceIdFromAuthId(authIds[i]);
-    if(did){ deviceIds.push(did); resolvedAuthIds.push(authIds[i]); }
+    if(did) deviceIds.push(did);
     else unresolved.push(names[i]);
-  }
-
-  if(!deviceIds.length){
-    showToast('❌ Aucun destinataire n\'a encore synchronisé son compte (réessaie plus tard)');
-    _reenableAlerteSendBtn();
-    return;
   }
 
   let alertText = senderName + ' : ' + text;
@@ -12934,8 +12941,12 @@ async function sendAlerteToMembers(authIds, names){
   }
 
   if(ok){
+    // v5.41.10 — l'envoi ne dépend plus de la synchro deviceId (voir plus
+    // haut) : ce message est maintenant purement informatif (l'ancienne
+    // bulle flottante mettra un peu plus de temps à s'allumer chez qui
+    // n'a pas encore synchronisé), jamais un signe d'échec.
     showToast(unresolved.length
-      ? `✅ Envoyée à ${deviceIds.length}/${authIds.length} (${unresolved.join(', ')} pas encore synchronisé${unresolved.length>1?'s':''})`
+      ? `✅ Alerte envoyée à ${names.join(', ')} (${unresolved.join(', ')} pas encore synchronisé${unresolved.length>1?'s':''} — la conversation reste bien visible, juste la bulle flottante qui prendra un peu plus de temps)`
       : '✅ Alerte envoyée à ' + names.join(', '));
 
     // Relance : proposer d'envoyer une nouvelle alerte aux MÊMES destinataires
@@ -31195,9 +31206,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.10';
+const APP_VERSION = '5.41.11';
 
 const CHANGELOG = [
+  {
+    version: '5.41.11',
+    date: '13/09/2026',
+    entries: [
+      { icon: '🛠️', text: "Corrigé (vraie cause cette fois) : une alerte « Dépannage » (ou toute alerte nominative) pouvait échouer silencieusement si le destinataire n'avait pas encore synchronisé de fiche d'heures — l'envoi ne dépend plus de ça, seulement du fait que la personne soit un membre connu" },
+      { icon: '💬', text: "Corrigé : les ouvriers ne voyaient parfois aucune conversation reçue en ouvrant l'onglet juste après le lancement de l'app (le temps que la première vérification de fond se termine) — l'onglet se met maintenant à jour tout seul dès que les données arrivent" },
+    ]
+  },
   {
     version: '5.41.10',
     date: '13/09/2026',
@@ -41020,7 +41039,24 @@ function renderAlertesTuile(){
   // sur les alertes qu'elle contient (Signer, Détails, Pointer…).
   const receivedSection = document.getElementById('alertesReceivedSection');
   if(receivedSection) receivedSection.style.display = canSend ? 'none' : 'block';
-  if(!canSend && typeof renderAlertesReceivedChatList === 'function') renderAlertesReceivedChatList();
+  if(!canSend && typeof renderAlertesReceivedChatList === 'function'){
+    // v5.41.10 — correctif « pas de conversations côté ouvrier » : cette
+    // vue lit _myAlertsCache, qui n'est rempli QUE par checkForNewAlerts()
+    // (poll de fond, ex: 4s après le lancement de l'app) — jamais par
+    // renderAlertesTuile() lui-même. Si l'onglet est ouvert avant ce
+    // premier poll (ou si le cache est simplement périmé), la liste
+    // paraissait vide alors que des alertes existaient bien côté serveur.
+    // On force donc ici un rafraîchissement à chaque ouverture de l'onglet
+    // (comme le fait déjà indirectement l'affichage historique côté
+    // envoyeur via renderAlertesChatList), puis on redessine avec les
+    // données à jour — sans changer le système de polling lui-même.
+    renderAlertesReceivedChatList();
+    if(typeof checkForNewAlerts === 'function'){
+      checkForNewAlerts().then(() => {
+        if(typeof renderAlertesReceivedChatList === 'function') renderAlertesReceivedChatList();
+      }).catch(()=>{});
+    }
+  }
 
   // Alertesmega : synchroniser le visuel de la pilule avec le réglage.
   const megaOn = _alertesMegaEnabled();
