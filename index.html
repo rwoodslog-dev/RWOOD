@@ -8330,155 +8330,6 @@ async function supaFetch(path, options={}){
    Appel "fire and forget" : n'importe quel souci réseau ou fonction non
    déployée ne doit jamais bloquer/casser l'action en cours (alerte,
    agenda...), donc tout est avalé silencieusement. */
-/* ═══════════════════════════════════════════════════════════════════
-   MODULE — Suivi "dernière connexion" / ouvertures du jour (v5.41.45)
-   Une ligne dédiée par utilisateur dans rwood_sync (clé "app_open_<authId>"),
-   séparée du registre des comptes (company_users_registry) pour ne jamais
-   interférer avec sa logique de fusion propre. Fire-and-forget partout :
-   ne doit jamais bloquer/casser le boot ni la navigation.
-   ═══════════════════════════════════════════════════════════════════ */
-async function _pingAppOpen(){
-  try{
-    const authId = getSupaUserId();
-    if(!authId) return;
-    const key = 'app_open_' + authId;
-    const now = new Date();
-    const todayKey = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
-
-    let opens = {};
-    try{
-      const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
-      if(res.ok){
-        const rows = await res.json();
-        if(rows && rows.length){
-          const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-          if(d && d.opens && typeof d.opens === 'object') opens = d.opens;
-        }
-      }
-    }catch(e){ /* pas grave : on repart d'un compteur vide pour aujourd'hui */ }
-
-    opens[todayKey] = (opens[todayKey] || 0) + 1;
-    // Ne garder que les 14 derniers jours pour ne pas faire grossir la ligne indéfiniment.
-    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
-    Object.keys(opens).forEach(k => {
-      const d = new Date(k + 'T00:00:00');
-      if(isNaN(d.getTime()) || d < cutoff) delete opens[k];
-    });
-
-    await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({
-        user_id: key,
-        updated_at: now.toISOString(),
-        data: JSON.stringify({ authId, lastSeenAt: now.toISOString(), opens })
-      })
-    });
-  }catch(e){ /* fire-and-forget : ne jamais faire échouer le boot pour ça */ }
-}
-
-/* Récupère en UNE requête les infos "dernière connexion / ouvertures" de
-   TOUS les utilisateurs (clé user_id LIKE 'app_open_%'), pour l'écran
-   Utilisateurs. Retourne un objet { authId: {lastSeenAt, opens} }. */
-async function _fetchAppOpensRegistry(){
-  try{
-    const res = await supaFetch('/rest/v1/rwood_sync?user_id=like.' + encodeURIComponent('app_open_%') + '&select=user_id,data', { headers:{'Prefer':''} });
-    if(!res.ok) return {};
-    const rows = await res.json();
-    const out = {};
-    (rows||[]).forEach(row => {
-      try{
-        const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-        const authId = (d && d.authId) || (row.user_id||'').replace(/^app_open_/, '');
-        if(authId) out[authId] = d;
-      }catch(e){}
-    });
-    return out;
-  }catch(e){ return {}; }
-}
-
-/* Formatte une date ISO "dernière connexion" en texte relatif lisible +
-   couleur d'alerte (vert récent → orange → rouge inactif depuis longtemps). */
-function _formatLastSeen(iso){
-  if(!iso) return { label: 'Jamais connecté', color: 'var(--red)' };
-  const d = new Date(iso);
-  if(isNaN(d.getTime())) return { label: 'Jamais connecté', color: 'var(--red)' };
-  const now = new Date();
-  const diffMin = Math.floor((now - d) / 60000);
-  const timeStr = d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
-  let label;
-  if(diffMin < 2) label = "À l'instant";
-  else if(diffMin < 60) label = `Il y a ${diffMin} min`;
-  else if(d.toDateString() === now.toDateString()) label = `Aujourd'hui à ${timeStr}`;
-  else {
-    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-    if(d.toDateString() === yesterday.toDateString()) label = `Hier à ${timeStr}`;
-    else label = d.toLocaleDateString('fr-FR', {day:'numeric', month:'short'}) + ' à ' + timeStr;
-  }
-  let color = 'var(--green)';
-  if(diffMin >= 60*24*2) color = 'var(--red)';       // plus de 2 jours sans connexion
-  else if(diffMin >= 60*8) color = 'var(--wood)';     // plus de 8h sans connexion
-  return { label, color };
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   MODULE — Suivi "notifications activées ?" (v5.41.47), réservé développeur.
-   Même principe que _pingAppOpen : une ligne dédiée par utilisateur dans
-   rwood_sync (clé "push_status_<authId>"), lisible directement par le
-   client (anon) — contrairement à rwood_push_subscriptions qui refuse
-   volontairement toute lecture anon (voir rwood-push/supabase/setup.sql).
-   État déterminé en vérifiant la VRAIE permission navigateur + l'abonnement
-   pushManager actif à chaque démarrage — pas seulement l'interrupteur
-   "pushEnabled" (qui peut mentir si l'utilisateur a coupé les notifs au
-   niveau du téléphone sans repasser par l'appli). */
-async function _pingPushStatus(){
-  try{
-    const authId = getSupaUserId();
-    if(!authId) return;
-
-    let enabled = false;
-    if('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator){
-      try{
-        const reg = await navigator.serviceWorker.getRegistration();
-        if(reg){
-          const sub = await reg.pushManager.getSubscription();
-          enabled = !!sub;
-        }
-      }catch(e){ /* tant pis, on considère "désactivé" par défaut */ }
-    }
-
-    await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({
-        user_id: 'push_status_' + authId,
-        updated_at: new Date().toISOString(),
-        data: JSON.stringify({ authId, enabled, checkedAt: new Date().toISOString() })
-      })
-    });
-  }catch(e){ /* fire-and-forget : ne jamais faire échouer le boot pour ça */ }
-}
-
-/* Récupère en UNE requête l'état "notifications activées" de TOUS les
-   utilisateurs (clé user_id LIKE 'push_status_%'). Retourne un objet
-   { authId: { enabled, checkedAt } }. */
-async function _fetchPushStatusRegistry(){
-  try{
-    const res = await supaFetch('/rest/v1/rwood_sync?user_id=like.' + encodeURIComponent('push_status_%') + '&select=user_id,data', { headers:{'Prefer':''} });
-    if(!res.ok) return {};
-    const rows = await res.json();
-    const out = {};
-    (rows||[]).forEach(row => {
-      try{
-        const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-        const authId = (d && d.authId) || (row.user_id||'').replace(/^push_status_/, '');
-        if(authId) out[authId] = d;
-      }catch(e){}
-    });
-    return out;
-  }catch(e){ return {}; }
-}
-
 async function notifyPush(userIds, title, body, tag, url){
   try{
     if(!userIds || !userIds.length) return;
@@ -8821,22 +8672,6 @@ async function loadData(){
     localStorage.setItem('rwood-sync-migration-done', '1');
   }
 
-  // Migration one-shot (v5.41.48) : crée la catégorie système « Point
-  // relevé par l'équipe » sur tous les chantiers déjà en mémoire qui ne
-  // l'ont pas encore (nouveaux chantiers créés après cette version l'ont
-  // via _ensureTeamNotesCategory, appelée aussi à l'ouverture de la modale
-  // Notes pour couvrir les chantiers reçus plus tard par sync).
-  if(!localStorage.getItem('rwood-team-notes-cat-migration-done')){
-    try{
-      if(Array.isArray(data.sites) && typeof _ensureTeamNotesCategory === 'function'){
-        let changed = false;
-        data.sites.forEach(s => { if(_ensureTeamNotesCategory(s)) changed = true; });
-        if(changed) await saveData();
-      }
-    }catch(e){ /* migration best-effort, ne bloque jamais le boot */ }
-    localStorage.setItem('rwood-team-notes-cat-migration-done', '1');
-  }
-
   await initRwoodStorage();
 
   // Sync Supabase — délai plus long pour que l'UI soit complètement affichée d'abord
@@ -8849,11 +8684,6 @@ async function loadData(){
         refreshCurrentView();
       }
       startSyncPolling();
-      // Enregistre cette ouverture d'app (dernière connexion + compteur du
-      // jour) et l'état réel des notifications — visibles uniquement dans
-      // l'onglet Dev « Comptes ».
-      if(typeof _pingAppOpen === 'function') _pingAppOpen();
-      if(typeof _pingPushStatus === 'function') _pingPushStatus();
     }, 1500); // 1.5s : l'UI est complète, l'utilisateur navigue déjà
   } else {
     setTimeout(startSyncPolling, 3000);
@@ -27389,7 +27219,6 @@ async function setPushNotifEnabled(enabled){
     showToast('Notifications désactivées sur cet appareil');
   }
   updateNotifPermStatus();
-  if(typeof _pingPushStatus === 'function') _pingPushStatus();
 }
 
 function updateNotifPermStatus(){
@@ -31558,37 +31387,9 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.48';
+const APP_VERSION = '5.41.44';
 
 const CHANGELOG = [
-  {
-    version: '5.41.48',
-    date: '14/09/2026',
-    entries: [
-      { icon: '📝', text: "Notes de chantier — nouvelle catégorie « Point relevé par l'équipe », présente sur tous les chantiers : le chef d'équipe peut y ajouter des notes pour le bureau (lecture seule ailleurs, comme avant)" },
-    ]
-  },
-  {
-    version: '5.41.47',
-    date: '14/09/2026',
-    entries: [
-      { icon: '🔔', text: "Onglet Dev « Comptes » — ajout de l'état réel des notifications (activées/désactivées) pour chaque utilisateur" },
-    ]
-  },
-  {
-    version: '5.41.46',
-    date: '14/09/2026',
-    entries: [
-      { icon: '🟢', text: "Dernière connexion et ouvertures du jour déplacées : réservées à l'onglet Dev « Comptes », plus visibles pour patron/comptable dans Utilisateurs" },
-    ]
-  },
-  {
-    version: '5.41.45',
-    date: '14/09/2026',
-    entries: [
-      { icon: '🟢', text: "Utilisateurs (patron/comptable) — ajout de la dernière connexion et du nombre d'ouvertures de l'app aujourd'hui pour chaque utilisateur" },
-    ]
-  },
   {
     version: '5.41.44',
     date: '13/09/2026',
@@ -39039,12 +38840,6 @@ async function _renderDevTabComptes(list){
   // Dédoublonnage d'affichage : jamais deux fois la même personne à l'écran.
   users = _dedupeUsersRegistry(users);
   const devList = (typeof devAccessFetchList === 'function') ? await devAccessFetchList() : []; // MODULE — DevAccess
-  // Dernière connexion / ouvertures du jour — réservé développeur (v5.41.46,
-  // suite à la demande explicite : retiré de l'écran Utilisateurs
-  // patron/comptable, visible ICI uniquement, dans l'onglet Dev « Comptes »).
-  const opensRegistry = (typeof _fetchAppOpensRegistry === 'function') ? await _fetchAppOpensRegistry() : {};
-  const pushStatusRegistry = (typeof _fetchPushStatusRegistry === 'function') ? await _fetchPushStatusRegistry() : {};
-  const todayKeyDev = (() => { const n = new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); })();
   if(!users || !users.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
     return;
@@ -39063,13 +38858,6 @@ async function _renderDevTabComptes(list){
     <div style="font-size:12px;font-weight:700;color:var(--wood);margin:4px 0 10px;">🔑 Gestion des accès Dev — coche pour accorder le rôle développeur</div>` +
   sorted.map(u => {
     const isDev = Array.isArray(devList) && devList.includes(String(u.authId||'').toLowerCase());
-    const opensInfo = opensRegistry[u.authId] || null;
-    const lastSeen = (typeof _formatLastSeen === 'function') ? _formatLastSeen(opensInfo && opensInfo.lastSeenAt) : { label:'—', color:'var(--ink-soft)' };
-    const opensToday = (opensInfo && opensInfo.opens && opensInfo.opens[todayKeyDev]) || 0;
-    const pushInfo = pushStatusRegistry[u.authId] || null;
-    const pushEnabled = !!(pushInfo && pushInfo.enabled);
-    const pushLabel = pushInfo ? (pushEnabled ? '🔔 Notifications activées' : '🔕 Notifications désactivées') : '❔ Notifications — jamais vérifié';
-    const pushColor = pushInfo ? (pushEnabled ? 'var(--green)' : 'var(--red)') : 'var(--ink-soft)';
     return `
     <div class="card" style="margin-bottom:8px;">
       <div style="display:flex; align-items:center; gap:10px;">
@@ -39080,12 +38868,6 @@ async function _renderDevTabComptes(list){
           ${u.phone ? `<div class="meta">📞 ${escapeHtml(u.phone)}</div>` : ''}
           <div class="meta" style="font-size:10px; opacity:0.6; margin-top:2px;">
             ID: ${escapeHtml(u.authId||'—')} · ${u.updatedAt ? new Date(u.updatedAt).toLocaleDateString('fr-FR',{day:'numeric',month:'short',year:'numeric'}) : '—'}
-          </div>
-          <div class="meta" style="font-size:11px; margin-top:4px;">
-            🟢 <strong style="color:${lastSeen.color};">${lastSeen.label}</strong> · 📲 ${opensToday}× aujourd'hui
-          </div>
-          <div class="meta" style="font-size:11px; margin-top:2px;">
-            <strong style="color:${pushColor};">${pushLabel}</strong>
           </div>
         </div>
         <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;"
@@ -45412,11 +45194,6 @@ function renderChantierActifBanner(){
    points importants d'un coup d'œil sans ouvrir la fenêtre Notes. Cliquable
    pour ouvrir le détail complet. Vide/masqué proprement s'il n'y a rien. */
 function _cabNotesPreviewHtml(site){
-  // Assure en mémoire que la catégorie système existe déjà pour l'aperçu
-  // (sans forcer de sauvegarde ici — la persistance se fait à l'ouverture
-  // de la modale Notes ou via la migration de boot, pour ne pas déclencher
-  // une écriture à chaque re-rendu du bandeau).
-  if(typeof _ensureTeamNotesCategory === 'function') _ensureTeamNotesCategory(site);
   const cats = (site.noteCategories || []).filter(c => !c.archived);
   if(!cats.length) return `<div class="cab-notes-empty">📝 Aucune note pour ce chantier</div>`;
   // Jusqu'à 3 catégories affichées, chacune avec sa dernière note en aperçu (texte tronqué).
@@ -45459,11 +45236,6 @@ function openSiteNotesModal(siteId){
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
-  if(_ensureTeamNotesCategory(site)){
-    site.updatedAt = new Date().toISOString();
-    saveData();
-    if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  }
   _siteNotesOpenCategoryId = null;
   _siteNotePendingMedia = null; // jamais de média orphelin d'une session précédente
   _siteNoteDraft = { text:'', date:'', hasCheckbox:false };
@@ -45493,50 +45265,6 @@ function _canEditSiteNotes(){
   // bord des notes (voir view-notesdashboard) avec les mêmes droits de
   // gestion que conducteur/patron — visualisation, ajout, modification.
   return role === 'conducteur' || role === 'patron' || role === 'comptable';
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   Catégorie système « Point relevé par l'équipe » (v5.41.48) — demande
-   explicite : le chef d'équipe reste en lecture seule sur toutes les
-   catégories de notes, SAUF celle-ci, où il peut ajouter des notes (jamais
-   les archiver/modifier — ça reste réservé conducteur/patron/comptable,
-   comme pour toutes les autres catégories).
-   Id FIXE (pas uid()) : présente sur TOUS les chantiers, ancien comme
-   nouveau, et fusionne proprement entre appareils via
-   _mergeNoteCategoriesForPush (qui matche les catégories par id). ═══ */
-const TEAM_NOTES_CATEGORY_ID = 'sys-team-notes';
-const TEAM_NOTES_CATEGORY_TITLE = 'Point relevé par l\'équipe';
-
-/* Garantit que cette catégorie système existe sur le chantier donné (créée
-   en premier dans la liste si absente). Appelée à chaque point d'entrée qui
-   affiche/manipule les notes d'un chantier, pour couvrir aussi bien les
-   chantiers déjà en mémoire (migration one-shot au boot, voir loadData())
-   que ceux qui arrivent plus tard via la sync Supabase depuis un autre
-   appareil/une ancienne version de l'app qui ne l'a pas encore créée. */
-function _ensureTeamNotesCategory(site){
-  if(!site) return false;
-  if(!Array.isArray(site.noteCategories)) site.noteCategories = [];
-  const exists = site.noteCategories.some(c => c && c.id === TEAM_NOTES_CATEGORY_ID);
-  if(exists) return false;
-  site.noteCategories.unshift({
-    id: TEAM_NOTES_CATEGORY_ID,
-    title: TEAM_NOTES_CATEGORY_TITLE,
-    archived: false,
-    createdAt: new Date().toISOString(),
-    notes: []
-  });
-  return true; // vient d'être créée
-}
-
-/* Droit d'AJOUTER une note dans une catégorie donnée : conducteur/patron/
-   comptable partout (comme avant), + chef UNIQUEMENT dans la catégorie
-   système « Point relevé par l'équipe ». N'accorde jamais le droit
-   d'archiver/modifier une catégorie ou une note existante — ça reste
-   couvert par _canEditSiteNotes() seul, inchangé, partout. */
-function _canAddNoteInCategory(cat){
-  if(_canEditSiteNotes()) return true;
-  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  return role === 'chef' && !!cat && cat.id === TEAM_NOTES_CATEGORY_ID;
 }
 
 function _fmtSiteNoteDate(iso){
@@ -45671,7 +45399,6 @@ function _renderSiteNoteCategoryDetail(siteId, catId){
   if(!cat){ _closeSiteNoteCategory(siteId); return; }
   if(titleEl) titleEl.textContent = `📁 ${cat.title}`;
   const canEdit = _canEditSiteNotes();
-  const canAdd = _canAddNoteInCategory(cat);
   const notes = cat.notes || [];
   const active = notes.filter(n => !n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
   const archived = notes.filter(n => n.archived).sort((a,b) => new Date(b.createdAt||0) - new Date(a.createdAt||0));
@@ -45697,7 +45424,7 @@ function _renderSiteNoteCategoryDetail(siteId, catId){
 
   let html = `<button class="btn btn-outline btn-block" style="margin-bottom:12px;" onclick="_closeSiteNoteCategory('${siteId}')">← Toutes les catégories</button>`;
 
-  if(canAdd){
+  if(canEdit){
     const pendingMedia = _siteNotePendingMedia;
     const draft = _siteNoteDraft || { text:'', date:'', hasCheckbox:false };
     html += `
@@ -45844,16 +45571,11 @@ function _addSiteNoteToAgenda(siteId, catId, noteId){
 }
 
 function _addSiteNote(siteId, catId){
+  if(!_canEditSiteNotes()){ showToast('🔒 Réservé au conducteur de travaux, au patron et à la comptable'); return; }
   const site = (data.sites||[]).find(s => s.id === siteId);
   if(!site) return;
   const cat = (site.noteCategories||[]).find(c => c.id === catId);
   if(!cat) return;
-  if(!_canAddNoteInCategory(cat)){
-    showToast(cat.id === TEAM_NOTES_CATEGORY_ID
-      ? '🔒 Réservé au conducteur de travaux, au patron, à la comptable et aux chefs d\'équipe'
-      : '🔒 Réservé au conducteur de travaux, au patron et à la comptable');
-    return;
-  }
   // Lu depuis le brouillon (_siteNoteDraft), pas directement depuis les
   // <input>/<textarea> : le formulaire peut avoir été reconstruit entre-temps
   // (ex. après le choix d'une photo), le brouillon reste la source fiable.
