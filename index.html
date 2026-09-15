@@ -4881,6 +4881,8 @@
             <button class="btn btn-outline btn-block" id="notifPermBtn" style="margin-top:10px; display:none;" onclick="requestNotifPermission()">🔔 Activer les notifications</button>
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotification()">🧪 Tester la notification</button>
             <div class="hint" style="margin-top:6px;">Envoie une vraie notification à ce compte et affiche le résultat réel du serveur (utile pour diagnostiquer si une notification n'arrive pas).</div>
+            <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotificationDelayed()">⏳ Tester à retardement (app fermée)</button>
+            <div class="hint" style="margin-top:6px;">Envoie la notification 20 secondes plus tard (délai côté serveur) — le temps de fermer complètement l'application pour vérifier qu'elle apparaît bien même app fermée.</div>
           </div>
         </div>
       </div>
@@ -8355,13 +8357,13 @@ async function supaFetch(path, options={}){
    ne distingue pas "ça a marché" de "la fonction n'existe pas"/"clé VAPID
    invalide"/"pas d'abonnement enregistré". Les appelants qui ignorent la
    valeur de retour (immense majorité) ne sont pas affectés. */
-async function notifyPush(userIds, title, body, tag, url){
+async function notifyPush(userIds, title, body, tag, url, delaySeconds){
   if(!userIds || !userIds.length) return { ok:false, reason:'no-recipients' };
   try{
     const res = await fetch(SUPA_URL + '/functions/v1/send-push', {
       method: 'POST',
       headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_ids: userIds, title, body, tag, url })
+      body: JSON.stringify({ user_ids: userIds, title, body, tag, url, delay_seconds: delaySeconds||0 })
     });
     let json = null;
     try{ json = await res.json(); }catch(e){ /* réponse non-JSON (ex: 404 HTML) */ }
@@ -8412,6 +8414,35 @@ async function testPushNotification(){
   } else {
     alert('✅ Notification envoyée par le serveur (' + sent + '/' + subs + ' abonnement(s)).\n\nSi elle n\'apparaît PAS sur ton téléphone dans les secondes qui suivent (même app fermée), le souci vient des réglages de notifications du téléphone/navigateur (batterie, "Ne pas déranger", autorisations Chrome…), pas de RWOOD.');
   }
+}
+
+/* Bouton "Tester à retardement" (v5.41.49) : le bouton de test instantané
+   (testPushNotification ci-dessus) ne permet PAS de tester le vrai cas
+   signalé — la notification native qui doit apparaître app FERMÉE — car
+   l'envoi est immédiat, sans laisser le temps de fermer l'app. Le délai est
+   géré CÔTÉ SERVEUR (Edge Function send-push, paramètre delay_seconds) et
+   non via un setTimeout local : un délai côté app serait tué dès que
+   l'utilisateur ferme l'app, ce qui empêcherait justement le test. */
+async function testPushNotificationDelayed(){
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!authId){
+    showToast('⚠️ Crée/synchronise d\'abord ton compte (Paramètres → Compte)');
+    return;
+  }
+  const DELAY = 20; // secondes
+  alert('⏳ La notification va arriver dans ' + DELAY + ' secondes.\n\nFERME COMPLÈTEMENT l\'application MAINTENANT (pas juste mettre en arrière-plan — la fermer vraiment) pour tester si elle apparaît app fermée.');
+  // Fire-and-forget volontaire : si l'app est fermée avant la fin du délai,
+  // ce fetch ne recevra jamais sa réponse (l'app n'existe plus pour la
+  // lire) — normal et attendu, l'envoi côté serveur continue quand même.
+  notifyPush([authId], 'RWOOD — Test (app fermée)', 'Si tu vois ceci alors que l\'app était fermée, tout fonctionne ✅', 'test-notif-delayed', null, DELAY)
+    .then(result => {
+      // Ne s'exécute que si l'app est encore ouverte à la fin du délai
+      // (sinon ce code n'existe plus) — sert de filet de sécurité pour
+      // détecter un échec serveur même dans ce scénario.
+      if(result && !result.ok){
+        console.error('testPushNotificationDelayed: échec', result);
+      }
+    });
 }
 
 // Pousse les données locales vers Supabase (upsert)
@@ -31526,9 +31557,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.48';
+const APP_VERSION = '5.41.49';
 
 const CHANGELOG = [
+  {
+    version: '5.41.49',
+    date: '15/09/2026',
+    entries: [
+      { icon: '⏳', text: "Notifications — nouveau bouton « Tester à retardement » (Paramètres → Notifications) qui envoie la notification de test 20 secondes plus tard (délai côté serveur) pour permettre de fermer réellement l'application avant l'arrivée, et vérifier si le problème vient de l'app ou du téléphone" },
+    ]
+  },
   {
     version: '5.41.48',
     date: '15/09/2026',
