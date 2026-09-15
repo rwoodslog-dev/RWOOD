@@ -31557,9 +31557,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.49';
+const APP_VERSION = '5.41.50';
 
 const CHANGELOG = [
+  {
+    version: '5.41.50',
+    date: '15/09/2026',
+    entries: [
+      { icon: '🐛', text: "Réunion de chantier — corrigé un bug où la même réunion pouvait apparaître plusieurs fois (jusqu'à 3x) le même jour dans l'agenda, causé par plusieurs appareils qui généraient chacun leur propre copie avant de se synchroniser entre eux ; les doublons déjà présents sont automatiquement nettoyés à la prochaine ouverture" },
+    ]
+  },
   {
     version: '5.41.49',
     date: '15/09/2026',
@@ -40451,6 +40458,22 @@ function _reunionChantierNextDateKey(weekday, time){
 // prochaine régénérée au compte-goutte à chaque ouverture de l'app).
 const REUNION_HORIZON_WEEKS = 52;
 
+/* Id STABLE et déterministe (pas aléatoire) pour l'occurrence d'un chantier
+   à une date donnée — v5.41.50. AVANT, chaque occurrence recevait un
+   uid() aléatoire ; comme data.tasks est fusionné ENTRE APPAREILS par id
+   (mergeArrayById), si deux appareils (ex: chef + conducteur, ou deux
+   onglets) généraient chacun l'occurrence du même lundi AVANT de s'être
+   synchronisés entre eux, chacun produisait un id différent pour "la même"
+   réunion — la fusion gardait alors les deux comme des tâches distinctes,
+   d'où les doublons visibles dans l'agenda (3 cartes identiques observées).
+   Avec un id calculé à partir du chantier + de la date, deux appareils qui
+   génèrent la même occurrence produisent TOUJOURS le même id : la fusion
+   n'en garde plus qu'une seule, quel que soit le nombre d'appareils qui
+   l'ont générée indépendamment. */
+function _reunionChantierTaskId(siteId, dateKey){
+  return 'reunion_' + siteId + '_' + dateKey;
+}
+
 /* (Re)génère TOUTES les occurrences futures (jusqu'à REUNION_HORIZON_WEEKS
    semaines à l'avance) pour ce chantier dans data.tasks — une tâche par
    lundi (ou jour choisi) de chaque semaine, texte "Réunion <NOM CHANTIER
@@ -40467,15 +40490,6 @@ function _reunionChantierSync(site){
   const { weekday, time } = site.reunionChantier;
   const text = 'Réunion ' + site.name.toUpperCase() + ' à ' + (time||'15:00');
 
-  // Retire les anciennes occurrences futures de ce chantier qui ne
-  // correspondent PLUS au jour/heure actuellement configuré (ex: jour/heure
-  // vient de changer) — mais conserve intactes (même id !) celles qui
-  // correspondent déjà à l'horaire actuel, pour ne jamais invalider le
-  // rappel J-1 déjà envoyé/planifié pour une occurrence inchangée (v5.41.42 —
-  // avant ce correctif, TOUTES les occurrences futures étaient supprimées et
-  // recréées avec un nouvel id à chaque ouverture de l'app, ce qui faisait
-  // repartir de zéro le garde-fou anti-doublon de _checkReunionChantierReminders
-  // et provoquait des notifications répétées).
   const todayKey = (() => { const n = new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); })();
   const firstDateKey = _reunionChantierNextDateKey(weekday, time);
   const firstDate = new Date(firstDateKey + 'T00:00:00');
@@ -40484,19 +40498,25 @@ function _reunionChantierSync(site){
     const d = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() + i * 7);
     expectedDateKeys.add(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'));
   }
-  // Supprime les occurrences futures obsolètes (date qui ne fait plus partie
-  // de l'horizon attendu, ou heure qui a changé pour une date qui y reste).
+  // Retire les occurrences futures obsolètes (date hors horizon, ou heure
+  // qui a changé) ET toute copie EN DOUBLE d'une date par ailleurs valide
+  // (ancien id aléatoire d'une version pré-v5.41.50, ou copie créée par un
+  // autre appareil) : on ne garde que celle portant exactement l'id
+  // déterministe attendu pour sa date — ce nettoyage tourne à CHAQUE appel,
+  // donc les doublons déjà synchronisés (comme ceux vus dans l'agenda) sont
+  // automatiquement absorbés dès la prochaine ouverture de l'app.
   data.tasks = data.tasks.filter(t => {
     if(t.reunionSiteId !== site.id || t.date < todayKey) return true; // hors périmètre : on garde tel quel
-    return expectedDateKeys.has(t.date) && t.time === time; // dans le périmètre : on garde seulement si toujours valide
+    if(!expectedDateKeys.has(t.date) || t.time !== time) return false; // obsolète : retiré
+    return t.id === _reunionChantierTaskId(site.id, t.date); // doublon (id non-canonique) : retiré
   });
   const existingDateKeys = new Set(
     data.tasks.filter(t => t.reunionSiteId === site.id && t.date >= todayKey).map(t => t.date)
   );
   expectedDateKeys.forEach(dateKey => {
-    if(existingDateKeys.has(dateKey)) return; // occurrence déjà présente et valide : ne pas toucher (id conservé)
+    if(existingDateKeys.has(dateKey)) return; // occurrence déjà présente et valide : ne pas toucher
     data.tasks.push({
-      id: uid(),
+      id: _reunionChantierTaskId(site.id, dateKey),
       date: dateKey,
       time: time,
       siteId: site.id,
