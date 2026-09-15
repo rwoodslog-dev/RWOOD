@@ -2891,9 +2891,9 @@
   }
   #pinnedNotePopup.open{ display:flex; }
   /* La liste de tâches défile en interne quand elle dépasse l'écran */
-  #pinnedTaskList, #sharedTodoItems{
+  #pinnedTaskList{
     overflow-y:auto; -webkit-overflow-scrolling:touch;
-    max-height:calc(100vh - 180px); /* espace pour header + tabs + marges */
+    max-height:calc(100vh - 180px); /* espace pour header + sélecteur + marges */
   }
   #pinnedNotePopup h4{
     margin:0 0 10px; font-size:13px; font-weight:800;
@@ -4879,6 +4879,8 @@
             </div>
             <div id="notifPermStatus" class="hint" style="margin-top:10px;"></div>
             <button class="btn btn-outline btn-block" id="notifPermBtn" style="margin-top:10px; display:none;" onclick="requestNotifPermission()">🔔 Activer les notifications</button>
+            <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotification()">🧪 Tester la notification</button>
+            <div class="hint" style="margin-top:6px;">Envoie une vraie notification à ce compte et affiche le résultat réel du serveur (utile pour diagnostiquer si une notification n'arrive pas).</div>
           </div>
         </div>
       </div>
@@ -8344,18 +8346,72 @@ async function supaFetch(path, options={}){
 
 /* Déclenche une vraie notification système (push) chez un ou plusieurs
    destinataires via la Edge Function send-push (voir rwood-push/).
-   Appel "fire and forget" : n'importe quel souci réseau ou fonction non
-   déployée ne doit jamais bloquer/casser l'action en cours (alerte,
-   agenda...), donc tout est avalé silencieusement. */
+   Appel "fire and forget" côté appelants existants (alerte, agenda...) :
+   n'importe quel souci réseau ou fonction non déployée ne doit jamais
+   bloquer/casser l'action en cours. MAIS (v5.41.48) on ne jette plus le
+   résultat comme avant — on le renvoie toujours (jamais de throw), pour que
+   testPushNotification() puisse afficher le VRAI diagnostic serveur (combien
+   d'abonnements trouvés, envoyés, échoués) au lieu d'un simple "silence" qui
+   ne distingue pas "ça a marché" de "la fonction n'existe pas"/"clé VAPID
+   invalide"/"pas d'abonnement enregistré". Les appelants qui ignorent la
+   valeur de retour (immense majorité) ne sont pas affectés. */
 async function notifyPush(userIds, title, body, tag, url){
+  if(!userIds || !userIds.length) return { ok:false, reason:'no-recipients' };
   try{
-    if(!userIds || !userIds.length) return;
-    await fetch(SUPA_URL + '/functions/v1/send-push', {
+    const res = await fetch(SUPA_URL + '/functions/v1/send-push', {
       method: 'POST',
       headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_ids: userIds, title, body, tag, url })
     });
-  } catch(e){ /* silencieux : la Edge Function peut ne pas (encore) être déployée */ }
+    let json = null;
+    try{ json = await res.json(); }catch(e){ /* réponse non-JSON (ex: 404 HTML) */ }
+    if(!res.ok){
+      console.error('notifyPush: la Edge Function a répondu', res.status, json);
+      return { ok:false, reason:'http-' + res.status, status:res.status, body:json };
+    }
+    return Object.assign({ ok:true }, json || {});
+  } catch(e){
+    // Hors ligne, DNS, fonction jamais déployée (échec réseau pur, pas de
+    // réponse HTTP du tout) : on avale toujours pour ne rien casser côté
+    // appelant, mais on renvoie l'info au lieu de undefined.
+    console.error('notifyPush: échec réseau', e);
+    return { ok:false, reason:'network-error', message: e && e.message };
+  }
+}
+
+/* Bouton "Tester la notification" (Paramètres → Notifications, v5.41.48) :
+   s'envoie une vraie notification push à SOI-MÊME et affiche le résultat
+   RENVOYÉ PAR LE SERVEUR — jusqu'ici notifyPush() avalait tout en silence,
+   donc "ça ne marche pas" ne disait jamais SI c'était un problème
+   d'abonnement (aucun trouvé côté serveur), de clé VAPID (échec d'envoi), ou
+   simplement que la notification est bien partie mais n'apparaît pas sur le
+   téléphone (auquel cas c'est un réglage Android/du navigateur, pas RWOOD). */
+async function testPushNotification(){
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!authId){
+    showToast('⚠️ Crée/synchronise d\'abord ton compte (Paramètres → Compte)');
+    return;
+  }
+  showToast('⏳ Envoi de la notification de test…');
+  const result = await notifyPush([authId], 'RWOOD — Test', 'Si tu vois ceci, les notifications marchent ✅', 'test-notif');
+  if(!result.ok){
+    if(result.reason === 'network-error'){
+      alert('❌ Échec réseau — impossible de joindre le serveur de notifications.\n\n' + (result.message || ''));
+    } else {
+      alert('❌ Le serveur a refusé l\'envoi (HTTP ' + (result.status||'?') + ').\n\n' + JSON.stringify(result.body||{}, null, 2) + '\n\nCôté serveur : vérifier que la clé VAPID de l\'Edge Function correspond bien à celle de l\'app, et que send-push est bien déployée.');
+    }
+    return;
+  }
+  const subs = result.subscriptions ?? '?';
+  const sent = result.sent ?? '?';
+  const failed = result.failed ?? '?';
+  if(subs === 0){
+    alert('⚠️ Aucun abonnement push enregistré côté serveur pour ton compte.\n\nLes notifications sont "activées" localement, mais l\'abonnement ne s\'est jamais sauvegardé sur le serveur — réessaie de désactiver puis réactiver le bouton "Notifications sur ce téléphone" ci-dessus.');
+  } else if(failed > 0 && sent === 0){
+    alert('⚠️ ' + subs + ' abonnement(s) trouvé(s), mais l\'envoi a échoué pour tous (' + failed + ').\n\nProbablement une clé VAPID qui ne correspond plus entre l\'app et le serveur — l\'abonnement doit être renouvelé (désactive/réactive les notifications) ou la clé serveur doit être corrigée.');
+  } else {
+    alert('✅ Notification envoyée par le serveur (' + sent + '/' + subs + ' abonnement(s)).\n\nSi elle n\'apparaît PAS sur ton téléphone dans les secondes qui suivent (même app fermée), le souci vient des réglages de notifications du téléphone/navigateur (batterie, "Ne pas déranger", autorisations Chrome…), pas de RWOOD.');
+  }
 }
 
 // Pousse les données locales vers Supabase (upsert)
@@ -26780,7 +26836,7 @@ function renderParametres(){
   applyRoleLockUI();
   // initChefTodoParamsSection() retiré : cette fonction ciblait l'écran
   // Paramètres "Liste à faire" (retiré) — la sélection du chef à suivre vit
-  // désormais dans le popup de la bulle (voir switchTodoTab /
+  // désormais dans le popup de la bulle (voir togglePinnedNotePopup /
   // _populateChefTodoSelectorPopup).
   renderUpdateBadge();
   renderAccentPresets(data.settings&&data.settings.accentColor||'#E8AC3D');
@@ -31470,9 +31526,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.46';
+const APP_VERSION = '5.41.48';
 
 const CHANGELOG = [
+  {
+    version: '5.41.48',
+    date: '15/09/2026',
+    entries: [
+      { icon: '🧪', text: "Notifications — nouveau bouton « Tester la notification » (Paramètres → Notifications) qui affiche le vrai résultat du serveur (abonnement trouvé ou non, envoi réussi ou échoué) pour diagnostiquer précisément pourquoi une notification n'arrive pas" },
+    ]
+  },
+  {
+    version: '5.41.47',
+    date: '15/09/2026',
+    entries: [
+      { icon: '📌', text: "Bulle « À faire » — un seul bouton + pour ajouter une tâche, que ce soit dans sa propre liste (chef, conducteur, patron, comptable) ou dans la liste du chef suivi (ouvrier) ; l'ouvrier peut désormais aussi cocher/modifier n'importe quelle tâche de la liste partagée, pas seulement celles du chef" },
+    ]
+  },
   {
     version: '5.41.46',
     date: '15/09/2026',
@@ -36711,14 +36781,26 @@ function _initBubbleDrag(bubble){
   bubble.addEventListener('touchstart', onStart, {passive:true});
 }
 
-/* ── Rendu de la liste dans le popup ──────────────────────────────────── */
+/* ── Rendu de la liste dans le popup (v5.41.47 : liste unique) ─────────── */
 function _renderPinnedTasksInPopup(){
   const pn = _getPinnedNote();
   const container = document.getElementById('pinnedTaskList');
+  const addRow = document.getElementById('pinnedPopupAddRow');
   if(!container) return;
 
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const syncBtn = role === 'chef'
+  const isFollower = role === 'ouvrier';
+  const followedId = isFollower ? _getFollowedChefId() : null;
+
+  // Ouvrier sans chef choisi : pas de liste à afficher, ni à modifier.
+  if(isFollower && !followedId){
+    if(addRow) addRow.style.display = 'none';
+    container.innerHTML = '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0 6px;">Choisis un chef ci-dessus pour voir et ajouter des tâches à sa liste.</div>';
+    return;
+  }
+  if(addRow) addRow.style.display = '';
+
+  const syncBtn = !isFollower
     ? `<div style="text-align:right; margin-bottom:4px;">
         <button onclick="pushMyTodoList().then(()=>showToast('✅ Liste synchronisée'))"
           style="background:none;border:none;font-size:11px;color:var(--wood);cursor:pointer;padding:2px 6px;">
@@ -36748,33 +36830,28 @@ function _renderPinnedTasksInPopup(){
   }).join('');
 }
 
-/* ── Toggle popup ────────────────────────────────────────────────────── */
+/* ── Toggle popup (v5.41.47) ───────────────────────────────────────────
+   Une seule liste affichée (plus de "Ma liste" / "Liste partagée") :
+   - ouvrier : liste du chef suivi (sélecteur visible en haut du popup) ;
+   - chef, conducteur, patron, comptable… : sa propre liste (pas de sélecteur).
+   Voir _activeTodoSyncKey. */
 function togglePinnedNotePopup(e){
   e && e.stopPropagation();
   const popup = document.getElementById('pinnedNotePopup');
   if(popup.classList.contains('open')){ closePinnedNotePopup(); return; }
 
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const isFollower = role === 'ouvrier';
+  const selRow = document.getElementById('chefTodoSelectorPopup');
+  if(selRow) selRow.style.display = isFollower ? '' : 'none';
+  if(isFollower) _populateChefTodoSelectorPopup();
 
-  // Réinitialiser l'onglet
-  _currentTodoTab = 'ma';
-
-  if(role === 'chef'){
-    // Chef : une seule liste — masquer le toggle et la section partagée
-    const toggle = document.getElementById('todoTabRow');
-    const parSect = document.getElementById('todoSectionPartage');
-    const maSect  = document.getElementById('todoSectionMaListe');
-    if(toggle)  toggle.style.display  = 'none';
-    if(parSect) parSect.style.display = 'none';
-    if(maSect)  maSect.style.display  = '';
-  } else {
-    // Ouvrier/autres : toggle visible, démarrer sur "Ma liste"
-    const toggle = document.getElementById('todoTabRow');
-    if(toggle) toggle.style.display = '';
-    switchTodoTab('ma');
-  }
-
+  // Affichage immédiat avec ce qu'on a déjà localement, puis rafraîchi dès
+  // que le serveur répond (voir _syncActiveTodoList) — pas d'écran vide le
+  // temps du réseau, mais les données restent à jour à chaque ouverture.
   _renderPinnedTasksInPopup();
+  _syncActiveTodoList().then(_renderPinnedTasksInPopup);
+
   const inp = document.getElementById('pinnedPopupAddInput');
   if(inp) inp.value = '';
 
@@ -36783,25 +36860,7 @@ function togglePinnedNotePopup(e){
   setTimeout(()=> document.addEventListener('click', _closePinnedOnOutside, {once:true}), 10);
 }
 
-let _currentTodoTab = 'ma'; // 'ma' | 'partage'
-
-function switchTodoTab(tab){
-  _currentTodoTab = tab;
-  const maSect = document.getElementById('todoSectionMaListe');
-  const parSect= document.getElementById('todoSectionPartage');
-  const btnMa  = document.getElementById('todoTabMaListe');
-  const btnPar = document.getElementById('todoTabPartage');
-  if(maSect)  maSect.style.display  = tab==='ma' ? '' : 'none';
-  if(parSect) parSect.style.display = tab==='partage' ? '' : 'none';
-  if(btnMa){  btnMa.style.background  = tab==='ma'? 'var(--wood)':'transparent'; btnMa.style.color  = tab==='ma'? '#1a0f00':'var(--ink-soft)'; }
-  if(btnPar){ btnPar.style.background = tab==='partage'? 'var(--wood)':'transparent'; btnPar.style.color = tab==='partage'? '#1a0f00':'var(--ink-soft)'; }
-  if(tab === 'partage'){
-    _populateChefTodoSelectorPopup();
-    refreshSharedTodoInPopup();
-  }
-}
-
-/* Peuple le sélecteur de chef du popup (voir switchTodoTab) — même logique
+/* Peuple le sélecteur de chef du popup (ouvrier uniquement) — même logique
    que l'ancienne section Paramètres retirée, mais accessible directement
    depuis la bulle, sans passer par un écran de réglages qui n'existe plus. */
 async function _populateChefTodoSelectorPopup(){
@@ -36813,41 +36872,6 @@ async function _populateChefTodoSelectorPopup(){
   const filteredChefs = chefs.filter(c => c.authId !== myAuthId);
   sel.innerHTML = '<option value="">— Choisir un chef —</option>' +
     filteredChefs.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId===followedId?'selected':''}>${escapeHtml(c.name||c.authId)}${c.teamName?' ('+c.teamName+')':''}</option>`).join('');
-}
-
-async function refreshSharedTodoInPopup(){
-  const labelEl = document.getElementById('sharedTodoLabel');
-  const itemsEl = document.getElementById('sharedTodoItems');
-  if(!itemsEl) return;
-
-  const followedId = _getFollowedChefId();
-  const myAuthId   = data.settings && data.settings.auth && data.settings.auth.authId;
-
-  // Fix doublon : un chef ne peut pas se suivre lui-même
-  if(!followedId || followedId === myAuthId){
-    itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">Choisis un chef ci-dessus pour voir sa liste.</span>';
-    if(labelEl) labelEl.textContent = 'Liste partagée';
-    return;
-  }
-
-  if(labelEl) labelEl.textContent = '⏳ Chargement…';
-  itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">⏳ Chargement…</span>';
-
-  const todoData = await pullChefTodoList(followedId);
-  const chefName = todoData && todoData.chefName ? todoData.chefName : '?';
-  if(labelEl) labelEl.textContent = 'À faire — ' + chefName;
-
-  if(!todoData || !todoData.tasks || !todoData.tasks.length){
-    itemsEl.innerHTML = '<span style="opacity:0.6;font-size:12px;">Liste vide pour le moment.</span>';
-    return;
-  }
-
-  const sorted = [...todoData.tasks].sort((a,b)=> (a.done?1:0)-(b.done?1:0));
-  itemsEl.innerHTML = sorted.map(t => `
-    <div class="pinned-task-item" data-id="${t.id}" style="padding:6px 0;">
-      <div class="pinned-task-cb ${t.done?'done':''}" onclick="toggleChefTodoTask('${escapeHtml(followedId)}','${t.id}',this,event)"></div>
-      <div class="pinned-task-text ${t.done?'done':''}" style="flex:1;">${escapeHtml(t.text)}</div>
-    </div>`).join('');
 }
 
 function _positionPinnedPopup(popup){
@@ -36896,12 +36920,10 @@ function _positionPinnedPopup(popup){
   popup.style.bottom = 'auto';
 
   // Recalculer le max-height de la liste interne (espace réel disponible)
-  const headerH = 90; // h4 + tabs + marges (~90px)
+  const headerH = 90; // h4 + sélecteur + marges (~90px)
   const listMaxH = Math.max(100, maxH - headerH);
   const tl = document.getElementById('pinnedTaskList');
-  const sl = document.getElementById('sharedTodoItems');
   if(tl) tl.style.maxHeight = listMaxH + 'px';
-  if(sl) sl.style.maxHeight = listMaxH + 'px';
 }
 
 function closePinnedNotePopup(){
@@ -37049,11 +37071,14 @@ function _myTodoSyncKey(){
 }
 
 /* Détermine sous quelle clé pousser/lire la liste "à faire" pour l'utilisateur
-   courant : le chef pousse sous SA clé, l'ouvrier suivant un chef pousse sous
-   la clé de CE chef (liste partagée, collaboration temps réel). */
+   courant (v5.41.47) : seul l'OUVRIER suit la liste d'un chef (choisi via le
+   sélecteur de la bulle) — chef, conducteur, patron, comptable… gèrent tous
+   leur PROPRE liste sous leur propre clé, exactement comme le chef. Avant
+   cette version, tout rôle non-chef suivait un chef ; ça empêchait
+   conducteur/patron d'avoir leur propre liste indépendante. */
 function _activeTodoSyncKey(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  if(role === 'chef') return _myTodoSyncKey();
+  if(role !== 'ouvrier') return _myTodoSyncKey();
   const followed = _getFollowedChefId();
   return followed ? TODO_SYNC_KEY_PREFIX + followed : null;
 }
@@ -37162,10 +37187,12 @@ async function pushMyTodoList(){
   }
 }
 
-/* Ouvrier : pull la liste du chef sélectionné */
-async function pullChefTodoList(authId){
+/* Lecture générique d'une liste "à faire" par clé rwood_sync brute (factorisé
+   depuis pullChefTodoList — v5.41.47 — pour pouvoir aussi relire SA PROPRE
+   liste, pas seulement celle d'un chef suivi). */
+async function _pullTodoListByKey(key){
+  if(!key) return null;
   try{
-    const key = TODO_SYNC_KEY_PREFIX + authId;
     const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
     if(!res.ok) return null;
     const rows = await res.json();
@@ -37175,18 +37202,50 @@ async function pullChefTodoList(authId){
   } catch(e){ return null; }
 }
 
+/* Ouvrier : pull la liste du chef sélectionné */
+async function pullChefTodoList(authId){
+  return _pullTodoListByKey(TODO_SYNC_KEY_PREFIX + authId);
+}
+
+/* Recharge la liste "active" (la sienne, ou celle du chef suivi pour un
+   ouvrier — voir _activeTodoSyncKey) depuis le serveur et la fusionne dans le
+   store local, SANS repousser (juste una adoption si le serveur a du neuf —
+   ex. le chef ou un collègue ouvrier a ajouté une tâche depuis son appareil).
+   Appelée à l'ouverture de la bulle et au changement de chef suivi. */
+async function _syncActiveTodoList(){
+  const key = _activeTodoSyncKey();
+  const pn = _getPinnedNote();
+  if(!key){ pn.tasks = []; return; }
+  const serverData = await _pullTodoListByKey(key);
+  if(serverData){
+    const serverDeletedIds = Array.isArray(serverData.deletedTaskIds) ? serverData.deletedTaskIds : [];
+    const allDeletedIds = [...new Set([...(pn.removedTaskIds||[]), ...serverDeletedIds])];
+    pn.tasks = _mergeTodoTasks(pn.tasks, serverData.tasks || [], allDeletedIds);
+    pn.removedTaskIds = allDeletedIds;
+    saveData(true); // skipSync : simple lecture, pas de repush nécessaire
+  }
+}
+
 /* authId du chef actuellement suivi par l'ouvrier (persisté en settings) */
 function _getFollowedChefId(){ return data.settings && data.settings.followedChefTodoId || null; }
 function _setFollowedChefId(id){ if(!data.settings) data.settings = {}; data.settings.followedChefTodoId = id; saveData(); }
 
 /* Déclenché par le changement de sélection du chef dans le popup de la
-   bulle (voir #chefTodoSelectorPopup). Rafraîchit directement l'affichage
-   du popup — l'ancienne cible (refreshChefTodoInParams, pensée pour
-   l'écran Paramètres retiré) référençait des éléments qui n'existent plus. */
+   bulle (voir #chefTodoSelectorPopup). On change de contexte (liste d'un
+   AUTRE chef) : on repart d'une liste locale vide plutôt que de fusionner
+   avec l'ancien chef suivi, puis on tire la liste du nouveau chef (v5.41.47 :
+   remplace refreshSharedTodoInPopup, ancienne vue en lecture seule séparée
+   du store pn.tasks — désormais une seule liste, pleinement éditable). */
 async function onChefTodoSelectorChange(authId){
   _setFollowedChefId(authId || null);
   pushMyUserRegistration(); // mettre à jour le registre avec le nouveau followedChefTodoId
-  await refreshSharedTodoInPopup();
+  const pn = _getPinnedNote();
+  pn.tasks = [];
+  pn.removedTaskIds = [];
+  saveData(true);
+  await _syncActiveTodoList();
+  _renderPinnedTasksInPopup();
+  _renderPinnedBubble(pn);
 }
 
 
@@ -48228,42 +48287,23 @@ async function comptaEditEnsurePulled(){
     <button onclick="closePinnedNotePopup()">×</button>
   </h4>
 
-  <!-- Toggle Ma liste / Liste partagée (masqué pour les chefs) -->
-  <div id="todoTabRow" style="display:flex; gap:4px; margin-bottom:10px; background:var(--bg); border-radius:10px; padding:3px;">
-    <button id="todoTabMaListe" onclick="switchTodoTab('ma')"
-      style="flex:1; padding:6px 8px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; background:var(--wood); color:#1a0f00;">
-      Ma liste
-    </button>
-    <button id="todoTabPartage" onclick="switchTodoTab('partage')"
-      style="flex:1; padding:6px 8px; border-radius:8px; border:none; font-size:12px; font-weight:700; cursor:pointer; background:transparent; color:var(--ink-soft);">
-      Liste partagée
-    </button>
-  </div>
+  <!-- Sélecteur du chef suivi — visible uniquement pour le rôle "ouvrier".
+       Chef/conducteur/patron/comptable gèrent leur propre liste, pas de
+       sélecteur (voir togglePinnedNotePopup / _activeTodoSyncKey — v5.41.47). -->
+  <select id="chefTodoSelectorPopup" onchange="onChefTodoSelectorChange(this.value)"
+    style="display:none; width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:12.5px; margin-bottom:10px;">
+    <option value="">— Choisir un chef —</option>
+  </select>
 
-  <!-- MA LISTE -->
-  <div id="todoSectionMaListe">
-    <div id="pinnedTaskList"></div>
-    <!-- Zone d'ajout supprimée : l'ajout se fait depuis l'onglet "Listes à faire" -->
-  </div>
+  <div id="pinnedTaskList"></div>
 
-  <!-- LISTE PARTAGÉE -->
-  <div id="todoSectionPartage" style="display:none;">
-    <!-- Sélection du chef à suivre — réintégrée ici après le retrait de la
-         section "Liste à faire" des Paramètres (elle vivait uniquement
-         là-bas, avec pour seul point d'accès un lien "Configurer" qui
-         pointait vers une section supprimée : plus aucun ouvrier ne pouvait
-         choisir de chef à suivre, cassant la synchro avec l'équipe). -->
-    <select id="chefTodoSelectorPopup" onchange="onChefTodoSelectorChange(this.value)"
-      style="width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:12.5px; margin-bottom:10px;">
-      <option value="">— Choisir un chef —</option>
-    </select>
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-      <span id="sharedTodoLabel" style="font-size:12px; font-weight:700; color:var(--wood);">Liste partagée</span>
-      <button onclick="refreshSharedTodoInPopup()" style="background:none;border:none;font-size:13px;color:var(--wood);cursor:pointer;padding:2px 6px;" title="Resync">🔄</button>
-    </div>
-    <div id="sharedTodoItems" style="color:var(--ink-soft);font-size:12px;">
-      <span style="opacity:0.6;">Aucun chef sélectionné.</span>
-    </div>
+  <!-- Ajout d'une tâche — écrit dans la liste affichée ci-dessus : la
+       sienne, ou celle du chef suivi (liste vraiment partagée et éditable
+       par toute l'équipe qui suit ce chef). -->
+  <div id="pinnedPopupAddRow">
+    <input type="text" id="pinnedPopupAddInput" placeholder="Nouvelle tâche…"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();addPinnedTaskFromPopup();}">
+    <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()" title="Ajouter une tâche">+</button>
   </div>
 </div>
 
