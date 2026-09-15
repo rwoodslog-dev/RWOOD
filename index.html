@@ -8019,6 +8019,23 @@ function stripBlobsForSync(d){
     if(w.photo && isDataUrlRef(w.photo)) delete w.photo;
     if(w.signature && isDataUrlRef(w.signature)) delete w.signature;
   });
+  // Signature du jour sur chaque fiche de pointage (voir _pointageDoValidate) :
+  // même traitement que w.signature ci-dessus — sans ça, l'historique complet
+  // de l'attendance (renvoyé en entier à CHAQUE sync, pas juste au push
+  // pointage dédié) réexpédiait une image base64 par jour validé, à chaque
+  // fois. Idéalement déjà convertie en URL Storage par pushPointageToSupabase
+  // au moment du push pointage — ce strip reste un filet de sécurité pour le
+  // base64 pas encore converti (première synchro après mise à jour, ou signé
+  // hors-ligne). Gère le format objet {dateKey:{...}} et l'ancien format tableau.
+  if(copy.attendance && typeof copy.attendance === 'object' && !Array.isArray(copy.attendance)){
+    Object.values(copy.attendance).forEach(dayData => {
+      if(dayData && dayData.signature && isDataUrlRef(dayData.signature)) delete dayData.signature;
+    });
+  } else if(Array.isArray(copy.attendance)){
+    copy.attendance.forEach(entry => {
+      if(entry && entry.signature && isDataUrlRef(entry.signature)) delete entry.signature;
+    });
+  }
   (copy.stock || []).forEach(item => {
     if(item.photo && isDataUrlRef(item.photo)) delete item.photo;
   });
@@ -14079,10 +14096,18 @@ async function uploadFileToSupabase(file, siteId){
   const res = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
     method: 'POST',
     headers: {
-      'apikey':        SUPA_KEY,
-      'Authorization': 'Bearer ' + SUPA_KEY,
-      'Content-Type':  mimeType,
-      'x-upsert':      'true'
+      'apikey':         SUPA_KEY,
+      'Authorization':  'Bearer ' + SUPA_KEY,
+      'Content-Type':   mimeType,
+      'x-upsert':       'true',
+      // Réduction bande passante (v5.41.46) : le chemin contient un uid()
+      // unique par upload — le contenu à cette URL ne change JAMAIS. On peut
+      // donc dire au navigateur ET au CDN de garder ce fichier en cache très
+      // longtemps sans jamais revalider, au lieu du cache court par défaut de
+      // Supabase (1h) qui fait retélécharger toutes les photos consultées
+      // plusieurs fois (galerie, catalogue, dépannage…) — gros contributeur
+      // au compteur "Cached Egress" du quota Supabase.
+      'Cache-Control':  'public, max-age=31536000, immutable'
     },
     body: blob
   });
@@ -14099,6 +14124,61 @@ async function uploadFileToSupabase(file, siteId){
   }
 
   return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RÉDUCTION BANDE PASSANTE SUPABASE (v5.41.45bis) — les signatures
+   (pointage, consentement) étaient stockées et synchronisées en base64
+   directement dans le JSON de rwood_sync. Comme les pointages renvoient
+   TOUT l'historique de l'ouvrier à chaque validation (voir
+   pushPointageToSupabase), chaque signature base64 était réexpédiée
+   encore et encore, jour après jour, à chaque push ET à chaque pull côté
+   comptable — gros contributeur à l'egress. Cette fonction convertit une
+   signature base64 en upload Supabase Storage (miroir de
+   uploadFileToSupabase mais à partir d'une chaîne data: URL plutôt que
+   d'un File) et ne renvoie plus qu'une URL (quelques dizaines d'octets au
+   lieu de plusieurs Ko/dizaines de Ko par signature).
+   Toujours "fail open" : en cas d'échec (hors-ligne, erreur réseau), on
+   renvoie la valeur d'origine inchangée — la signature continue de
+   fonctionner localement, elle sera reconvertie au prochain essai. */
+async function uploadDataUrlToSupabase(dataUrl, pathPrefix){
+  if(!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return dataUrl;
+  const match = dataUrl.match(/^data:([^;,]+)(?:;charset=[^;,]+)?(?:;base64)?,(.+)$/);
+  if(!match) return dataUrl; // format inattendu (rare) : on ne touche à rien
+  const mimeType = match[1] || 'image/png';
+  const b64 = match[2];
+  let bytes;
+  try{
+    const byteChars = atob(b64);
+    bytes = new Uint8Array(byteChars.length);
+    for(let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+  }catch(e){ return dataUrl; } // base64 invalide : on ne casse rien
+  const blob = new Blob([bytes], { type: mimeType });
+  const ext = mimeType.startsWith('image/') ? mimeType.split('/')[1].split(';')[0] : 'png';
+  const path = `${pathPrefix}/${uid()}.${ext}`;
+  const res = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: {
+      'apikey':        SUPA_KEY,
+      'Authorization': 'Bearer ' + SUPA_KEY,
+      'Content-Type':  mimeType,
+      'x-upsert':      'true',
+      'Cache-Control': 'public, max-age=31536000, immutable'
+    },
+    body: blob
+  });
+  if(!res.ok) throw new Error('Upload signature échoué (' + res.status + ')');
+  return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
+}
+
+/* Wrapper "fail open" : ne lève jamais, renvoie la valeur d'origine si la
+   conversion échoue pour n'importe quelle raison (hors-ligne, etc.). */
+async function _signatureToUrlIfPossible(base64OrUrl, pathHint){
+  if(!base64OrUrl || typeof base64OrUrl !== 'string' || !base64OrUrl.startsWith('data:')) return base64OrUrl;
+  if(!navigator.onLine) return base64OrUrl;
+  try{
+    return await uploadDataUrlToSupabase(base64OrUrl, 'signatures/' + (pathHint || 'divers'));
+  }catch(e){ return base64OrUrl; } // échec réseau : on garde le base64 local, on réessaiera plus tard
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -14541,7 +14621,10 @@ async function uploadThumbnailToSupabase(file, siteId){
         'apikey':        SUPA_KEY,
         'Authorization': 'Bearer ' + SUPA_KEY,
         'Content-Type':  'image/jpeg',
-        'x-upsert':      'true'
+        'x-upsert':      'true',
+        // Voir commentaire dans uploadFileToSupabase (v5.41.46) : chemin
+        // unique par upload, cache long possible sans risque.
+        'Cache-Control': 'public, max-age=31536000, immutable'
       },
       body: thumbBlob
     });
@@ -31387,9 +31470,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.44';
+const APP_VERSION = '5.41.46';
 
 const CHANGELOG = [
+  {
+    version: '5.41.46',
+    date: '15/09/2026',
+    entries: [
+      { icon: '📉', text: "Optimisation technique — les photos envoyées (chantier, dépannage, catalogue, matériel…) sont désormais mises en cache longue durée par le navigateur au lieu d'être retéléchargées à chaque consultation, pour réduire encore la consommation de bande passante du serveur" },
+    ]
+  },
+  {
+    version: '5.41.45',
+    date: '15/09/2026',
+    entries: [
+      { icon: '📉', text: "Optimisation technique — les signatures (pointage, consentement) sont maintenant stockées en ligne de façon plus légère au lieu d'être renvoyées en entier à chaque synchronisation, pour réduire la consommation de bande passante du serveur" },
+    ]
+  },
   {
     version: '5.41.44',
     date: '13/09/2026',
@@ -38050,6 +38147,39 @@ async function pushPointageToSupabase(){
 
   const myWorkerId = profile.workerId || null;
 
+  // Réduction bande passante Supabase (v5.41.45bis) : convertit les
+  // signatures encore en base64 (ancien format, ou hors-ligne au moment de
+  // signer) en URL Supabase Storage AVANT de construire le payload. Comme
+  // ce push renvoie TOUT l'historique de pointage de l'ouvrier à chaque
+  // fois, une signature laissée en base64 était réexpédiée en entier à
+  // chaque validation — d'où le dépassement de quota. Mémo local (par
+  // valeur identique) pour n'uploader qu'une seule fois une signature
+  // réutilisée sur plusieurs jours. Fail-open (voir _signatureToUrlIfPossible) :
+  // en cas d'échec réseau, la signature reste en base64 pour cette fois,
+  // sans jamais bloquer le pointage.
+  if(myWorkerId){
+    const _sigCache = new Map();
+    const _convertSig = async (sig) => {
+      if(!sig || typeof sig !== 'string' || !sig.startsWith('data:')) return sig;
+      if(_sigCache.has(sig)) return _sigCache.get(sig);
+      const url = await _signatureToUrlIfPossible(sig, 'pointage');
+      _sigCache.set(sig, url);
+      return url;
+    };
+    if(data.settings && data.settings.signature){
+      data.settings.signature = await _convertSig(data.settings.signature);
+    }
+    const myWorkerObj = (data.workers||[]).find(x => x.id === myWorkerId);
+    if(myWorkerObj && myWorkerObj.signature){
+      myWorkerObj.signature = await _convertSig(myWorkerObj.signature);
+    }
+    for(const dayData of Object.values(data.attendance || {})){
+      if(!dayData || !dayData.workers || !dayData.workers[myWorkerId]) continue;
+      if(dayData.signature) dayData.signature = await _convertSig(dayData.signature);
+    }
+    saveData(); // persiste les conversions localement — ne se refera plus jamais pour ces jours
+  }
+
   // RÈGLE STRICTE : n'envoyer QUE son propre ouvrier + ses propres pointages.
   // On inclut la signature (pour injection auto sur le récap PDF comptable).
   const _mySig = (data.settings && data.settings.signature) || null;
@@ -39995,6 +40125,16 @@ async function _pushAccountData(){
   // "Utilisateurs" (patron/comptable) affiche exactement ce qui a été
   // réellement signé, avec sa date, quel que soit l'appareil qui consulte.
   const worker = (data.workers||[]).find(w => w.id === profile.workerId) || {};
+  // Réduction bande passante (v5.41.45bis) : si la signature est encore en
+  // base64 à ce stade (ex: ce compte n'a jamais poussé de pointage), on la
+  // convertit ici aussi en URL Storage — fail-open, voir pushPointageToSupabase.
+  if(worker.signature && typeof worker.signature === 'string' && worker.signature.startsWith('data:')){
+    worker.signature = await _signatureToUrlIfPossible(worker.signature, 'pointage');
+    saveData();
+  } else if(moi.signature && typeof moi.signature === 'string' && moi.signature.startsWith('data:')){
+    moi.signature = await _signatureToUrlIfPossible(moi.signature, 'pointage');
+    saveData();
+  }
   const accountData = {
     firstName: profile.firstName || '',
     lastName:  profile.lastName  || '',
