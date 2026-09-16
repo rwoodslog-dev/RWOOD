@@ -2829,10 +2829,17 @@
   .recap-line strong{ color:var(--ink); font-weight:800; }
   .recap-sub{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--wood); margin-top:10px; margin-bottom:2px; }
   /* MODULE — Bulle aide/fermeture · début */
+  /* v5.41.57 — croix de fermeture réactivée, à la demande de Rémi : placée
+     en HAUT-GAUCHE du cercle, en symétrie exacte du badge rouge de
+     comptage #pinnedNoteBadge (haut-droit, top:-2px;right:-6px). */
   #pinnedBubbleClose{
-    /* Croix supprimée : le seul moyen de masquer la bulle est via
-       "À faire → masquer la bulle" (évite les fermetures accidentelles). */
-    display:none !important;
+    display:flex !important;
+    position:absolute; top:-2px; left:-6px;
+    width:18px; height:18px; border-radius:50%;
+    background:#3a3226; color:#fff; border:2px solid var(--bg);
+    align-items:center; justify-content:center;
+    font-size:12px; line-height:1; font-weight:800;
+    padding:0; cursor:pointer; z-index:2;
   }
   #pinnedBubbleClose:active{ transform:scale(.88); }
   #pinnedBubbleHint{
@@ -3101,6 +3108,19 @@
     0%,100%{ transform:scale(1); }
     50%{ transform:scale(1.08); }
   }
+  /* v5.41.57 — croix de fermeture de la bulle Messagerie, en HAUT-GAUCHE,
+     symétrique du badge rouge de comptage #alertBubbleBadge (haut-droit,
+     top:-6px;right:-6px ci-dessous) — même demande que pour la bulle
+     "À faire" (#pinnedBubbleClose). */
+  #alertBubbleClose{
+    position:absolute; top:-6px; left:-6px;
+    width:18px; height:18px; border-radius:50%;
+    background:#3a3226; color:#fff; border:2px solid var(--bg);
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; line-height:1; font-weight:800;
+    padding:0; cursor:pointer; z-index:2;
+  }
+  #alertBubbleClose:active{ transform:scale(.88); }
   #alertBubbleBadge{
     position:absolute; top:-6px; right:-6px;
     background:#E05555; color:#fff; font-size:10px; font-weight:800;
@@ -31858,9 +31878,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.56';
+const APP_VERSION = '5.41.57';
 
 const CHANGELOG = [
+  {
+    version: '5.41.57',
+    date: '16/09/2026',
+    entries: [
+      { icon: '💬', text: "Messagerie : ajout d'un bouton « Répondre » à côté de « Supprimer » dans la bulle flottante, pour les messages reçus — ouvre directement la conversation avec l'expéditeur" },
+      { icon: '✕', text: "Bulle flottante Messagerie et bulle « À faire » : ajout d'une croix de fermeture à gauche (en symétrie du point rouge de notifications à droite) pour masquer la bulle d'un clic" },
+    ],
+  },
   {
     version: '5.41.56',
     date: '16/09/2026',
@@ -42777,6 +42805,20 @@ function toggleAlertesMega(on){
   showToast(on ? '🔔 Alertesmega activée' : '🔕 Alertesmega désactivée');
 }
 
+/* v5.41.57 — Masque la bulle flottante Messagerie (croix), même logique que
+   hidePinnedBubble pour la bulle "À faire" : réactivable depuis Paramètres. */
+function hideAlertBubble(ev){
+  if(ev){ ev.stopPropagation(); ev.preventDefault(); }
+  if(!data.settings) data.settings = {};
+  data.settings.alertesMegaEnabled = false;
+  saveData();
+  checkForNewAlerts();
+  if(typeof renderAlertesTuile === 'function') renderAlertesTuile();
+  const bubble = document.getElementById('alertBubble');
+  if(bubble) bubble.style.display = 'none';
+  if(typeof showToast === 'function') showToast('🔕 Bulle masquée — réactivable depuis Paramètres');
+}
+
 let _myAlertsCache = [];
 // v5.41.16 — cache dédié aux Conversations reçues (ouvrier) : contient TOUT
 // ce qui nous a été envoyé, y compris ce qui a été "Supprimé" (archivé) de
@@ -43238,6 +43280,29 @@ function _openHeuresFromAlert(alertId){
   else if(typeof markAlertRead === 'function') markAlertRead(alertId);
 }
 
+/* v5.41.57 — "Répondre" depuis la bulle Messagerie (inbox popup) : ouvre
+   directement le fil de conversation avec l'expéditeur du message reçu,
+   en créant un fil vierge si aucune conversation n'existe encore avec lui. */
+async function _replyToAlertFromInbox(alertId){
+  const a = (_myAlertsCache||[]).find(x => x.id === alertId);
+  if(!a) return;
+  closeModal('alertInbox');
+  goTo('alertes-conducteur');
+  if(typeof renderAlertesChatList === 'function') await renderAlertesChatList();
+  const senderId = a.senderAuthId || null;
+  const idx = (_alertesChatRowsCache||[]).findIndex(r =>
+    r.type === 'person' && ((senderId && r.authId === senderId) || (!senderId && r.name === a.senderName))
+  );
+  if(idx !== -1){
+    await openAlertesChatThread(idx);
+  } else {
+    const name = a.senderName || senderId || 'Expéditeur inconnu';
+    _currentChatThreadPerson = senderId ? { authId: senderId, name } : null;
+    await _renderChatThreadModal({ type:'person', authId: senderId, name, alerts: [] });
+  }
+  if(typeof _clearAlert === 'function') _clearAlert(alertId);
+}
+
 /* Fiche détaillée d'un dépannage (Alertesmega) : chantier/adresse/date,
    médias (composant réutilisé du chantier), notes, checklist quincaillerie
    cochable, et raccourci de pointage sur la fiche d'heures du jour. */
@@ -43589,6 +43654,10 @@ function _renderAlertInboxList(){
     } else if(a.kind === 'depannage'){
       mainActionHtml = `<button class="btn btn-outline btn-sm" onclick="openDepannageDetail('${a.id}')">🛠️ Détails</button>` +
         ` <button class="btn btn-outline btn-sm" onclick="_addDepannageToAlertesmega('${a.id}', _renderAlertInboxList)"><img src="icons/megaphone.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Alertesmega</button>`;
+    } else if(a.kind === 'info'){
+      // v5.41.57 — les Messages libres reçus dans la bulle Messagerie peuvent
+      // être ouverts directement dans la conversation via "Répondre".
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_replyToAlertFromInbox('${a.id}')">💬 Répondre</button>`;
     } else {
       mainActionHtml = '';
     }
@@ -48547,6 +48616,7 @@ async function comptaEditEnsurePulled(){
 <div id="alertBubble" onclick="if(this._suppressClick)return; openAlertInbox()">
   <img src="icons/messagerie.png" alt="" style="width:30px;height:30px;object-fit:contain;pointer-events:none;">
   <span id="alertBubbleBadge" style="display:none;"></span>
+  <button id="alertBubbleClose" onclick="hideAlertBubble(event)" title="Masquer">×</button>
 </div>
 <div id="pinnedNoteBubble" class="pinned-note-bubble" style="display:none;position:fixed;width:46px;height:46px;border-radius:50% !important;background-color:#F5C518;overflow:visible;" onclick="togglePinnedNotePopup(event)">
   <span id="pinnedBubbleEmoji"><img src="icons/note.png" alt="À faire" style="width:28px;height:28px;object-fit:contain;display:block;"></span>
