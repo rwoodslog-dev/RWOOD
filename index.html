@@ -26770,10 +26770,24 @@ function getDateOfISOWeek(week, year){
   // Raccourcis Android (long-appui sur l'icône de l'app, définis dans manifest.json)
   const shortcutParam = new URLSearchParams(window.location.search).get('shortcut');
   if(shortcutParam){
-    if(shortcutParam === 'photo') goTo('photos');
-    else if(shortcutParam === 'newsite'){ goTo('chantiers'); setTimeout(()=>openModal('addSite'), 150); }
-    else if(shortcutParam === 'calc') goTo('calcul');
-    else if(shortcutParam === 'agenda'){ goTo('agenda'); setTimeout(()=>openTaskModal(), 150); }
+    if(shortcutParam === 'calc') goTo('calcul');
+    else if(shortcutParam === 'watch'){
+      // v5.41.58 — envoie la liste à faire sur la montre sans avoir besoin
+      // d'ouvrir/naviguer dans l'app : appelle directement sendTodoListToWatch
+      // (même fonction que le bouton ⌚ de la bulle "à faire"), ferme la
+      // fenêtre juste après si c'est un onglet dédié ouvert par le raccourci.
+      setTimeout(() => {
+        if(typeof sendTodoListToWatch === 'function') sendTodoListToWatch();
+        setTimeout(() => { try{ window.close(); }catch(e){} }, 1200);
+      }, 300);
+    }
+    else if(shortcutParam === 'radio'){
+      // v5.41.58 — lance directement la radio mise en favori (voir
+      // musicSetFavoriteStation / _musicPlayFavoriteFromShortcut).
+      setTimeout(() => {
+        if(typeof _musicPlayFavoriteFromShortcut === 'function') _musicPlayFavoriteFromShortcut();
+      }, 300);
+    }
     window.history.replaceState({}, '', window.location.pathname);
   }
 
@@ -31878,9 +31892,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.57';
+const APP_VERSION = '5.41.59';
 
 const CHANGELOG = [
+  {
+    version: '5.41.59',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⌚', text: "Raccourcis de l'icône d'app (appui long) refaits : « Envoyer la liste sur ma montre » (envoie la notif sans ouvrir l'app), « Lancer ma radio favorite » (mets une radio en favori avec ⭐ dans le menu du mode musique, puis lance-la d'un appui), et « Calculatrice » — à la place des anciens raccourcis Photo/Nouveau chantier/Calculatrice/Évènement" },
+    ],
+  },
+  {
+    version: '5.41.58',
+    date: '16/09/2026',
+    entries: [
+      { icon: '🖼️', text: "Correction du logo Messagerie : un léger halo/bruit gris semi-transparent autour de l'icône (visible comme un carré fantôme sur certains fonds) a été nettoyé — le fond est maintenant totalement transparent" },
+    ],
+  },
   {
     version: '5.41.57',
     date: '16/09/2026',
@@ -33670,20 +33698,67 @@ function _musicRenderGenreList(){
   const el = document.getElementById('musicGenreList');
   if(!el) return;
   const currentGenre = _musicCurrentStationId ? (_musicFindStation(_musicCurrentStationId)||{}).genre : null;
+  const favId = _musicFavoriteStationId();
   el.innerHTML = Object.keys(MUSIC_STATIONS).map(genreKey => {
     const g = MUSIC_STATIONS[genreKey];
     const isSingle = g.stations.length === 1;
     const isActiveGenre = currentGenre === genreKey;
     const expanded = _musicExpandedGenre === genreKey;
+    const singleFavStar = isSingle
+      ? `<span onclick="event.stopPropagation(); musicToggleFavoriteStation('${g.stations[0].id}')" title="${g.stations[0].id===favId?'Retirer des favoris':'Radio favorite du raccourci'}" style="margin-left:auto;cursor:pointer;font-size:16px;line-height:1;">${g.stations[0].id===favId?'⭐':'☆'}</span>`
+      : '';
     let html = `<button class="music-genre-btn ${isActiveGenre?'active':''}" onclick="_musicGenreClick('${genreKey}')">
       <img src="${g.icon}" alt="" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${g.emoji}',style:'font-size:18px;'}))"><span>${escapeHtml(g.label)}</span>
-      ${isActiveGenre ? '<span style="margin-left:auto;">▶</span>' : (isSingle ? '' : '<span style="margin-left:auto; opacity:.5;">›</span>')}
+      ${isSingle ? singleFavStar : (isActiveGenre ? '<span style="margin-left:auto;">▶</span>' : '<span style="margin-left:auto; opacity:.5;">›</span>')}
     </button>`;
     if(!isSingle && expanded){
-      html += g.stations.map(s => `<button class="music-sub-btn ${s.id===_musicCurrentStationId?'active':''}" onclick="event.stopPropagation(); musicPlayStation('${s.id}')">${s.id===_musicCurrentStationId?'▶ ':''}${escapeHtml(s.name)}</button>`).join('');
+      html += g.stations.map(s => `<button class="music-sub-btn ${s.id===_musicCurrentStationId?'active':''}" onclick="event.stopPropagation(); musicPlayStation('${s.id}')" style="display:flex;align-items:center;gap:6px;">
+        <span style="flex:1;text-align:left;">${s.id===_musicCurrentStationId?'▶ ':''}${escapeHtml(s.name)}</span>
+        <span onclick="event.stopPropagation(); musicToggleFavoriteStation('${s.id}')" title="${s.id===favId?'Retirer des favoris':'Radio favorite du raccourci'}" style="cursor:pointer;font-size:15px;line-height:1;">${s.id===favId?'⭐':'☆'}</span>
+      </button>`).join('');
     }
     return html;
   }).join('');
+}
+
+/* v5.41.58 — Radio favorite pour le raccourci "Play radio" de l'icône
+   d'app (manifest.json shortcuts). Une seule radio favorite à la fois,
+   stockée dans data.settings pour être disponible dès le tout premier
+   chargement déclenché par le raccourci (avant même que localStorage de
+   la "dernière station écoutée" ait un sens). */
+function _musicFavoriteStationId(){
+  return (data.settings && data.settings.musicFavoriteStationId) || null;
+}
+function musicToggleFavoriteStation(stationId){
+  if(!data.settings) data.settings = {};
+  const current = _musicFavoriteStationId();
+  data.settings.musicFavoriteStationId = (current === stationId) ? null : stationId;
+  saveData();
+  if(typeof showToast === 'function'){
+    showToast(data.settings.musicFavoriteStationId
+      ? '⭐ Radio favorite du raccourci définie'
+      : '☆ Radio favorite retirée');
+  }
+  _musicRenderGenreList();
+}
+/* Appelée au démarrage quand l'app est ouverte via le raccourci "Play
+   radio" de l'icône (index.html?shortcut=radio) : lance directement la
+   radio favorite, sans passer par le menu. Si aucune favorite n'est
+   définie, ouvre simplement le mode musique + le menu de sélection. */
+function _musicPlayFavoriteFromShortcut(){
+  if(!_musicModeIsActive()){
+    data.settings = data.settings || {};
+    data.settings.musicModeActive = true;
+    saveData();
+    _musicApplyVisibility(true);
+  }
+  const favId = _musicFavoriteStationId();
+  if(favId && _musicFindStation(favId)){
+    musicPlayStation(favId);
+  } else {
+    if(typeof showToast === 'function') showToast('Choisis une radio et mets-la en favori (⭐) pour ce raccourci');
+    toggleMusicDropdown(true);
+  }
 }
 
 function _musicGenreClick(genreKey){
