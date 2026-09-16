@@ -3954,6 +3954,27 @@
 </head>
 <body>
 
+<!-- v5.41.62 — ÉCRAN DE DÉMARRAGE (boot splash) : affiché en tout premier,
+     avant même le chargement complet du reste de l'app, pour éviter tout
+     flash noir/vide entre l'écran de démarrage natif du téléphone (géré par
+     l'OS via manifest.json → background_color, qui ne peut afficher qu'une
+     couleur unie, pas notre motif) et le premier rendu réel de l'app.
+     Masqué par _hideBootSplash() dès que l'app est prête à s'afficher. -->
+<div id="bootSplash" style="position:fixed; inset:0; z-index:99999; background:#1C1714; display:flex; align-items:center; justify-content:center; transition:opacity .25s ease;">
+  <img src="icons/icon-512.png" alt="" style="width:96px; height:96px; border-radius:22px; box-shadow:0 0 24px rgba(232,172,61,0.4);">
+</div>
+<script>
+  function _hideBootSplash(){
+    var el = document.getElementById('bootSplash');
+    if(!el) return;
+    el.style.opacity = '0';
+    setTimeout(function(){ if(el && el.parentNode) el.parentNode.removeChild(el); }, 260);
+  }
+  // Filet de sécurité : si une erreur bloque l'init avant d'atteindre
+  // _hideBootSplash(), on ne laisse jamais l'utilisateur coincé sur un écran noir.
+  setTimeout(_hideBootSplash, 6000);
+</script>
+
 <!-- ÉCRAN D'AUTHENTIFICATION / VERROUILLAGE -->
 <div id="authScreen" style="display:none; position:fixed; inset:0; z-index:200; flex-direction:column; align-items:center; justify-content:center; padding:24px; overflow-y:auto;">
 
@@ -26789,6 +26810,7 @@ function getDateOfISOWeek(week, year){
   setupNavReorder();
 
   const isBlocked = checkAuthOnStartup();
+  _hideBootSplash(); // v5.41.62 — l'écran d'auth (avec motif) ou le contenu va s'afficher, on peut retirer le splash
   if(isBlocked) return; // n'affiche rien tant que l'utilisateur n'est pas authentifié
 
   if(needsRoleMigration()){
@@ -26915,9 +26937,19 @@ if('serviceWorker' in navigator){
       }
 
       // Si le SW prend le contrôle après activation → recharger proprement
+      // v5.41.62 — garde-fou anti-boucle : si plusieurs mises à jour
+      // s'enchaînent très vite (ex: déploiements rapprochés côté serveur),
+      // on ne se recharge qu'UNE seule fois par visite. C'était la cause du
+      // "clignotement" au démarrage (icône qui apparaît/disparaît plusieurs
+      // fois) — chaque rechargement automatique redéclenchait une nouvelle
+      // vérification de mise à jour, en cascade.
       let refreshing = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if(refreshing) return;
+        try{
+          if(sessionStorage.getItem('rwood-sw-reloaded')) return;
+          sessionStorage.setItem('rwood-sw-reloaded', '1');
+        }catch(e){}
         refreshing = true;
         window.location.reload();
       });
@@ -31931,9 +31963,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.61';
+const APP_VERSION = '5.41.62';
 
 const CHANGELOG = [
+  {
+    version: '5.41.62',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⚡', text: "Corrigé le clignotement de l'icône au démarrage de l'app (apparaît/disparaît plusieurs fois avant d'afficher le contenu) : un rechargement automatique en cascade se déclenchait après chaque mise à jour installée — il ne se produit maintenant qu'une seule fois par ouverture" },
+      { icon: '⚡', text: "Ajouté un écran de transition (fond uni de la même couleur que l'app) entre l'écran de démarrage du téléphone et le premier affichage de l'app, pour éviter tout flash noir/vide" },
+    ],
+  },
   {
     version: '5.41.61',
     date: '16/09/2026',
