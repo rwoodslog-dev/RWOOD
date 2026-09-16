@@ -32039,9 +32039,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.69';
+const APP_VERSION = '5.41.71';
 
 const CHANGELOG = [
+  {
+    version: '5.41.71',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⏱️', text: "Rappel fiche d'heures : horaire déplacé de 15h30 à 15h45" },
+    ],
+  },
+  {
+    version: '5.41.70',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⏱️', text: "Corrigé le rappel « pense à remplir ta fiche d'heures » (15h30) qui ne partait plus depuis un moment : il était désactivé suite à un ancien bug de doublons, jamais réactivé depuis que ce bug a été corrigé — c'est fait, et il envoie maintenant une vraie notification (avant, il ne posait qu'une alerte invisible dans l'app)" },
+    ],
+  },
   {
     version: '5.41.69',
     date: '16/09/2026',
@@ -42957,9 +42971,28 @@ async function _checkForNewAlertsInner(){
   // if(typeof _checkAgendaReminders === 'function'){
   //   try{ await _checkAgendaReminders(); }catch(e){ /* silencieux */ }
   // }
-  // if(typeof _checkHoursReminders === 'function'){
-  //   try{ await _checkHoursReminders(); }catch(e){ /* silencieux */ }
-  // }
+  //
+  // v5.41.70 — RÉACTIVÉ : Rémi a signalé ne plus recevoir le rappel fiche
+  // d'heures (15h30). En creusant, deux problèmes cumulés :
+  //  1) cet appel était bien désactivé depuis le fix "795 alertesMega"
+  //     (doublons en boucle) — mais ce bug venait de la RÉENTRANCE de
+  //     checkForNewAlerts() (sendAlert → checkForNewAlerts → ... en boucle),
+  //     qui a depuis été corrigée à la source par le verrou
+  //     _checkForNewAlertsRunning tout en haut de checkForNewAlerts() : un
+  //     appel ré-entrant pendant qu'un premier est en cours ressort
+  //     immédiatement sans rien refaire. _checkHoursReminders() marque en
+  //     plus son créneau comme "envoyé" AVANT d'envoyer l'alerte (même
+  //     pattern que _checkTaskReminders). Avec ces deux protections, plus de
+  //     risque de boucle — on peut réactiver en confiance.
+  //  2) MÊME quand il tournait, _checkHoursReminders() ne faisait que
+  //     déposer une alerte in-app (bulle Alertesmega) : jamais de vraie
+  //     notification système via notifyPush(). Sur un rappel censé arriver
+  //     "même app fermée" comme les autres notifications, c'était
+  //     silencieux par nature — corrigé directement dans
+  //     _checkHoursReminders (voir plus bas).
+  if(typeof _checkHoursReminders === 'function'){
+    try{ await _checkHoursReminders(); }catch(e){ /* silencieux */ }
+  }
 
   // v5.41.20 — Réunion de chantier : rappel J-1 dédié (_checkReunionChantierReminders),
   // indépendant du mécanisme désactivé ci-dessus (marqueur différent
@@ -43159,12 +43192,26 @@ async function _checkAgendaReminders(){
   }
 }
 
-/* Alertesmega — rappel fiche d'heures : tous les jours à 15h30 (pense à
+/* Alertesmega — rappel fiche d'heures : tous les jours à 15h45 (pense à
    pointer aujourd'hui) et le vendredi à 10h (pense à envoyer la fiche de
    la semaine). Ciblé sur ouvrier/chef (ceux qui remplissent des heures).
    Ne se déclenche qu'une fois par créneau grâce à un horodatage mémorisé
    (data.settings.hoursReminderLog), même si l'app est ouverte plusieurs
-   fois dans la même fenêtre horaire. */
+   fois dans la même fenêtre horaire.
+
+   v5.41.70 — réactivé (voir _checkForNewAlertsInner) + AJOUT d'une vraie
+   notification push via notifyPush(), en plus de l'alerte in-app déposée
+   par sendAlert(). Avant, ce rappel ne posait qu'une alerte dans la bulle
+   Alertesmega — invisible si l'app n'était pas ouverte au bon moment, donc
+   silencieux la plupart du temps. Comme les autres notifications système de
+   l'app, on respecte le réglage "Notifications sur ce téléphone" (pushEnabled)
+   avant d'envoyer.
+   v5.41.71 — horaire quotidien déplacé de 15h30 à 15h45 (demande Rémi).
+
+   IMPORTANT — limite qui reste : ce rappel ne peut se déclencher que si
+   l'app tourne (même en arrière-plan) pendant la fenêtre 15h45-16h15. S'il
+   n'y a AUCUNE ouverture de l'app ce jour-là dans ce créneau, rien ne part
+   — il n'y a pas de vrai serveur programmé (cron) derrière ce rappel-ci. */
 async function _checkHoursReminders(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
   if(role !== 'ouvrier' && role !== 'chef') return;
@@ -43176,6 +43223,8 @@ async function _checkHoursReminders(){
   const now = new Date();
   const todayKey = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
   const myId = getDeviceSyncId();
+  const myAuthId = data.settings && data.settings.auth && data.settings.auth.authId;
+  const pushOn = !!(data.settings.notifications && data.settings.notifications.pushEnabled);
   const minutesNow = now.getHours() * 60 + now.getMinutes();
 
   // IMPORTANT (correctif « 795 alertesMega ») : sendAlert() appelle en
@@ -43187,18 +43236,23 @@ async function _checkHoursReminders(){
   // pendant toute la fenêtre de tolérance (15h30-16h00), d'où les centaines
   // d'alertes identiques. Fix : on marque le créneau comme envoyé et on
   // sauvegarde AVANT d'envoyer l'alerte, pour que l'appel ré-entrant le
-  // voie déjà traité et ne renvoie rien.
+  // voie déjà traité et ne renvoie rien. Ce verrou est désormais doublé par
+  // _checkForNewAlertsRunning dans checkForNewAlerts() (v5.41.70).
 
-  // Rappel quotidien : 15h30 (930 min), fenêtre de tolérance de 30 min pour
-  // couvrir le cas où l'app n'est pas ouverte pile à l'heure.
+  // Rappel quotidien : 15h45 (945 min, demande Rémi v5.41.71 — avant 15h30),
+  // fenêtre de tolérance de 30 min pour couvrir le cas où l'app n'est pas
+  // ouverte pile à l'heure.
   const dailyKey = 'daily_' + todayKey;
-  if(minutesNow >= 15*60+30 && minutesNow < 16*60 && log[dailyKey] !== true){
+  if(minutesNow >= 15*60+45 && minutesNow < 16*60+15 && log[dailyKey] !== true){
     log[dailyKey] = true;
     saveData();
     await sendAlert(
       '⏱️ Pense à remplir ta fiche d\'heures du jour.',
       'device', myId, null, 'rappel-heures'
     );
+    if(pushOn && myAuthId){
+      notifyPush([myAuthId], 'RWOOD — Fiche d\'heures', 'Pense à remplir ta fiche d\'heures du jour.', 'rappel-heures', 'heures').catch(()=>{});
+    }
   }
 
   // Rappel hebdomadaire : vendredi (day===5) à 10h, même fenêtre de tolérance.
@@ -43210,6 +43264,9 @@ async function _checkHoursReminders(){
       '🧾 C\'est vendredi — pense à envoyer ta fiche d\'heures de la semaine à la comptable.',
       'device', myId, null, 'rappel-heures'
     );
+    if(pushOn && myAuthId){
+      notifyPush([myAuthId], 'RWOOD — Fiche d\'heures', 'C\'est vendredi — pense à envoyer ta fiche d\'heures de la semaine à la comptable.', 'rappel-heures', 'heures').catch(()=>{});
+    }
   }
 }
 
