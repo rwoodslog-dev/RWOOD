@@ -2942,6 +2942,11 @@
     background:var(--wood); color:#1a0f00; font-size:13px;
     font-weight:700; cursor:pointer; flex-shrink:0;
   }
+  #pinnedPopupWatchBtn{
+    padding:7px 10px; border-radius:8px; border:1.5px solid var(--wood);
+    background:none; color:var(--wood); font-size:14px;
+    cursor:pointer; flex-shrink:0;
+  }
   /* ═══════════════════════════════════════════════════════════════
      PWA NATIF — iOS + Android (v3 — scroll document natif)
      Le scroll est géré par le document lui-même (html/body),
@@ -4883,6 +4888,27 @@
             <div class="hint" style="margin-top:6px;">Envoie une vraie notification à ce compte et affiche le résultat réel du serveur (utile pour diagnostiquer si une notification n'arrive pas).</div>
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotificationDelayed()">⏳ Tester à retardement (app fermée)</button>
             <div class="hint" style="margin-top:6px;">Envoie la notification 20 secondes plus tard (délai côté serveur) — le temps de fermer complètement l'application pour vérifier qu'elle apparaît bien même app fermée.</div>
+          </div>
+
+          <!-- MODULE — Mode montre (v5.41.51, revu en v5.41.52) : envoie le
+               contenu de la liste "à faire" dans une notification, lisible
+               directement sur une montre connectée (Wear OS / Apple Watch)
+               qui reflète les notifications du téléphone — sans avoir besoin
+               d'ouvrir l'app, ce qu'une montre ne peut de toute façon pas
+               faire. v5.41.52 : simple case à cocher ici ; le bouton d'envoi
+               lui-même a été déplacé dans la bulle "à faire" (visible
+               seulement quand la case est cochée) pour un accès plus direct. -->
+          <div class="card" style="margin-top:12px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <div>
+                <div style="font-weight:700; font-size:14px;">⌚ Mode montre</div>
+                <div class="hint" style="margin-top:2px;">Ajoute un bouton ⌚ dans la bulle « à faire » pour envoyer tes tâches non cochées dans une notification, lisible directement sur ta montre connectée.</div>
+              </div>
+              <label class="toggle-switch" style="flex-shrink:0;">
+                <input type="checkbox" id="watchModeToggle" onchange="setWatchModeEnabled(this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
         </div>
       </div>
@@ -8443,6 +8469,54 @@ async function testPushNotificationDelayed(){
         console.error('testPushNotificationDelayed: échec', result);
       }
     });
+}
+
+/* Bouton "⌚ Envoyer ma liste sur ma montre" (v5.41.51) — Option 1 retenue
+   avec Rémi : une montre connectée (Wear OS / Apple Watch) reflète
+   automatiquement les notifications du téléphone, mais RWOOD n'a pas d'app
+   montre native, donc il n'y a aucun moyen d'y "ouvrir" la liste à faire.
+   La solution est d'envoyer le CONTENU de la liste directement dans le
+   corps d'une notification — lisible sur la montre sans rien ouvrir.
+   Seulement les tâches NON cochées (demande explicite), plafonné à
+   TODO_WATCH_MAX lignes pour rester lisible sur un petit écran (le corps
+   d'une notification est de toute façon tronqué par l'OS au-delà de
+   quelques lignes) ; le reste est résumé en "+ N autres". Utilise la liste
+   ACTIVE de la bulle "à faire" (_getPinnedNote — la sienne pour
+   chef/conducteur/patron/comptable, celle du chef suivi pour un ouvrier,
+   voir togglePinnedNotePopup / v5.41.47), pas un store séparé. */
+const TODO_WATCH_MAX = 8;
+async function sendTodoListToWatch(){
+  const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+  if(!authId){
+    showToast('⚠️ Crée/synchronise d\'abord ton compte (Paramètres → Compte)');
+    return;
+  }
+  const pn = _getPinnedNote();
+  const undone = (pn.tasks || []).filter(t => !t.done);
+  if(!undone.length){
+    showToast('✅ Aucune tâche en attente — rien à envoyer sur la montre');
+    return;
+  }
+  const shown = undone.slice(0, TODO_WATCH_MAX);
+  let body = shown.map(t => '• ' + t.text).join('\n');
+  const remaining = undone.length - shown.length;
+  if(remaining > 0) body += '\n+ ' + remaining + ' autre' + (remaining > 1 ? 's' : '');
+
+  showToast('⏳ Envoi vers ta montre…');
+  const result = await notifyPush([authId], '📌 À faire (' + undone.length + ')', body, 'todo-watch');
+  if(!result.ok){
+    if(result.reason === 'network-error'){
+      alert('❌ Échec réseau — impossible de joindre le serveur de notifications.');
+    } else {
+      alert('❌ Le serveur a refusé l\'envoi (HTTP ' + (result.status||'?') + ').');
+    }
+    return;
+  }
+  if((result.subscriptions ?? 0) === 0){
+    alert('⚠️ Aucun abonnement notification trouvé pour ton compte — active d\'abord "Notifications sur ce téléphone" ci-dessus.');
+    return;
+  }
+  showToast('✅ Liste envoyée — regarde ta montre !');
 }
 
 // Pousse les données locales vers Supabase (upsert)
@@ -27239,12 +27313,16 @@ function ensureNotifSettings(){
       backup: false,
       backupHour: 19*60,
       minutesMigrationDone: true,
-      pushEnabled: true
+      pushEnabled: true,
+      watchModeEnabled: false
     };
   }
   // Activées par défaut pour tout le monde (y compris les comptes déjà
   // existants créés avant l'ajout de ce réglage).
   if(data.settings.notifications.pushEnabled === undefined) data.settings.notifications.pushEnabled = true;
+  // Mode montre (v5.41.52) — désactivé par défaut, activé volontairement
+  // via la case à cocher dans Paramètres → Notifications.
+  if(data.settings.notifications.watchModeEnabled === undefined) data.settings.notifications.watchModeEnabled = false;
   // Migration depuis l'ancien format (2h / morning / evening_before)
   const n = data.settings.notifications;
   if(n.agendaTiming === '2h' || n.agendaTiming === 'morning'){
@@ -27348,7 +27426,23 @@ function renderPushNotifSection(){
   ensureNotifSettings();
   const toggle = document.getElementById('pushNotifToggle');
   if(toggle) toggle.checked = !!data.settings.notifications.pushEnabled;
+  const watchToggle = document.getElementById('watchModeToggle');
+  if(watchToggle) watchToggle.checked = !!data.settings.notifications.watchModeEnabled;
   updateNotifPermStatus();
+}
+
+/* Interrupteur "Mode montre" dans Paramètres → Notifications (v5.41.52).
+   ON  → fait apparaître le bouton ⌚ dans la bulle "à faire" (voir
+         _renderPinnedTasksInPopup) pour envoyer la liste en notification.
+   OFF → masque ce bouton. Le bouton "Envoyer sur la montre" qui était
+         auparavant ici, dans Paramètres, a été retiré : on ne garde qu'un
+         seul point d'accès, dans la bulle, pour éviter la redondance. */
+function setWatchModeEnabled(enabled){
+  ensureNotifSettings();
+  data.settings.notifications.watchModeEnabled = enabled;
+  saveData();
+  if(typeof _renderPinnedTasksInPopup === 'function') _renderPinnedTasksInPopup();
+  showToast(enabled ? '⌚ Bouton montre ajouté dans la bulle « à faire »' : '⌚ Mode montre désactivé');
 }
 
 /* Interrupteur "Notifications sur ce téléphone" dans Paramètres.
@@ -31557,9 +31651,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.50';
+const APP_VERSION = '5.41.52';
 
 const CHANGELOG = [
+  {
+    version: '5.41.52',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⌚', text: "Mode montre revu : une case à cocher dans Paramètres → Notifications active un bouton ⌚ directement dans la bulle « à faire », pour envoyer ta liste en notification sans passer par les Paramètres" },
+    ]
+  },
+  {
+    version: '5.41.51',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⌚', text: "Nouveau « Mode montre » dans Paramètres → Notifications : un bouton envoie tes tâches « à faire » non cochées directement dans une notification, lisible sur une montre connectée sans avoir besoin d'ouvrir l'application" },
+      { icon: '⚡', text: "Notifications envoyées avec une priorité plus élevée côté serveur, pour réduire le délai d'arrivée (jusqu'à 5+ minutes observées) causé par les économies de batterie Android quand l'application est fermée" },
+    ]
+  },
   {
     version: '5.41.50',
     date: '15/09/2026',
@@ -36831,19 +36940,25 @@ function _renderPinnedTasksInPopup(){
   const pn = _getPinnedNote();
   const container = document.getElementById('pinnedTaskList');
   const addRow = document.getElementById('pinnedPopupAddRow');
+  const watchBtn = document.getElementById('pinnedPopupWatchBtn');
   if(!container) return;
 
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
   const isFollower = role === 'ouvrier';
   const followedId = isFollower ? _getFollowedChefId() : null;
+  // Bouton "Mode montre" (v5.41.52) — n'apparaît que si l'option a été
+  // cochée dans Paramètres → Notifications (voir setWatchModeEnabled).
+  const watchModeOn = !!(data.settings && data.settings.notifications && data.settings.notifications.watchModeEnabled);
 
   // Ouvrier sans chef choisi : pas de liste à afficher, ni à modifier.
   if(isFollower && !followedId){
     if(addRow) addRow.style.display = 'none';
+    if(watchBtn) watchBtn.style.display = 'none';
     container.innerHTML = '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0 6px;">Choisis un chef ci-dessus pour voir et ajouter des tâches à sa liste.</div>';
     return;
   }
   if(addRow) addRow.style.display = '';
+  if(watchBtn) watchBtn.style.display = watchModeOn ? '' : 'none';
 
   const syncBtn = !isFollower
     ? `<div style="text-align:right; margin-bottom:4px;">
@@ -48361,6 +48476,10 @@ async function comptaEditEnsurePulled(){
   <div id="pinnedPopupAddRow">
     <input type="text" id="pinnedPopupAddInput" placeholder="Nouvelle tâche…"
       onkeydown="if(event.key==='Enter'){event.preventDefault();addPinnedTaskFromPopup();}">
+    <!-- Bouton "Mode montre" (v5.41.52) — visible seulement si la case
+         "Mode montre" est cochée dans Paramètres → Notifications
+         (voir setWatchModeEnabled / _renderPinnedTasksInPopup). -->
+    <button id="pinnedPopupWatchBtn" onclick="sendTodoListToWatch()" title="Envoyer la liste sur ma montre" style="display:none;">⌚</button>
     <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()" title="Ajouter une tâche">+</button>
   </div>
 </div>
