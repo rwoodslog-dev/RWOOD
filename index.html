@@ -8502,8 +8502,33 @@ async function sendTodoListToWatch(){
   const remaining = undone.length - shown.length;
   if(remaining > 0) body += '\n+ ' + remaining + ' autre' + (remaining > 1 ? 's' : '');
 
-  showToast('⏳ Envoi vers ta montre…');
-  const result = await notifyPush([authId], '📌 À faire (' + undone.length + ')', body, 'todo-watch');
+  /* v5.41.54 — Confirmé avec Rémi : chef et ouvrier LIÉS (l'ouvrier suit la
+     liste de ce chef) partagent la MÊME liste "à faire", donc quand l'un
+     envoie sur sa montre, l'autre doit être notifié aussi — comportement
+     voulu, pas un bug. Mais on ne notifie JAMAIS quelqu'un qui n'a pas
+     lui-même activé "Mode montre" dans ses Paramètres : on vérifie son
+     réglage via le registre partagé (company_users_registry), jamais en
+     supposant qu'il veut recevoir juste parce qu'il est lié. */
+  const targets = new Set([authId]);
+  try{
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    if(role === 'ouvrier'){
+      const chefId = _getFollowedChefId();
+      if(chefId){
+        const users = await _fetchUsersRegistry();
+        const chef = users.find(u => u.authId === chefId);
+        if(chef && chef.watchModeEnabled) targets.add(chefId);
+      }
+    } else if(role === 'chef'){
+      const users = await _fetchUsersRegistry();
+      users
+        .filter(u => u.followedChefTodoId === authId && u.watchModeEnabled)
+        .forEach(u => targets.add(u.authId));
+    }
+  }catch(e){ /* silencieux — on envoie au moins à soi-même */ }
+
+  showToast(targets.size > 1 ? '⏳ Envoi vers les montres…' : '⏳ Envoi vers ta montre…');
+  const result = await notifyPush([...targets], '📌 À faire (' + undone.length + ')', body, 'todo-watch');
   if(!result.ok){
     if(result.reason === 'network-error'){
       alert('❌ Échec réseau — impossible de joindre le serveur de notifications.');
@@ -8513,10 +8538,10 @@ async function sendTodoListToWatch(){
     return;
   }
   if((result.subscriptions ?? 0) === 0){
-    alert('⚠️ Aucun abonnement notification trouvé pour ton compte — active d\'abord "Notifications sur ce téléphone" ci-dessus.');
+    alert('⚠️ Aucun abonnement notification trouvé — active d\'abord "Notifications sur ce téléphone" ci-dessus.');
     return;
   }
-  showToast('✅ Liste envoyée — regarde ta montre !');
+  showToast(targets.size > 1 ? '✅ Liste envoyée — vérifiez vos montres !' : '✅ Liste envoyée — regarde ta montre !');
 }
 
 // Pousse les données locales vers Supabase (upsert)
@@ -27442,6 +27467,13 @@ function setWatchModeEnabled(enabled){
   data.settings.notifications.watchModeEnabled = enabled;
   saveData();
   if(typeof _renderPinnedTasksInPopup === 'function') _renderPinnedTasksInPopup();
+  // v5.41.54 — pousse immédiatement ce réglage dans le registre partagé
+  // (company_users_registry) : c'est ce qui permet au chef/ouvrier lié de
+  // savoir si CET utilisateur veut recevoir la notif montre de l'autre
+  // (voir sendTodoListToWatch) — sans ça, le réglage resterait local et
+  // invisible pour la personne liée tant qu'aucune autre action ne
+  // resynchronise le registre.
+  if(typeof pushMyUserRegistration === 'function') pushMyUserRegistration();
   showToast(enabled ? '⌚ Bouton montre ajouté dans la bulle « à faire »' : '⌚ Mode montre désactivé');
 }
 
@@ -31651,9 +31683,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.52';
+const APP_VERSION = '5.41.54';
 
 const CHANGELOG = [
+  {
+    version: '5.41.54',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⌚', text: "Mode montre : quand un chef et un ouvrier sont liés (l'ouvrier suit sa liste), envoyer sur sa montre notifie maintenant aussi l'autre — mais seulement s'il a lui-même activé « Mode montre » dans ses Paramètres" },
+    ]
+  },
+  {
+    version: '5.41.53',
+    date: '16/09/2026',
+    entries: [
+      { icon: '💬', text: "Corrigé : les ouvriers (et tout rôle sans droit d'envoi) ne pouvaient plus rouvrir une conversation dans Alertes après l'avoir fermée une première fois — la fenêtre restait invisible pour toujours" },
+    ]
+  },
   {
     version: '5.41.52',
     date: '16/09/2026',
@@ -40312,6 +40358,11 @@ async function pushMyUserRegistration(){
       phone: normalizePhone((data.contacts||[]).find(c=>c.role==='Moi')?.phone || ''),
       teamName: data.settings.teamName || '',
       followedChefTodoId: data.settings.followedChefTodoId || '',
+      // v5.41.54 — exposé pour que le chef/ouvrier lié puisse savoir, avant
+      // d'envoyer sur la montre, si l'autre a lui-même activé ce réglage
+      // (voir sendTodoListToWatch) : jamais de notif à quelqu'un qui ne l'a
+      // pas demandée, même si les deux partagent la même liste.
+      watchModeEnabled: !!(data.settings.notifications && data.settings.notifications.watchModeEnabled),
       updatedAt: new Date().toISOString()
     };
 
@@ -42885,6 +42936,13 @@ async function _renderReceivedChatThreadModal(row){
     ex.id = 'modal-alertesReceivedChatThread';
     document.body.appendChild(ex);
   }
+  // v5.41.53 — CORRECTIF : closeModal() retire la classe "open" de cette
+  // modale (réutilisée d'un appel à l'autre, contrairement à son équivalent
+  // côté envoi qui la recrée entièrement à chaque ouverture). Comme la
+  // classe n'était réappliquée QUE lors de la toute première création, la
+  // modale restait invisible pour toujours après une première fermeture —
+  // c'est ce qui empêchait les ouvriers de rouvrir une conversation reçue.
+  ex.classList.add('open');
 
   const myId = getDeviceSyncId();
   const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', photo:'📷', 'nouveau-chantier':'🏗️' };
