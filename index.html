@@ -26986,26 +26986,34 @@ if('serviceWorker' in navigator){
         try{ reg.waiting.postMessage({ type: 'SKIP_WAITING' }); }catch(e){}
       }
 
-      // Si le SW prend le contrôle après activation → recharger proprement
-      // v5.41.62 — garde-fou anti-boucle : si plusieurs mises à jour
-      // s'enchaînent très vite (ex: déploiements rapprochés côté serveur),
-      // on ne se recharge qu'UNE seule fois par visite. C'était la cause du
-      // "clignotement" au démarrage (icône qui apparaît/disparaît plusieurs
-      // fois) — chaque rechargement automatique redéclenchait une nouvelle
-      // vérification de mise à jour, en cascade.
+      // Si le SW prend le contrôle après activation → recharger proprement,
+      // AUTOMATIQUEMENT, sans aucune manip pour l'utilisateur.
+      // v5.41.62 — garde-fou anti-boucle : évite que plusieurs mises à jour
+      // enchaînées très vite (déploiements rapprochés) ne provoquent une
+      // cascade de rechargements ("clignotement" de l'icône au démarrage).
+      // v5.41.66 — CORRECTIF : la 1ère version de ce garde-fou bloquait le
+      // rechargement automatique pour le RESTE de la session (sessionStorage
+      // posé une fois, jamais retiré) → si l'app restait ouverte entre deux
+      // déploiements successifs, la 2e mise à jour ne se chargeait plus
+      // JAMAIS toute seule (il fallait fermer/rouvrir l'app à la main —
+      // ce que Rémi ne veut plus faire). Remplacé par un cooldown de 8s :
+      // seuls les rechargements en RAFALE (même déploiement) sont fusionnés
+      // en un seul ; toute mise à jour suivante, même dans la même session,
+      // redéclenche normalement un rechargement automatique.
       let refreshing = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if(refreshing) return;
         try{
-          if(sessionStorage.getItem('rwood-sw-reloaded')) return;
-          sessionStorage.setItem('rwood-sw-reloaded', '1');
+          const last = Number(sessionStorage.getItem('rwood-sw-reloaded-at') || 0);
+          if(Date.now() - last < 8000) return; // rafale du même déploiement → ignoré
+          sessionStorage.setItem('rwood-sw-reloaded-at', String(Date.now()));
         }catch(e){}
         refreshing = true;
         window.location.reload();
       });
     }).catch(()=>{});
 
-    // Revérifie une mise à jour à chaque retour au premier plan
+    // Revérifie une mise à jour à chaque retour au premier plan...
     document.addEventListener('visibilitychange', () => {
       if(document.visibilityState === 'visible'){
         navigator.serviceWorker.getRegistration().then(reg => {
@@ -27013,6 +27021,17 @@ if('serviceWorker' in navigator){
         });
       }
     });
+
+    // v5.41.66 — ...et aussi en tâche de fond toutes les 20 min, pour les
+    // sessions qui restent ouvertes très longtemps sans jamais repasser par
+    // "en arrière-plan puis revisible" (fenêtre d'app PC installée, tenue au
+    // premier plan toute la journée) : sans ça, une mise à jour publiée
+    // pendant que l'app tourne pouvait ne jamais être détectée toute seule.
+    setInterval(() => {
+      navigator.serviceWorker.getRegistration().then(reg => {
+        if(reg) reg.update().catch(()=>{});
+      });
+    }, 20 * 60 * 1000);
   });
 }
 
@@ -32013,9 +32032,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.65';
+const APP_VERSION = '5.41.66';
 
 const CHANGELOG = [
+  {
+    version: '5.41.66',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⚡', text: "Mises à jour automatiques : corrigé un bug qui pouvait bloquer le rechargement auto après une nouvelle mise à jour si l'app restait ouverte depuis le déploiement précédent — l'app se met maintenant à jour toute seule à chaque nouvelle version, sans jamais avoir besoin de fermer/rouvrir ou vider le cache à la main" },
+    ],
+  },
   {
     version: '5.41.65',
     date: '16/09/2026',
