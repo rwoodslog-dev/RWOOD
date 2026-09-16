@@ -8582,7 +8582,14 @@ async function testPushNotificationDelayed(){
    chef/conducteur/patron/comptable, celle du chef suivi pour un ouvrier,
    voir togglePinnedNotePopup / v5.41.47), pas un store séparé. */
 const TODO_WATCH_MAX = 8;
-async function sendTodoListToWatch(){
+/* v5.41.69 — Rémi a demandé de séparer les deux envois qui se marchaient
+   dessus sur le MÊME bouton ⌚ :
+     - appui simple  → envoie la liste À SOI-MÊME uniquement
+     - appui maintenu (3s, même pattern que _gearPressStart/_musicMode)
+       → envoie à toute l'équipe synchronisée (comportement précédent,
+       inchangé : chef+ouvriers liés ayant activé "Mode montre")
+   toTeam=false (par défaut) = envoi solo ; toTeam=true = envoi équipe. */
+async function sendTodoListToWatch(toTeam){
   const authId = data.settings && data.settings.auth && data.settings.auth.authId;
   if(!authId){
     showToast('⚠️ Crée/synchronise d\'abord ton compte (Paramètres → Compte)');
@@ -8601,28 +8608,32 @@ async function sendTodoListToWatch(){
 
   /* v5.41.54 — Confirmé avec Rémi : chef et ouvrier LIÉS (l'ouvrier suit la
      liste de ce chef) partagent la MÊME liste "à faire", donc quand l'un
-     envoie sur sa montre, l'autre doit être notifié aussi — comportement
-     voulu, pas un bug. Mais on ne notifie JAMAIS quelqu'un qui n'a pas
-     lui-même activé "Mode montre" dans ses Paramètres : on vérifie son
-     réglage via le registre partagé (company_users_registry), jamais en
-     supposant qu'il veut recevoir juste parce qu'il est lié. */
+     envoie sur sa montre EN MODE ÉQUIPE, l'autre doit être notifié aussi.
+     Mais on ne notifie JAMAIS quelqu'un qui n'a pas lui-même activé "Mode
+     montre" dans ses Paramètres : on vérifie son réglage via le registre
+     partagé (company_users_registry), jamais en supposant qu'il veut
+     recevoir juste parce qu'il est lié.
+     v5.41.69 — ce bloc ne s'exécute plus que si toTeam===true (appui
+     maintenu) ; un appui simple reste toujours solo (targets = [authId]). */
   const targets = new Set([authId]);
-  try{
-    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    if(role === 'ouvrier'){
-      const chefId = _getFollowedChefId();
-      if(chefId){
+  if(toTeam){
+    try{
+      const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+      if(role === 'ouvrier'){
+        const chefId = _getFollowedChefId();
+        if(chefId){
+          const users = await _fetchUsersRegistry();
+          const chef = users.find(u => u.authId === chefId);
+          if(chef && chef.watchModeEnabled) targets.add(chefId);
+        }
+      } else if(role === 'chef'){
         const users = await _fetchUsersRegistry();
-        const chef = users.find(u => u.authId === chefId);
-        if(chef && chef.watchModeEnabled) targets.add(chefId);
+        users
+          .filter(u => u.followedChefTodoId === authId && u.watchModeEnabled)
+          .forEach(u => targets.add(u.authId));
       }
-    } else if(role === 'chef'){
-      const users = await _fetchUsersRegistry();
-      users
-        .filter(u => u.followedChefTodoId === authId && u.watchModeEnabled)
-        .forEach(u => targets.add(u.authId));
-    }
-  }catch(e){ /* silencieux — on envoie au moins à soi-même */ }
+    }catch(e){ /* silencieux — on envoie au moins à soi-même */ }
+  }
 
   showToast(targets.size > 1 ? '⏳ Envoi vers les montres…' : '⏳ Envoi vers ta montre…');
   const result = await notifyPush([...targets], '📌 À faire (' + undone.length + ')', body, 'todo-watch');
@@ -8639,6 +8650,35 @@ async function sendTodoListToWatch(){
     return;
   }
   showToast(targets.size > 1 ? '✅ Liste envoyée — vérifiez vos montres !' : '✅ Liste envoyée — regarde ta montre !');
+}
+
+/* Appui simple vs appui maintenu (3s) sur le bouton ⌚ de la bulle "à faire"
+   — même pattern que _gearPressStart/_gearPressEnd (mode musique). Le tap
+   court (relâché avant 3s) déclenche l'envoi SOLO ; si les 3s sont
+   atteintes, l'envoi ÉQUIPE part tout seul et le relâchement qui suit
+   n'envoie plus rien (évite le double-envoi solo+équipe au même appui). */
+let _watchBtnPressTimer = null;
+let _watchBtnLongFired = false;
+function _watchBtnPressStart(ev){
+  if(ev && ev.type === 'mousedown' && ev.button !== 0) return;
+  _watchBtnPressEnd();
+  _watchBtnLongFired = false;
+  _watchBtnPressTimer = setTimeout(() => {
+    _watchBtnPressTimer = null;
+    _watchBtnLongFired = true;
+    if(navigator.vibrate){ try{ navigator.vibrate([15,40,15]); }catch(e){} }
+    sendTodoListToWatch(true);
+  }, 3000);
+}
+function _watchBtnPressEnd(ev){
+  if(_watchBtnPressTimer){
+    clearTimeout(_watchBtnPressTimer);
+    _watchBtnPressTimer = null;
+    if(ev && ev.type !== 'mouseleave' && ev.type !== 'touchmove' && !_watchBtnLongFired){
+      sendTodoListToWatch(false); // relâché avant 3s → envoi solo
+    }
+  }
+  _watchBtnLongFired = false;
 }
 
 // Pousse les données locales vers Supabase (upsert)
@@ -31999,9 +32039,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.68';
+const APP_VERSION = '5.41.69';
 
 const CHANGELOG = [
+  {
+    version: '5.41.69',
+    date: '16/09/2026',
+    entries: [
+      { icon: '⌚', text: "Bouton montre de la bulle « à faire » : appui simple envoie la liste à toi seul, appui maintenu 3s l'envoie à toute l'équipe synchronisée (avant, un seul appui envoyait toujours à toute l'équipe)" },
+    ],
+  },
   {
     version: '5.41.68',
     date: '16/09/2026',
@@ -48896,8 +48943,14 @@ async function comptaEditEnsurePulled(){
       onkeydown="if(event.key==='Enter'){event.preventDefault();addPinnedTaskFromPopup();}">
     <!-- Bouton "Mode montre" (v5.41.52) — visible seulement si la case
          "Mode montre" est cochée dans Paramètres → Notifications
-         (voir setWatchModeEnabled / _renderPinnedTasksInPopup). -->
-    <button id="pinnedPopupWatchBtn" onclick="sendTodoListToWatch()" title="Envoyer la liste sur ma montre" style="display:none;">⌚</button>
+         (voir setWatchModeEnabled / _renderPinnedTasksInPopup).
+         v5.41.69 — appui simple = envoi solo, appui maintenu 3s = envoi
+         équipe (voir _watchBtnPressStart/_watchBtnPressEnd) ; pas d'onclick
+         pour éviter un envoi en double au relâchement (même pattern que
+         _gearPressStart pour le mode musique). -->
+    <button id="pinnedPopupWatchBtn" title="Appui simple : à moi seul · Appui maintenu 3s : à toute l'équipe synchronisée" style="display:none;"
+      ontouchstart="_watchBtnPressStart(event)" ontouchend="_watchBtnPressEnd(event)" ontouchmove="_watchBtnPressEnd(event)"
+      onmousedown="_watchBtnPressStart(event)" onmouseup="_watchBtnPressEnd(event)" onmouseleave="_watchBtnPressEnd(event)">⌚</button>
     <button id="pinnedPopupAddBtn" onclick="addPinnedTaskFromPopup()" title="Ajouter une tâche">+</button>
   </div>
 </div>
