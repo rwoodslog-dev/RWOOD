@@ -5550,12 +5550,11 @@
         <!-- ═══ WRAPPER PLEIN ÉCRAN : gauche = aperçu, droite = contrôles ═══ -->
 
           <div id="zincEditFields">
+          <button class="btn btn-primary btn-block" style="margin-bottom:10px;" onclick="openZincSketchTool(currentZincEditingProfile)"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg> Modifier la forme (croquis)</button>
           <button class="btn btn-outline btn-block" id="zincAddBoudinBtn" style="margin-bottom:10px;" onclick="toggleZincBoudin()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Ajouter un boudin</button>
-          <button class="btn btn-outline btn-block" id="zincAddBoudinPieceBtn" style="margin-bottom:10px; display:none;" onclick="togglePiecesBoudin()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Ajouter un boudin</button>
 
-          <div class="section-title">Segments</div>
+          <div class="section-title">Cotes</div>
           <div id="zincSegmentList"></div>
-          <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="addZincSegmentDispatch()">+ Ajouter un segment</button>
 
           <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="closeZincEditor()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.8 2.8L16.5 9"/></svg> Enregistrer le pliage</button>
         </div><!-- /zincEditFields -->
@@ -8948,7 +8947,7 @@ let data = {
   tiles: [], // {id, name, brand, ref, dimensions, photo, doc:{name,mimeType,data}}
   payslips: [], // {id, month: "YYYY-MM", name, mimeType, data, addedAt}
   trash: [], // {id, logEntry: {...}, deletedAt}
-  zincProfiles: [] // {id, siteId, name, modelType, segments: [{length, angle}], createdAt}
+  zincProfiles: [] // {id, siteId, name, sketch:true, sketchSegments:[{p1,p2,mm}], sketchCanvasWidth, sketchCanvasHeight, hasBoudin, createdAt}
 };
 
 async function loadData(){
@@ -17212,6 +17211,21 @@ let currentZincEditingProfile = null;
 
 function ensureZincProfiles(){
   if(!data.zincProfiles) data.zincProfiles = [];
+  // v5.41.85 — refonte complète du pliage (ancien système "chaque segment,
+  // longueur+angle exacts, positionné à la main" remplacé par le croquis à
+  // main levée). Sur demande explicite de Rémi, les anciens pliages
+  // (modèles pieces/freeform/segments) sont purgés une bonne fois pour
+  // toutes au premier chargement après cette version, plutôt que gardés en
+  // lecture seule : ils ne correspondent plus à rien d'affichable/éditable
+  // dans le nouveau système. Ne supprime que les pliages de l'ANCIEN format
+  // (sans sketch:true) — les nouveaux pliages créés depuis cette version
+  // ne sont jamais concernés.
+  if(!data._zincLegacyPurged835){
+    const before = data.zincProfiles.length;
+    data.zincProfiles = data.zincProfiles.filter(p => p.sketch === true);
+    data._zincLegacyPurged835 = true;
+    if(data.zincProfiles.length !== before) saveData();
+  }
 }
 
 /* --- Galerie principale (onglet Zinc) --- */
@@ -17352,6 +17366,18 @@ function deleteZincProfile(profileId){
 
 /* Crée un profil en mode libre : U de départ à 3 segments, en points absolus (mm),
    modifiable en glissant les rotules ou en saisissant une longueur exacte */
+/* v5.41.85 — Refonte complète du pliage : au lieu de saisir chaque segment
+   (longueur + angle exacts) et de le positionner à la main (ancien modèle
+   "pieces", abandonné avec freeform/segments — trop précis, pas assez
+   pratique sur chantier), le pliage réutilise maintenant TEL QUEL l'outil de
+   croquis à main levée (openSketchTool) déjà développé pour les tâches
+   "À faire" : dessin au doigt → lissage automatique (Douglas-Peucker) →
+   tap sur un segment pour saisir sa cote ou le supprimer. Seule différence
+   avec le croquis générique : la cote est un nombre en mm obligatoire
+   (opts.mmMode), pour que le développé total et le cumul de traçage restent
+   calculables — voir _sketchPromptSegmentText.
+   Le profil stocke seulement : sketch:true, sketchSegments (p1/p2/mm),
+   sketchCanvasWidth/Height, hasBoudin. Plus de segments/points/pieces. */
 function createFreeformZincProfile(){
   if(!currentZincFolderSite) return;
 
@@ -17359,18 +17385,50 @@ function createFreeformZincProfile(){
     id: uid(),
     siteId: currentZincFolderSite,
     name: '',
-    modelType: 'pieces',
-    pieces: true, // nouveau modèle : segments indépendants, positionnés/orientés à la main
-    segmentPieces: [], // {id, length, angle, x, y, locked}
-    boudinPiece: null, // {x, y, locked} ou null si pas de boudin
+    sketch: true,
+    sketchSegments: [], // {p1:{x,y}, p2:{x,y}, mm}
+    sketchCanvasWidth: null,
+    sketchCanvasHeight: null,
+    hasBoudin: false,
     createdAt: formatDateTime(new Date())
   };
 
   ensureZincProfiles();
   data.zincProfiles.push(profile);
   saveData();
-  openZincEditor(profile.id);
-  enterZincEditMode(); // un nouveau pliage s'ouvre toujours en édition
+  openZincSketchTool(profile.id);
+}
+
+/* Ouvre l'outil de croquis pour créer/modifier la forme d'un pliage. À la
+   sauvegarde (💾 Enregistrer le croquis dans l'outil), les segments sont
+   convertis en mm (la cote saisie sur chaque segment, texte→nombre) et le
+   pliage retourne à l'écran éditeur classique (nom, développé, cumul, PDF…). */
+function openZincSketchTool(profileId){
+  const profile = data.zincProfiles.find(p=>p.id===profileId);
+  if(!profile) return;
+  currentZincEditingProfile = profileId;
+
+  const existing = (profile.sketchSegments && profile.sketchSegments.length) ? {
+    segments: profile.sketchSegments.map(s => ({ p1:s.p1, p2:s.p2, text:String(Math.round(s.mm)) })),
+    canvasWidth: profile.sketchCanvasWidth,
+    canvasHeight: profile.sketchCanvasHeight
+  } : null;
+
+  openSketchTool((blob, sketchData) => {
+    const segs = (sketchData.segments||[]).filter(s => s.text && parseFloat(s.text) > 0);
+    if(!segs.length){ showToast('Ajoute au moins une cote avant d\'enregistrer'); openZincSketchTool(profileId); return; }
+    profile.sketchSegments = segs.map(s => ({ p1:s.p1, p2:s.p2, mm: Math.round(parseFloat(s.text)) }));
+    profile.sketchCanvasWidth = sketchData.canvasWidth;
+    profile.sketchCanvasHeight = sketchData.canvasHeight;
+    // La forme a changé : un cumul de traçage déjà calculé n'aurait plus de sens (indices de segments obsolètes)
+    profile.cumulTracage = null;
+    profile.cumulTracageOrder = null;
+    const isNewProfile = !profile.name; // tout premier enregistrement : pas encore de nom saisi
+    saveData();
+    openZincEditor(profileId);
+    if(isNewProfile) enterZincEditMode(); // reste en édition pour saisir le nom tout de suite
+    showToast('✅ Forme du pliage enregistrée');
+  }, existing, null, { mmMode:true, title:'📐 Croquis du pliage' });
 }
 
 /* --- Éditeur de pliage --- */
@@ -17569,9 +17627,7 @@ function deleteZincMetrage(){
 /* Construit le HTML SVG d'aperçu à partir d'un profil (indépendant du DOM éditeur) */
 function _zincPdfBuildSchemaHtml(profile){
   try{
-    if(profile.pieces) return buildPiecesZincSchema(profile, false);
-    if(profile.freeform) return buildFreeformZincSchema(profile.points, false, profile.hasBoudin, profile.boudinPointIndex);
-    if(profile.segments) return buildZincSchema(profile.segments, profile.hasBoudin, false);
+    return buildSketchZincSchema(profile);
   } catch(e){}
   return null;
 }
@@ -17852,8 +17908,8 @@ function applyZincEditModeVisibility(profile){
   document.getElementById('zincEditFields').style.display = zincIsEditMode ? 'block' : 'none';
   const pdfCard = document.getElementById('zincPdfCard');
   if(pdfCard) pdfCard.style.display = zincIsEditMode ? 'none' : 'block';
-  document.getElementById('zincAddBoudinBtn').style.display = (profile.freeform && !profile.pieces) ? 'block' : 'none';
-  if(profile.freeform && profile.hasBoudin){
+  document.getElementById('zincAddBoudinBtn').style.display = 'block';
+  if(profile.hasBoudin){
     document.getElementById('zincAddBoudinBtn').innerHTML = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Retirer le boudin';
   } else {
     document.getElementById('zincAddBoudinBtn').innerHTML = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Ajouter un boudin';
@@ -18006,131 +18062,71 @@ function renderZincEditor(){
   document.getElementById('zincProfileName').value = profile.name || '';
   applyZincEditModeVisibility(profile);
   renderZincMetrage(profile);
-
-  if(profile.pieces){
-    renderPiecesZincEditor(profile);
-    renderZincCumulCard(profile);
-    applyZincZoom();
-    setupZincPinchZoom();
-    return;
-  }
-
-  if(profile.freeform){
-    renderFreeformZincEditor(profile);
-    renderZincCumulCard(profile);
-    applyZincZoom();
-    setupZincPinchZoom();
-    return;
-  }
-
-  const total = zincTotalLength(profile.segments, profile.hasBoudin);
-  document.getElementById('zincTotalLength').textContent = formatMm(total) + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
-
-  document.getElementById('zincSegmentList').innerHTML = profile.segments.map((seg, i)=>`
-    <div class="zinc-segment-row">
-      <div class="zinc-segment-index">${i+1}</div>
-      <div class="zinc-segment-fields">
-        <div class="field-mini">
-          <label>Longueur (mm)</label>
-          <input type="number" min="1" value="${seg.length}" onchange="updateZincSegment(${i}, 'length', this.value)">
-        </div>
-        ${i > 0 ? `
-          <div class="field-mini">
-            <label>Angle (°)</label>
-            <input type="number" value="${seg.angle}" onchange="updateZincSegment(${i}, 'angle', this.value)">
-          </div>
-        ` : ''}
-      </div>
-      ${profile.segments.length > 1 ? `<button class="remove-worker" onclick="removeZincSegment(${i})" title="Supprimer ce segment">×</button>` : ''}
-    </div>
-  `).join('');
-
-  document.getElementById('zincSchema').innerHTML = buildZincSchema(profile.segments, profile.hasBoudin, zincIsEditMode);
+  renderSketchZincEditor(profile);
   renderZincCumulCard(profile);
   applyZincZoom();
   setupZincPinchZoom();
 }
 
-/* ============ PROFIL LIBRE (rotules déplaçables au doigt) ============ */
-
-function freeformSegmentLengths(points){
-  const lengths = [];
-  for(let i=0; i<points.length-1; i++){
-    const dx = points[i+1].x - points[i].x;
-    const dy = points[i+1].y - points[i].y;
-    lengths.push(Math.sqrt(dx*dx + dy*dy));
-  }
-  return lengths;
-}
-
-function freeformTotalLength(points){
-  return freeformSegmentLengths(points).reduce((a,b)=>a+b, 0);
-}
-
-function renderFreeformZincEditor(profile){
-  const total = Math.round(freeformTotalLength(profile.points)) + (profile.hasBoudin ? BOUDIN_DEVELOPPE_MM : 0);
+/* v5.41.85 — remplace renderPiecesZincEditor/renderFreeformZincEditor : le
+   pliage n'a plus qu'un seul modèle (sketch). La liste "Segments" à saisie
+   manuelle disparaît : la forme et les cotes se modifient uniquement dans
+   l'outil de croquis (bouton "Modifier la forme"), la liste ci-dessous n'est
+   plus qu'un simple récapitulatif en lecture des cotes déjà saisies. */
+function renderSketchZincEditor(profile){
+  const total = getProfileTotalLength(profile);
   document.getElementById('zincTotalLength').textContent = formatMm(total) + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
 
-  if(!profile.lockedSegments) profile.lockedSegments = {};
-  const lengths = freeformSegmentLengths(profile.points);
-  document.getElementById('zincSegmentList').innerHTML = profile.points.slice(0, -1).map((p, i)=>{
-    const isLocked = !!profile.lockedSegments[i];
-    return `
-    <div class="zinc-segment-row">
-      <div class="zinc-segment-index">${i+1}</div>
-      <div class="zinc-segment-fields">
-        <div class="field-mini">
-          <label>Longueur (mm)</label>
-          <input type="number" min="1" value="${Math.round(lengths[i])}" ${isLocked ? 'disabled' : ''} onchange="updateFreeformSegmentLength(${i}, this.value)">
+  const segs = profile.sketchSegments || [];
+  if(!segs.length){
+    document.getElementById('zincSegmentList').innerHTML = '<div class="hint">Aucune forme dessinée pour l\'instant.</div>';
+  } else {
+    document.getElementById('zincSegmentList').innerHTML = segs.map((seg, i)=>`
+      <div class="zinc-segment-row">
+        <div class="zinc-segment-index">${i+1}</div>
+        <div class="zinc-segment-fields">
+          <div class="field-mini">
+            <label>Cote (mm)</label>
+            <div style="padding:8px 0; font-weight:700; color:var(--wood);">${Math.round(seg.mm)} mm</div>
+          </div>
         </div>
       </div>
-      <button class="remove-worker" onclick="toggleFreeformSegmentLock(${i})" title="${isLocked ? 'Déverrouiller la longueur' : 'Verrouiller la longueur'}" style="opacity:${isLocked ? '1' : '0.4'};">${isLocked ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>' : '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg>'}</button>
-      ${profile.points.length > 2 ? `<button class="remove-worker" onclick="removeFreeformPoint(${i+1})" title="Supprimer cette rotule">×</button>` : ''}
-    </div>
-  `;
-  }).join('');
-
-  document.getElementById('zincSchema').innerHTML = buildFreeformZincSchema(profile.points, zincIsEditMode, profile.hasBoudin, profile.boudinPointIndex);
-  if(zincIsEditMode) setupFreeformDragHandles();
-}
-
-/* Construit le schéma SVG interactif : poignées (cercles) déplaçables sur chaque rotule */
-/* Calcule les points d'AFFICHAGE du tracé (jamais les vraies coordonnées) : si un segment est
-   trop court à l'écran pour qu'on voie son angle, son extrémité est étirée le long de sa
-   direction réelle jusqu'à une longueur minimale. Les rotules réelles ne sont pas affectées. */
-function computeFreeformDrawPoints(svgPoints){
-  const MIN_VISUAL_LENGTH = 38;
-  const drawPoints = [svgPoints[0]];
-  for(let i=1; i<svgPoints.length; i++){
-    const prev = drawPoints[i-1];
-    const real = svgPoints[i];
-    const dx = real.x - prev.x;
-    const dy = real.y - prev.y;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-    if(dist > 0 && dist < MIN_VISUAL_LENGTH){
-      const ratio = MIN_VISUAL_LENGTH / dist;
-      drawPoints.push({ x: prev.x + dx * ratio, y: prev.y + dy * ratio });
-    } else {
-      drawPoints.push(real);
-    }
+    `).join('');
   }
-  return drawPoints;
+
+  document.getElementById('zincSchema').innerHTML = buildSketchZincSchema(profile);
 }
 
-function buildFreeformZincSchema(points, showHandles, hasBoudin, boudinPointIndex){
-  const boudinRadius = hasBoudin ? 26 : 0;
-  const boudinPt = hasBoudin ? (points[boudinPointIndex] || points[0]) : null;
+/* ============ PROFIL LIBRE (rotules déplaçables au doigt) ============ */
 
-  const xs = points.map(p=>p.x).concat(boudinPt ? [boudinPt.x - boudinRadius*2, boudinPt.x + boudinRadius*2] : []);
-  const ys = points.map(p=>p.y).concat(boudinPt ? [boudinPt.y - boudinRadius*2, boudinPt.y + boudinRadius*2] : []);
-  const minX = Math.min(...xs);
+/* ============ PLIAGE — MODÈLE UNIQUE "CROQUIS" (v5.41.85) ============
+   Remplace les anciens modèles pieces/freeform/segments. Un pliage est
+   maintenant une forme dessinée à main levée avec l'outil de croquis
+   (openZincSketchTool → openSketchTool), stockée telle quelle :
+   profile.sketchSegments = [{p1:{x,y}, p2:{x,y}, mm}], à l'échelle du
+   canevas d'origine (profile.sketchCanvasWidth/Height). */
+
+/* Construit le schéma SVG affiché à l'écran (et réutilisé pour le PDF) à
+   partir des segments du croquis, remis à l'échelle du viewBox du module
+   zinc. Simple lecture, pas d'édition ici — la forme se modifie uniquement
+   en rouvrant l'outil de croquis (openZincSketchTool). */
+function buildSketchZincSchema(profile){
+  const segs = profile.sketchSegments || [];
+  if(!segs.length){
+    return `<div class="hint" style="padding:24px; text-align:center;">Aucune forme dessinée pour l'instant.</div>`;
+  }
+
+  const xs = [], ys = [];
+  segs.forEach(s => { xs.push(s.p1.x, s.p2.x); ys.push(s.p1.y, s.p2.y); });
+  const boudinRadius = profile.hasBoudin ? 26 : 0;
+  const minX = Math.min(...xs) - boudinRadius;
   const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
+  const minY = Math.min(...ys) - (profile.hasBoudin ? boudinRadius : 0);
   const maxY = Math.max(...ys);
   const w = Math.max(1, maxX - minX);
   const h = Math.max(1, maxY - minY);
 
-  const margin = 36;
+  const margin = 30;
   const svgW = 320;
   const svgH = 260;
   const scale = Math.min((svgW - margin*2) / w, (svgH - margin*2) / h);
@@ -18140,406 +18136,51 @@ function buildFreeformZincSchema(points, showHandles, hasBoudin, boudinPointInde
     y: margin + (p.y - minY) * scale
   });
 
-  // Points réels à l'échelle (utilisés pour les rotules et les calculs — jamais déformés)
-  const svgPoints = points.map(toSvg);
-
-  // Points d'AFFICHAGE du tracé uniquement : si un segment est trop court à l'écran pour qu'on voie
-  // son angle, on étire son extrémité le long de sa direction réelle jusqu'à une longueur minimale.
-  const drawPoints = computeFreeformDrawPoints(svgPoints);
-  const pathD = drawPoints.map((p,i)=> (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
-
-  const lengths = freeformSegmentLengths(points);
-  const labels = lengths.map((len, i) => {
-    const p1 = drawPoints[i];
-    const p2 = drawPoints[i+1];
-    const midX = (p1.x + p2.x) / 2;
-    const midY = (p1.y + p2.y) / 2;
-    return `<text class="zinc-length-label" x="${midX.toFixed(1)}" y="${(midY - 10).toFixed(1)}" font-size="11" fill="var(--wood)" text-anchor="middle" font-weight="700">${Math.round(len)}</text>`;
+  const segLines = segs.map(seg => {
+    const p1 = toSvg(seg.p1), p2 = toSvg(seg.p2);
+    return `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}" x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" stroke="var(--wood)" stroke-width="4" stroke-linecap="round"/>`;
   }).join('');
 
-  // Poignées plus grosses et identifiées par index pour le glisser-déposer tactile (masquées en lecture).
-  // Placées sur les points d'affichage (étirés si besoin) pour rester accessibles au doigt même sur un segment court.
-  // En mode édition avec boudin actif, un clic sur une rotule déplace le boudin sur ce point.
-  const handles = showHandles ? drawPoints.map((p,i)=>`
-    <circle class="zinc-drag-handle" data-index="${i}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="11" fill="var(--card)" stroke="var(--wood)" stroke-width="3" style="cursor:grab; touch-action:none;" ${hasBoudin ? `onclick="moveBoudinToPoint(${i})"` : ''}/>
-  `).join('') : '';
+  const labels = segs.map(seg => {
+    const p1 = toSvg(seg.p1), p2 = toSvg(seg.p2);
+    const midX = (p1.x + p2.x) / 2;
+    const midY = (p1.y + p2.y) / 2;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    const off = 12;
+    const tx = midX + nx * off, ty = midY + ny * off;
+    return `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" font-size="11" fill="var(--wood)" text-anchor="middle" font-weight="700">${Math.round(seg.mm)}</text>`;
+  }).join('');
 
   let boudinSvg = '';
-  if(hasBoudin && boudinPt){
-    const r = boudinRadius * scale;
-    const centerIdx = boudinPointIndex || 0;
-    const center = drawPoints[centerIdx] || drawPoints[0];
-    boudinSvg = buildBoudinSvg(center, r);
-
-    // Raccourcit le premier tracé du trait pour qu'il démarre au bord du cercle (pas à son centre)
-    const neighborIdx = centerIdx === 0 ? 1 : centerIdx - 1;
-    const neighbor = drawPoints[neighborIdx];
-    if(neighbor){
-      const dx = neighbor.x - center.x;
-      const dy = neighbor.y - center.y;
-      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-      const edge = { x: center.x + (dx/dist) * r, y: center.y + (dy/dist) * r };
-      drawPoints[centerIdx] = edge; // déplace uniquement le point d'AFFICHAGE du trait, pas la rotule réelle
-    }
+  if(profile.hasBoudin){
+    const start = toSvg(segs[0].p1);
+    const r = boudinRadius * scale * 0.55;
+    boudinSvg = buildBoudinSvg(start, r);
   }
-  // Le path doit être reconstruit après l'éventuel ajustement du boudin ci-dessus
-  const finalPathD = drawPoints.map((p,i)=> (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
 
   return `
-    <svg id="zincFreeformSvg" viewBox="0 0 ${svgW} ${svgH}" data-min-x="${minX}" data-min-y="${minY}" data-scale="${scale}" data-margin="${margin}" style="width:100%; height:auto; display:block; touch-action:none;">
-      <path class="zinc-profile-path" d="${finalPathD}" fill="none" stroke="var(--wood)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%; height:auto; display:block;">
+      ${segLines}
       ${boudinSvg}
       ${labels}
-      ${handles}
     </svg>
   `;
 }
 
-/* Convertit une position d'écran (clientX/Y) en coordonnées mm du profil, à partir des attributs du SVG */
-function freeformScreenToMm(svg, clientX, clientY){
-  const rect = svg.getBoundingClientRect();
-  const viewBox = svg.viewBox.baseVal;
-  const scaleX = viewBox.width / rect.width;
-  const scaleY = viewBox.height / rect.height;
-  const svgX = (clientX - rect.left) * scaleX;
-  const svgY = (clientY - rect.top) * scaleY;
-
-  const minX = parseFloat(svg.dataset.minX);
-  const minY = parseFloat(svg.dataset.minY);
-  const margin = parseFloat(svg.dataset.margin);
-  const scale = parseFloat(svg.dataset.scale);
-
-  return {
-    x: minX + (svgX - margin) / scale,
-    y: minY + (svgY - margin) / scale
-  };
-}
-
-/* Applique les contraintes de verrouillage de longueur au déplacement d'un point.
-   - Si les deux segments voisins du point sont verrouillés : le point ne bouge pas (retourne sa position actuelle).
-   - Si un seul segment voisin est verrouillé : le point est contraint sur le cercle (rayon = longueur verrouillée)
-     centré sur l'autre extrémité de ce segment verrouillé — il peut donc tourner mais pas s'éloigner/se rapprocher.
-   - Si aucun n'est verrouillé : aucune contrainte, retourne la position désirée telle quelle. */
-/* Mode de cascade pour la chaîne articulée : 'absolute' garde l'angle absolu des segments suivants
-   (translation en bloc), 'relative' garde l'angle relatif entre segments (rotation en cascade).
-   Changeable facilement ici pendant les tests de comparaison demandés par l'utilisateur. */
-const ZINC_CHAIN_MODE = 'relative'; // 'absolute' | 'relative'
-
-/* Déplace pointIndex vers `desired`, en respectant la longueur verrouillée du segment précédent
-   si elle existe (le point pivote autour du point précédent à distance fixe), puis répercute le
-   mouvement en cascade sur tous les points suivants pour que leurs longueurs de segment restent
-   inchangées (comportement type "bras articulé"). Si le segment précédent n'est pas verrouillé,
-   le point va simplement à `desired` sans contrainte de distance. */
-function applyChainedDrag(profile, pointIndex, desired){
-  const points = profile.points;
-  const locked = profile.lockedSegments || {};
-  const originalLengths = freeformSegmentLengths(points);
-  const originalAngles = freeformSegmentAngles(points);
-
-  // Étape 1 : positionne le point déplacé, contraint par son segment précédent si verrouillé
-  const beforeSegIndex = pointIndex - 1;
-  const beforeLocked = beforeSegIndex >= 0 && locked[beforeSegIndex];
-
-  let newPoint;
-  if(beforeLocked){
-    const anchor = points[pointIndex - 1];
-    newPoint = projectOntoCircle(anchor, originalLengths[beforeSegIndex], desired);
-  } else {
-    newPoint = desired;
-  }
-
-  const newPoints = points.map(p => ({x: p.x, y: p.y}));
-  newPoints[pointIndex] = newPoint;
-
-  // Étape 2 : répercute en cascade sur tous les points suivants pour préserver leurs longueurs
-  if(ZINC_CHAIN_MODE === 'absolute'){
-    // Translation en bloc : tout le reste de la chaîne se décale du même vecteur que le point déplacé.
-    const shiftX = newPoint.x - points[pointIndex].x;
-    const shiftY = newPoint.y - points[pointIndex].y;
-    for(let i = pointIndex + 1; i < newPoints.length; i++){
-      newPoints[i] = { x: points[i].x + shiftX, y: points[i].y + shiftY };
-    }
-  } else {
-    // Rotation en cascade (bras articulé) : l'angle du tout premier segment de la cascade
-    // (pointIndex → pointIndex+1) est déterminé par le déplacement qu'on vient de faire (s'il
-    // existe un segment précédent dans la chaîne) ; chaque segment suivant garde ensuite le
-    // même DELTA d'angle qu'à l'origine par rapport à celui qui le précède.
-    if(pointIndex < newPoints.length - 1){
-      let currentAngle;
-      if(pointIndex > 0){
-        // La direction du segment précédent a changé : on applique le même delta d'angle
-        // qu'à l'origine entre ce segment et le suivant, pour propager la rotation du coude.
-        const newPrevAngle = Math.atan2(newPoint.y - newPoints[pointIndex-1].y, newPoint.x - newPoints[pointIndex-1].x);
-        const originalDelta = originalAngles[pointIndex] - originalAngles[pointIndex - 1];
-        currentAngle = newPrevAngle + originalDelta;
-      } else {
-        currentAngle = originalAngles[0]; // premier point de la chaîne : pas de segment amont
-      }
-
-      for(let i = pointIndex; i < newPoints.length - 1; i++){
-        const len = originalLengths[i];
-        newPoints[i+1] = {
-          x: newPoints[i].x + len * Math.cos(currentAngle),
-          y: newPoints[i].y + len * Math.sin(currentAngle)
-        };
-        if(i + 1 < newPoints.length - 1){
-          const originalDelta = originalAngles[i+1] - originalAngles[i];
-          currentAngle += originalDelta;
-        }
-      }
-    }
-  }
-
-  return newPoints;
-}
-
-/* Angle absolu (radians) de chaque segment du tracé */
-function freeformSegmentAngles(points){
-  const angles = [];
-  for(let i=0; i<points.length-1; i++){
-    angles.push(Math.atan2(points[i+1].y - points[i].y, points[i+1].x - points[i].x));
-  }
-  return angles;
-}
-
-/* Projette un point désiré sur le cercle de rayon fixe centré sur anchor (garde la même direction) */
-function projectOntoCircle(anchor, radius, desired){
-  const dx = desired.x - anchor.x;
-  const dy = desired.y - anchor.y;
-  const dist = Math.sqrt(dx*dx + dy*dy);
-  if(dist < 0.0001){
-    // Le point désiré coïncide avec l'ancre : direction arbitraire (vers la droite) pour éviter une division par zéro
-    return { x: anchor.x + radius, y: anchor.y };
-  }
-  const ratio = radius / dist;
-
-  return { x: anchor.x + dx * ratio, y: anchor.y + dy * ratio };
-}
-
-function setupFreeformDragHandles(){
-  const svg = document.getElementById('zincFreeformSvg');
-  if(!svg) return;
-
-  let draggingIndex = null;
-  let activePointerId = null;
-
-  svg.querySelectorAll('.zinc-drag-handle').forEach(handle => {
-    handle.addEventListener('pointerdown', (e) => {
-      draggingIndex = parseInt(handle.dataset.index, 10);
-      activePointerId = e.pointerId;
-      handle.setPointerCapture(e.pointerId);
-      handle.style.cursor = 'grabbing';
-      e.preventDefault();
-    });
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if(draggingIndex === null || e.pointerId !== activePointerId) return;
-    const profile = getCurrentZincProfile();
-    if(!profile || !profile.freeform) return;
-    if(!profile.lockedSegments) profile.lockedSegments = {};
-
-    const mm = freeformScreenToMm(svg, e.clientX, e.clientY);
-    const desired = { x: mm.x, y: mm.y };
-    profile.points = applyChainedDrag(profile, draggingIndex, desired);
-
-    // Met à jour le SVG en place (sans reconstruire le DOM), pour rester fluide pendant le glisser
-    updateFreeformSchemaInPlace(svg, profile.points);
-    updateFreeformSegmentListOnly(profile);
-    e.preventDefault();
-  });
-
-  const endDrag = (e) => {
-    if(draggingIndex === null) return;
-    draggingIndex = null;
-    activePointerId = null;
-    saveData();
-    // Reconstruit une fois proprement à la fin du geste (ré-applique l'échelle/cadrage optimal)
-    const profile = getCurrentZincProfile();
-    if(profile && profile.freeform){
-      document.getElementById('zincSchema').innerHTML = buildFreeformZincSchema(profile.points, zincIsEditMode, profile.hasBoudin, profile.boudinPointIndex);
-      setupFreeformDragHandles();
-    }
-  };
-  svg.addEventListener('pointerup', endDrag);
-  svg.addEventListener('pointercancel', endDrag);
-}
-
-/* Recalcule l'échelle/cadrage et met à jour les attributs SVG existants (path, cercles, textes)
-   sans toucher au DOM — garde le geste de glisser fluide et la capture du pointeur intacte. */
-function updateFreeformSchemaInPlace(svg, points){
-  const xs = points.map(p=>p.x);
-  const ys = points.map(p=>p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
-  const w = Math.max(1, maxX - minX);
-  const h = Math.max(1, maxY - minY);
-
-  const margin = 36;
-  const svgW = 320;
-  const svgH = 260;
-  const scale = Math.min((svgW - margin*2) / w, (svgH - margin*2) / h);
-
-  svg.dataset.minX = minX;
-  svg.dataset.minY = minY;
-  svg.dataset.scale = scale;
-  svg.dataset.margin = margin;
-
-  const toSvg = (p) => ({
-    x: margin + (p.x - minX) * scale,
-    y: margin + (p.y - minY) * scale
-  });
-  const svgPoints = points.map(toSvg);
-  const drawPoints = computeFreeformDrawPoints(svgPoints);
-
-  // Repositionne le boudin avant de finaliser le tracé, pour pouvoir raccourcir le trait jusqu'à son bord
-  const profile = getCurrentZincProfile();
-  const boudinCircle = svg.querySelector('.zinc-boudin-circle');
-  const boudinLabel = svg.querySelector('.zinc-boudin-label');
-  if(boudinCircle && profile && profile.hasBoudin){
-    const centerIdx = profile.boudinPointIndex || 0;
-    const center = drawPoints[centerIdx] || drawPoints[0];
-    const r = parseFloat(boudinCircle.getAttribute('r'));
-    boudinCircle.setAttribute('cx', center.x.toFixed(1));
-    boudinCircle.setAttribute('cy', center.y.toFixed(1));
-    if(boudinLabel){
-      boudinLabel.setAttribute('x', center.x.toFixed(1));
-      boudinLabel.setAttribute('y', (center.y + r + 16).toFixed(1));
-    }
-
-    const neighborIdx = centerIdx === 0 ? 1 : centerIdx - 1;
-    const neighbor = drawPoints[neighborIdx];
-    if(neighbor){
-      const dx = neighbor.x - center.x;
-      const dy = neighbor.y - center.y;
-      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-      drawPoints[centerIdx] = { x: center.x + (dx/dist) * r, y: center.y + (dy/dist) * r };
-    }
-  }
-
-  const path = svg.querySelector('.zinc-profile-path');
-  if(path){
-    path.setAttribute('d', drawPoints.map((p,i)=> (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' '));
-  }
-
-  svg.querySelectorAll('.zinc-drag-handle').forEach((handle, i) => {
-    const p = drawPoints[i];
-    if(!p) return;
-    handle.setAttribute('cx', p.x.toFixed(1));
-    handle.setAttribute('cy', p.y.toFixed(1));
-  });
-
-  const lengths = freeformSegmentLengths(points);
-  svg.querySelectorAll('.zinc-length-label').forEach((label, i) => {
-    const p1 = drawPoints[i];
-    const p2 = drawPoints[i+1];
-    if(!p1 || !p2) return;
-    const midX = (p1.x + p2.x) / 2;
-    const midY = (p1.y + p2.y) / 2;
-    label.setAttribute('x', midX.toFixed(1));
-    label.setAttribute('y', (midY - 10).toFixed(1));
-    if(lengths[i] !== undefined) label.textContent = Math.round(lengths[i]);
-  });
-}
-
-/* Met à jour seulement les valeurs de longueur affichées (sans reconstruire toute la liste, pour rester fluide pendant le glisser) */
-function updateFreeformSegmentListOnly(profile){
-  const total = Math.round(freeformTotalLength(profile.points));
-  document.getElementById('zincTotalLength').textContent = formatMm(total);
-
-  const lengths = freeformSegmentLengths(profile.points);
-  document.querySelectorAll('#zincSegmentList .zinc-segment-row').forEach((row, i) => {
-    const input = row.querySelector('input[type="number"]');
-    if(input && lengths[i] !== undefined) input.value = Math.round(lengths[i]);
-  });
-}
-
-/* Modifie la longueur d'un segment en déplaçant son point d'arrivée le long de la direction actuelle */
-function updateFreeformSegmentLength(index, value){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform) return;
-  const newLength = parseFloat(value);
-  if(!newLength || newLength <= 0) return;
-
-  const p1 = profile.points[index];
-  const p2 = profile.points[index+1];
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  const currentLength = Math.sqrt(dx*dx + dy*dy) || 1;
-  const ratio = newLength / currentLength;
-
-  profile.points[index+1] = {
-    x: Math.round(p1.x + dx * ratio),
-    y: Math.round(p1.y + dy * ratio)
-  };
-
-  // Une longueur saisie au clavier verrouille automatiquement ce segment :
-  // sa longueur ne pourra plus être changée que par déverrouillage explicite.
-  if(!profile.lockedSegments) profile.lockedSegments = {};
-  profile.lockedSegments[index] = true;
-
-  saveData();
-  renderFreeformZincEditor(profile);
-}
-
-function toggleFreeformSegmentLock(index){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform) return;
-  if(!profile.lockedSegments) profile.lockedSegments = {};
-  profile.lockedSegments[index] = !profile.lockedSegments[index];
-  saveData();
-  renderFreeformZincEditor(profile);
-}
 
 
 /* Active/désactive le boudin (spirale à développé fixe 65mm) en tête du profil libre */
+/* Active/désactive le boudin (spirale à développé fixe 65mm), rattaché
+   au tout premier point du tracé (segs[0].p1) — le pliage n'a plus de
+   rotules déplaçables une par une, donc plus de choix de point d'ancrage. */
 function toggleZincBoudin(){
   const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform) return;
-  if(profile.hasBoudin){
-    profile.hasBoudin = false;
-    profile.boudinPointIndex = null;
-  } else {
-    profile.hasBoudin = true;
-    profile.boudinPointIndex = 0; // par défaut sur le premier point, déplaçable ensuite en cliquant une autre rotule
-  }
+  if(!profile) return;
+  profile.hasBoudin = !profile.hasBoudin;
   saveData();
   renderZincEditor();
-}
-
-/* En mode édition, avec le boudin actif : un clic sur une rotule déplace le boudin sur ce point */
-function moveBoudinToPoint(index){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform || !profile.hasBoudin) return;
-  profile.boudinPointIndex = index;
-  saveData();
-  renderZincEditor();
-}
-
-function addFreeformPoint(){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform) return;
-  const last = profile.points[profile.points.length - 1];
-  const prev = profile.points[profile.points.length - 2] || {x: last.x - 50, y: last.y};
-  // Nouveau point dans la continuité de la direction précédente
-  const dx = last.x - prev.x;
-  const dy = last.y - prev.y;
-  const len = Math.sqrt(dx*dx + dy*dy) || 1;
-  const newPoint = {
-    x: Math.round(last.x + (dx/len) * 50),
-    y: Math.round(last.y + (dy/len) * 50)
-  };
-  profile.points.push(newPoint);
-  saveData();
-  renderFreeformZincEditor(profile);
-}
-
-function removeFreeformPoint(index){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.freeform || profile.points.length <= 2) return;
-  profile.points.splice(index, 1);
-  saveData();
-  renderFreeformZincEditor(profile);
 }
 
 function updateZincProfileName(name){
@@ -18549,410 +18190,26 @@ function updateZincProfileName(name){
   saveData();
 }
 
-function updateZincSegment(index, field, value){
-  const profile = getCurrentZincProfile();
-  if(!profile) return;
-  const seg = profile.segments[index];
-  if(!seg) return;
-  seg[field] = parseFloat(value) || 0;
-  saveData();
-  renderZincEditor();
-}
-
-function addZincSegmentDispatch(){
-  const profile = getCurrentZincProfile();
-  if(!profile) return;
-  if(profile.pieces){
-    addZincPiece();
-  } else if(profile.freeform){
-    addFreeformPoint();
-  } else {
-    addZincSegment();
-  }
-}
-
-/* ============ MODÈLE "PIÈCES INDÉPENDANTES" ============
-   Chaque segment est une pièce autonome {id, length, angle, x, y, locked} positionnée et
-   orientée librement sur la feuille, sans lien automatique avec les autres segments.
-   Le boudin est une pièce séparée {x, y, locked} (pas d'angle, c'est un simple rond). */
-
-const PIECE_DEFAULT_LENGTH_PX_SCALE = 1; // 1mm = 1 unité de coordonnée interne, comme le reste du module zinc
-
-function addZincPiece(){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-
-  const lengthStr = prompt('Longueur du segment (mm) :', '100');
-  if(lengthStr === null) return;
-  const length = parseFloat(lengthStr);
-  if(!length || length <= 0){
-    showToast('Longueur invalide');
-    return;
-  }
-
-  if(!profile.segmentPieces) profile.segmentPieces = [];
-  // Décale chaque nouvelle pièce pour éviter qu'elles se superposent toutes au même endroit
-  const offset = profile.segmentPieces.length * 20;
-  profile.segmentPieces.push({
-    id: uid(),
-    length,
-    angle: 0,
-    x: 60 + offset,
-    y: 60 + (offset % 100),
-    locked: false
-  });
-
-  saveData();
-  zincZoomReset(); // le nouveau segment doit toujours être visible immédiatement, pas caché hors-champ par un zoom/pan précédent
-  renderZincEditor();
-}
-
-function removeZincPiece(pieceId){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-  profile.segmentPieces = profile.segmentPieces.filter(p => p.id !== pieceId);
-  saveData();
-  renderZincEditor();
-}
-
-function togglePieceLock(pieceId){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-  const piece = profile.segmentPieces.find(p => p.id === pieceId);
-  if(!piece) return;
-  piece.locked = !piece.locked;
-  saveData();
-  renderZincEditor();
-}
-
-function rotateZincPiece(pieceId, delta){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-  const piece = profile.segmentPieces.find(p => p.id === pieceId);
-  if(!piece || piece.locked) return;
-  piece.angle = (piece.angle + delta + 360) % 360;
-  saveData();
-  renderZincEditor();
-}
-
-function togglePiecesBoudin(){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-  if(profile.boudinPiece){
-    profile.boudinPiece = null;
-  } else {
-    profile.boudinPiece = { x: 200, y: 60, locked: false };
-  }
-  saveData();
-  renderZincEditor();
-}
-
-function togglePieceBoudinLock(){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces || !profile.boudinPiece) return;
-  profile.boudinPiece.locked = !profile.boudinPiece.locked;
-  saveData();
-  renderZincEditor();
-}
-
-function getPiecesTotalLength(profile){
-  const segTotal = (profile.segmentPieces || []).reduce((sum, p) => sum + p.length, 0);
-  return Math.round(segTotal) + (profile.boudinPiece ? BOUDIN_DEVELOPPE_MM : 0);
-}
-
-function renderPiecesZincEditor(profile){
-  if(!profile.segmentPieces) profile.segmentPieces = [];
-  const total = getPiecesTotalLength(profile);
-  document.getElementById('zincTotalLength').textContent = formatMm(total) + (profile.boudinPiece ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
-
-  document.getElementById('zincAddBoudinPieceBtn').style.display = 'block';
-  document.getElementById('zincAddBoudinPieceBtn').innerHTML = profile.boudinPiece ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Retirer le boudin' : '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><circle cx="12" cy="12" r="7.5"/></svg> Ajouter un boudin';
-
-  // Affiche la liste avec le dernier segment ajouté en haut, tout en gardant le numéro
-  // d'index correspondant à l'ordre réel des données (cohérent avec le schéma)
-  const indexedPieces = profile.segmentPieces.map((p, i) => ({piece: p, index: i}));
-  const displayOrder = indexedPieces.slice().reverse();
-
-  document.getElementById('zincSegmentList').innerHTML = displayOrder.map(({piece: p, index: i})=>{
-    const isLocked = !!p.locked;
-    return `
-    <div class="zinc-segment-row">
-      <div class="zinc-segment-index">${i+1}</div>
-      <div class="zinc-segment-fields">
-        <div class="field-mini">
-          <label>Longueur (mm)</label>
-          <input type="number" min="1" value="${Math.round(p.length)}" ${isLocked ? 'disabled' : ''} onchange="updatePieceLength('${p.id}', this.value)">
-        </div>
-        <div class="field-mini">
-          <label>Angle</label>
-          <div style="padding:8px 0; font-weight:700; color:var(--wood);">${Math.round(p.angle)}°</div>
-        </div>
-      </div>
-      <button class="remove-worker" onclick="togglePieceLock('${p.id}')" title="${isLocked ? 'Déverrouiller' : 'Verrouiller'}" style="opacity:${isLocked ? '1' : '0.4'};">${isLocked ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>' : '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg>'}</button>
-      <button class="remove-worker" onclick="removeZincPiece('${p.id}')" title="Supprimer ce segment">×</button>
-    </div>
-    <div class="row-actions" style="margin-bottom:14px; margin-top:-6px;">
-      <button class="btn btn-outline" ${isLocked ? 'disabled' : ''} onclick="rotateZincPiece('${p.id}', -15)">−15°</button>
-      <button class="btn btn-outline" ${isLocked ? 'disabled' : ''} onclick="rotateZincPiece('${p.id}', -5)">−5°</button>
-      <button class="btn btn-outline" ${isLocked ? 'disabled' : ''} onclick="rotateZincPiece('${p.id}', 5)">+5°</button>
-      <button class="btn btn-outline" ${isLocked ? 'disabled' : ''} onclick="rotateZincPiece('${p.id}', 15)">+15°</button>
-    </div>
-  `;
-  }).join('');
-
-  document.getElementById('zincSchema').innerHTML = buildPiecesZincSchema(profile, zincIsEditMode);
-  if(zincIsEditMode) setupPiecesDragHandles();
-}
-
-function updatePieceLength(pieceId, value){
-  const profile = getCurrentZincProfile();
-  if(!profile || !profile.pieces) return;
-  const piece = profile.segmentPieces.find(p => p.id === pieceId);
-  if(!piece) return;
-  const newLength = parseFloat(value);
-  if(!newLength || newLength <= 0) return;
-  piece.length = newLength;
-  piece.locked = true; // une longueur tapée au clavier verrouille automatiquement la pièce
-  saveData();
-  renderZincEditor();
-}
-
-/* Construit le SVG du modèle "pièces" : chaque segment est tracé indépendamment, centré sur (x,y),
-   orienté selon son angle. Vue fixe (pas de recadrage dynamique), comme une feuille de travail. */
-function buildPiecesZincSchema(profile, showHandles){
-  const svgW = 320;
-  const svgH = 260;
-
-  const pieces = profile.segmentPieces || [];
-  const pieceSvgs = pieces.map(p => {
-    const rad = p.angle * Math.PI / 180;
-    const halfLen = p.length / 2;
-    const x1 = p.x - halfLen * Math.cos(rad);
-    const y1 = p.y - halfLen * Math.sin(rad);
-    const x2 = p.x + halfLen * Math.cos(rad);
-    const y2 = p.y + halfLen * Math.sin(rad);
-
-    const handle = showHandles ? `<circle class="zinc-piece-handle" data-piece-id="${p.id}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="11" fill="transparent" stroke="none" style="cursor:grab; touch-action:none;"/>` : '';
-
-    // La cote est décalée perpendiculairement au segment (pas juste vers le haut) et tourne avec
-    // lui pour rester toujours parallèle au trait, quelle que soit son orientation.
-    const labelOffset = 16;
-    const labelX = p.x - labelOffset * Math.sin(rad);
-    const labelY = p.y + labelOffset * Math.cos(rad);
-    // Normalise l'angle affiché entre -90° et 90° pour que le texte ne se retrouve jamais à l'envers
-    let labelAngleDeg = p.angle;
-    if(labelAngleDeg > 90 || labelAngleDeg < -90) labelAngleDeg += 180;
-    labelAngleDeg = ((labelAngleDeg % 360) + 360) % 360;
-    if(labelAngleDeg > 90 && labelAngleDeg < 270) labelAngleDeg -= 180;
-
-    return `
-      <line class="zinc-piece-line" data-piece-id="${p.id}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="var(--wood)" stroke-width="4" stroke-linecap="round"/>
-      <text class="zinc-piece-label" data-piece-id="${p.id}" x="${labelX.toFixed(1)}" y="${labelY.toFixed(1)}" transform="rotate(${labelAngleDeg.toFixed(1)} ${labelX.toFixed(1)} ${labelY.toFixed(1)})" font-size="11" fill="var(--wood)" text-anchor="middle" font-weight="700">${Math.round(p.length)}</text>
-      ${handle}
-    `;
-  }).join('');
-
-  let boudinSvg = '';
-  if(profile.boudinPiece){
-    const bp = profile.boudinPiece;
-    const r = 22;
-    const handle = showHandles ? `<circle class="zinc-piece-handle" data-piece-id="boudin" cx="${bp.x.toFixed(1)}" cy="${bp.y.toFixed(1)}" r="11" fill="transparent" stroke="none" style="cursor:grab; touch-action:none;"/>` : '';
-    boudinSvg = `
-      <circle class="zinc-piece-boudin-circle" cx="${bp.x.toFixed(1)}" cy="${bp.y.toFixed(1)}" r="${r}" fill="none" stroke="var(--wood)" stroke-width="3"/>
-      <text class="zinc-piece-boudin-label" x="${bp.x.toFixed(1)}" y="${(bp.y + r + 16).toFixed(1)}" font-size="10" fill="var(--ink-soft)" text-anchor="middle">boudin 65</text>
-      ${handle}
-    `;
-  }
-
-  return `
-    <svg id="zincPiecesSvg" viewBox="0 0 ${svgW} ${svgH}" style="width:100%; height:auto; display:block; touch-action:none; background:rgba(255,255,255,0.02); border-radius:8px;">
-      ${pieceSvgs}
-      ${boudinSvg}
-    </svg>
-  `;
-}
-
-/* Glisser-déposer : déplace librement une pièce (segment ou boudin) sur la feuille, sans
-   contrainte avec les autres pièces puisqu'elles sont indépendantes. */
-function setupPiecesDragHandles(){
-  const svg = document.getElementById('zincPiecesSvg');
-  if(!svg) return;
-
-  let draggingId = null;
-  let activePointerId = null;
-
-  svg.querySelectorAll('.zinc-piece-handle').forEach(handle => {
-    handle.addEventListener('pointerdown', (e) => {
-      const profile = getCurrentZincProfile();
-      if(!profile) return;
-      const pieceId = handle.dataset.pieceId;
-      const piece = pieceId === 'boudin' ? profile.boudinPiece : profile.segmentPieces.find(p=>p.id===pieceId);
-      if(!piece || piece.locked) return; // une pièce verrouillée ne se déplace pas
-
-      draggingId = pieceId;
-      activePointerId = e.pointerId;
-      handle.setPointerCapture(e.pointerId);
-      handle.style.cursor = 'grabbing';
-      e.preventDefault();
-      e.stopPropagation();
-    });
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if(draggingId === null || e.pointerId !== activePointerId) return;
-    const profile = getCurrentZincProfile();
-    if(!profile) return;
-
-    const rect = svg.getBoundingClientRect();
-    const viewBox = svg.viewBox.baseVal;
-    const scaleX = viewBox.width / rect.width;
-    const scaleY = viewBox.height / rect.height;
-    const svgX = (e.clientX - rect.left) * scaleX;
-    const svgY = (e.clientY - rect.top) * scaleY;
-
-    let piece;
-    if(draggingId === 'boudin'){
-      piece = profile.boudinPiece;
-    } else {
-      piece = profile.segmentPieces.find(p=>p.id===draggingId);
-    }
-    if(!piece) return;
-    piece.x = svgX;
-    piece.y = svgY;
-
-    updatePiecesSchemaInPlace(svg, profile);
-    e.preventDefault();
-  });
-
-  const endDrag = () => {
-    if(draggingId === null) return;
-    draggingId = null;
-    activePointerId = null;
-    saveData();
-  };
-  svg.addEventListener('pointerup', endDrag);
-  svg.addEventListener('pointercancel', endDrag);
-}
-
-/* Met à jour les attributs SVG en place pendant le glisser, sans reconstruire le DOM
-   (garde la capture du pointeur intacte et le geste fluide). */
-function updatePiecesSchemaInPlace(svg, profile){
-  (profile.segmentPieces || []).forEach(p => {
-    const rad = p.angle * Math.PI / 180;
-    const halfLen = p.length / 2;
-    const line = svg.querySelector(`.zinc-piece-line[data-piece-id="${p.id}"]`);
-    if(line){
-      line.setAttribute('x1', (p.x - halfLen * Math.cos(rad)).toFixed(1));
-      line.setAttribute('y1', (p.y - halfLen * Math.sin(rad)).toFixed(1));
-      line.setAttribute('x2', (p.x + halfLen * Math.cos(rad)).toFixed(1));
-      line.setAttribute('y2', (p.y + halfLen * Math.sin(rad)).toFixed(1));
-    }
-    const label = svg.querySelector(`.zinc-piece-label[data-piece-id="${p.id}"]`);
-    if(label){
-      const labelOffset = 16;
-      const labelX = p.x - labelOffset * Math.sin(rad);
-      const labelY = p.y + labelOffset * Math.cos(rad);
-      let labelAngleDeg = p.angle;
-      if(labelAngleDeg > 90 || labelAngleDeg < -90) labelAngleDeg += 180;
-      labelAngleDeg = ((labelAngleDeg % 360) + 360) % 360;
-      if(labelAngleDeg > 90 && labelAngleDeg < 270) labelAngleDeg -= 180;
-      label.setAttribute('x', labelX.toFixed(1));
-      label.setAttribute('y', labelY.toFixed(1));
-      label.setAttribute('transform', `rotate(${labelAngleDeg.toFixed(1)} ${labelX.toFixed(1)} ${labelY.toFixed(1)})`);
-    }
-    const handle = svg.querySelector(`.zinc-piece-handle[data-piece-id="${p.id}"]`);
-    if(handle){
-      handle.setAttribute('cx', p.x.toFixed(1));
-      handle.setAttribute('cy', p.y.toFixed(1));
-    }
-  });
-
-  if(profile.boudinPiece){
-    const bp = profile.boudinPiece;
-    const r = 22;
-    const circle = svg.querySelector('.zinc-piece-boudin-circle');
-    if(circle){
-      circle.setAttribute('cx', bp.x.toFixed(1));
-      circle.setAttribute('cy', bp.y.toFixed(1));
-    }
-    const label = svg.querySelector('.zinc-piece-boudin-label');
-    if(label){
-      label.setAttribute('x', bp.x.toFixed(1));
-      label.setAttribute('y', (bp.y + r + 16).toFixed(1));
-    }
-    const handle = svg.querySelector('.zinc-piece-handle[data-piece-id="boudin"]');
-    if(handle){
-      handle.setAttribute('cx', bp.x.toFixed(1));
-      handle.setAttribute('cy', bp.y.toFixed(1));
-    }
-  }
-}
-
-function addZincSegment(){
-  const profile = getCurrentZincProfile();
-  if(!profile) return;
-  profile.segments.push({length: 50, angle: 90});
-  saveData();
-  renderZincEditor();
-}
-
-function removeZincSegment(index){
-  const profile = getCurrentZincProfile();
-  if(!profile || profile.segments.length <= 1) return;
-  profile.segments.splice(index, 1);
-  saveData();
-  renderZincEditor();
-}
-
 const BOUDIN_DEVELOPPE_MM = 65; // développé fixe du boudin (6,5 cm), du bout du boudin jusqu'à son point de croisement avec le reste du profil
 
-function zincTotalLength(segments, hasBoudin){
-  const segTotal = segments.reduce((sum, s) => sum + (s.length || 0), 0);
-  return segTotal + (hasBoudin ? BOUDIN_DEVELOPPE_MM : 0);
-}
-
-/* Calcule le développé total d'un profil quel que soit son type (segments ou points libres) */
+/* Calcule le développé total du pliage : somme des cotes des segments du croquis + boudin éventuel */
 function getProfileTotalLength(profile){
-  if(profile.pieces) return getPiecesTotalLength(profile);
-  if(profile.freeform) return Math.round(freeformTotalLength(profile.points)) + (profile.hasBoudin ? BOUDIN_DEVELOPPE_MM : 0);
-  return zincTotalLength(profile.segments, profile.hasBoudin);
+  const segTotal = (profile.sketchSegments || []).reduce((sum, s) => sum + (s.mm || 0), 0);
+  return Math.round(segTotal) + (profile.hasBoudin ? BOUDIN_DEVELOPPE_MM : 0);
 }
 
-/* Retourne les points (mm) d'un profil quel que soit son type */
+/* Retourne les points (mm, coordonnées du canevas de croquis) du pliage, mis bout à bout */
 function getProfilePoints(profile){
-  if(profile.pieces){
-    // Modèle "pièces indépendantes" : pas de chaîne continue, on retourne les 2 extrémités
-    // de chaque segment mises à plat (utilisé seulement par le partage image, géré à part).
-    const pts = [];
-    (profile.segmentPieces || []).forEach(p => {
-      const rad = p.angle * Math.PI / 180;
-      const halfLen = p.length / 2;
-      pts.push({x: p.x - halfLen * Math.cos(rad), y: p.y - halfLen * Math.sin(rad)});
-      pts.push({x: p.x + halfLen * Math.cos(rad), y: p.y + halfLen * Math.sin(rad)});
-    });
-    return pts;
-  }
-  if(profile.freeform) return profile.points;
-
-  const points = [{x: 0, y: 0}];
-  let direction = profile.segments[0] ? profile.segments[0].angle : 0;
-  profile.segments.forEach((seg, i) => {
-    if(i > 0) direction += seg.angle;
-    const rad = direction * Math.PI / 180;
-    const last = points[points.length - 1];
-    points.push({
-      x: last.x + seg.length * Math.cos(rad),
-      y: last.y + seg.length * Math.sin(rad)
-    });
-  });
-  return points;
+  const segs = profile.sketchSegments || [];
+  if(!segs.length) return [];
+  const pts = [segs[0].p1];
+  segs.forEach(s => pts.push(s.p2));
+  return pts;
 }
 
-/* Retourne la longueur (mm) de chaque segment d'un profil quel que soit son type */
+/* Retourne la cote (mm) de chaque segment du pliage */
 function getProfileSegmentLengths(profile){
-  if(profile.pieces) return (profile.segmentPieces || []).map(p => p.length);
-  if(profile.freeform) return freeformSegmentLengths(profile.points);
-  return profile.segments.map(s => s.length);
+  return (profile.sketchSegments || []).map(s => s.mm);
 }
 
 /* Génère une image combinant tous les pliages sélectionnés (schéma + cotes + développé total)
@@ -19010,11 +18267,6 @@ function drawZincProfileCard(ctx, profile, x, y, w, h){
   ctx.fillText(`Développé : ${total} mm`, x + w - padding, y + padding + 24);
 
   // Schéma
-  if(profile.pieces){
-    drawPiecesProfileCard(ctx, profile, x, y, w, h, padding);
-    return;
-  }
-
   const points = getProfilePoints(profile);
   const xs = points.map(p=>p.x);
   const ys = points.map(p=>p.y);
@@ -19083,72 +18335,6 @@ function drawZincProfileCard(ctx, profile, x, y, w, h){
 }
 
 
-/* Dessine la carte de partage d'un pliage en modèle "pièces indépendantes" : chaque segment
-   est tracé selon sa position/angle réels sur la feuille, mis à l'échelle pour la carte. */
-function drawPiecesProfileCard(ctx, profile, x, y, w, h, padding){
-  const pieces = profile.segmentPieces || [];
-  const allX = [], allY = [];
-  pieces.forEach(p => {
-    const rad = p.angle * Math.PI / 180;
-    const halfLen = p.length / 2;
-    allX.push(p.x - halfLen * Math.cos(rad), p.x + halfLen * Math.cos(rad));
-    allY.push(p.y - halfLen * Math.sin(rad), p.y + halfLen * Math.sin(rad));
-  });
-  if(profile.boudinPiece){
-    allX.push(profile.boudinPiece.x - 22, profile.boudinPiece.x + 22);
-    allY.push(profile.boudinPiece.y - 22, profile.boudinPiece.y + 22);
-  }
-  if(allX.length === 0) return;
-
-  const minX = Math.min(...allX), maxX = Math.max(...allX);
-  const minY = Math.min(...allY), maxY = Math.max(...allY);
-  const pw = Math.max(1, maxX - minX);
-  const ph = Math.max(1, maxY - minY);
-
-  const schemaTop = y + padding + 50;
-  const schemaH = h - padding * 2 - 50;
-  const schemaMargin = 30;
-  const scale = Math.min((w - padding*2 - schemaMargin*2) / pw, (schemaH - schemaMargin*2) / ph);
-
-  const toCanvas = (px, py) => ({
-    x: x + padding + schemaMargin + (px - minX) * scale,
-    y: schemaTop + schemaMargin + (py - minY) * scale
-  });
-
-  ctx.strokeStyle = '#D89B5E';
-  ctx.lineWidth = 5;
-  ctx.lineCap = 'round';
-  ctx.fillStyle = '#D89B5E';
-  ctx.font = 'bold 14px sans-serif';
-  ctx.textAlign = 'center';
-
-  pieces.forEach(p => {
-    const rad = p.angle * Math.PI / 180;
-    const halfLen = p.length / 2;
-    const c1 = toCanvas(p.x - halfLen * Math.cos(rad), p.y - halfLen * Math.sin(rad));
-    const c2 = toCanvas(p.x + halfLen * Math.cos(rad), p.y + halfLen * Math.sin(rad));
-    ctx.beginPath();
-    ctx.moveTo(c1.x, c1.y);
-    ctx.lineTo(c2.x, c2.y);
-    ctx.stroke();
-
-    const center = toCanvas(p.x, p.y);
-    ctx.fillText(Math.round(p.length), center.x, center.y - 14);
-  });
-
-  if(profile.boudinPiece){
-    const bp = profile.boudinPiece;
-    const center = toCanvas(bp.x, bp.y);
-    const r = 22 * scale;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, r, 0, Math.PI*2);
-    ctx.stroke();
-    ctx.font = '13px sans-serif';
-    ctx.fillStyle = '#B8A89A';
-    ctx.fillText('boudin 65', center.x, center.y + r + 18);
-  }
-}
-
 /* Affiche la liste des pliages d'un chantier directement dans son onglet détail */
 function renderSiteZincList(siteId){
   ensureZincProfiles();
@@ -19215,73 +18401,6 @@ function buildBoudinSvg(point, r){
   return `
     <circle class="zinc-boudin-circle" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${r.toFixed(1)}" fill="none" stroke="var(--wood)" stroke-width="3"/>
     <text class="zinc-boudin-label" x="${point.x.toFixed(1)}" y="${(point.y + r + 16).toFixed(1)}" font-size="10" fill="var(--ink-soft)" text-anchor="middle">boudin 65</text>
-  `;
-}
-
-function buildZincSchema(segments, hasBoudin, showDots){
-  const points = [{x: 0, y: 0}];
-  let direction = segments[0] ? segments[0].angle : 0; // le premier segment fixe la direction de départ
-
-  segments.forEach((seg, i) => {
-    if(i > 0) direction += seg.angle;
-    const rad = direction * Math.PI / 180;
-    const last = points[points.length - 1];
-    points.push({
-      x: last.x + seg.length * Math.cos(rad),
-      y: last.y + seg.length * Math.sin(rad)
-    });
-  });
-
-  const xs = points.map(p=>p.x);
-  const ys = points.map(p=>p.y);
-  // Réserve de la place à gauche du premier point pour dessiner le boudin
-  const boudinRadius = hasBoudin ? Math.max(20, segments[0]?.length * 0.4 || 20) : 0;
-  const minX = Math.min(...xs) - boudinRadius;
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys) - (hasBoudin ? boudinRadius : 0);
-  const maxY = Math.max(...ys);
-  const w = Math.max(1, maxX - minX);
-  const h = Math.max(1, maxY - minY);
-
-  const margin = 30;
-  const svgW = 320;
-  const svgH = 220;
-  const scale = Math.min((svgW - margin*2) / w, (svgH - margin*2) / h);
-
-  const toSvg = (p) => ({
-    x: margin + (p.x - minX) * scale,
-    y: margin + (p.y - minY) * scale
-  });
-
-  const svgPoints = points.map(toSvg);
-  const pathD = svgPoints.map((p,i)=> (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
-
-  // Annotation de la longueur au milieu de chaque segment
-  const labels = segments.map((seg, i) => {
-    const p1 = svgPoints[i];
-    const p2 = svgPoints[i+1];
-    const midX = (p1.x + p2.x) / 2;
-    const midY = (p1.y + p2.y) / 2;
-    return `<text x="${midX.toFixed(1)}" y="${(midY - 8).toFixed(1)}" font-size="11" fill="var(--wood)" text-anchor="middle" font-weight="700">${seg.length}</text>`;
-  }).join('');
-
-  const dots = showDots ? svgPoints.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="var(--ink)"/>`).join('') : '';
-
-  // Boudin : petite spirale dessinée juste avant le premier point du profil
-  let boudinSvg = '';
-  if(hasBoudin){
-    const start = svgPoints[0];
-    const r = boudinRadius * scale * 0.55;
-    boudinSvg = buildBoudinSvg(start, r);
-  }
-
-  return `
-    <svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%; height:auto; display:block;">
-      <path d="${pathD}" fill="none" stroke="var(--wood)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-      ${boudinSvg}
-      ${dots}
-      ${labels}
-    </svg>
   `;
 }
 
@@ -31700,22 +30819,7 @@ let cumulSelection = []; // ordre de sélection : indices des segments
 function getZincSegmentLengths(){
   const profile = getCurrentZincProfile();
   if(!profile) return [];
-
-  if(profile.pieces && profile.segmentPieces){
-    return profile.segmentPieces.map(p => Math.round(p.length));
-  }
-  if(profile.freeform && profile.points){
-    const pts = profile.points;
-    const lengths = [];
-    for(let i=0;i<pts.length-1;i++){
-      lengths.push(Math.round(Math.hypot(pts[i+1].x-pts[i].x, pts[i+1].y-pts[i].y)));
-    }
-    return lengths;
-  }
-  if(profile.segments){
-    return profile.segments.map(s => Math.round(s.length));
-  }
-  return [];
+  return (profile.sketchSegments || []).map(s => Math.round(s.mm));
 }
 
 /* Ouvre la modal de sélection des segments */
@@ -32046,9 +31150,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.84';
+const APP_VERSION = '5.41.85';
 
 const CHANGELOG = [
+  {
+    version: '5.41.85',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📐', text: "Pliage : refonte complète — la forme se dessine maintenant à main levée avec le même outil que « Croquis avec côtes » (au lieu de saisir chaque segment avec longueur et angle exacts), avec cote en mm sur chaque segment" },
+      { icon: '🧮', text: "Pliage : développé total, cumul pour traçage, métrage chantier, boudin et export PDF fonctionnent à l'identique avec la nouvelle forme dessinée" },
+      { icon: '🗑️', text: "Pliage : suppression des anciens modèles de création (segments à angle exact, pièces indépendantes déplaçables) — les pliages déjà créés avec ces anciens modèles ont été retirés" },
+    ],
+  },
   {
     version: '5.41.84',
     date: '17/09/2026',
@@ -34516,19 +33629,19 @@ function _parseQRResult(raw){
   }
 
   if(payload.type === 'zinc'){
-    // Importer un profil zinc
+    // Importer un profil zinc (v5.41.85 — modèle unique "sketch" : la forme
+    // dessinée est transmise telle quelle par le QR, segs = sketchSegments)
     closeModal('qrScanner');
     const site = data.sites.find(s => s.name.toLowerCase() === (payload.siteName||'').toLowerCase());
     const prof = {
       id: uid(),
       siteId: site ? site.id : (data.sites[0] ? data.sites[0].id : null),
       name: payload.name||'Pliage importé',
-      modelType: payload.model||'pieces',
-      pieces: true,
-      segmentPieces: (payload.segs||[]).map(s => ({
-        id: uid(), length: s.l||0, angle: s.a||0, x:0, y:0, locked:false
-      })),
-      boudinPiece: null,
+      sketch: true,
+      sketchSegments: (payload.segs||[]).map(s => ({ p1:s.p1, p2:s.p2, mm:s.mm||0 })),
+      sketchCanvasWidth: payload.cw||null,
+      sketchCanvasHeight: payload.ch||null,
+      hasBoudin: !!payload.hasBoudin,
       createdAt: formatDateTime(new Date())
     };
     data.zincProfiles = data.zincProfiles||[];
@@ -35737,13 +34850,17 @@ function shareViaQR(type, id, extra){
       if(!p){ showToast('Pliage introuvable'); return; }
       const site2 = data.sites.find(s => s.id === p.siteId);
       label = (p.name||'Pliage') + (site2 ? ' · ' + site2.name : '');
+      // v5.41.85 — modèle unique "sketch" : on transmet directement la forme
+      // (segments p1/p2/mm) + les dimensions du canevas d'origine, pour que
+      // l'appareil qui importe retrouve exactement le même dessin, pas juste
+      // une liste de longueurs sans forme.
       payload = { rwood:1, type:'zinc',
-        name: p.name||'', model: p.modelType||'',
+        name: p.name||'', model: 'sketch',
         siteName: site2 ? site2.name : '',
         total: getProfileTotalLength ? getProfileTotalLength(p) : 0,
-        segs: (p.segmentPieces||p.segments||[]).map(s => ({
-          l: s.length||s.l||0, a: s.angle||s.a||0
-        }))
+        hasBoudin: !!p.hasBoudin,
+        cw: p.sketchCanvasWidth||0, ch: p.sketchCanvasHeight||0,
+        segs: (p.sketchSegments||[]).map(s => ({ p1:s.p1, p2:s.p2, mm:s.mm }))
       };
       break;
     }
@@ -46662,7 +45779,7 @@ let _sketch = null; // état courant de l'outil (null si fermé)
    créer (ajouter/supprimer des segments, retoucher les côtes…). Les
    coordonnées sont remises à l'échelle si la taille du canevas a changé
    entre-temps (écran différent, ou zone de dessin redimensionnée). */
-function openSketchTool(onSave, existingSketch, bgImageUrl){
+function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   const ex = document.getElementById('modal-sketchTool');
   if(ex) ex.remove();
   const div = document.createElement('div');
@@ -46704,7 +45821,15 @@ function openSketchTool(onSave, existingSketch, bgImageUrl){
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  _sketch = { canvas, ctx, dpr, step:'draw', raw:[], segments:[], closed:false, drawing:false, onSave };
+  // v5.41.85 — mode "pliage" (opts.mmMode=true) : réutilise exactement le même
+  // outil de dessin/lissage/édition que le croquis générique, mais la cote de
+  // chaque segment doit être un nombre en mm (pas un texte libre), pour que le
+  // développé total et le cumul de traçage du module Zinc puissent se calculer.
+  _sketch = { canvas, ctx, dpr, step:'draw', raw:[], segments:[], closed:false, drawing:false, onSave, mmMode: !!(opts && opts.mmMode) };
+  if(opts && opts.title){
+    const titleEl = div.querySelector('.modal-header h2');
+    if(titleEl) titleEl.textContent = opts.title;
+  }
 
   if(existingSketch && Array.isArray(existingSketch.segments) && existingSketch.segments.length){
     const sw = existingSketch.canvasWidth || canvas.width;
@@ -47047,6 +46172,22 @@ function _sketchNearestSegment(p, segments, dpr){
 function _sketchPromptSegmentText(i){
   const seg = _sketch && _sketch.segments && _sketch.segments[i];
   if(!seg) return;
+
+  // v5.41.85 — mode pliage : cote numérique en mm obligatoire (nécessaire au
+  // calcul du développé total et du cumul de traçage), contrairement au
+  // croquis générique qui accepte un texte libre. On reboucle tant que la
+  // saisie n'est pas un nombre positif valide, sauf annulation explicite.
+  if(_sketch.mmMode){
+    const current = seg.text ? seg.text.replace(/[^\d.,]/g,'').replace(',','.') : '';
+    const next = prompt('Cote du segment, en mm (ex: 1200) :', current);
+    if(next == null) return; // annulé
+    const mm = parseFloat(String(next).replace(',','.'));
+    if(!mm || mm <= 0){ showToast('Cote invalide — entre un nombre en mm'); return; }
+    seg.text = String(Math.round(mm));
+    _sketchRenderLabelStep();
+    return;
+  }
+
   const next = prompt('Cote du segment (ex: 1200mm) :', seg.text || '');
   if(next == null) return; // annulé
   seg.text = next.trim();
