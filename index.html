@@ -17375,7 +17375,7 @@ function deleteZincProfile(profileId){
    tap sur un segment pour saisir sa cote ou le supprimer. Seule différence
    avec le croquis générique : la cote est un nombre en mm obligatoire
    (opts.mmMode), pour que le développé total et le cumul de traçage restent
-   calculables — voir _sketchPromptSegmentText.
+   calculables — voir _sketchShowSegmentMenu.
    Le profil stocke seulement : sketch:true, sketchSegments (p1/p2/mm),
    sketchCanvasWidth/Height, hasBoudin. Plus de segments/points/pieces. */
 function createFreeformZincProfile(){
@@ -31150,9 +31150,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.85';
+const APP_VERSION = '5.41.86';
 
 const CHANGELOG = [
+  {
+    version: '5.41.86',
+    date: '17/09/2026',
+    entries: [
+      { icon: '⌨️', text: "Croquis avec côtes : taper sur un segment ouvre maintenant directement un champ pour saisir sa cote (avec un bouton supprimer juste à côté), au lieu du menu « Modifier / Supprimer » à deux étapes" },
+      { icon: '📐', text: "Croquis avec côtes : en dessinant, un coude proche de 45°/90°/135°/180° s'accroche automatiquement à cette valeur exacte, avec un petit arc affichant l'angle — touche l'arc pour changer la valeur au clavier (le segment pivote en conservant sa longueur)" },
+    ],
+  },
   {
     version: '5.41.85',
     date: '17/09/2026',
@@ -45912,6 +45920,11 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
       // et un seuil trop strict faisait passer ce genre de tap pour un début
       // de trait — le segment tapé n'ouvrait alors jamais son menu.
       if(moveDist < 18 * dpr){
+        // v5.41.86 — priorité au tap sur un arc d'angle (zone plus petite et
+        // plus excentrée qu'un segment) : testé en premier, sinon un tap visant
+        // l'arc tomberait presque toujours sur le segment sous-jacent à la place.
+        const angleIdx = _sketchNearestAngle(_sketch._downPos, dpr);
+        if(angleIdx >= 0){ _sketchPromptAngle(angleIdx); return; }
         const idx = _sketchNearestSegment(_sketch._downPos, _sketch.segments, dpr);
         if(idx >= 0) _sketchShowSegmentMenu(idx, _sketch._downPos);
         else _sketchRenderLabelStep(); // tap dans le vide : efface le petit point resté sur le canevas
@@ -45972,6 +45985,69 @@ function _rdpPerpDist(p, a, b){
   return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
 }
 
+/* v5.41.86 — accroche angulaire : si un coude du tracé simplifié est proche
+   d'un angle "remarquable" (45°/90°/135°/180°, ou leur opposé — pratique en
+   couverture/zinguerie), on corrige légèrement la position du point suivant
+   pour que l'angle tombe pile dessus, plutôt que de garder l'angle brut du
+   tracé à main levée (jamais parfaitement droit). La longueur de CE segment
+   est conservée (seule sa direction change) ; tout le reste du tracé après
+   ce sommet est translaté en bloc pour rester cohérent (le sommet suivant
+   garde sa position relative par rapport à ce segment). Un seul passage,
+   sommet par sommet dans l'ordre du tracé : chaque correction ne dépend que
+   des sommets déjà traités avant elle, jamais rejouée en arrière.
+   Retourne { pts: nouveaux points, angles: angle intérieur en ° à chaque
+   sommet interne (index 1..n-2), null si non calculable/pas accroché près
+   d'un angle remarquable — voir SNAP_ANGLES/SNAP_TOLERANCE_DEG). */
+const SNAP_ANGLES_DEG = [45, 90, 135, 180]; // valeurs remarquables (le complément 360-x est testé aussi)
+const SNAP_TOLERANCE_DEG = 12; // au-delà, on garde l'angle brut du tracé (pas d'accroche forcée)
+
+function _sketchSnapAngles(pts){
+  if(pts.length < 3) return { pts: pts.slice(), angles: pts.map(()=>null) };
+  const out = pts.map(p => ({x:p.x, y:p.y}));
+  const angles = new Array(pts.length).fill(null);
+
+  for(let i = 1; i < out.length - 1; i++){
+    const a = out[i-1], b = out[i], c = out[i+1]; // c = position déjà translatée par les corrections précédentes
+    const v1x = a.x - b.x, v1y = a.y - b.y; // vecteur sommet → point précédent
+    const v2x = c.x - b.x, v2y = c.y - b.y; // vecteur sommet → point suivant (avant correction)
+    const len1 = Math.hypot(v1x, v1y), len2 = Math.hypot(v2x, v2y);
+    if(len1 < 1e-6 || len2 < 1e-6) continue;
+
+    // Angle intérieur au sommet b (entre 0° et 180°)
+    const dot = (v1x*v2x + v1y*v2y) / (len1*len2);
+    const rawAngle = Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+
+    // Cherche la valeur remarquable la plus proche (et sa tolérance respectée)
+    let snapped = null, bestDiff = SNAP_TOLERANCE_DEG;
+    SNAP_ANGLES_DEG.forEach(target => {
+      const diff = Math.abs(rawAngle - target);
+      if(diff <= bestDiff){ bestDiff = diff; snapped = target; }
+    });
+
+    if(snapped === null){ angles[i] = null; continue; }
+
+    // Fait pivoter v2 (direction du segment suivant) autour de b pour que
+    // l'angle intérieur avec v1 tombe pile sur `snapped`, en gardant le sens
+    // de rotation d'origine (signe du produit vectoriel) et la longueur len2.
+    const cross = v1x*v2y - v1y*v2x;
+    const sign = cross >= 0 ? 1 : -1;
+    const baseAngleRad = Math.atan2(v1y, v1x);
+    const targetRad = baseAngleRad + sign * (snapped * Math.PI / 180);
+    const newC = { x: b.x + Math.cos(targetRad) * len2, y: b.y + Math.sin(targetRad) * len2 };
+
+    // Translate tout le reste du tracé (à partir de i+1) du même décalage,
+    // pour que les segments suivants gardent leur forme relative intacte.
+    // Accumulé sur `out` (déjà éventuellement décalé par une correction
+    // précédente), jamais recalculé depuis les positions d'origine `pts`.
+    const shiftX = newC.x - c.x, shiftY = newC.y - c.y;
+    for(let k = i+1; k < out.length; k++){
+      out[k] = { x: out[k].x + shiftX, y: out[k].y + shiftY };
+    }
+    angles[i] = snapped;
+  }
+  return { pts: out, angles };
+}
+
 /* Redresse un tracé à main levée (raw) en une liste de points anguleux
    (pts) + indique si la forme est fermée. Factorisé pour être utilisé à la
    fois pour le tout premier trait ET pour un trait ajouté par-dessus
@@ -46014,19 +46090,27 @@ function _sketchSimplifyStroke(raw, dpr){
     pts = _rdpSimplify(raw, epsilon);
   }
 
+  // v5.41.86 — accroche angulaire : corrige les coudes proches d'un angle
+  // remarquable (45°/90°/135°/180°) AVANT la fermeture automatique, pour que
+  // le dernier segment (qui referme la forme) profite lui aussi d'un tracé
+  // déjà redressé. `angles[i]` donne l'angle affiché/éditable au sommet i.
+  const snapResult = _sketchSnapAngles(pts);
+  pts = snapResult.pts;
+  const angles = snapResult.angles;
+
   // Fermeture automatique : si le point de départ et d'arrivée sont proches
   // (l'utilisateur a "bouclé" la forme), on les fusionne en un vrai contour
   // fermé plutôt que de laisser un minuscule segment résiduel.
   const first = pts[0], last = pts[pts.length-1];
   const closed = pts.length > 2 && Math.hypot(last.x-first.x, last.y-first.y) < closeThreshold;
-  if(closed) pts = pts.slice(0, -1);
+  if(closed){ pts = pts.slice(0, -1); angles.pop(); }
 
-  return { pts, closed };
+  return { pts, closed, angles };
 }
 
 function _sketchSimplifyAndShow(){
   const { raw, dpr } = _sketch;
-  const { pts, closed } = _sketchSimplifyStroke(raw, dpr);
+  const { pts, closed, angles } = _sketchSimplifyStroke(raw, dpr);
 
   if(pts.length < 2){ showToast('Trait trop court — recommence'); _sketchRedo(); return; }
 
@@ -46035,7 +46119,12 @@ function _sketchSimplifyAndShow(){
   const segCount = closed ? n : n - 1;
   for(let i = 0; i < segCount; i++){
     const p1 = pts[i], p2 = pts[(i+1) % n];
-    segments.push({ p1, p2, color: SKETCH_COLORS[i % SKETCH_COLORS.length], text:'' });
+    // v5.41.86 — l'angle calculé au sommet i (coude entre le segment
+    // précédent et celui-ci) se rattache au segment qui EN PART : seg.angle.
+    // null pour le tout premier segment (pas de coude amont) et pour un
+    // coude non accroché (angle brut hors tolérance, pas de valeur à afficher).
+    const angle = angles[i] != null ? angles[i] : null;
+    segments.push({ p1, p2, color: SKETCH_COLORS[i % SKETCH_COLORS.length], text:'', angle });
   }
   _sketch.segments = segments;
   _sketch.closed = closed;
@@ -46054,14 +46143,15 @@ function _sketchSimplifyAndShow(){
    du début, pour bien distinguer visuellement l'ajout). */
 function _sketchAppendStroke(){
   const { raw, dpr, segments } = _sketch;
-  const { pts, closed } = _sketchSimplifyStroke(raw, dpr);
+  const { pts, closed, angles } = _sketchSimplifyStroke(raw, dpr);
   if(pts.length < 2){ _sketchRenderLabelStep(); return; } // trait trop court : ignoré, la forme existante reste intacte
   const startIndex = segments.length;
   const n = pts.length;
   const segCount = closed ? n : n - 1;
   for(let i = 0; i < segCount; i++){
     const p1 = pts[i], p2 = pts[(i+1) % n];
-    segments.push({ p1, p2, color: SKETCH_COLORS[(startIndex + i) % SKETCH_COLORS.length], text:'' });
+    const angle = angles[i] != null ? angles[i] : null;
+    segments.push({ p1, p2, color: SKETCH_COLORS[(startIndex + i) % SKETCH_COLORS.length], text:'', angle });
   }
   _sketchRenderLabelStep();
 }
@@ -46122,6 +46212,48 @@ function _sketchRedrawShape(){
     ctx.fillStyle = seg.color;
     ctx.fillText(seg.text, tx, ty);
   });
+
+  // v5.41.86 — petit arc + valeur en degrés à chaque coude accroché à un
+  // angle remarquable (45°/90°/135°/180°, voir _sketchSnapAngles). Dessiné
+  // au sommet DE DÉPART de chaque segment qui porte un seg.angle non nul
+  // (le tout premier segment n'en a jamais, faute de coude amont). Les
+  // positions sont mémorisées dans _sketch.angleHitboxes pour que up() sache
+  // reconnaître un tap sur cet arc (voir _sketchNearestAngle).
+  _sketch.angleHitboxes = [];
+  ctx.font = `${11.5 * dpr}px -apple-system, Arial, sans-serif`;
+  segments.forEach((seg, i) => {
+    if(seg.angle == null) return;
+    const b = seg.p1; // sommet du coude = départ de ce segment
+    // Le segment précédent (même sommet) donne l'autre côté de l'angle.
+    // En forme fermée, le "précédent" du segment 0 est le dernier segment.
+    const prevSeg = segments[i > 0 ? i - 1 : segments.length - 1];
+    if(!prevSeg) return;
+    const v1x = prevSeg.p1.x - b.x, v1y = prevSeg.p1.y - b.y;
+    const v2x = seg.p2.x - b.x, v2y = seg.p2.y - b.y;
+    const a1 = Math.atan2(v1y, v1x), a2 = Math.atan2(v2y, v2x);
+    const r = 22 * dpr;
+    // Bissectrice de l'angle intérieur, pour placer le texte du bon côté
+    let mid = (a1 + a2) / 2;
+    if(Math.cos(a1 - mid) < 0) mid += Math.PI; // évite la bissectrice de l'angle EXTÉRIEUR
+    const labelX = b.x + Math.cos(mid) * (r + 14 * dpr);
+    const labelY = b.y + Math.sin(mid) * (r + 14 * dpr);
+
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, r, Math.min(a1,a2), Math.max(a1,a2), false);
+    ctx.strokeStyle = 'rgba(74,20,140,0.85)';
+    ctx.lineWidth = 2 * dpr;
+    ctx.stroke();
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const label = Math.round(seg.angle) + '°';
+    ctx.lineWidth = 3 * dpr;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeText(label, labelX, labelY);
+    ctx.fillStyle = '#4A148C';
+    ctx.fillText(label, labelX, labelY);
+
+    _sketch.angleHitboxes.push({ segIndex: i, x: labelX, y: labelY });
+  });
 }
 
 function _sketchRenderLabelStep(){
@@ -46129,7 +46261,7 @@ function _sketchRenderLabelStep(){
   const hint = document.getElementById('sketchStepHint');
   // v5.41.84 — plus de liste de côtes ni d'onglet séparé : tout se passe
   // directement sur le dessin (tap = menu ✏️ Modifier / 🗑️ Supprimer).
-  if(hint) hint.textContent = 'Forme redressée ✅ — touche un segment sur le dessin pour saisir sa cote ou le supprimer. Tu peux aussi redessiner par-dessus pour ajouter des segments.';
+  if(hint) hint.textContent = 'Forme redressée ✅ — touche un segment pour saisir sa cote (ou le supprimer), touche un angle affiché pour le modifier. Tu peux aussi redessiner par-dessus pour ajouter des segments.';
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = _sketch.segments.length ? '' : 'none';
 }
@@ -46139,6 +46271,13 @@ function _sketchRenderLabelStep(){
    dessin (comme "Recommencer") plutôt que de laisser un croquis vide. */
 function _sketchDeleteSegment(i){
   if(!_sketch || !_sketch.segments) return;
+  // v5.41.86 — le segment qui suivait celui-ci se retrouve avec un nouveau
+  // voisin précédent : son seg.angle (calculé par rapport à l'ANCIEN voisin,
+  // qui vient de disparaître) n'a plus de sens et serait affiché à tort comme
+  // encore valide/accroché. On l'efface, l'utilisateur pourra retracer ce
+  // coude s'il veut un nouvel angle affiché.
+  const nextIdx = (i + 1) % _sketch.segments.length;
+  if(_sketch.segments.length > 1 && _sketch.segments[nextIdx]) _sketch.segments[nextIdx].angle = null;
   _sketch.segments.splice(i, 1);
   if(!_sketch.segments.length){ _sketchRedo(); return; }
   _sketchRenderLabelStep();
@@ -46166,40 +46305,83 @@ function _sketchNearestSegment(p, segments, dpr){
   const threshold = 34 * dpr; // v5.41.84 — élargi : le tap sur segment est maintenant le SEUL moyen d'éditer/supprimer une cote (plus de liste de secours), la cible doit être généreuse
   return bestDist <= threshold ? best : -1;
 }
-/* Ouvre directement la saisie de la cote d'un segment tapé sur le dessin
-   (au lieu de devoir descendre jusqu'à son champ) — même stockage
-   (t.segments[i].text) donc le champ en dessous reste synchronisé. */
-function _sketchPromptSegmentText(i){
-  const seg = _sketch && _sketch.segments && _sketch.segments[i];
-  if(!seg) return;
 
-  // v5.41.85 — mode pliage : cote numérique en mm obligatoire (nécessaire au
-  // calcul du développé total et du cumul de traçage), contrairement au
-  // croquis générique qui accepte un texte libre. On reboucle tant que la
-  // saisie n'est pas un nombre positif valide, sauf annulation explicite.
-  if(_sketch.mmMode){
-    const current = seg.text ? seg.text.replace(/[^\d.,]/g,'').replace(',','.') : '';
-    const next = prompt('Cote du segment, en mm (ex: 1200) :', current);
-    if(next == null) return; // annulé
-    const mm = parseFloat(String(next).replace(',','.'));
-    if(!mm || mm <= 0){ showToast('Cote invalide — entre un nombre en mm'); return; }
-    seg.text = String(Math.round(mm));
-    _sketchRenderLabelStep();
-    return;
-  }
+/* v5.41.86 — trouve l'arc d'angle le plus proche du point tapé, parmi ceux
+   dessinés au dernier _sketchRedrawShape() (_sketch.angleHitboxes, calculés
+   au niveau du LABEL "45°" affiché, pas de l'arc lui-même — plus facile à
+   viser du doigt qu'un arc fin). Retourne l'index du SEGMENT concerné (celui
+   qui porte seg.angle), ou -1 si aucun arc n'est assez proche. */
+function _sketchNearestAngle(p, dpr){
+  const boxes = _sketch && _sketch.angleHitboxes;
+  if(!boxes || !boxes.length) return -1;
+  let best = -1, bestDist = Infinity;
+  boxes.forEach(hb => {
+    const d = Math.hypot(p.x - hb.x, p.y - hb.y);
+    if(d < bestDist){ bestDist = d; best = hb.segIndex; }
+  });
+  const threshold = 26 * dpr;
+  return bestDist <= threshold ? best : -1;
+}
 
-  const next = prompt('Cote du segment (ex: 1200mm) :', seg.text || '');
+/* v5.41.86 — change la valeur de l'angle accroché à un coude donné (celui au
+   départ de segments[i]) : demande la nouvelle valeur en degrés, puis fait
+   pivoter le segment concerné ET tout ce qui suit dans le tracé (cascade,
+   comme _sketchSnapAngles) autour du sommet du coude, pour que le reste de la
+   forme garde sa géométrie relative — la longueur de chaque segment ne change
+   jamais, seule sa direction. Fonctionne aussi bien en tracé ouvert qu'en
+   forme fermée (le dernier segment est alors celui qui "boucle"). */
+function _sketchPromptAngle(i){
+  const segs = _sketch && _sketch.segments;
+  if(!segs || !segs[i] || segs[i].angle == null) return;
+  const seg = segs[i];
+  const current = String(Math.round(seg.angle));
+  const next = prompt('Angle du coude, en degrés (ex: 90) :', current);
   if(next == null) return; // annulé
-  seg.text = next.trim();
+  const deg = parseFloat(String(next).replace(',','.'));
+  if(!Number.isFinite(deg) || deg <= 0 || deg >= 360){ showToast('Angle invalide — entre une valeur entre 0 et 360'); return; }
+
+  const b = seg.p1; // sommet du coude
+  const prevSeg = segs[i > 0 ? i - 1 : segs.length - 1];
+  if(!prevSeg) return;
+  const v1x = prevSeg.p1.x - b.x, v1y = prevSeg.p1.y - b.y; // référence : vers le point précédent
+  const v2x = seg.p2.x - b.x, v2y = seg.p2.y - b.y;
+  const len2 = Math.hypot(v2x, v2y);
+  if(len2 < 1e-6) return;
+
+  const cross = v1x*v2y - v1y*v2x;
+  const sign = cross >= 0 ? 1 : -1; // garde le même sens de rotation qu'avant l'édition
+  const baseAngleRad = Math.atan2(v1y, v1x);
+  const targetRad = baseAngleRad + sign * (deg * Math.PI / 180);
+  const newP2 = { x: b.x + Math.cos(targetRad) * len2, y: b.y + Math.sin(targetRad) * len2 };
+
+  const shiftX = newP2.x - seg.p2.x, shiftY = newP2.y - seg.p2.y;
+  // Translate ce sommet ET tous les suivants du même décalage : chaque
+  // segment garde sa longueur et son orientation relative aux autres, seul
+  // le coude édité (et donc tout ce qui est "après" lui) pivote en bloc.
+  // p1 et p2 de segments consécutifs sont des copies indépendantes (pas le
+  // même objet), donc on décale explicitement les deux à chaque segment.
+  const n = segs.length;
+  for(let k = i; k < n; k++){
+    if(k !== i) segs[k].p1 = { x: segs[k].p1.x + shiftX, y: segs[k].p1.y + shiftY };
+    segs[k].p2 = { x: segs[k].p2.x + shiftX, y: segs[k].p2.y + shiftY };
+  }
+  // Si la forme est fermée, le tout premier point (segs[0].p1) doit rester
+  // fixe (c'est l'ancre du contour) : on ne le décale donc jamais — cohérent
+  // avec la boucle ci-dessus qui commence à i et non à 0.
+  seg.angle = deg;
   _sketchRenderLabelStep();
 }
 
-/* v5.41.83 — au lieu d'ouvrir directement la saisie de la cote (ce qui ne
-   proposait aucun moyen de supprimer le segment tapé), un tap sur un segment
-   ouvre un petit menu à cet endroit avec les deux actions possibles :
-   ✏️ Modifier la cote (reprend _sketchPromptSegmentText) ou 🗑️ Supprimer.
+/* v5.41.86 — sur demande de Rémi, le tap sur un segment n'ouvre plus un menu
+   ✏️ Modifier / 🗑️ Supprimer (2 boutons, 2 taps nécessaires pour changer la
+   cote) mais DIRECTEMENT un petit champ de texte éditable + un bouton
+   Supprimer juste à côté, à l'endroit tapé — un seul tap pour arriver à la
+   saisie. Remplace un <input> HTML réel (pas de prompt() ici, pour rester
+   inline sur le dessin) ; en mode pliage (mmMode), le clavier numérique
+   s'ouvre et la valeur est validée/arrondie à la perte de focus ou sur
+   Entrée, avec le même filet anti-valeur-invalide que l'ancien prompt().
    `p` est le point tapé en coordonnées internes du canevas (mêmes unités que
-   _sketch.raw), reconverti ici en position CSS pour placer le menu au bon
+   _sketch.raw), reconverti ici en position CSS pour placer le champ au bon
    endroit dans #sketchCanvasWrap (son parent positionné). */
 function _sketchShowSegmentMenu(i, p){
   _sketchCloseSegmentMenu();
@@ -46207,26 +46389,71 @@ function _sketchShowSegmentMenu(i, p){
   if(!seg) return;
   const canvas = _sketch.canvas;
   const wrap = document.getElementById('sketchCanvasWrap');
-  if(!wrap) { _sketchPromptSegmentText(i); return; } // filet de sécurité si le wrap n'existe pas
+  if(!wrap) return; // filet de sécurité si le wrap n'existe pas
   const cssX = (p.x / canvas.width) * canvas.offsetWidth;
   const cssY = (p.y / canvas.height) * canvas.offsetHeight;
   const menu = document.createElement('div');
   menu.id = 'sketchSegMenu';
-  menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
+  menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; align-items:center; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
   // Rapproché des bords si besoin, pour ne pas sortir du cadre du dessin.
-  const clampedX = Math.min(Math.max(cssX, 60), canvas.offsetWidth - 60);
+  const clampedX = Math.min(Math.max(cssX, 90), canvas.offsetWidth - 90);
   const clampedY = Math.max(cssY, 40);
   menu.style.left = clampedX + 'px';
   menu.style.top = clampedY + 'px';
-  menu.innerHTML = `
-    <button onclick="_sketchPromptSegmentText(${i}); _sketchCloseSegmentMenu();" style="background:${seg.color}; color:#1a1206; border:none; border-radius:7px; padding:8px 12px; font-size:12.5px; font-weight:800; cursor:pointer; white-space:nowrap;">✏️ Modifier</button>
-    <button onclick="_sketchDeleteSegment(${i}); _sketchCloseSegmentMenu();" style="background:#c85050; color:#fff; border:none; border-radius:7px; padding:8px 12px; font-size:12.5px; font-weight:800; cursor:pointer; white-space:nowrap;">🗑️ Supprimer</button>
-  `;
+
+  const mmMode = !!_sketch.mmMode;
+  const currentVal = mmMode ? (seg.text ? seg.text.replace(/[^\d.,]/g,'').replace(',','.') : '') : (seg.text || '');
+
+  const input = document.createElement('input');
+  input.type = mmMode ? 'number' : 'text';
+  if(mmMode) input.min = '1';
+  input.value = currentVal;
+  input.placeholder = mmMode ? 'mm' : 'cote';
+  input.style.cssText = `width:${mmMode ? '72px' : '110px'}; background:${seg.color}; color:#1a1206; border:none; border-radius:7px; padding:8px 8px; font-size:13px; font-weight:800; text-align:center;`;
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.textContent = '🗑️';
+  delBtn.title = 'Supprimer ce segment';
+  delBtn.style.cssText = 'background:#c85050; color:#fff; border:none; border-radius:7px; padding:8px 10px; font-size:14px; font-weight:800; cursor:pointer; flex-shrink:0;';
+
+  const commit = () => {
+    const raw = input.value;
+    if(mmMode){
+      const mm = parseFloat(String(raw).replace(',','.'));
+      if(!mm || mm <= 0){ showToast('Cote invalide — entre un nombre en mm'); return; }
+      seg.text = String(Math.round(mm));
+    } else {
+      seg.text = String(raw).trim();
+    }
+    _sketchCloseSegmentMenu();
+    _sketchRenderLabelStep();
+  };
+
+  input.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); commit(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); _sketchCloseSegmentMenu(); }
+  });
+  // Valide aussi quand le champ perd le focus (l'utilisateur tape ailleurs sur le dessin)
+  input.onblur = () => { if(document.getElementById('sketchSegMenu')) commit(); };
+  delBtn.addEventListener('click', () => { _sketchDeleteSegment(i); _sketchCloseSegmentMenu(); });
+
+  menu.appendChild(input);
+  menu.appendChild(delBtn);
   wrap.appendChild(menu);
+  input.focus();
+  input.select();
 }
 function _sketchCloseSegmentMenu(){
   const m = document.getElementById('sketchSegMenu');
-  if(m) m.remove();
+  if(m){
+    // Le blur du champ déclencherait sinon commit() une 2e fois pendant la
+    // suppression du DOM (double sauvegarde inoffensive mais inutile) : on
+    // détache l'écouteur avant de retirer l'élément.
+    const input = m.querySelector('input');
+    if(input) input.onblur = null;
+    m.remove();
+  }
 }
 
 function _sketchRedo(){
