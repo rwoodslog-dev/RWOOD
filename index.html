@@ -5468,18 +5468,6 @@
           <div class="calc-result-value" id="zincTotalLength">—</div>
         </div>
 
-        <!-- Type de pliage : simple / main-courante / chêneau / noue -->
-        <div class="card" id="zincPliageTypeCard" style="display:none;">
-          <div class="calc-result-label" style="margin-bottom:10px;">Type de pliage</div>
-          <div class="chip-row" id="zincPliageTypeChips">
-            <div class="chip" data-type="simple" onclick="setZincPliageType('simple')">Simple</div>
-            <div class="chip" data-type="main-courante" onclick="setZincPliageType('main-courante')">Main-courante</div>
-            <div class="chip" data-type="cheneau" onclick="setZincPliageType('cheneau')">Chêneau</div>
-            <div class="chip" data-type="noue" onclick="setZincPliageType('noue')">Noue</div>
-          </div>
-          <div class="hint" id="zincPliageTypeHint" style="margin-top:8px;"></div>
-        </div>
-
         <!-- Cumul pour traçage -->
         <div class="card" id="zincCumulCard" style="display:none;">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
@@ -5501,7 +5489,7 @@
         <div id="zincCumulBtn" style="display:none; margin-bottom:8px;">
           <button class="btn btn-outline btn-block" onclick="openCumulTracageModal()">
             <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M12 5v14M5 12h14"/></svg>
-            Cumul pour traçage
+            Créer le cumul de traçage
           </button>
         </div>
 
@@ -6250,7 +6238,7 @@
       <button class="modal-close" onclick="closeModal('cumulTracage')">×</button>
     </div>
     <div style="padding:0 16px 8px;">
-      <div class="hint" style="margin-bottom:8px;">Appuie sur les segments dans l'ordre du traçage. L'app cumule les cotes au fur et à mesure.</div>
+      <div class="hint" id="cumulIntroHint" style="margin-bottom:12px; color:var(--wood); font-weight:600;"></div>
       <div class="hint" id="cumulMarkHint" style="display:none; margin-bottom:12px; color:var(--wood);"></div>
       <div id="cumulSegmentList" style="display:flex; flex-direction:column; gap:8px; max-height:45vh; overflow-y:auto; padding-right:4px;"></div>
       <div style="margin-top:14px; padding:12px; background:var(--card); border-radius:10px;">
@@ -6260,7 +6248,7 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="resetCumulSelection()">Réinitialiser</button>
-      <button class="btn btn-primary" onclick="saveCumulTracage()">Enregistrer</button>
+      <button class="btn btn-primary" onclick="saveCumulTracage()">Générer le cumul</button>
     </div>
   </div>
 </div>
@@ -17434,15 +17422,17 @@ function openZincSketchTool(profileId){
     profile.sketchSegments = segs.map(s => ({ p1:s.p1, p2:s.p2, mm: Math.round(parseFloat(s.text)) }));
     profile.sketchCanvasWidth = sketchData.canvasWidth;
     profile.sketchCanvasHeight = sketchData.canvasHeight;
+    if(sketchData.pliageType) profile.pliageType = sketchData.pliageType;
     // La forme a changé : un cumul de traçage déjà calculé n'aurait plus de sens (indices de segments obsolètes)
     profile.cumulTracage = null;
     profile.cumulTracageOrder = null;
+    profile.cumulMarked = null;
     const isNewProfile = !profile.name; // tout premier enregistrement : pas encore de nom saisi
     saveData();
     openZincEditor(profileId);
     if(isNewProfile) enterZincEditMode(); // reste en édition pour saisir le nom tout de suite
     showToast('✅ Forme du pliage enregistrée');
-  }, existing, null, { mmMode:true, title:'📐 Croquis du pliage' });
+  }, existing, null, { mmMode:true, title:'📐 Croquis du pliage', pliageTypeSelector:true, pliageType: profile.pliageType || 'simple' });
 }
 
 /* --- Éditeur de pliage --- */
@@ -18087,7 +18077,6 @@ function renderZincEditor(){
   applyZincEditModeVisibility(profile);
   renderZincMetrage(profile);
   renderSketchZincEditor(profile);
-  renderZincPliageTypeCard(profile);
   renderZincCumulCard(profile);
   applyZincZoom();
   setupZincPinchZoom();
@@ -30873,42 +30862,6 @@ function getZincPliageType(profile){
   return (profile && profile.pliageType) || 'simple';
 }
 
-function setZincPliageType(type){
-  const profile = getCurrentZincProfile();
-  if(!profile || !PLIAGE_TYPES[type]) return;
-  profile.pliageType = type;
-  // Le marquage de segment(s) dépend du type — on l'invalide s'il ne correspond plus
-  if(type === 'simple'){ delete profile.cumulMarked; }
-  else if(profile.cumulMarked && profile.cumulMarked.length > PLIAGE_TYPES[type].maxMarks){
-    delete profile.cumulMarked;
-  }
-  saveData();
-  renderZincEditor();
-}
-
-function renderZincPliageTypeCard(profile){
-  const cardEl = document.getElementById('zincPliageTypeCard');
-  const hintEl = document.getElementById('zincPliageTypeHint');
-  if(!cardEl || !hintEl) return;
-
-  const hasShape = (profile.sketchSegments || []).length > 0;
-  cardEl.style.display = hasShape ? 'block' : 'none';
-  if(!hasShape) return;
-
-  const type = getZincPliageType(profile);
-  document.querySelectorAll('#zincPliageTypeChips .chip').forEach(chip => {
-    chip.classList.toggle('selected', chip.dataset.type === type);
-  });
-
-  const HINTS = {
-    'simple':        'Le cumul de traçage est identique en haut et en bas de la feuille.',
-    'main-courante': 'Le haut du pliage perd 5mm sur la partie supérieure (recouvrement avec la main-courante du dessus).',
-    'cheneau':       'Le haut du pliage est plus large que le bas, pour chevaucher le pliage du dessous.',
-    'noue':          'Le fond en V (2 segments) est réduit de 5mm côté bas, pour le recouvrement dans la pente.',
-  };
-  hintEl.textContent = HINTS[type] || '';
-}
-
 /* Calcule le cumul "haut" à partir du cumul de base (celui saisi dans la modal) et
    des segments marqués comme partie ajustable, selon le type de pliage.
    Retourne null si le type est 'simple' (pas de second cumul) ou si le marquage
@@ -30955,21 +30908,21 @@ function openCumulTracageModal(){
   const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
   const titleEl = document.getElementById('cumulModalTitle');
   const labelEl = document.getElementById('cumulPreviewLabel');
-  if(titleEl) titleEl.textContent = cfg.baseIsTop ? 'Cumul pour traçage — Haut' : 'Cumul pour traçage';
+  titleEl && (titleEl.textContent = 'Cumul pour traçage');
   if(labelEl) labelEl.textContent = cfg.baseIsTop ? 'Cumul (haut) :' : (cfg.maxMarks ? 'Cumul (bas) :' : 'Cumul :');
 
+  const introHintEl = document.getElementById('cumulIntroHint');
   const markHintEl = document.getElementById('cumulMarkHint');
-  if(markHintEl){
+  if(introHintEl){
     if(cfg.maxMarks === 1){
-      markHintEl.style.display = 'block';
-      markHintEl.textContent = '⭐ Marque le segment de la partie supérieure/large (celle qui varie entre le haut et le bas) en appuyant longuement dessus, ou sur l\'étoile.';
+      introHintEl.textContent = `Tu as choisi ${cfg.label}. Choisis les segments dans l'ordre du traçage (1, 2, 3…), et mets en favori (⭐) le segment qui représente le dessus${type==='cheneau' ? ' (partie large)' : ''} de ton pliage.`;
     } else if(cfg.maxMarks === 2){
-      markHintEl.style.display = 'block';
-      markHintEl.textContent = '⭐ Marque les 2 segments du fond (le V de la noue) en appuyant sur l\'étoile de chacun.';
+      introHintEl.textContent = `Tu as choisi Noue. Choisis les segments dans l'ordre du traçage (1, 2, 3…), et mets en favori (⭐) les 2 segments qui forment le fond en V.`;
     } else {
-      markHintEl.style.display = 'none';
+      introHintEl.textContent = `Appuie sur les segments dans l'ordre du traçage. L'app cumule les cotes au fur et à mesure.`;
     }
   }
+  if(markHintEl) markHintEl.style.display = 'none'; // v5.41.89 — remplacé par cumulIntroHint (message unique au-dessus)
 
   // Pré-remplir si un cumul existe déjà
   // (on ne peut pas retrouver l'ordre exact, on repart de zéro)
@@ -31161,14 +31114,14 @@ function renderZincCumulCard(profile){
   ).join('');
 
   if(otherCumul && cfg.maxMarks){
-    if(titleEl) titleEl.textContent = cfg.baseIsTop ? 'Cumul pour traçage — Haut' : 'Cumul pour traçage — Bas';
-    dispEl.innerHTML = renderChips(profile.cumulTracage);
+    if(titleEl) titleEl.textContent = 'Cumul de traçage';
+    dispEl.innerHTML = `<div style="width:100%; font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:2px;">${cfg.baseIsTop ? 'Haut :' : 'Bas :'}</div>` + renderChips(profile.cumulTracage);
     if(dispTopEl){
       dispTopEl.style.display = 'flex';
-      dispTopEl.innerHTML = `<div style="width:100%; font-size:11px; color:var(--ink-soft); margin-bottom:2px;">${cfg.baseIsTop ? 'Bas :' : 'Haut :'}</div>` + renderChips(otherCumul);
+      dispTopEl.innerHTML = `<div style="width:100%; font-size:11px; font-weight:700; color:var(--ink-soft); margin-bottom:2px;">${cfg.baseIsTop ? 'Bas :' : 'Haut :'}</div>` + renderChips(otherCumul);
     }
   } else {
-    if(titleEl) titleEl.textContent = 'Cumul pour traçage';
+    if(titleEl) titleEl.textContent = 'Cumul de traçage';
     dispEl.innerHTML = renderChips(profile.cumulTracage);
     if(dispTopEl){ dispTopEl.style.display = 'none'; dispTopEl.innerHTML = ''; }
   }
@@ -31353,9 +31306,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.88';
+const APP_VERSION = '5.41.89';
 
 const CHANGELOG = [
+  {
+    version: '5.41.89',
+    date: '17/09/2026',
+    entries: [
+      { icon: '🪚', text: "Pliage : le choix du type (Simple / Main-courante / Chêneau / Noue) se fait maintenant directement en haut de l'outil de croquis, avant/pendant le dessin — plus besoin d'un écran séparé après l'enregistrement" },
+      { icon: '⭐', text: "Cumul pour traçage : l'écran indique maintenant clairement le type choisi et ce qu'il faut faire (« Tu as choisi Main-courante, choisis les segments dans l'ordre et mets en favori celui du dessus… ») — marque le(s) segment(s) concerné(s) puis clique sur « Générer le cumul »" },
+      { icon: '📋', text: "Cumul pour traçage : le résultat final affiche maintenant « Haut : … » et « Bas : … » côte à côte dans la carte du pliage et dans le PDF exporté (identiques pour un pliage Simple)" },
+    ],
+  },
   {
     version: '5.41.88',
     date: '17/09/2026',
@@ -46027,6 +45989,14 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
         <h2>📐 Croquis avec côtes</h2>
         <button class="modal-close" onclick="_sketchClose()">✕</button>
       </div>
+      <div id="sketchPliageTypeRow" style="display:none; flex-shrink:0; margin-bottom:10px;">
+        <div class="chip-row" id="sketchPliageTypeChips">
+          <div class="chip" data-type="simple" onclick="_sketchSetPliageType('simple')">Simple</div>
+          <div class="chip" data-type="main-courante" onclick="_sketchSetPliageType('main-courante')">Main-courante</div>
+          <div class="chip" data-type="cheneau" onclick="_sketchSetPliageType('cheneau')">Chêneau</div>
+          <div class="chip" data-type="noue" onclick="_sketchSetPliageType('noue')">Noue</div>
+        </div>
+      </div>
       <div id="sketchStepHint" class="hint" style="margin-bottom:10px; flex-shrink:0;">
         Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.
       </div>
@@ -46065,6 +46035,15 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   if(opts && opts.title){
     const titleEl = div.querySelector('.modal-header h2');
     if(titleEl) titleEl.textContent = opts.title;
+  }
+  // v5.41.89 — pliage : choix du type (simple/main-courante/chêneau/noue)
+  // affiché en haut du croquis, avant même de dessiner. Stocké sur _sketch,
+  // renvoyé dans sketchData au moment d'enregistrer.
+  if(opts && opts.pliageTypeSelector){
+    _sketch.pliageType = (opts.pliageType && PLIAGE_TYPES[opts.pliageType]) ? opts.pliageType : 'simple';
+    const row = document.getElementById('sketchPliageTypeRow');
+    if(row) row.style.display = 'block';
+    _sketchRenderPliageTypeChips();
   }
 
   if(existingSketch && Array.isArray(existingSketch.segments) && existingSketch.segments.length){
@@ -46187,6 +46166,19 @@ function _sketchClose(){
   const m = document.getElementById('modal-sketchTool');
   if(m) m.remove();
   _sketch = null;
+}
+
+function _sketchSetPliageType(type){
+  if(!_sketch || !PLIAGE_TYPES[type]) return;
+  _sketch.pliageType = type;
+  _sketchRenderPliageTypeChips();
+}
+
+function _sketchRenderPliageTypeChips(){
+  if(!_sketch) return;
+  document.querySelectorAll('#sketchPliageTypeChips .chip').forEach(chip => {
+    chip.classList.toggle('selected', chip.dataset.type === _sketch.pliageType);
+  });
 }
 
 /* Simplification Douglas-Peucker : réduit un tracé à main levée (des
@@ -46839,6 +46831,7 @@ function _sketchFinish(){
     segments: segments.map(s => ({ p1:s.p1, p2:s.p2, color:s.color, text:s.text })),
     canvasWidth: canvas.width,
     canvasHeight: canvas.height,
+    pliageType: _sketch.pliageType || undefined,
   };
   canvas.toBlob((blob) => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
