@@ -32039,9 +32039,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.73';
+const APP_VERSION = '5.41.74';
 
 const CHANGELOG = [
+  {
+    version: '5.41.74',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📐', text: "Croquis avec côtes : la zone de dessin prend maintenant tout l'écran, et on peut redessiner par-dessus une forme déjà redressée pour ajouter de nouveaux segments (nouvelle couleur), sans effacer ce qui est déjà tracé" },
+    ],
+  },
   {
     version: '5.41.73',
     date: '17/09/2026',
@@ -46504,26 +46511,39 @@ const SKETCH_COLORS = ['#FF5A5A','#3ACF7D','#4EA1FF','#FFB020','#C67CFF','#2FD8D
 
 let _sketch = null; // état courant de l'outil (null si fermé)
 
+/* v5.41.74 — sur demande de Rémi : (1) la zone de dessin prend tout l'écran
+   au lieu d'un petit carré dans une fenêtre, (2) on peut redessiner
+   PAR-DESSUS une forme déjà redressée pour ajouter de nouveaux segments
+   (dans une nouvelle couleur), sans effacer ce qui existe déjà — pratique
+   pour compléter un profil au fur et à mesure plutôt que devoir tout
+   redessiner d'un seul trait. La hauteur de la zone de dessin est calculée
+   une seule fois à l'ouverture (espace dispo moins l'en-tête/le conseil/les
+   boutons) et reste FIXE ensuite : si elle changeait de taille en passant
+   à l'étape "côtes" (ex: via flex:1 qui se réduirait), le canevas déjà
+   dessiné se retrouverait étiré/flouté (sa résolution interne ne suit pas
+   sa taille CSS). Le reste (côtes, boutons) défile sous elle si besoin,
+   avec le bouton Enregistrer toujours visible (position sticky). */
 function openSketchTool(onSave){
   const ex = document.getElementById('modal-sketchTool');
   if(ex) ex.remove();
   const div = document.createElement('div');
   div.className = 'modal-overlay open';
   div.id = 'modal-sketchTool';
+  div.style.alignItems = 'stretch';
   div.innerHTML = `
-    <div class="modal" style="max-width:480px;">
-      <div class="modal-header">
+    <div class="modal" style="max-width:none; width:100%; height:100dvh; height:100vh; margin:0; border-radius:0; max-height:none; overflow-y:auto; display:flex; flex-direction:column; box-sizing:border-box; padding:calc(12px + env(safe-area-inset-top,0)) 14px calc(10px + env(safe-area-inset-bottom,0));">
+      <div class="modal-header" style="flex-shrink:0;">
         <h2>📐 Croquis avec côtes</h2>
         <button class="modal-close" onclick="_sketchClose()">✕</button>
       </div>
-      <div id="sketchStepHint" class="hint" style="margin-bottom:10px;">
+      <div id="sketchStepHint" class="hint" style="margin-bottom:10px; flex-shrink:0;">
         Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.
       </div>
-      <div style="position:relative; width:100%; aspect-ratio:1/1; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); touch-action:none;">
+      <div id="sketchCanvasWrap" style="position:relative; width:100%; flex-shrink:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); touch-action:none;">
         <canvas id="sketchCanvas" style="width:100%; height:100%; display:block;"></canvas>
       </div>
       <div id="sketchLabelsWrap" style="margin-top:12px; display:none;"></div>
-      <div id="sketchActionsRow" style="display:flex; gap:8px; margin-top:14px;">
+      <div id="sketchActionsRow" style="display:flex; gap:8px; margin-top:14px; flex-shrink:0; position:sticky; bottom:0; background:var(--bg); padding-top:10px; padding-bottom:calc(6px + env(safe-area-inset-bottom,0));">
         <button class="btn btn-outline btn-block" onclick="_sketchRedo()">↺ Recommencer</button>
         <button id="sketchSaveBtn" class="btn btn-primary btn-block" onclick="_sketchFinish()" style="display:none;">💾 Enregistrer le croquis</button>
       </div>
@@ -46531,7 +46551,17 @@ function openSketchTool(onSave){
   document.body.appendChild(div);
 
   const canvas = document.getElementById('sketchCanvas');
-  const wrap = canvas.parentElement;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  const modalEl = div.querySelector('.modal');
+  const headerEl = div.querySelector('.modal-header');
+  const hintEl = document.getElementById('sketchStepHint');
+  const actionsEl = document.getElementById('sketchActionsRow');
+  // Espace dispo = hauteur du panneau plein écran moins ce qui l'entoure ;
+  // marge de sécurité (40px) pour les espacements/marges non mesurés ici.
+  const usedH = headerEl.offsetHeight + hintEl.offsetHeight + actionsEl.offsetHeight + 40;
+  const availH = Math.max(modalEl.clientHeight - usedH, 260);
+  wrap.style.height = availH + 'px';
+
   const rect = wrap.getBoundingClientRect();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.round(rect.width * dpr);
@@ -46548,13 +46578,15 @@ function openSketchTool(onSave){
     return { x:(t.clientX - r.left) * (canvas.width/r.width), y:(t.clientY - r.top) * (canvas.height/r.height) };
   };
   const down = e => {
-    if(_sketch.step !== 'draw') return;
+    // v5.41.74 — autorisé aussi pendant l'étape "côtes" (step==='label') :
+    // permet de redessiner par-dessus la forme existante pour ajouter des
+    // segments, au lieu d'être limité au tout premier trait.
     e.preventDefault();
     _sketch.drawing = true;
     _sketch.raw = [pos(e)];
   };
   const move = e => {
-    if(!_sketch.drawing || _sketch.step !== 'draw') return;
+    if(!_sketch.drawing) return;
     e.preventDefault();
     const p = pos(e);
     const last = _sketch.raw[_sketch.raw.length - 1];
@@ -46566,8 +46598,17 @@ function openSketchTool(onSave){
   const up = () => {
     if(!_sketch.drawing) return;
     _sketch.drawing = false;
-    if(_sketch.raw.length >= 3) _sketchSimplifyAndShow();
-    else { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+    const wasFirstStroke = _sketch.step === 'draw';
+    if(_sketch.raw.length >= 3){
+      if(wasFirstStroke) _sketchSimplifyAndShow();
+      else _sketchAppendStroke();
+    } else if(wasFirstStroke){
+      ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    } else {
+      // Griffonnage résiduel trop court par-dessus une forme déjà là : on
+      // l'efface simplement en redessinant l'état actuel, rien n'est perdu.
+      _sketchRenderLabelStep();
+    }
   };
   canvas.onmousedown = down; canvas.onmousemove = move; window.addEventListener('mouseup', up);
   canvas.ontouchstart = down; canvas.ontouchmove = move; canvas.ontouchend = up;
@@ -46603,12 +46644,15 @@ function _rdpPerpDist(p, a, b){
   return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
 }
 
-function _sketchSimplifyAndShow(){
-  const { raw, canvas } = _sketch;
+/* Redresse un tracé à main levée (raw) en une liste de points anguleux
+   (pts) + indique si la forme est fermée. Factorisé pour être utilisé à la
+   fois pour le tout premier trait ET pour un trait ajouté par-dessus
+   (v5.41.74) — même logique de redressement dans les deux cas. */
+function _sketchSimplifyStroke(raw, dpr){
   let xs = raw.map(p=>p.x), ys = raw.map(p=>p.y);
   const diag = Math.hypot(Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys)) || 100;
-  const epsilon = Math.max(diag * 0.025, 8 * _sketch.dpr);
-  const closeThreshold = Math.max(diag * 0.07, 22 * _sketch.dpr);
+  const epsilon = Math.max(diag * 0.025, 8 * dpr);
+  const closeThreshold = Math.max(diag * 0.07, 22 * dpr);
 
   // Si le trait est bouclé (départ et arrivée proches — forme fermée, le cas
   // le plus courant pour un profil plié), le RDP classique casse : sa base
@@ -46645,6 +46689,13 @@ function _sketchSimplifyAndShow(){
   const closed = pts.length > 2 && Math.hypot(last.x-first.x, last.y-first.y) < closeThreshold;
   if(closed) pts = pts.slice(0, -1);
 
+  return { pts, closed };
+}
+
+function _sketchSimplifyAndShow(){
+  const { raw, dpr } = _sketch;
+  const { pts, closed } = _sketchSimplifyStroke(raw, dpr);
+
   if(pts.length < 2){ showToast('Trait trop court — recommence'); _sketchRedo(); return; }
 
   const segments = [];
@@ -46657,6 +46708,26 @@ function _sketchSimplifyAndShow(){
   _sketch.segments = segments;
   _sketch.closed = closed;
   _sketch.step = 'label';
+  _sketchRenderLabelStep();
+}
+
+/* v5.41.74 — ajoute un ou plusieurs segments à partir d'un trait dessiné
+   PAR-DESSUS une forme déjà redressée, SANS toucher aux segments existants
+   (ni leurs cotes déjà saisies) : le nouveau trait est redressé avec la
+   même logique, puis ses segments sont simplement ajoutés à la suite, dans
+   une nouvelle couleur (le cycle de couleurs continue au lieu de repartir
+   du début, pour bien distinguer visuellement l'ajout). */
+function _sketchAppendStroke(){
+  const { raw, dpr, segments } = _sketch;
+  const { pts, closed } = _sketchSimplifyStroke(raw, dpr);
+  if(pts.length < 2){ _sketchRenderLabelStep(); return; } // trait trop court : ignoré, la forme existante reste intacte
+  const startIndex = segments.length;
+  const n = pts.length;
+  const segCount = closed ? n : n - 1;
+  for(let i = 0; i < segCount; i++){
+    const p1 = pts[i], p2 = pts[(i+1) % n];
+    segments.push({ p1, p2, color: SKETCH_COLORS[(startIndex + i) % SKETCH_COLORS.length], text:'' });
+  }
   _sketchRenderLabelStep();
 }
 
@@ -46687,7 +46758,7 @@ function _sketchRedrawShape(){
 function _sketchRenderLabelStep(){
   _sketchRedrawShape();
   const hint = document.getElementById('sketchStepHint');
-  if(hint) hint.textContent = 'Forme redressée ✅ — ajoute une cote pour chaque segment (facultatif), dans sa couleur.';
+  if(hint) hint.textContent = 'Forme redressée ✅ — ajoute une cote pour chaque segment (facultatif), dans sa couleur. Tu peux aussi redessiner par-dessus pour ajouter des segments.';
   const wrap = document.getElementById('sketchLabelsWrap');
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = '';
