@@ -32046,9 +32046,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.81';
+const APP_VERSION = '5.41.82';
 
 const CHANGELOG = [
+  {
+    version: '5.41.82',
+    date: '17/09/2026',
+    entries: [
+      { icon: '✏️', text: "Croquis avec côtes : on reste sur l'onglet « Dessin » après avoir tracé la forme — plus de bascule automatique vers « Côtes », on y va seulement si on le souhaite" },
+      { icon: '🖼️', text: "Croquis avec côtes : correction — redessiner par-dessus un ancien croquis (image de fond, via « Modifier ») ne supprimait plus l'image de fond dès le premier trait" },
+    ],
+  },
   {
     version: '5.41.81',
     date: '17/09/2026',
@@ -46724,6 +46732,12 @@ function openSketchTool(onSave, existingSketch, bgImageUrl){
       const scale = Math.min(canvas.width / bgImg.width, canvas.height / bgImg.height);
       const dw = bgImg.width * scale, dh = bgImg.height * scale;
       const dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2;
+      // v5.41.82 — mémorisé sur _sketch (pas seulement dessiné une fois) :
+      // _sketchRedrawShape() le redessine à chaque fois AVANT les segments,
+      // sinon tracer un nouveau trait par-dessus effaçait l'image de fond
+      // (elle n'existait que comme pixels, perdus au clearRect suivant).
+      _sketch.bgImg = bgImg;
+      _sketch.bgRect = { dx, dy, dw, dh };
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(bgImg, dx, dy, dw, dh);
@@ -46784,7 +46798,10 @@ function openSketchTool(onSave, existingSketch, bgImageUrl){
       if(wasFirstStroke) _sketchSimplifyAndShow();
       else _sketchAppendStroke();
     } else if(wasFirstStroke){
+      // v5.41.82 — griffonnage trop court : on efface juste ce trait résiduel,
+      // en remettant l'image de fond (le cas échéant) plutôt qu'un blanc uni.
       ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      if(_sketch.bgImg && _sketch.bgRect){ const r = _sketch.bgRect; ctx.drawImage(_sketch.bgImg, r.dx, r.dy, r.dw, r.dh); }
     } else {
       // Griffonnage résiduel trop court par-dessus une forme déjà là : on
       // l'efface simplement en redessinant l'état actuel, rien n'est perdu.
@@ -46897,11 +46914,10 @@ function _sketchSimplifyAndShow(){
   _sketch.segments = segments;
   _sketch.closed = closed;
   _sketch.step = 'label';
+  // v5.41.82 — on reste sur l'onglet "Dessin" après le premier tracé (plus de
+  // bascule automatique vers "Côtes") : l'utilisateur voit tout de suite sa
+  // forme redressée et choisit lui-même quand aller saisir les côtes.
   _sketchRenderLabelStep();
-  // v5.41.81 — une fois la toute première forme tracée, on bascule direct sur
-  // l'onglet "Côtes" (au lieu de forcer à scroller) pour saisir les mesures ;
-  // un ajout de trait par-dessus (_sketchAppendStroke) reste sur "Dessin".
-  _sketchSetTab('labels');
 }
 
 /* v5.41.74 — ajoute un ou plusieurs segments à partir d'un trait dessiné
@@ -46934,6 +46950,14 @@ function _sketchRedrawShape(){
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // v5.41.82 — redessine l'ancienne image de fond (croquis pré-vectoriel en
+  // cours de retraçage) à chaque appel, sinon elle disparaissait dès qu'un
+  // nouveau trait était simplifié (clearRect ci-dessus l'effaçait sans la
+  // remettre, puisqu'elle n'avait été peinte qu'une seule fois au chargement).
+  if(_sketch.bgImg && _sketch.bgRect){
+    const r = _sketch.bgRect;
+    ctx.drawImage(_sketch.bgImg, r.dx, r.dy, r.dw, r.dh);
+  }
   segments.forEach(seg => {
     ctx.beginPath();
     ctx.moveTo(seg.p1.x, seg.p1.y);
@@ -47060,6 +47084,8 @@ function _sketchRedo(){
   _sketch.step = 'draw';
   _sketch.raw = [];
   _sketch.segments = [];
+  _sketch.bgImg = null; // v5.41.82 — "Recommencer" repart d'une page vraiment blanche
+  _sketch.bgRect = null;
   const hint = document.getElementById('sketchStepHint');
   if(hint) hint.textContent = 'Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.';
   const wrap = document.getElementById('sketchLabelsWrap');
