@@ -32039,9 +32039,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.74';
+const APP_VERSION = '5.41.75';
 
 const CHANGELOG = [
+  {
+    version: '5.41.75',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📐', text: "Croquis avec côtes : chaque segment peut être supprimé (✕) à tout moment, la cote saisie s'affiche en direct sur le dessin (plus besoin d'enregistrer pour la voir), et un bouton de visualisation du croquis remplace la chaîne 🔗 dans la bulle « à faire » quand une tâche en a un" },
+    ],
+  },
   {
     version: '5.41.74',
     date: '17/09/2026',
@@ -37571,6 +37578,14 @@ function _renderPinnedTasksInPopup(){
   container.innerHTML = syncBtn + sorted.map(t => {
     const hasLink = !!(t.link && (t.link.siteId || t.link.date));
     const linkLabel = t.link ? [t.link.siteName, t.link.dateLabel].filter(Boolean).join(' · ') : '';
+    const hasSketch = !!(t.media && t.media.url);
+    // v5.41.75 — quand la tâche a un croquis, son bouton "Lier" (🔗) est
+    // remplacé ici par un bouton de visualisation du croquis (place limitée
+    // dans cette bulle compacte) ; sans croquis, "Lier" reste disponible
+    // comme avant.
+    const linkOrSketchBtn = hasSketch
+      ? `<button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--wood);" onclick="openPhotoFullscreen('${escapeHtml(t.media.url)}', 'Croquis', null)" title="Voir le croquis">📐</button>`
+      : `<button class="pinned-task-link-btn ${hasLink?'linked':''}" onclick="openPinnedLinkMenu('${t.id}', this)" title="Lier">🔗</button>`;
     return `
     <div class="pinned-task-item" data-id="${t.id}">
       <div class="pinned-task-cb ${t.done?'done':''}" onclick="togglePinnedTask('${t.id}')"></div>
@@ -37578,7 +37593,7 @@ function _renderPinnedTasksInPopup(){
         <div class="pinned-task-text ${t.done?'done':''}" onclick="togglePinnedTask('${t.id}')">${escapeHtml(t.text)}</div>
         ${hasLink ? `<div onclick="_openPinnedLink(${JSON.stringify(t).replace(/"/g,'&quot;')})" style="font-size:10px;color:var(--wood);cursor:pointer;margin-top:2px;">${linkLabel}</div>` : ''}
       </div>
-      <button class="pinned-task-link-btn ${hasLink?'linked':''}" onclick="openPinnedLinkMenu('${t.id}', this)" title="Lier">🔗</button>
+      ${linkOrSketchBtn}
       <button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--ink-soft);" onclick="editPinnedTask('${t.id}')" title="Modifier">✏️</button>
       ${t.done ? `<button class="pinned-task-reopen visible" onclick="reopenPinnedTask('${t.id}')" title="Remettre à faire">↩</button>` : ''}
     </div>`;
@@ -46731,6 +46746,11 @@ function _sketchAppendStroke(){
   _sketchRenderLabelStep();
 }
 
+/* v5.41.75 — dessine aussi la cote de chaque segment (si saisie), pas
+   seulement les traits : cette fonction sert maintenant à la fois à
+   l'aperçu EN DIRECT pendant la saisie (appelée à chaque frappe dans un
+   champ de cote) et au rendu final avant enregistrement, pour un seul
+   endroit qui décide à quoi ressemble le croquis. */
 function _sketchRedrawShape(){
   const { ctx, canvas, segments, dpr } = _sketch;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -46753,15 +46773,36 @@ function _sketchRedrawShape(){
     const p = JSON.parse(v);
     ctx.beginPath(); ctx.arc(p.x, p.y, 3.5 * dpr, 0, Math.PI*2); ctx.fill();
   });
+  // Cote de chaque segment, près de son milieu, décalée perpendiculairement
+  // pour ne pas chevaucher le trait, dans la couleur du segment (avec un
+  // léger contour blanc pour rester lisible même si le texte croise le tracé).
+  ctx.font = `${13 * dpr}px -apple-system, Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  segments.forEach(seg => {
+    if(!seg.text || !seg.text.trim()) return;
+    const mx = (seg.p1.x + seg.p2.x) / 2;
+    const my = (seg.p1.y + seg.p2.y) / 2;
+    const dx = seg.p2.x - seg.p1.x, dy = seg.p2.y - seg.p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    const off = 18 * dpr;
+    const tx = mx + nx * off, ty = my + ny * off;
+    ctx.lineWidth = 3.5 * dpr;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeText(seg.text, tx, ty);
+    ctx.fillStyle = seg.color;
+    ctx.fillText(seg.text, tx, ty);
+  });
 }
 
 function _sketchRenderLabelStep(){
   _sketchRedrawShape();
   const hint = document.getElementById('sketchStepHint');
-  if(hint) hint.textContent = 'Forme redressée ✅ — ajoute une cote pour chaque segment (facultatif), dans sa couleur. Tu peux aussi redessiner par-dessus pour ajouter des segments.';
+  if(hint) hint.textContent = 'Forme redressée ✅ — ajoute une cote pour chaque segment (facultatif, visible directement sur le dessin), dans sa couleur. Tu peux redessiner par-dessus pour ajouter des segments, ou supprimer (✕) ceux dont tu ne veux plus.';
   const wrap = document.getElementById('sketchLabelsWrap');
   const saveBtn = document.getElementById('sketchSaveBtn');
-  if(saveBtn) saveBtn.style.display = '';
+  if(saveBtn) saveBtn.style.display = _sketch.segments.length ? '' : 'none';
   if(wrap){
     wrap.style.display = 'flex';
     wrap.style.flexDirection = 'column';
@@ -46770,10 +46811,23 @@ function _sketchRenderLabelStep(){
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="width:22px; height:5px; border-radius:3px; background:${seg.color}; flex-shrink:0;"></span>
         <input type="text" placeholder="Côte du segment ${i+1} (ex: 1200mm)" value="${escapeHtml(seg.text)}"
-          oninput="_sketch.segments[${i}].text = this.value"
+          oninput="_sketch.segments[${i}].text = this.value; _sketchRedrawShape();"
           style="flex:1; min-width:0; border:1.5px solid ${seg.color}; border-radius:8px; padding:8px 10px; font-size:13px; font-weight:700; color:${seg.color}; background:var(--card);">
+        <button onclick="_sketchDeleteSegment(${i})" title="Supprimer ce segment" style="background:none;border:none;color:#c85050;cursor:pointer;padding:4px;flex-shrink:0;display:flex;">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
       </div>`).join('');
   }
+}
+
+/* v5.41.75 — supprime un segment donné (et sa cote) à tout moment pendant
+   l'étape "côtes" ; s'il ne reste plus aucun segment, retour à l'étape
+   dessin (comme "Recommencer") plutôt que de laisser un croquis vide. */
+function _sketchDeleteSegment(i){
+  if(!_sketch || !_sketch.segments) return;
+  _sketch.segments.splice(i, 1);
+  if(!_sketch.segments.length){ _sketchRedo(); return; }
+  _sketchRenderLabelStep();
 }
 
 function _sketchRedo(){
@@ -46795,30 +46849,10 @@ function _sketchRedo(){
 
 function _sketchFinish(){
   if(!_sketch || !_sketch.segments.length) return;
-  const { ctx, canvas, segments, dpr } = _sketch;
+  const { canvas } = _sketch;
+  // _sketchRedrawShape() dessine déjà les traits ET les cotes (v5.41.75) —
+  // le rendu final est donc identique à l'aperçu déjà visible à l'écran.
   _sketchRedrawShape();
-  // Écrit chaque cote près du milieu de son segment, décalée perpendiculairement
-  // pour ne pas chevaucher le trait, dans la couleur du segment (avec un léger
-  // contour blanc pour rester lisible même si le texte croise le tracé).
-  ctx.font = `${13 * dpr}px -apple-system, Arial, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  segments.forEach(seg => {
-    if(!seg.text || !seg.text.trim()) return;
-    const mx = (seg.p1.x + seg.p2.x) / 2;
-    const my = (seg.p1.y + seg.p2.y) / 2;
-    const dx = seg.p2.x - seg.p1.x, dy = seg.p2.y - seg.p1.y;
-    const len = Math.hypot(dx, dy) || 1;
-    // normale unitaire (perpendiculaire), décalage fixe vers l'extérieur
-    const nx = -dy / len, ny = dx / len;
-    const off = 18 * dpr;
-    const tx = mx + nx * off, ty = my + ny * off;
-    ctx.lineWidth = 3.5 * dpr;
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.strokeText(seg.text, tx, ty);
-    ctx.fillStyle = seg.color;
-    ctx.fillText(seg.text, tx, ty);
-  });
   canvas.toBlob((blob) => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const cb = _sketch.onSave;
