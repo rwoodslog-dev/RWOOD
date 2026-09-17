@@ -32039,9 +32039,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.76';
+const APP_VERSION = '5.41.77';
 
 const CHANGELOG = [
+  {
+    version: '5.41.77',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📐', text: "Croquis avec côtes : touche un segment directement sur le dessin pour saisir sa cote, plus besoin de descendre jusqu'au champ correspondant" },
+    ],
+  },
   {
     version: '5.41.76',
     date: '17/09/2026',
@@ -46605,7 +46612,9 @@ function openSketchTool(onSave){
     // segments, au lieu d'être limité au tout premier trait.
     e.preventDefault();
     _sketch.drawing = true;
-    _sketch.raw = [pos(e)];
+    const p = pos(e);
+    _sketch.raw = [p];
+    _sketch._downPos = p; // v5.41.77 — mémorise le point de départ pour distinguer un TAP d'un vrai trait
   };
   const move = e => {
     if(!_sketch.drawing) return;
@@ -46620,6 +46629,23 @@ function openSketchTool(onSave){
   const up = () => {
     if(!_sketch.drawing) return;
     _sketch.drawing = false;
+
+    // v5.41.77 — un simple TAP (quasiment aucun déplacement entre down et
+    // up) sur un segment déjà tracé ouvre directement la saisie de sa cote,
+    // au lieu d'avoir à descendre jusqu'au champ correspondant plus bas.
+    // Ne s'applique qu'à l'étape "côtes" (step==='label') : pendant le tout
+    // premier trait, un tap ne veut rien dire de particulier.
+    if(_sketch.step === 'label'){
+      const last = _sketch.raw[_sketch.raw.length - 1] || _sketch._downPos;
+      const moveDist = _sketch._downPos ? Math.hypot(last.x - _sketch._downPos.x, last.y - _sketch._downPos.y) : 999;
+      if(moveDist < 10 * dpr){
+        const idx = _sketchNearestSegment(_sketch._downPos, _sketch.segments, dpr);
+        if(idx >= 0) _sketchPromptSegmentText(idx);
+        else _sketchRenderLabelStep(); // tap dans le vide : efface le petit point resté sur le canevas
+        return;
+      }
+    }
+
     const wasFirstStroke = _sketch.step === 'draw';
     if(_sketch.raw.length >= 3){
       if(wasFirstStroke) _sketchSimplifyAndShow();
@@ -46810,7 +46836,7 @@ function _sketchRedrawShape(){
 function _sketchRenderLabelStep(){
   _sketchRedrawShape();
   const hint = document.getElementById('sketchStepHint');
-  if(hint) hint.textContent = 'Forme redressée ✅ — ajoute une cote pour chaque segment (facultatif, visible directement sur le dessin), dans sa couleur. Tu peux redessiner par-dessus pour ajouter des segments, ou supprimer (✕) ceux dont tu ne veux plus.';
+  if(hint) hint.textContent = 'Forme redressée ✅ — touche un segment sur le dessin pour saisir directement sa cote. Tu peux aussi redessiner par-dessus pour ajouter des segments, ou en supprimer (✕) ci-dessous.';
   const wrap = document.getElementById('sketchLabelsWrap');
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = _sketch.segments.length ? '' : 'none';
@@ -46838,6 +46864,40 @@ function _sketchDeleteSegment(i){
   if(!_sketch || !_sketch.segments) return;
   _sketch.segments.splice(i, 1);
   if(!_sketch.segments.length){ _sketchRedo(); return; }
+  _sketchRenderLabelStep();
+}
+
+/* v5.41.77 — distance point→segment (projection bornée sur [0,1]), utilisée
+   pour trouver quel segment a été tapé directement sur le dessin. */
+function _sketchPointToSegDist(p, a, b){
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx*dx + dy*dy;
+  if(lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = a.x + t * dx, projY = a.y + t * dy;
+  return Math.hypot(p.x - projX, p.y - projY);
+}
+/* Renvoie l'indice du segment le plus proche du point tapé, ou -1 si aucun
+   n'est assez proche (tap dans le vide, ignoré). */
+function _sketchNearestSegment(p, segments, dpr){
+  let best = -1, bestDist = Infinity;
+  segments.forEach((seg, i) => {
+    const d = _sketchPointToSegDist(p, seg.p1, seg.p2);
+    if(d < bestDist){ bestDist = d; best = i; }
+  });
+  const threshold = 26 * dpr; // marge assez large pour un doigt, pas trop pour rester précis entre segments proches
+  return bestDist <= threshold ? best : -1;
+}
+/* Ouvre directement la saisie de la cote d'un segment tapé sur le dessin
+   (au lieu de devoir descendre jusqu'à son champ) — même stockage
+   (t.segments[i].text) donc le champ en dessous reste synchronisé. */
+function _sketchPromptSegmentText(i){
+  const seg = _sketch && _sketch.segments && _sketch.segments[i];
+  if(!seg) return;
+  const next = prompt('Cote du segment (ex: 1200mm) :', seg.text || '');
+  if(next == null) return; // annulé
+  seg.text = next.trim();
   _sketchRenderLabelStep();
 }
 
