@@ -5468,10 +5468,22 @@
           <div class="calc-result-value" id="zincTotalLength">—</div>
         </div>
 
+        <!-- Type de pliage : simple / main-courante / chêneau / noue -->
+        <div class="card" id="zincPliageTypeCard" style="display:none;">
+          <div class="calc-result-label" style="margin-bottom:10px;">Type de pliage</div>
+          <div class="chip-row" id="zincPliageTypeChips">
+            <div class="chip" data-type="simple" onclick="setZincPliageType('simple')">Simple</div>
+            <div class="chip" data-type="main-courante" onclick="setZincPliageType('main-courante')">Main-courante</div>
+            <div class="chip" data-type="cheneau" onclick="setZincPliageType('cheneau')">Chêneau</div>
+            <div class="chip" data-type="noue" onclick="setZincPliageType('noue')">Noue</div>
+          </div>
+          <div class="hint" id="zincPliageTypeHint" style="margin-top:8px;"></div>
+        </div>
+
         <!-- Cumul pour traçage -->
         <div class="card" id="zincCumulCard" style="display:none;">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-            <div class="calc-result-label" style="margin:0;">Cumul pour traçage</div>
+            <div class="calc-result-label" style="margin:0;" id="zincCumulCardTitle">Cumul pour traçage</div>
             <div style="display:flex; gap:6px;">
               <button class="btn btn-outline btn-sm" onclick="openCumulTracageModal()" title="Recalculer">
                 <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38"/></svg>
@@ -5482,6 +5494,7 @@
             </div>
           </div>
           <div id="zincCumulDisplay" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+          <div id="zincCumulDisplayTop" style="display:none; flex-wrap:wrap; gap:6px; margin-top:10px;"></div>
         </div>
 
         <!-- Bouton cumul traçage (quand pas encore calculé) -->
@@ -6233,14 +6246,15 @@
 <div class="modal-overlay" id="modal-cumulTracage">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-title">Cumul pour traçage</span>
+      <span class="modal-title" id="cumulModalTitle">Cumul pour traçage</span>
       <button class="modal-close" onclick="closeModal('cumulTracage')">×</button>
     </div>
     <div style="padding:0 16px 8px;">
-      <div class="hint" style="margin-bottom:12px;">Appuie sur les segments dans l'ordre du traçage. L'app cumule les cotes au fur et à mesure.</div>
+      <div class="hint" style="margin-bottom:8px;">Appuie sur les segments dans l'ordre du traçage. L'app cumule les cotes au fur et à mesure.</div>
+      <div class="hint" id="cumulMarkHint" style="display:none; margin-bottom:12px; color:var(--wood);"></div>
       <div id="cumulSegmentList" style="display:flex; flex-direction:column; gap:8px; max-height:45vh; overflow-y:auto; padding-right:4px;"></div>
       <div style="margin-top:14px; padding:12px; background:var(--card); border-radius:10px;">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:6px;">Cumul :</div>
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:6px;" id="cumulPreviewLabel">Cumul :</div>
         <div id="cumulPreview" style="display:flex; flex-wrap:wrap; gap:6px; min-height:28px;"></div>
       </div>
     </div>
@@ -17732,9 +17746,15 @@ async function _buildZincPdfDoc(profile){
   const nom  = profile.name || 'Pliage sans nom';
   const developpe = formatMm(getProfileTotalLength(profile))
                   + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
-  const cumul = (profile.cumulTracage && profile.cumulTracage.length)
+  const pliageTypeCfg = PLIAGE_TYPES[getZincPliageType(profile)] || PLIAGE_TYPES.simple;
+  const otherCumulPdf = computeZincCumulOther(profile);
+  let cumulLabel = 'Cumul de traçage';
+  let cumul = (profile.cumulTracage && profile.cumulTracage.length)
               ? profile.cumulTracage.map(v => formatMm(v)).join('   →   ')
               : null;
+  if(otherCumulPdf && pliageTypeCfg.maxMarks && cumul){
+    cumulLabel = pliageTypeCfg.baseIsTop ? 'Cumul de traçage — Haut' : 'Cumul de traçage — Bas';
+  }
   const metrage = profile.metrage ? formatZincMetrageSummary(profile.metrage) : null;
   const schemaImg = await _zincPdfSchemaToImage(profile);
 
@@ -17787,7 +17807,11 @@ async function _buildZincPdfDoc(profile){
   };
 
   block('Développé total', developpe);
-  block('Cumul de traçage', cumul || 'Non défini');
+  block(cumulLabel, cumul || 'Non défini');
+  if(otherCumulPdf && pliageTypeCfg.maxMarks && cumul){
+    const otherLabel = pliageTypeCfg.baseIsTop ? 'Cumul de traçage — Bas' : 'Cumul de traçage — Haut';
+    block(otherLabel, otherCumulPdf.map(v => formatMm(v)).join('   →   '));
+  }
   block('Métrage chantier', metrage || 'Non défini');
 
   const safeName = nom.replace(/[^\w\-]+/g,'_').slice(0,40);
@@ -18063,6 +18087,7 @@ function renderZincEditor(){
   applyZincEditModeVisibility(profile);
   renderZincMetrage(profile);
   renderSketchZincEditor(profile);
+  renderZincPliageTypeCard(profile);
   renderZincCumulCard(profile);
   applyZincZoom();
   setupZincPinchZoom();
@@ -30814,6 +30839,7 @@ function fermeExportPDF(){
    ══════════════════════════════════════════════════════ */
 
 let cumulSelection = []; // ordre de sélection : indices des segments
+let cumulMarked    = [];  // indices (dans l'ordre de sélection, cumulSelection) marqués comme "partie ajustable" haut/bas
 
 /* Récupère les longueurs des segments du profil courant (tous types) */
 function getZincSegmentLengths(){
@@ -30822,11 +30848,128 @@ function getZincSegmentLengths(){
   return (profile.sketchSegments || []).map(s => Math.round(s.mm));
 }
 
+/* v5.41.88 — Type de pliage : détermine comment le cumul de traçage diffère
+   entre le haut et le bas de la feuille de zinc.
+   - simple        : cumul identique haut/bas (comportement historique)
+   - main-courante : le cumul saisi représente le BAS. Le haut perd 5mm sur
+                     le(s) segment(s) marqué(s) (partie supérieure du pliage,
+                     qui vient sous la main-courante du dessus) et regagne
+                     ces 5mm sur le dernier segment du cumul.
+   - cheneau       : le cumul saisi représente le HAUT (plus large, pour
+                     chevaucher le bas du pliage du dessous). Le bas perd
+                     5mm sur le(s) segment(s) marqué(s) et regagne ces 5mm
+                     sur le dernier segment.
+   - noue          : le cumul saisi représente le HAUT. Le fond (2 segments
+                     marqués) perd 5mm chacun côté bas, +10mm reporté sur le
+                     dernier segment du cumul. */
+const PLIAGE_TYPES = {
+  'simple':        { label:'Simple',        maxMarks:0, baseIsTop:false },
+  'main-courante': { label:'Main-courante', maxMarks:1, baseIsTop:false },
+  'cheneau':       { label:'Chêneau',       maxMarks:1, baseIsTop:true  },
+  'noue':          { label:'Noue',          maxMarks:2, baseIsTop:true  },
+};
+
+function getZincPliageType(profile){
+  return (profile && profile.pliageType) || 'simple';
+}
+
+function setZincPliageType(type){
+  const profile = getCurrentZincProfile();
+  if(!profile || !PLIAGE_TYPES[type]) return;
+  profile.pliageType = type;
+  // Le marquage de segment(s) dépend du type — on l'invalide s'il ne correspond plus
+  if(type === 'simple'){ delete profile.cumulMarked; }
+  else if(profile.cumulMarked && profile.cumulMarked.length > PLIAGE_TYPES[type].maxMarks){
+    delete profile.cumulMarked;
+  }
+  saveData();
+  renderZincEditor();
+}
+
+function renderZincPliageTypeCard(profile){
+  const cardEl = document.getElementById('zincPliageTypeCard');
+  const hintEl = document.getElementById('zincPliageTypeHint');
+  if(!cardEl || !hintEl) return;
+
+  const hasShape = (profile.sketchSegments || []).length > 0;
+  cardEl.style.display = hasShape ? 'block' : 'none';
+  if(!hasShape) return;
+
+  const type = getZincPliageType(profile);
+  document.querySelectorAll('#zincPliageTypeChips .chip').forEach(chip => {
+    chip.classList.toggle('selected', chip.dataset.type === type);
+  });
+
+  const HINTS = {
+    'simple':        'Le cumul de traçage est identique en haut et en bas de la feuille.',
+    'main-courante': 'Le haut du pliage perd 5mm sur la partie supérieure (recouvrement avec la main-courante du dessus).',
+    'cheneau':       'Le haut du pliage est plus large que le bas, pour chevaucher le pliage du dessous.',
+    'noue':          'Le fond en V (2 segments) est réduit de 5mm côté bas, pour le recouvrement dans la pente.',
+  };
+  hintEl.textContent = HINTS[type] || '';
+}
+
+/* Calcule le cumul "haut" à partir du cumul de base (celui saisi dans la modal) et
+   des segments marqués comme partie ajustable, selon le type de pliage.
+   Retourne null si le type est 'simple' (pas de second cumul) ou si le marquage
+   ne correspond pas à ce qu'attend le type. */
+function computeZincCumulOther(profile){
+  const type = getZincPliageType(profile);
+  const cfg = PLIAGE_TYPES[type];
+  if(!cfg || !cfg.maxMarks) return null;
+  if(!profile.cumulTracage || !profile.cumulTracage.length) return null;
+  const marked = profile.cumulMarked || [];
+  if(!marked.length) return null;
+
+  // Reconstitue les longueurs individuelles (pas les valeurs cumulées) dans
+  // l'ordre du cumul, à partir des valeurs cumulées stockées.
+  const cumulBase = profile.cumulTracage;
+  const lens = cumulBase.map((v, i) => v - (i > 0 ? cumulBase[i-1] : 0));
+
+  const delta = 5; // mm perdus/gagnés par segment marqué
+  const otherLens = lens.slice();
+  let totalShift = 0;
+  marked.forEach(idx => {
+    if(idx < 0 || idx >= otherLens.length) return;
+    otherLens[idx] = Math.max(0, otherLens[idx] - delta);
+    totalShift += delta;
+  });
+  if(totalShift > 0){
+    const lastIdx = otherLens.length - 1;
+    otherLens[lastIdx] = otherLens[lastIdx] + totalShift;
+  }
+
+  let cumul = 0;
+  const otherCumul = otherLens.map(v => { cumul += v; return cumul; });
+  return otherCumul;
+}
+
 /* Ouvre la modal de sélection des segments */
 function openCumulTracageModal(){
   cumulSelection = [];
   const profile = getCurrentZincProfile();
   if(!profile) return;
+  cumulMarked = (profile.cumulMarked || []).slice();
+
+  const type = getZincPliageType(profile);
+  const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
+  const titleEl = document.getElementById('cumulModalTitle');
+  const labelEl = document.getElementById('cumulPreviewLabel');
+  if(titleEl) titleEl.textContent = cfg.baseIsTop ? 'Cumul pour traçage — Haut' : 'Cumul pour traçage';
+  if(labelEl) labelEl.textContent = cfg.baseIsTop ? 'Cumul (haut) :' : (cfg.maxMarks ? 'Cumul (bas) :' : 'Cumul :');
+
+  const markHintEl = document.getElementById('cumulMarkHint');
+  if(markHintEl){
+    if(cfg.maxMarks === 1){
+      markHintEl.style.display = 'block';
+      markHintEl.textContent = '⭐ Marque le segment de la partie supérieure/large (celle qui varie entre le haut et le bas) en appuyant longuement dessus, ou sur l\'étoile.';
+    } else if(cfg.maxMarks === 2){
+      markHintEl.style.display = 'block';
+      markHintEl.textContent = '⭐ Marque les 2 segments du fond (le V de la noue) en appuyant sur l\'étoile de chacun.';
+    } else {
+      markHintEl.style.display = 'none';
+    }
+  }
 
   // Pré-remplir si un cumul existe déjà
   // (on ne peut pas retrouver l'ordre exact, on repart de zéro)
@@ -30840,16 +30983,25 @@ function renderCumulSegmentList(){
   const lengths = getZincSegmentLengths();
   const container = document.getElementById('cumulSegmentList');
   if(!container) return;
+  const profile = getCurrentZincProfile();
+  const type = profile ? getZincPliageType(profile) : 'simple';
+  const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
 
   container.innerHTML = lengths.map((len, i) => {
     const selIdx = cumulSelection.indexOf(i);
     const isSelected = selIdx !== -1;
     const order = isSelected ? selIdx + 1 : '';
+    const isMarked = isSelected && cumulMarked.includes(selIdx);
+    const starBtn = (cfg.maxMarks && isSelected) ? `
+      <button onclick="event.stopPropagation(); toggleCumulMark(${selIdx})" title="Marquer comme partie ajustable"
+              style="background:none; border:none; padding:4px; cursor:pointer; flex-shrink:0; color:${isMarked ? '#ffd23f' : 'rgba(255,255,255,.45)'};">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="${isMarked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5l2.9 6.1 6.6.8-4.9 4.6 1.3 6.6-5.9-3.3-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z"/></svg>
+      </button>` : '';
     return `
     <div onclick="toggleCumulSegment(${i})"
          style="display:flex; align-items:center; gap:12px; padding:12px 14px;
                 background:${isSelected ? 'var(--wood-dk)' : 'var(--card)'};
-                border:1.5px solid ${isSelected ? 'var(--wood)' : 'var(--line)'};
+                border:1.5px solid ${isMarked ? '#ffd23f' : (isSelected ? 'var(--wood)' : 'var(--line)')};
                 border-radius:10px; cursor:pointer; transition:.15s; user-select:none;">
       <div style="width:28px; height:28px; border-radius:50%;
                   background:${isSelected ? 'var(--wood)' : 'var(--line)'};
@@ -30866,6 +31018,7 @@ function renderCumulSegmentList(){
           ${len} mm
         </div>
       </div>
+      ${starBtn}
       ${isSelected ? `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color:#fff;flex-shrink:0;"><circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.8 2.8L16.5 9"/></svg>` : ''}
     </div>`;
   }).join('');
@@ -30876,8 +31029,29 @@ function toggleCumulSegment(idx){
   if(pos !== -1){
     // Désélectionner — retire ce segment ET tous ceux sélectionnés après lui
     cumulSelection = cumulSelection.slice(0, pos);
+    cumulMarked = cumulMarked.filter(m => m < pos);
   } else {
     cumulSelection.push(idx);
+  }
+  renderCumulSegmentList();
+  renderCumulPreview();
+}
+
+function toggleCumulMark(selIdx){
+  const profile = getCurrentZincProfile();
+  const type = profile ? getZincPliageType(profile) : 'simple';
+  const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
+  if(!cfg.maxMarks) return;
+
+  const pos = cumulMarked.indexOf(selIdx);
+  if(pos !== -1){
+    cumulMarked.splice(pos, 1);
+  } else {
+    if(cumulMarked.length >= cfg.maxMarks){
+      showToast(cfg.maxMarks === 1 ? 'Un seul segment à marquer pour ce type de pliage' : `${cfg.maxMarks} segments maximum à marquer`);
+      return;
+    }
+    cumulMarked.push(selIdx);
   }
   renderCumulSegmentList();
   renderCumulPreview();
@@ -30896,9 +31070,10 @@ function renderCumulPreview(){
   let cumul = 0;
   const chips = cumulSelection.map((segIdx, i) => {
     cumul += lengths[segIdx] || 0;
-    return `<div style="background:var(--wood-dk); color:#fff; border-radius:20px;
+    const marked = cumulMarked.includes(i);
+    return `<div style="background:${marked ? '#8a6d1a' : 'var(--wood-dk)'}; color:#fff; border-radius:20px;
                         padding:4px 12px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px;">
-      <span style="opacity:.7; font-size:11px;">${i+1}.</span> ${cumul} mm
+      <span style="opacity:.7; font-size:11px;">${i+1}.</span> ${cumul} mm ${marked ? '⭐' : ''}
     </div>`;
   });
   container.innerHTML = chips.join('');
@@ -30906,6 +31081,7 @@ function renderCumulPreview(){
 
 function resetCumulSelection(){
   cumulSelection = [];
+  cumulMarked = [];
   renderCumulSegmentList();
   renderCumulPreview();
 }
@@ -30917,6 +31093,12 @@ function saveCumulTracage(){
   }
   const profile = getCurrentZincProfile();
   if(!profile) return;
+  const type = getZincPliageType(profile);
+  const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
+  if(cfg.maxMarks && cumulMarked.length !== cfg.maxMarks){
+    showToast(cfg.maxMarks === 1 ? 'Marque le segment de la partie ajustable (⭐)' : `Marque les ${cfg.maxMarks} segments du fond (⭐)`);
+    return;
+  }
   const lengths = getZincSegmentLengths();
 
   // Calculer les valeurs cumulatives dans l'ordre de sélection
@@ -30928,6 +31110,7 @@ function saveCumulTracage(){
 
   profile.cumulTracage        = cumulValues;      // [15, 45, 145, 160]
   profile.cumulTracageOrder   = [...cumulSelection]; // ordre des segments sélectionnés
+  profile.cumulMarked         = cfg.maxMarks ? [...cumulMarked] : null;
   saveData();
   closeModal('cumulTracage');
   renderZincEditor();
@@ -30939,6 +31122,7 @@ function deleteCumulTracage(){
   if(!profile) return;
   delete profile.cumulTracage;
   delete profile.cumulTracageOrder;
+  delete profile.cumulMarked;
   saveData();
   renderZincEditor();
 }
@@ -30948,6 +31132,8 @@ function renderZincCumulCard(profile){
   const cardEl  = document.getElementById('zincCumulCard');
   const btnEl   = document.getElementById('zincCumulBtn');
   const dispEl  = document.getElementById('zincCumulDisplay');
+  const dispTopEl = document.getElementById('zincCumulDisplayTop');
+  const titleEl = document.getElementById('zincCumulCardTitle');
   if(!cardEl || !btnEl || !dispEl) return;
 
   // Pas de cumul + mode lecture → afficher le bouton d'ajout
@@ -30961,7 +31147,11 @@ function renderZincCumulCard(profile){
   btnEl.style.display  = 'none';
   cardEl.style.display = 'block';
 
-  dispEl.innerHTML = profile.cumulTracage.map((val, i) => `
+  const type = getZincPliageType(profile);
+  const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
+  const otherCumul = computeZincCumulOther(profile);
+
+  const renderChips = (vals) => vals.map((val, i) => `
     <div style="background:var(--card); border:1px solid var(--line); border-radius:20px;
                 padding:5px 12px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:5px;">
       <span style="color:var(--ink-soft); font-size:11px;">${i+1}.</span>
@@ -30969,6 +31159,19 @@ function renderZincCumulCard(profile){
       <span style="color:var(--ink-soft); font-size:11px;">mm</span>
     </div>`
   ).join('');
+
+  if(otherCumul && cfg.maxMarks){
+    if(titleEl) titleEl.textContent = cfg.baseIsTop ? 'Cumul pour traçage — Haut' : 'Cumul pour traçage — Bas';
+    dispEl.innerHTML = renderChips(profile.cumulTracage);
+    if(dispTopEl){
+      dispTopEl.style.display = 'flex';
+      dispTopEl.innerHTML = `<div style="width:100%; font-size:11px; color:var(--ink-soft); margin-bottom:2px;">${cfg.baseIsTop ? 'Bas :' : 'Haut :'}</div>` + renderChips(otherCumul);
+    }
+  } else {
+    if(titleEl) titleEl.textContent = 'Cumul pour traçage';
+    dispEl.innerHTML = renderChips(profile.cumulTracage);
+    if(dispTopEl){ dispTopEl.style.display = 'none'; dispTopEl.innerHTML = ''; }
+  }
 }
 
 
@@ -31150,9 +31353,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.87';
+const APP_VERSION = '5.41.88';
 
 const CHANGELOG = [
+  {
+    version: '5.41.88',
+    date: '17/09/2026',
+    entries: [
+      { icon: '🪚', text: "Pliage : nouveau choix du type — Simple / Main-courante / Chêneau / Noue — qui définit si le cumul pour traçage est identique en haut et en bas de la feuille ou non" },
+      { icon: '⭐', text: "Main-courante, chêneau, noue : lors du cumul pour traçage, marque le(s) segment(s) qui varient (partie supérieure pour main-courante/chêneau, fond en V pour la noue) — l'app calcule automatiquement le second cumul (haut/bas) à ±5mm en conservant le développé total" },
+    ],
+  },
   {
     version: '5.41.87',
     date: '17/09/2026',
@@ -33658,6 +33869,10 @@ function _parseQRResult(raw){
       sketchCanvasWidth: payload.cw||null,
       sketchCanvasHeight: payload.ch||null,
       hasBoudin: !!payload.hasBoudin,
+      pliageType: payload.pliageType || 'simple',
+      cumulTracage: payload.cumulTracage || null,
+      cumulTracageOrder: payload.cumulTracageOrder || null,
+      cumulMarked: payload.cumulMarked || null,
       createdAt: formatDateTime(new Date())
     };
     data.zincProfiles = data.zincProfiles||[];
@@ -34876,7 +35091,11 @@ function shareViaQR(type, id, extra){
         total: getProfileTotalLength ? getProfileTotalLength(p) : 0,
         hasBoudin: !!p.hasBoudin,
         cw: p.sketchCanvasWidth||0, ch: p.sketchCanvasHeight||0,
-        segs: (p.sketchSegments||[]).map(s => ({ p1:s.p1, p2:s.p2, mm:s.mm }))
+        segs: (p.sketchSegments||[]).map(s => ({ p1:s.p1, p2:s.p2, mm:s.mm })),
+        pliageType: p.pliageType || 'simple',
+        cumulTracage: p.cumulTracage || null,
+        cumulTracageOrder: p.cumulTracageOrder || null,
+        cumulMarked: p.cumulMarked || null
       };
       break;
     }
