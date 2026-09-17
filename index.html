@@ -11664,7 +11664,14 @@ function openPhotoFullscreen(src, caption, logId){
   // Réafficher les actions édition/partage (peuvent avoir été masquées par un autre appelant, ex. photo boîte à clés)
   const editBtn = document.getElementById('photoFullscreenEditBtn');
   const shareBtn = document.getElementById('photoFullscreenShareBtn');
-  if(editBtn) editBtn.style.display = '';
+  if(editBtn){
+    editBtn.style.display = '';
+    // v5.41.78 — remet le bouton crayon sur son comportement par défaut
+    // (éditeur photo générique) à CHAQUE ouverture ; un appelant spécifique
+    // (ex: viewTaskSketch, juste après cet appel) peut ensuite le
+    // rebrancher sur son propre éditeur pour cette visualisation précise.
+    editBtn.onclick = openPhotoEditorFromFullscreen;
+  }
   if(shareBtn) shareBtn.style.display = '';
 
   openModal('photoFullscreen');
@@ -32039,9 +32046,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.77';
+const APP_VERSION = '5.41.80';
 
 const CHANGELOG = [
+  {
+    version: '5.41.80',
+    date: '17/09/2026',
+    entries: [
+      { icon: '⬆️', text: "Croquis avec côtes : ajout d'un bouton ⬆ « Voir le dessin » pour remonter facilement vers le croquis depuis la liste des côtes, en plus du bouton ▼ pour descendre" },
+    ],
+  },
+  {
+    version: '5.41.79',
+    date: '17/09/2026',
+    entries: [
+      { icon: '✏️', text: "Croquis avec côtes : le bouton crayon en visualisation rouvre maintenant directement le même outil pour modifier le croquis (au lieu de l'éditeur photo générique) — le bouton partager reste inchangé" },
+      { icon: '📐', text: "Croquis avec côtes : ajout d'une barre de défilement visible et d'un bouton ▼ sur le dessin pour descendre facilement jusqu'aux champs de côtes" },
+    ],
+  },
   {
     version: '5.41.77',
     date: '17/09/2026',
@@ -37598,7 +37620,7 @@ function _renderPinnedTasksInPopup(){
     // dans cette bulle compacte) ; sans croquis, "Lier" reste disponible
     // comme avant.
     const linkOrSketchBtn = hasSketch
-      ? `<button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--wood);" onclick="openPhotoFullscreen('${escapeHtml(t.media.url)}', 'Croquis', null)" title="Voir le croquis">📐</button>`
+      ? `<button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--wood);" onclick="viewTaskSketch('${t.id}')" title="Voir le croquis">📐</button>`
       : `<button class="pinned-task-link-btn ${hasLink?'linked':''}" onclick="openPinnedLinkMenu('${t.id}', this)" title="Lier">🔗</button>`;
     return `
     <div class="pinned-task-item" data-id="${t.id}">
@@ -45182,10 +45204,14 @@ function notesRender(){
       : '';
     // v5.41.73 — croquis avec côtes attaché à la tâche : miniature cliquable
     // (plein écran) si déjà présent, sinon bouton pour en ajouter un.
+    // v5.41.78 — la miniature ouvre la visionneuse dédiée (viewTaskSketch,
+    // dont le crayon rouvre l'outil de croquis) et "Refaire" devient
+    // "Modifier" (notesEditSketch, reprend la forme existante) plutôt que de
+    // reforcer à tout redessiner depuis zéro.
     const sketchRow = t.media && t.media.url
       ? '<div class="notes-sketch-row">'
-        + '<img src="'+escapeHtml(t.media.url)+'" class="notes-sketch-thumb" onclick="openPhotoFullscreen(\''+escapeHtml(t.media.url)+'\', \'Croquis\', null)" alt="Croquis">'
-        + '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Refaire le croquis">📐 Refaire</button>'
+        + '<img src="'+escapeHtml(t.media.url)+'" class="notes-sketch-thumb" onclick="viewTaskSketch(\''+t.id+'\')" alt="Croquis">'
+        + '<button class="notes-sketch-btn" onclick="notesEditSketch(\''+t.id+'\')" title="Modifier le croquis">✏️ Modifier</button>'
         + '</div>'
       : '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Ajouter un croquis avec côtes">📐 Ajouter un croquis</button>';
     return '<div class="notes-item'+(t.done?' done':'')+'">'
@@ -45234,17 +45260,56 @@ function notesAddSketch(id){
   const pn = _getPinnedNote();
   const t = (pn.tasks||[]).find(x=>x.id===id);
   if(!t) return;
-  openSketchTool(async (blob) => {
+  openSketchTool(async (blob, sketchData) => {
     showToast('⏳ Envoi du croquis…');
     try{
       const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
       const url = await uploadFileToSupabase(file, 'todo');
-      t.media = { url };
+      // v5.41.78 — on garde aussi les données vectorielles (sketchData) pour
+      // pouvoir rouvrir ce même croquis dans l'outil et le modifier plus
+      // tard (voir notesEditSketch), pas juste l'image finale.
+      t.media = { url, sketch: sketchData };
       t.updatedAt = new Date().toISOString();
       _notesCommit();
       showToast('✅ Croquis ajouté à la tâche');
     }catch(e){ showToast('❌ Échec de l\'envoi du croquis'); }
   });
+}
+
+/* v5.41.78 — rouvre l'outil de croquis avec la forme déjà tracée (à partir
+   de t.media.sketch, sauvegardé par _sketchFinish), pour continuer à la
+   modifier avec le même outil que celui qui a servi à la créer — plutôt
+   que de forcer à tout redessiner depuis zéro. */
+function notesEditSketch(id){
+  const pn = _getPinnedNote();
+  const t = (pn.tasks||[]).find(x=>x.id===id);
+  if(!t) return;
+  const existing = t.media && t.media.sketch;
+  openSketchTool(async (blob, sketchData) => {
+    showToast('⏳ Envoi du croquis…');
+    try{
+      const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
+      const url = await uploadFileToSupabase(file, 'todo');
+      t.media = { url, sketch: sketchData };
+      t.updatedAt = new Date().toISOString();
+      _notesCommit();
+      showToast('✅ Croquis mis à jour');
+    }catch(e){ showToast('❌ Échec de l\'envoi du croquis'); }
+  }, existing);
+}
+
+/* v5.41.78 — visionneuse plein écran d'un croquis de tâche : réutilise la
+   fenêtre plein écran générique (zoom, partage inclus), mais son bouton
+   crayon rouvre l'outil de croquis (notesEditSketch) au lieu de l'éditeur
+   photo générique (recadrage/filtres), qui n'a pas de sens pour un croquis
+   vectoriel redessinable. */
+function viewTaskSketch(id){
+  const pn = _getPinnedNote();
+  const t = (pn.tasks||[]).find(x=>x.id===id);
+  if(!t || !t.media || !t.media.url) return;
+  openPhotoFullscreen(t.media.url, 'Croquis', null);
+  const editBtn = document.getElementById('photoFullscreenEditBtn');
+  if(editBtn) editBtn.onclick = () => { closeModal('photoFullscreen'); notesEditSketch(id); };
 }
 function notesAddManual(){
   const inp = document.getElementById('notesAddInput');
@@ -46552,7 +46617,15 @@ let _sketch = null; // état courant de l'outil (null si fermé)
    dessiné se retrouverait étiré/flouté (sa résolution interne ne suit pas
    sa taille CSS). Le reste (côtes, boutons) défile sous elle si besoin,
    avec le bouton Enregistrer toujours visible (position sticky). */
-function openSketchTool(onSave){
+/* v5.41.78 — 2e paramètre optionnel `existingSketch` ({segments,
+   canvasWidth, canvasHeight}, tel que sauvegardé par _sketchFinish) : si
+   fourni, l'outil s'ouvre directement à l'étape "côtes" avec la forme déjà
+   là (au lieu de l'étape dessin vide), pour pouvoir MODIFIER un croquis
+   déjà enregistré avec exactement le même outil que celui qui a servi à le
+   créer (ajouter/supprimer des segments, retoucher les côtes…). Les
+   coordonnées sont remises à l'échelle si la taille du canevas a changé
+   entre-temps (écran différent, ou zone de dessin redimensionnée). */
+function openSketchTool(onSave, existingSketch){
   const ex = document.getElementById('modal-sketchTool');
   if(ex) ex.remove();
   const div = document.createElement('div');
@@ -46560,6 +46633,17 @@ function openSketchTool(onSave){
   div.id = 'modal-sketchTool';
   div.style.alignItems = 'stretch';
   div.innerHTML = `
+    <style>
+      /* v5.41.79 — le canevas plein écran (touch-action:none) capte tout le
+         geste tactile, donc il ne reste presque plus de place pour glisser
+         et faire défiler la page jusqu'aux champs de côtes en dessous. Une
+         vraie barre de défilement visible (au lieu de la barre fine/masquée
+         par défaut sur mobile) donne un repère + une zone à glisser en plus
+         du bouton flottant ▼ ajouté ci-dessous. */
+      #modal-sketchTool .modal::-webkit-scrollbar{ width:10px; }
+      #modal-sketchTool .modal::-webkit-scrollbar-track{ background:rgba(255,255,255,.08); border-radius:5px; }
+      #modal-sketchTool .modal::-webkit-scrollbar-thumb{ background:var(--wood,#C8862B); border-radius:5px; }
+    </style>
     <div class="modal" style="max-width:none; width:100%; height:100dvh; height:100vh; margin:0; border-radius:0; max-height:none; overflow-y:auto; display:flex; flex-direction:column; box-sizing:border-box; padding:calc(12px + env(safe-area-inset-top,0)) 14px calc(10px + env(safe-area-inset-bottom,0));">
       <div class="modal-header" style="flex-shrink:0;">
         <h2>📐 Croquis avec côtes</h2>
@@ -46570,8 +46654,10 @@ function openSketchTool(onSave){
       </div>
       <div id="sketchCanvasWrap" style="position:relative; width:100%; flex-shrink:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); touch-action:none;">
         <canvas id="sketchCanvas" style="width:100%; height:100%; display:block;"></canvas>
+        <button id="sketchScrollDownBtn" onclick="_sketchScrollToLabels()" title="Voir les côtes" style="display:none; position:absolute; right:12px; bottom:12px; width:42px; height:42px; border-radius:50%; background:var(--wood,#C8862B); color:#1a1206; border:none; font-size:18px; font-weight:900; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(0,0,0,.4); z-index:5;">▼</button>
       </div>
-      <div id="sketchLabelsWrap" style="margin-top:12px; display:none;"></div>
+      <button id="sketchScrollUpBtn" onclick="_sketchScrollToCanvas()" title="Voir le dessin" style="display:none; align-items:center; gap:6px; align-self:flex-start; margin-top:10px; background:none; border:1.5px dashed var(--wood,#C8862B); color:var(--wood,#C8862B); font-size:12px; font-weight:700; cursor:pointer; padding:6px 12px; border-radius:8px;">⬆ Voir le dessin</button>
+      <div id="sketchLabelsWrap" style="margin-top:8px; display:none;"></div>
       <div id="sketchActionsRow" style="display:flex; gap:8px; margin-top:14px; flex-shrink:0; position:sticky; bottom:0; background:var(--bg); padding-top:10px; padding-bottom:calc(6px + env(safe-area-inset-bottom,0));">
         <button class="btn btn-outline btn-block" onclick="_sketchRedo()">↺ Recommencer</button>
         <button id="sketchSaveBtn" class="btn btn-primary btn-block" onclick="_sketchFinish()" style="display:none;">💾 Enregistrer le croquis</button>
@@ -46600,6 +46686,17 @@ function openSketchTool(onSave){
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   _sketch = { canvas, ctx, dpr, step:'draw', raw:[], segments:[], closed:false, drawing:false, onSave };
+
+  if(existingSketch && Array.isArray(existingSketch.segments) && existingSketch.segments.length){
+    const sw = existingSketch.canvasWidth || canvas.width;
+    const sh = existingSketch.canvasHeight || canvas.height;
+    const scaleX = canvas.width / sw, scaleY = canvas.height / sh;
+    const scalePt = p => ({ x: p.x * scaleX, y: p.y * scaleY });
+    _sketch.segments = existingSketch.segments.map(seg => ({
+      p1: scalePt(seg.p1), p2: scalePt(seg.p2), color: seg.color, text: seg.text || ''
+    }));
+    _sketch.step = 'label';
+  }
 
   const pos = e => {
     const r = canvas.getBoundingClientRect();
@@ -46660,6 +46757,10 @@ function openSketchTool(onSave){
   };
   canvas.onmousedown = down; canvas.onmousemove = move; window.addEventListener('mouseup', up);
   canvas.ontouchstart = down; canvas.ontouchmove = move; canvas.ontouchend = up;
+
+  // Forme préchargée (édition d'un croquis existant) : afficher directement
+  // l'étape "côtes" avec la forme dessinée, plutôt qu'un canevas vide.
+  if(_sketch.step === 'label') _sketchRenderLabelStep();
 }
 
 function _sketchClose(){
@@ -46840,6 +46941,10 @@ function _sketchRenderLabelStep(){
   const wrap = document.getElementById('sketchLabelsWrap');
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = _sketch.segments.length ? '' : 'none';
+  const scrollBtn = document.getElementById('sketchScrollDownBtn');
+  if(scrollBtn) scrollBtn.style.display = _sketch.segments.length ? 'flex' : 'none';
+  const scrollUpBtn = document.getElementById('sketchScrollUpBtn');
+  if(scrollUpBtn) scrollUpBtn.style.display = _sketch.segments.length ? 'flex' : 'none';
   if(wrap){
     wrap.style.display = 'flex';
     wrap.style.flexDirection = 'column';
@@ -46916,19 +47021,47 @@ function _sketchRedo(){
   if(wrap){ wrap.style.display = 'none'; wrap.innerHTML = ''; }
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = 'none';
+  const scrollBtn = document.getElementById('sketchScrollDownBtn');
+  if(scrollBtn) scrollBtn.style.display = 'none';
+  const scrollUpBtn = document.getElementById('sketchScrollUpBtn');
+  if(scrollUpBtn) scrollUpBtn.style.display = 'none';
+}
+
+/* v5.41.79 — bouton flottant ▼ sur le dessin : descend directement vers les
+   champs de côtes, sans avoir à trouver un endroit hors du canevas (qui
+   capte tout le geste tactile) pour faire défiler la page à la main. */
+function _sketchScrollToLabels(){
+  const wrap = document.getElementById('sketchLabelsWrap');
+  if(wrap) wrap.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+/* v5.41.80 — bouton ⬆ symétrique : remonte vers le dessin depuis la liste
+   des côtes, une fois qu'on a scrollé en bas pour les saisir. */
+function _sketchScrollToCanvas(){
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(wrap) wrap.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
 function _sketchFinish(){
   if(!_sketch || !_sketch.segments.length) return;
-  const { canvas } = _sketch;
+  const { canvas, segments } = _sketch;
   // _sketchRedrawShape() dessine déjà les traits ET les cotes (v5.41.75) —
   // le rendu final est donc identique à l'aperçu déjà visible à l'écran.
   _sketchRedrawShape();
+  // v5.41.78 — en plus de l'image PNG finale, on renvoie les données
+  // vectorielles (segments + taille du canevas) pour pouvoir rouvrir ce
+  // même croquis plus tard dans l'outil et continuer à le modifier,
+  // plutôt que de repartir d'une page blanche.
+  const sketchData = {
+    segments: segments.map(s => ({ p1:s.p1, p2:s.p2, color:s.color, text:s.text })),
+    canvasWidth: canvas.width,
+    canvasHeight: canvas.height,
+  };
   canvas.toBlob((blob) => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const cb = _sketch.onSave;
     _sketchClose();
-    if(cb) cb(blob);
+    if(cb) cb(blob, sketchData);
   }, 'image/png', 0.95);
 }
 
