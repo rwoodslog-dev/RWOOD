@@ -31150,9 +31150,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.86';
+const APP_VERSION = '5.41.87';
 
 const CHANGELOG = [
+  {
+    version: '5.41.87',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📐', text: "Croquis avec côtes : tous les coudes sont maintenant modifiables au tap (pas seulement ceux déjà accrochés à 45°/90°/135°/180°) — un coude non accroché s'affiche en pointillés avec son angle actuel, et se fixe à une valeur exacte au tap" },
+      { icon: '📏', text: "Pliage : nouveau bouton « Mettre à l'échelle » — une fois au moins 2 cotes saisies, redessine le croquis avec des proportions fidèles aux vraies cotes (les angles ne bougent pas), pour corriger un tracé à main levée pas assez proportionné" },
+    ],
+  },
   {
     version: '5.41.86',
     date: '17/09/2026',
@@ -45808,6 +45816,7 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
       </div>
       <div id="sketchActionsRow" style="display:flex; gap:8px; margin-top:14px; flex-shrink:0; padding-top:10px; padding-bottom:calc(6px + env(safe-area-inset-bottom,0));">
         <button class="btn btn-outline btn-block" onclick="_sketchRedo()">↺ Recommencer</button>
+        <button id="sketchScaleBtn" class="btn btn-outline btn-block" onclick="_sketchApplyScale()" style="display:none;">📏 Mettre à l'échelle</button>
         <button id="sketchSaveBtn" class="btn btn-primary btn-block" onclick="_sketchFinish()" style="display:none;">💾 Enregistrer le croquis</button>
       </div>
     </div>`;
@@ -46213,43 +46222,56 @@ function _sketchRedrawShape(){
     ctx.fillText(seg.text, tx, ty);
   });
 
-  // v5.41.86 — petit arc + valeur en degrés à chaque coude accroché à un
-  // angle remarquable (45°/90°/135°/180°, voir _sketchSnapAngles). Dessiné
-  // au sommet DE DÉPART de chaque segment qui porte un seg.angle non nul
-  // (le tout premier segment n'en a jamais, faute de coude amont). Les
-  // positions sont mémorisées dans _sketch.angleHitboxes pour que up() sache
-  // reconnaître un tap sur cet arc (voir _sketchNearestAngle).
+  // v5.41.87 — sur demande de Rémi, TOUS les coudes sont désormais éditables
+  // au tap, pas seulement ceux déjà accrochés à une valeur remarquable :
+  // - accroché (seg.angle non nul, via _sketchSnapAngles ou fixé à la main) →
+  //   arc plein violet, valeur affichée en gras.
+  // - non accroché (angle "brut" du tracé, pas proche d'une valeur usuelle) →
+  //   arc en pointillés, plus discret, valeur affichée en plus petit — reste
+  //   tapable pour lui donner une valeur exacte au clavier (_sketchPromptAngle
+  //   fixera alors seg.angle, et l'arc deviendra plein au prochain rendu).
+  // Dessiné au sommet DE DÉPART de chaque segment (le tout premier segment
+  // n'a pas de coude amont, donc rien à afficher). Les positions sont
+  // mémorisées dans _sketch.angleHitboxes pour que up() reconnaisse un tap
+  // sur cet arc (voir _sketchNearestAngle), qu'il soit accroché ou non.
   _sketch.angleHitboxes = [];
-  ctx.font = `${11.5 * dpr}px -apple-system, Arial, sans-serif`;
   segments.forEach((seg, i) => {
-    if(seg.angle == null) return;
+    if(!_sketch.closed && i === 0) return; // premier segment d'un tracé ouvert : pas de coude amont
     const b = seg.p1; // sommet du coude = départ de ce segment
-    // Le segment précédent (même sommet) donne l'autre côté de l'angle.
-    // En forme fermée, le "précédent" du segment 0 est le dernier segment.
     const prevSeg = segments[i > 0 ? i - 1 : segments.length - 1];
     if(!prevSeg) return;
     const v1x = prevSeg.p1.x - b.x, v1y = prevSeg.p1.y - b.y;
     const v2x = seg.p2.x - b.x, v2y = seg.p2.y - b.y;
+    const len1 = Math.hypot(v1x, v1y), len2 = Math.hypot(v2x, v2y);
+    if(len1 < 1e-6 || len2 < 1e-6) return;
     const a1 = Math.atan2(v1y, v1x), a2 = Math.atan2(v2y, v2x);
     const r = 22 * dpr;
-    // Bissectrice de l'angle intérieur, pour placer le texte du bon côté
     let mid = (a1 + a2) / 2;
-    if(Math.cos(a1 - mid) < 0) mid += Math.PI; // évite la bissectrice de l'angle EXTÉRIEUR
+    if(Math.cos(a1 - mid) < 0) mid += Math.PI; // bissectrice de l'angle INTÉRIEUR, pas l'extérieur
     const labelX = b.x + Math.cos(mid) * (r + 14 * dpr);
     const labelY = b.y + Math.sin(mid) * (r + 14 * dpr);
 
+    const isSnapped = seg.angle != null;
+    // Angle affiché : la valeur fixée si accrochée, sinon l'angle brut du tracé actuel
+    const dot = (v1x*v2x + v1y*v2y) / (len1*len2);
+    const rawAngle = Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+    const displayAngle = isSnapped ? seg.angle : rawAngle;
+
     ctx.beginPath();
     ctx.arc(b.x, b.y, r, Math.min(a1,a2), Math.max(a1,a2), false);
-    ctx.strokeStyle = 'rgba(74,20,140,0.85)';
+    ctx.strokeStyle = isSnapped ? 'rgba(74,20,140,0.85)' : 'rgba(74,20,140,0.4)';
     ctx.lineWidth = 2 * dpr;
+    if(!isSnapped) ctx.setLineDash([3*dpr, 3*dpr]);
     ctx.stroke();
+    ctx.setLineDash([]);
 
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const label = Math.round(seg.angle) + '°';
+    ctx.font = `${(isSnapped ? 11.5 : 10) * dpr}px -apple-system, Arial, sans-serif`;
+    const label = Math.round(displayAngle) + '°';
     ctx.lineWidth = 3 * dpr;
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.strokeText(label, labelX, labelY);
-    ctx.fillStyle = '#4A148C';
+    ctx.fillStyle = isSnapped ? '#4A148C' : 'rgba(74,20,140,0.6)';
     ctx.fillText(label, labelX, labelY);
 
     _sketch.angleHitboxes.push({ segIndex: i, x: labelX, y: labelY });
@@ -46264,6 +46286,105 @@ function _sketchRenderLabelStep(){
   if(hint) hint.textContent = 'Forme redressée ✅ — touche un segment pour saisir sa cote (ou le supprimer), touche un angle affiché pour le modifier. Tu peux aussi redessiner par-dessus pour ajouter des segments.';
   const saveBtn = document.getElementById('sketchSaveBtn');
   if(saveBtn) saveBtn.style.display = _sketch.segments.length ? '' : 'none';
+
+  // v5.41.87 — bouton "Mettre à l'échelle" (mode pliage uniquement) : n'a de
+  // sens qu'une fois qu'au moins DEUX cotes en mm sont saisies (sinon rien à
+  // proportionner les unes par rapport aux autres). Reste visible tant que
+  // l'utilisateur peut vouloir le relancer après avoir ajouté d'autres cotes.
+  const scaleBtn = document.getElementById('sketchScaleBtn');
+  if(scaleBtn){
+    const mmCount = _sketch.mmMode ? _sketch.segments.filter(s => s.text && parseFloat(s.text) > 0).length : 0;
+    scaleBtn.style.display = mmCount >= 2 ? '' : 'none';
+  }
+}
+
+/* v5.41.87 — reconstruit le tracé à l'échelle réelle à partir des cotes déjà
+   saisies : un segment dessiné trop court à l'écran par rapport à sa vraie
+   cote (ex: 56mm dessiné plus long que 126mm) retrouve des proportions
+   cohérentes. Ne touche PAS aux angles (accrochés ou fixés à la main) : seule
+   la LONGUEUR de chaque segment change, sa direction reste celle du tracé
+   actuel. Un segment sans cote saisie garde la longueur px moyenne des
+   segments cotés (mm moyen), pour rester visuellement raisonnable en
+   attendant sa propre cote — il n'a aucune vraie valeur à respecter.
+   Appelé uniquement à la demande (bouton), jamais automatiquement à chaque
+   cote saisie — cf. décision explicite de Rémi. */
+function _sketchApplyScale(){
+  if(!_sketch || !_sketch.mmMode) return;
+  const segs = _sketch.segments;
+  if(!segs || segs.length < 2) return;
+
+  const costed = segs.filter(s => s.text && parseFloat(s.text) > 0);
+  if(costed.length < 2){ showToast('Il faut au moins 2 cotes saisies pour mettre à l\'échelle'); return; }
+
+  // Échelle px/mm : moyenne du rapport (longueur actuelle à l'écran / cote
+  // réelle) sur tous les segments cotés — lisse les écarts si le tracé à main
+  // levée n'était pas parfaitement homogène d'un segment à l'autre.
+  let ratioSum = 0;
+  costed.forEach(s => {
+    const lenPx = Math.hypot(s.p2.x - s.p1.x, s.p2.y - s.p1.y);
+    ratioSum += lenPx / parseFloat(s.text);
+  });
+  const pxPerMm = ratioSum / costed.length;
+  // Longueur par défaut (en mm-équivalent) pour un segment sans cote : la
+  // moyenne des cotes déjà saisies, pour rester dans une échelle plausible.
+  const avgMm = costed.reduce((sum,s) => sum + parseFloat(s.text), 0) / costed.length;
+
+  // Reconstruit la chaîne de points depuis le premier point (ancre fixe),
+  // segment par segment : garde la DIRECTION actuelle de chaque segment,
+  // remplace juste sa longueur par (cote mm × pxPerMm), ou (avgMm × pxPerMm)
+  // si pas encore coté.
+  const n = segs.length;
+  let anchor = { x: segs[0].p1.x, y: segs[0].p1.y }; // premier point du tracé, ne bouge jamais
+  for(let i = 0; i < n; i++){
+    const s = segs[i];
+    const dx = s.p2.x - s.p1.x, dy = s.p2.y - s.p1.y;
+    const curLen = Math.hypot(dx, dy) || 1;
+    const mm = (s.text && parseFloat(s.text) > 0) ? parseFloat(s.text) : avgMm;
+    const targetLen = mm * pxPerMm;
+    const ux = dx / curLen, uy = dy / curLen; // direction unitaire conservée telle quelle
+    const newP1 = anchor;
+    const newP2 = { x: newP1.x + ux * targetLen, y: newP1.y + uy * targetLen };
+    s.p1 = newP1;
+    s.p2 = newP2;
+    anchor = newP2;
+  }
+  // Forme fermée : après avoir remis à l'échelle chaque segment sur sa
+  // propre direction d'origine, le dernier point ne retombe en général plus
+  // exactement sur le premier (la somme des vecteurs à l'échelle n'a aucune
+  // raison de refermer le contour). On ne force pas la fermeture géométrique
+  // (ça déformerait les cotes qu'on vient justement de rendre exactes) — un
+  // léger écart visuel de fermeture est le compromis attendu ici, les cotes
+  // affichées restent la source de vérité, pas le dessin.
+
+  _sketchFitToCanvas(); // la forme à l'échelle réelle peut déborder du cadre visible : on la recentre/redimensionne
+  showToast('📏 Croquis mis à l\'échelle des cotes saisies');
+  _sketchRenderLabelStep();
+}
+
+/* v5.41.87 — recadre l'ensemble du tracé (tous les segments) pour qu'il
+   tienne dans le canevas avec une marge confortable, en conservant toutes
+   les proportions (un seul facteur d'échelle appliqué à x et y identique,
+   jamais de déformation). Nécessaire après _sketchApplyScale : une forme
+   remise à l'échelle réelle des cotes peut devenir bien plus grande (ou
+   petite) que ce que le tracé à main levée occupait à l'écran. */
+function _sketchFitToCanvas(){
+  const { canvas, segments, dpr } = _sketch;
+  if(!segments || !segments.length) return;
+  const xs = [], ys = [];
+  segments.forEach(s => { xs.push(s.p1.x, s.p2.x); ys.push(s.p1.y, s.p2.y); });
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+
+  const margin = 46 * dpr; // laisse la place aux cotes/angles affichés en dehors du tracé lui-même
+  const availW = canvas.width - margin*2, availH = canvas.height - margin*2;
+  const scale = Math.min(availW / w, availH / h);
+  // Centre le tracé mis à l'échelle dans le canevas
+  const offsetX = margin + (availW - w*scale)/2 - minX*scale;
+  const offsetY = margin + (availH - h*scale)/2 - minY*scale;
+
+  const project = p => ({ x: p.x*scale + offsetX, y: p.y*scale + offsetY });
+  segments.forEach(s => { s.p1 = project(s.p1); s.p2 = project(s.p2); });
 }
 
 /* v5.41.75 — supprime un segment donné (et sa cote) à tout moment pendant
@@ -46332,21 +46453,32 @@ function _sketchNearestAngle(p, dpr){
    forme fermée (le dernier segment est alors celui qui "boucle"). */
 function _sketchPromptAngle(i){
   const segs = _sketch && _sketch.segments;
-  if(!segs || !segs[i] || segs[i].angle == null) return;
+  // v5.41.87 — n'importe quel coude est éditable, accroché ou non : seule
+  // condition, avoir un segment précédent valide pour former l'angle.
+  if(!segs || !segs[i]) return;
   const seg = segs[i];
-  const current = String(Math.round(seg.angle));
-  const next = prompt('Angle du coude, en degrés (ex: 90) :', current);
-  if(next == null) return; // annulé
-  const deg = parseFloat(String(next).replace(',','.'));
-  if(!Number.isFinite(deg) || deg <= 0 || deg >= 360){ showToast('Angle invalide — entre une valeur entre 0 et 360'); return; }
-
   const b = seg.p1; // sommet du coude
   const prevSeg = segs[i > 0 ? i - 1 : segs.length - 1];
   if(!prevSeg) return;
   const v1x = prevSeg.p1.x - b.x, v1y = prevSeg.p1.y - b.y; // référence : vers le point précédent
   const v2x = seg.p2.x - b.x, v2y = seg.p2.y - b.y;
-  const len2 = Math.hypot(v2x, v2y);
-  if(len2 < 1e-6) return;
+  const len1 = Math.hypot(v1x, v1y), len2 = Math.hypot(v2x, v2y);
+  if(len1 < 1e-6 || len2 < 1e-6) return;
+
+  // Valeur de départ proposée dans le prompt : l'angle déjà fixé s'il y en a
+  // un, sinon l'angle brut actuel du coude (arrondi), pour partir de ce qui
+  // se voit à l'écran plutôt que d'un champ vide.
+  let current;
+  if(seg.angle != null){
+    current = seg.angle;
+  } else {
+    const dot0 = (v1x*v2x + v1y*v2y) / (len1*len2);
+    current = Math.round(Math.acos(Math.max(-1, Math.min(1, dot0))) * 180 / Math.PI);
+  }
+  const next = prompt('Angle du coude, en degrés (ex: 90) :', String(current));
+  if(next == null) return; // annulé
+  const deg = parseFloat(String(next).replace(',','.'));
+  if(!Number.isFinite(deg) || deg <= 0 || deg >= 360){ showToast('Angle invalide — entre une valeur entre 0 et 360'); return; }
 
   const cross = v1x*v2y - v1y*v2x;
   const sign = cross >= 0 ? 1 : -1; // garde le même sens de rotation qu'avant l'édition
