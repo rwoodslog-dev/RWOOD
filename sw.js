@@ -1,10 +1,8 @@
-const CACHE_NAME = 'rwood-cache-v823';
+const CACHE_NAME = 'rwood-cache-v807';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './icons/icon-192-maskable.png',
-  './icons/icon-512-maskable.png',
   './icons/logo-header.png',
   './icons/chantier.png',
   './icons/afaire.png',
@@ -30,9 +28,6 @@ const ASSETS = [
   './icons/role-patron.png',
   './icons/megaphone.png',
   './icons/messagerie.png',
-  './icons/montre.png',
-  './icons/motif-outils.jpg',
-  './icons/motif-outils-pc.jpg',
   './icons/engrenage.png',
   './icons/monnaie.png',
   './icons/ordinateur.png',
