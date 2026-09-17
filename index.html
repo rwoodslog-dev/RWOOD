@@ -32046,9 +32046,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.82';
+const APP_VERSION = '5.41.83';
 
 const CHANGELOG = [
+  {
+    version: '5.41.83',
+    date: '17/09/2026',
+    entries: [
+      { icon: '📌', text: "Croquis avec côtes : taper sur un segment déjà tracé ouvre maintenant un petit menu ✏️ Modifier / 🗑️ Supprimer juste à côté, au lieu d'aller directement à la saisie de la cote" },
+    ],
+  },
   {
     version: '5.41.82',
     date: '17/09/2026',
@@ -46758,6 +46765,7 @@ function openSketchTool(onSave, existingSketch, bgImageUrl){
     // permet de redessiner par-dessus la forme existante pour ajouter des
     // segments, au lieu d'être limité au tout premier trait.
     e.preventDefault();
+    _sketchCloseSegmentMenu(); // v5.41.83 — tout nouveau geste ferme le menu segment déjà ouvert
     _sketch.drawing = true;
     const p = pos(e);
     _sketch.raw = [p];
@@ -46778,16 +46786,16 @@ function openSketchTool(onSave, existingSketch, bgImageUrl){
     _sketch.drawing = false;
 
     // v5.41.77 — un simple TAP (quasiment aucun déplacement entre down et
-    // up) sur un segment déjà tracé ouvre directement la saisie de sa cote,
-    // au lieu d'avoir à descendre jusqu'au champ correspondant plus bas.
-    // Ne s'applique qu'à l'étape "côtes" (step==='label') : pendant le tout
-    // premier trait, un tap ne veut rien dire de particulier.
+    // up) sur un segment déjà tracé ouvre un petit menu (modifier / supprimer)
+    // juste à côté, au lieu d'avoir à descendre jusqu'au champ correspondant
+    // plus bas. Ne s'applique qu'à l'étape "côtes" (step==='label') : pendant
+    // le tout premier trait, un tap ne veut rien dire de particulier.
     if(_sketch.step === 'label'){
       const last = _sketch.raw[_sketch.raw.length - 1] || _sketch._downPos;
       const moveDist = _sketch._downPos ? Math.hypot(last.x - _sketch._downPos.x, last.y - _sketch._downPos.y) : 999;
       if(moveDist < 10 * dpr){
         const idx = _sketchNearestSegment(_sketch._downPos, _sketch.segments, dpr);
-        if(idx >= 0) _sketchPromptSegmentText(idx);
+        if(idx >= 0) _sketchShowSegmentMenu(idx, _sketch._downPos);
         else _sketchRenderLabelStep(); // tap dans le vide : efface le petit point resté sur le canevas
         return;
       }
@@ -47075,8 +47083,44 @@ function _sketchPromptSegmentText(i){
   _sketchRenderLabelStep();
 }
 
+/* v5.41.83 — au lieu d'ouvrir directement la saisie de la cote (ce qui ne
+   proposait aucun moyen de supprimer le segment tapé), un tap sur un segment
+   ouvre un petit menu à cet endroit avec les deux actions possibles :
+   ✏️ Modifier la cote (reprend _sketchPromptSegmentText) ou 🗑️ Supprimer.
+   `p` est le point tapé en coordonnées internes du canevas (mêmes unités que
+   _sketch.raw), reconverti ici en position CSS pour placer le menu au bon
+   endroit dans #sketchCanvasWrap (son parent positionné). */
+function _sketchShowSegmentMenu(i, p){
+  _sketchCloseSegmentMenu();
+  const seg = _sketch && _sketch.segments && _sketch.segments[i];
+  if(!seg) return;
+  const canvas = _sketch.canvas;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap) { _sketchPromptSegmentText(i); return; } // filet de sécurité si le wrap n'existe pas
+  const cssX = (p.x / canvas.width) * canvas.offsetWidth;
+  const cssY = (p.y / canvas.height) * canvas.offsetHeight;
+  const menu = document.createElement('div');
+  menu.id = 'sketchSegMenu';
+  menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
+  // Rapproché des bords si besoin, pour ne pas sortir du cadre du dessin.
+  const clampedX = Math.min(Math.max(cssX, 60), canvas.offsetWidth - 60);
+  const clampedY = Math.max(cssY, 40);
+  menu.style.left = clampedX + 'px';
+  menu.style.top = clampedY + 'px';
+  menu.innerHTML = `
+    <button onclick="_sketchPromptSegmentText(${i}); _sketchCloseSegmentMenu();" style="background:${seg.color}; color:#1a1206; border:none; border-radius:7px; padding:8px 12px; font-size:12.5px; font-weight:800; cursor:pointer; white-space:nowrap;">✏️ Modifier</button>
+    <button onclick="_sketchDeleteSegment(${i}); _sketchCloseSegmentMenu();" style="background:#c85050; color:#fff; border:none; border-radius:7px; padding:8px 12px; font-size:12.5px; font-weight:800; cursor:pointer; white-space:nowrap;">🗑️ Supprimer</button>
+  `;
+  wrap.appendChild(menu);
+}
+function _sketchCloseSegmentMenu(){
+  const m = document.getElementById('sketchSegMenu');
+  if(m) m.remove();
+}
+
 function _sketchRedo(){
   if(!_sketch) return;
+  _sketchCloseSegmentMenu();
   const { ctx, canvas } = _sketch;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#fff';
@@ -47104,6 +47148,7 @@ function _sketchRedo(){
    à confondre avec un geste de dessin. */
 function _sketchSetTab(tab){
   if(!_sketch) return;
+  _sketchCloseSegmentMenu();
   const panelDraw = document.getElementById('sketchPanelDraw');
   const panelLabels = document.getElementById('sketchPanelLabels');
   const tabDraw = document.getElementById('sketchTabDraw');
