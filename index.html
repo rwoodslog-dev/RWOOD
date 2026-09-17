@@ -32039,9 +32039,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.72';
+const APP_VERSION = '5.41.73';
 
 const CHANGELOG = [
+  {
+    version: '5.41.73',
+    date: '17/09/2026',
+    entries: [
+      { icon: '✏️', text: "Le croquis à main levée avec côtes est déplacé dans l'onglet « À faire » (directement sur chaque tâche) au lieu des notes de chantier" },
+    ],
+  },
   {
     version: '5.41.72',
     date: '17/09/2026',
@@ -45047,6 +45054,10 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
   + '#view-notes .notes-more{background:none;border:none;color:var(--wood,#C8862B);font-size:12.5px;font-weight:700;cursor:pointer;padding:4px 0 0;display:inline-flex;align-items:center;gap:4px;}'
   + '#view-notes .notes-meta{font-size:11px;color:var(--ink-soft);margin-top:4px;opacity:.8;}'
   + '#view-notes .notes-del{background:none;border:none;color:#7a6a52;cursor:pointer;padding:2px 4px;flex-shrink:0;}'
+  + '#view-notes .notes-sketch-row{display:flex;align-items:center;gap:10px;margin-top:8px;}'
+  + '#view-notes .notes-sketch-thumb{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1.5px solid rgba(255,255,255,.12);cursor:pointer;background:#fff;flex-shrink:0;}'
+  + '#view-notes .notes-sketch-btn{background:none;border:1.5px dashed var(--wood,#C8862B);color:var(--wood,#C8862B);font-size:12px;font-weight:700;cursor:pointer;padding:6px 10px;border-radius:8px;margin-top:8px;}'
+  + '#view-notes .notes-sketch-row .notes-sketch-btn{margin-top:0;}'
   + '@media (min-width:860px){'
   +   '#view-notes .notes-wrap{max-width:720px;margin:0 auto;}'
   + '}';
@@ -45133,12 +45144,21 @@ function notesRender(){
     const moreBtn = isMulti
       ? '<button class="notes-more" onclick="notesToggleExpand(\'' + t.id + '\')">' + (open ? '🔼 Voir moins' : '🔽 Voir plus') + '</button>'
       : '';
+    // v5.41.73 — croquis avec côtes attaché à la tâche : miniature cliquable
+    // (plein écran) si déjà présent, sinon bouton pour en ajouter un.
+    const sketchRow = t.media && t.media.url
+      ? '<div class="notes-sketch-row">'
+        + '<img src="'+escapeHtml(t.media.url)+'" class="notes-sketch-thumb" onclick="openPhotoFullscreen(\''+escapeHtml(t.media.url)+'\', \'Croquis\', null)" alt="Croquis">'
+        + '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Refaire le croquis">📐 Refaire</button>'
+        + '</div>'
+      : '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Ajouter un croquis avec côtes">📐 Ajouter un croquis</button>';
     return '<div class="notes-item'+(t.done?' done':'')+'">'
       + '<button class="notes-check'+(t.done?' on':'')+'" onclick="notesToggle(\''+t.id+'\')">'+(t.done?'✓':'')+'</button>'
       + '<div class="notes-body">'
       +   '<div class="notes-item-text'+(isMulti && !open ? ' collapsed' : '')+'" onclick="notesEditPrompt(\''+t.id+'\')">'+escapeHtml(text)+'</div>'
       +   moreBtn
       +   authorLine
+      +   sketchRow
       + '</div>'
       + '<button class="notes-del" onclick="notesDelete(\''+t.id+'\')" title="Supprimer">'
       +   '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
@@ -45167,6 +45187,28 @@ function notesDelete(id){
   pn.tasks = (pn.tasks||[]).filter(x=>x.id!==id);
   _markTodoTaskRemoved(pn, id);
   _notesCommit();
+}
+
+/* Croquis avec côtes attaché à une tâche de la liste à faire (v5.41.73) —
+   demandé explicitement dans l'onglet "À faire", pas dans les notes de
+   chantier. Réutilise le même outil de dessin (openSketchTool) que celui
+   développé pour les notes de chantier, mais stocke le résultat sur la
+   tâche elle-même (t.media) au lieu d'une note séparée. */
+function notesAddSketch(id){
+  const pn = _getPinnedNote();
+  const t = (pn.tasks||[]).find(x=>x.id===id);
+  if(!t) return;
+  openSketchTool(async (blob) => {
+    showToast('⏳ Envoi du croquis…');
+    try{
+      const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
+      const url = await uploadFileToSupabase(file, 'todo');
+      t.media = { url };
+      t.updatedAt = new Date().toISOString();
+      _notesCommit();
+      showToast('✅ Croquis ajouté à la tâche');
+    }catch(e){ showToast('❌ Échec de l\'envoi du croquis'); }
+  });
 }
 function notesAddManual(){
   const inp = document.getElementById('notesAddInput');
@@ -46395,10 +46437,6 @@ function _pickSiteNoteMedia(siteId, catId){
         <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
         Importer depuis Dropbox
       </button>` : ''}
-      <button class="action-sheet-item" data-act="sketch">
-        <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l4 4L21 7l-4-4L3 17z"/><path d="M14 6l4 4"/></svg></span>
-        Faire un croquis avec côtes
-      </button>
       <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
     </div>`;
   const close = () => sheet.remove();
@@ -46416,14 +46454,6 @@ function _pickSiteNoteMedia(siteId, catId){
       showToast('✅ Média ajouté à la note');
     }catch(e){ showToast('❌ Échec de l\'envoi du média'); }
     _renderSiteNoteCategoryDetail(siteId, catId);
-  };
-  const sketchBtn = sheet.querySelector('[data-act="sketch"]');
-  if(sketchBtn) sketchBtn.onclick = () => {
-    close();
-    openSketchTool(async (blob) => {
-      const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
-      await uploadOne(file);
-    });
   };
   sheet.querySelector('[data-act="photo"]').onclick = () => {
     close();
