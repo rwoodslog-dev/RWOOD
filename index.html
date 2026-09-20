@@ -31528,9 +31528,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.99';
+const APP_VERSION = '5.41.100';
 
 const CHANGELOG = [
+  {
+    version: '5.41.100',
+    date: '20/09/2026',
+    entries: [
+      { icon: '🔍', text: "Croquis du pliage : nouveaux boutons +/⤢/− pour zoomer sur le dessin (en bas à droite), plus le pincement à 2 doigts. Utile quand un segment court est difficile à taper sans toucher l'arc d'angle voisin — zoomer écarte les deux zones tapables l'une de l'autre." },
+    ],
+  },
   {
     version: '5.41.99',
     date: '20/09/2026',
@@ -46296,7 +46303,16 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
         Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.
       </div>
       <div id="sketchCanvasWrap" style="position:relative; width:100%; flex:1; min-height:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); touch-action:none;">
-        <canvas id="sketchCanvas" style="width:100%; height:100%; display:block;"></canvas>
+        <canvas id="sketchCanvas" style="width:100%; height:100%; display:block; transform-origin:0 0;"></canvas>
+        <!-- v5.41.100 — zoom/dézoom sur le croquis : les segments courts d'un
+             gabarit (ex: retours 45° courts) sont parfois difficiles à taper
+             sans toucher l'arc d'angle voisin, trop grand à côté d'eux. Zoomer
+             écarte visuellement les deux zones tapables. -->
+        <div id="sketchZoomControls" style="position:absolute; bottom:10px; right:10px; display:flex; flex-direction:column; gap:6px; z-index:6;">
+          <button type="button" class="btn btn-outline" style="padding:6px 10px; background:rgba(26,18,6,0.85);" onclick="_sketchZoomIn()">+</button>
+          <button type="button" class="btn btn-outline" style="padding:6px 10px; background:rgba(26,18,6,0.85);" onclick="_sketchZoomReset()">⤢</button>
+          <button type="button" class="btn btn-outline" style="padding:6px 10px; background:rgba(26,18,6,0.85);" onclick="_sketchZoomOut()">−</button>
+        </div>
       </div>
       <div id="sketchActionsRow" style="display:flex; gap:8px; margin-top:14px; flex-shrink:0; padding-top:10px; padding-bottom:calc(6px + env(safe-area-inset-bottom,0));">
         <button class="btn btn-outline btn-block" onclick="_sketchRedo()">↺ Recommencer</button>
@@ -46326,7 +46342,7 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   // outil de dessin/lissage/édition que le croquis générique, mais la cote de
   // chaque segment doit être un nombre en mm (pas un texte libre), pour que le
   // développé total et le cumul de traçage du module Zinc puissent se calculer.
-  _sketch = { canvas, ctx, dpr, step:'draw', raw:[], segments:[], closed:false, drawing:false, onSave, mmMode: !!(opts && opts.mmMode) };
+  _sketch = { canvas, ctx, dpr, step:'draw', raw:[], segments:[], closed:false, drawing:false, onSave, mmMode: !!(opts && opts.mmMode), zoom:1, panX:0, panY:0 };
   if(opts && opts.title){
     const titleEl = div.querySelector('.modal-header h2');
     if(titleEl) titleEl.textContent = opts.title;
@@ -46388,6 +46404,16 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     return { x:(t.clientX - r.left) * (canvas.width/r.width), y:(t.clientY - r.top) * (canvas.height/r.height) };
   };
   const down = e => {
+    // v5.41.100 — un geste à 2 doigts sert à pincer-zoomer/déplacer la vue,
+    // jamais à dessiner : dès qu'un 2e doigt touche l'écran, on abandonne le
+    // tracé éventuel en cours et on bascule en mode pinch (voir _sketchPinchMove).
+    if(e.touches && e.touches.length >= 2){
+      e.preventDefault();
+      _sketch.drawing = false;
+      _sketchCloseSegmentMenu();
+      _sketchStartPinch(e);
+      return;
+    }
     // v5.41.74 — autorisé aussi pendant l'étape "côtes" (step==='label') :
     // permet de redessiner par-dessus la forme existante pour ajouter des
     // segments, au lieu d'être limité au tout premier trait.
@@ -46399,6 +46425,8 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     _sketch._downPos = p; // v5.41.77 — mémorise le point de départ pour distinguer un TAP d'un vrai trait
   };
   const move = e => {
+    if(e.touches && e.touches.length >= 2){ e.preventDefault(); _sketchPinchMove(e); return; }
+    if(_sketch._pinching) return; // un doigt relâché après un pinch : ignore jusqu'au prochain geste propre
     if(!_sketch.drawing) return;
     e.preventDefault();
     const p = pos(e);
@@ -46408,7 +46436,15 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     ctx.strokeStyle = '#222'; ctx.lineWidth = 3.5 * dpr; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.stroke();
   };
-  const up = () => {
+  const up = (e) => {
+    if(e && e.touches && e.touches.length >= 1){
+      // v5.41.100 — il reste au moins un doigt posé après la fin d'un pinch
+      // (l'utilisateur relâche progressivement) : on termine juste le pinch,
+      // sans repartir sur un tap/trait avec les coordonnées du doigt restant.
+      if(_sketch._pinching){ _sketch._pinching = false; }
+      return;
+    }
+    _sketch._pinching = false;
     if(!_sketch.drawing) return;
     _sketch.drawing = false;
 
@@ -46467,6 +46503,111 @@ function _sketchClose(){
   _sketch = null;
 }
 
+/* ============ ZOOM/DÉPLACEMENT DU CROQUIS (v5.41.100) ============
+   Sur demande de Rémi : certains segments d'un gabarit sont trop courts pour
+   être tapés sans toucher l'arc d'angle voisin (souvent bien plus grand).
+   Zoomer le croquis écarte visuellement les deux zones tapables — plutôt que
+   redimensionner le CANEVAS (ses pixels internes, utilisés pour tout le
+   calcul géométrique), on applique un simple transform CSS scale+translate
+   sur l'élément <canvas> lui-même : getBoundingClientRect() (utilisé par
+   pos() ci-dessus pour convertir un tap en coordonnées canevas) reflète déjà
+   les transforms CSS, donc AUCUN autre calcul du fichier n'a besoin de
+   connaître le zoom — tap, dessin, redimensionnement restent inchangés. */
+const SKETCH_ZOOM_MIN = 1;
+const SKETCH_ZOOM_MAX = 5;
+const SKETCH_ZOOM_STEP = 0.5;
+
+function _sketchApplyZoomTransform(){
+  if(!_sketch || !_sketch.canvas) return;
+  _sketch.canvas.style.transform = `translate(${_sketch.panX}px, ${_sketch.panY}px) scale(${_sketch.zoom})`;
+}
+
+/* Zoome en gardant fixe à l'écran le point (anchorX, anchorY), exprimé en
+   coordonnées CSS du conteneur #sketchCanvasWrap (comme zincZoomAt). */
+function _sketchZoomAt(newZoom, anchorX, anchorY){
+  if(!_sketch) return;
+  newZoom = Math.min(SKETCH_ZOOM_MAX, Math.max(SKETCH_ZOOM_MIN, newZoom));
+  const contentX = (anchorX - _sketch.panX) / _sketch.zoom;
+  const contentY = (anchorY - _sketch.panY) / _sketch.zoom;
+  _sketch.zoom = newZoom;
+  _sketch.panX = anchorX - contentX * _sketch.zoom;
+  _sketch.panY = anchorY - contentY * _sketch.zoom;
+  _sketchClampPan();
+  _sketchApplyZoomTransform();
+}
+
+/* Empêche de faire glisser le croquis complètement hors champ : le centre du
+   canevas zoomé ne peut jamais sortir du conteneur visible. Purement pour le
+   confort (le canevas se retrouve toujours ré-accessible d'un geste). */
+function _sketchClampPan(){
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap || !_sketch) return;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const scaledW = w * _sketch.zoom, scaledH = h * _sketch.zoom;
+  const minX = Math.min(0, w - scaledW), maxX = Math.max(0, w - scaledW);
+  const minY = Math.min(0, h - scaledH), maxY = Math.max(0, h - scaledH);
+  _sketch.panX = Math.min(Math.max(_sketch.panX, minX), maxX);
+  _sketch.panY = Math.min(Math.max(_sketch.panY, minY), maxY);
+}
+
+function _sketchZoomIn(){
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap || !_sketch) return;
+  _sketchZoomAt(_sketch.zoom + SKETCH_ZOOM_STEP, wrap.clientWidth / 2, wrap.clientHeight / 2);
+}
+function _sketchZoomOut(){
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap || !_sketch) return;
+  _sketchZoomAt(_sketch.zoom - SKETCH_ZOOM_STEP, wrap.clientWidth / 2, wrap.clientHeight / 2);
+}
+function _sketchZoomReset(){
+  if(!_sketch) return;
+  _sketch.zoom = 1; _sketch.panX = 0; _sketch.panY = 0;
+  _sketchApplyZoomTransform();
+}
+
+/* Pincement à 2 doigts : zoom centré sur le point médian + glisser (pan). */
+function _sketchStartPinch(e){
+  if(!_sketch || !e.touches || e.touches.length < 2) return;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap) return;
+  const r = wrap.getBoundingClientRect();
+  const t0 = e.touches[0], t1 = e.touches[1];
+  _sketch._pinching = true;
+  _sketch._pinchStartDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+  _sketch._pinchStartZoom = _sketch.zoom;
+  _sketch._pinchStartMid = {
+    x: (t0.clientX + t1.clientX) / 2 - r.left,
+    y: (t0.clientY + t1.clientY) / 2 - r.top,
+  };
+  _sketch._pinchStartPan = { x: _sketch.panX, y: _sketch.panY };
+}
+function _sketchPinchMove(e){
+  if(!_sketch || !_sketch._pinching || !e.touches || e.touches.length < 2) return;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap) return;
+  const r = wrap.getBoundingClientRect();
+  const t0 = e.touches[0], t1 = e.touches[1];
+  const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+  const mid = {
+    x: (t0.clientX + t1.clientX) / 2 - r.left,
+    y: (t0.clientY + t1.clientY) / 2 - r.top,
+  };
+  const ratio = dist / _sketch._pinchStartDist;
+  const newZoom = Math.min(SKETCH_ZOOM_MAX, Math.max(SKETCH_ZOOM_MIN, _sketch._pinchStartZoom * ratio));
+  // Ancre le point de contenu qui était sous le milieu des 2 doigts au DÉBUT
+  // du pinch, calculé avec le pan/zoom d'alors, puis replace ce même point
+  // sous le NOUVEAU milieu des doigts (qui peut avoir légèrement bougé aussi
+  // — glisser à 2 doigts déplace donc la vue en plus de zoomer).
+  const contentX = (_sketch._pinchStartMid.x - _sketch._pinchStartPan.x) / _sketch._pinchStartZoom;
+  const contentY = (_sketch._pinchStartMid.y - _sketch._pinchStartPan.y) / _sketch._pinchStartZoom;
+  _sketch.zoom = newZoom;
+  _sketch.panX = mid.x - contentX * newZoom;
+  _sketch.panY = mid.y - contentY * newZoom;
+  _sketchClampPan();
+  _sketchApplyZoomTransform();
+}
+
 /* v5.41.91 — en plus de mémoriser le type choisi, dessine directement le
    gabarit correspondant (voir PLIAGE_TEMPLATES) si la catégorie en a un
    (Main-courante / Chêneau / Noue — pas Simple). Si un dessin existant a déjà
@@ -46522,12 +46663,16 @@ function _sketchShowBoudinMenu(){
   const wrap = document.getElementById('sketchCanvasWrap');
   if(!h || !_sketch.boudin || !wrap) return;
   const canvas = _sketch.canvas;
-  const cssX = (h.cx / canvas.width) * canvas.offsetWidth;
-  const cssY = (h.cy / canvas.height) * canvas.offsetHeight;
+  // v5.41.100 — voir _sketchShowSegmentMenu : position calculée via
+  // getBoundingClientRect() pour rester juste quel que soit le zoom du croquis.
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const cssX = (h.cx / canvas.width) * canvasRect.width + (canvasRect.left - wrapRect.left);
+  const cssY = (h.cy / canvas.height) * canvasRect.height + (canvasRect.top - wrapRect.top);
   const menu = document.createElement('div');
   menu.id = 'sketchSegMenu'; // même id que le menu segment : fermé par _sketchCloseSegmentMenu
   menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; align-items:center; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
-  menu.style.left = Math.min(Math.max(cssX, 90), canvas.offsetWidth - 90) + 'px';
+  menu.style.left = Math.min(Math.max(cssX, 90), wrapRect.width - 90) + 'px';
   menu.style.top = Math.max(cssY, 40) + 'px';
 
   const lbl = document.createElement('span');
@@ -47220,13 +47365,20 @@ function _sketchShowSegmentMenu(i, p){
   const canvas = _sketch.canvas;
   const wrap = document.getElementById('sketchCanvasWrap');
   if(!wrap) return; // filet de sécurité si le wrap n'existe pas
-  const cssX = (p.x / canvas.width) * canvas.offsetWidth;
-  const cssY = (p.y / canvas.height) * canvas.offsetHeight;
+  // v5.41.100 — le canevas peut être zoomé/déplacé (transform CSS), donc sa
+  // position VISIBLE ne correspond plus à offsetWidth/offsetHeight (qui
+  // donnent la boîte de layout non transformée). On repasse par
+  // getBoundingClientRect() des deux éléments pour placer le menu au bon
+  // endroit À L'ÉCRAN quel que soit le zoom actuel.
+  const canvasRect = canvas.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const cssX = (p.x / canvas.width) * canvasRect.width + (canvasRect.left - wrapRect.left);
+  const cssY = (p.y / canvas.height) * canvasRect.height + (canvasRect.top - wrapRect.top);
   const menu = document.createElement('div');
   menu.id = 'sketchSegMenu';
   menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; align-items:center; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
   // Rapproché des bords si besoin, pour ne pas sortir du cadre du dessin.
-  const clampedX = Math.min(Math.max(cssX, 90), canvas.offsetWidth - 90);
+  const clampedX = Math.min(Math.max(cssX, 90), wrapRect.width - 90);
   const clampedY = Math.max(cssY, 40);
   menu.style.left = clampedX + 'px';
   menu.style.top = clampedY + 'px';
