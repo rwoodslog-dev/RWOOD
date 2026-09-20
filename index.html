@@ -31008,13 +31008,21 @@ function computeZincCumulOther(profile){
   const marked = profile.cumulMarked || [];
   if(!marked.length) return null;
 
+  // v5.41.97 — le boudin (Main-courante), quand il y en a un, occupe le tout
+  // premier pas du cumul (voir buildZincCumulSteps) : c'est un développé fixe
+  // à tracer avant le segment 1, pas un segment qu'on peut marquer ⭐ ni faire
+  // varier de ±5mm. On le met donc de côté avant le calcul haut/bas habituel,
+  // puis on le remet identique en tête du résultat.
+  const boudinMm = profile.hasBoudin ? getProfileBoudinMm(profile) : 0;
+
   // Reconstitue les longueurs individuelles (pas les valeurs cumulées) dans
   // l'ordre du cumul, à partir des valeurs cumulées stockées.
   const cumulBase = profile.cumulTracage;
   const lens = cumulBase.map((v, i) => v - (i > 0 ? cumulBase[i-1] : 0));
+  const segLens = boudinMm ? lens.slice(1) : lens; // enlève le pas boudin, s'il y en a un
 
   const delta = 5; // mm perdus/gagnés par segment marqué
-  const otherLens = lens.slice();
+  const otherLens = segLens.slice();
   let totalShift = 0;
   marked.forEach(idx => {
     if(idx < 0 || idx >= otherLens.length) return;
@@ -31026,9 +31034,24 @@ function computeZincCumulOther(profile){
     otherLens[lastIdx] = otherLens[lastIdx] + totalShift;
   }
 
-  let cumul = 0;
-  const otherCumul = otherLens.map(v => { cumul += v; return cumul; });
+  let cumul = boudinMm;
+  const otherCumul = boudinMm ? [boudinMm] : [];
+  otherLens.forEach(v => { cumul += v; otherCumul.push(cumul); });
   return otherCumul;
+}
+
+/* v5.41.97 — construit les [longueurs, valeurs cumulées] du cumul de traçage
+   en incluant, si le pliage a un boudin (Main-courante), son développé fixe
+   comme tout premier pas AVANT le segment 1 — jamais marquable ⭐, jamais
+   affecté par le ±5mm haut/bas (voir computeZincCumulOther). Utilisé par
+   saveCumulTracage() (sélection manuelle) et autoGenerateCumulTracage()
+   (calcul auto à la sortie d'un gabarit), pour ne pas dupliquer cette règle. */
+function buildZincCumulSteps(profile, orderedLens){
+  const boudinMm = profile.hasBoudin ? getProfileBoudinMm(profile) : 0;
+  let cumul = boudinMm;
+  const values = boudinMm ? [boudinMm] : [];
+  orderedLens.forEach(len => { cumul += (len || 0); values.push(cumul); });
+  return values;
 }
 
 /* Ouvre la modal de sélection des segments */
@@ -31201,14 +31224,12 @@ function saveCumulTracage(){
   }
   const lengths = getZincSegmentLengths();
 
-  // Calculer les valeurs cumulatives dans l'ordre de sélection
-  let cumul = 0;
-  const cumulValues = cumulSelection.map(segIdx => {
-    cumul += lengths[segIdx] || 0;
-    return cumul;
-  });
+  // v5.41.97 — le boudin éventuel (Main-courante) ajoute un premier pas fixe
+  // avant le segment 1 (voir buildZincCumulSteps).
+  const orderedLens = cumulSelection.map(segIdx => lengths[segIdx] || 0);
+  const cumulValues = buildZincCumulSteps(profile, orderedLens);
 
-  profile.cumulTracage        = cumulValues;      // [15, 45, 145, 160]
+  profile.cumulTracage        = cumulValues;      // [15, 45, 145, 160] (ou [52, 172, 202, 217] avec boudin)
   profile.cumulTracageOrder   = [...cumulSelection]; // ordre des segments sélectionnés
   profile.cumulMarked         = cfg.maxMarks ? [...cumulMarked] : null;
   saveData();
@@ -31256,8 +31277,11 @@ function autoGenerateCumulTracage(profile){
   const markedSegIdx = hint.map(n => n - 1);
   if(markedSegIdx.some(i => i < 0 || i >= segs.length)) return false; // hint périmé (forme retouchée entre-temps)
 
-  let cumul = 0;
-  const cumulValues = segs.map(s => { cumul += (s.mm || 0); return cumul; });
+  // v5.41.97 — le boudin éventuel (Main-courante) ajoute un premier pas fixe
+  // avant le segment 1 (voir buildZincCumulSteps) ; il ne compte pas comme un
+  // segment marquable, donc markedSegIdx (indices dans cumulTracageOrder,
+  // c-à-d dans les segments) n'a pas besoin de décalage.
+  const cumulValues = buildZincCumulSteps(profile, segs.map(s => s.mm || 0));
 
   profile.cumulTracage      = cumulValues;
   profile.cumulTracageOrder = segs.map((_, i) => i); // ordre naturel 0..n-1
@@ -31289,10 +31313,14 @@ function renderZincCumulCard(profile){
   const cfg = PLIAGE_TYPES[type] || PLIAGE_TYPES.simple;
   const otherCumul = computeZincCumulOther(profile);
 
+  // v5.41.97 — si le pliage a un boudin, le tout premier chip est son
+  // développé fixe (voir buildZincCumulSteps) : étiqueté "boudin" plutôt que
+  // "1." pour ne pas le confondre avec le segment 1 qui le suit.
+  const hasBoudinStep = !!profile.hasBoudin;
   const renderChips = (vals) => vals.map((val, i) => `
     <div style="background:var(--card); border:1px solid var(--line); border-radius:20px;
                 padding:5px 12px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:5px;">
-      <span style="color:var(--ink-soft); font-size:11px;">${i+1}.</span>
+      <span style="color:var(--ink-soft); font-size:11px;">${hasBoudinStep && i === 0 ? 'boudin' : (hasBoudinStep ? i : i+1) + '.'}</span>
       <span style="color:var(--wood);">${val}</span>
       <span style="color:var(--ink-soft); font-size:11px;">mm</span>
     </div>`
@@ -31491,9 +31519,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.96';
+const APP_VERSION = '5.41.97';
 
 const CHANGELOG = [
+  {
+    version: '5.41.97',
+    date: '20/09/2026',
+    entries: [
+      { icon: '⭐', text: "Cumul pour traçage — Main-courante avec boudin : le développé du boudin est maintenant ajouté comme premier pas du cumul, avant le segment 1 (ex : boudin 52 → 172 → 202 → 217), aussi bien en Bas qu'en Haut. Le boudin n'est jamais marqué ⭐ ni affecté par le décalage haut/bas — seul le segment marqué (le dessus) varie de ±5mm comme avant." },
+    ],
+  },
   {
     version: '5.41.96',
     date: '20/09/2026',
