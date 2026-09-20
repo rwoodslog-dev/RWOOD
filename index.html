@@ -5384,10 +5384,20 @@
 
     <!-- VUE ZINC -->
     <section class="view" id="view-zinc">
-      <!-- Galerie : liste des chantiers (dossiers) -->
+      <!-- v5.41.107 — Accueil Zinc : sur demande de Rémi, plus de liste de tous
+           les chantiers dès l'ouverture de l'onglet. Un seul bouton "+ Créer un
+           pliage" ; un chantier n'apparaît sous forme de cadre que dès qu'il a
+           au moins un pliage enregistré (voir renderZincGallery). -->
       <div id="zincGalleryRoot">
-        <div class="view-heading">Chantiers</div>
+        <button class="btn btn-primary btn-block" style="margin-bottom:14px;" onclick="openZincSitePicker()">+ Créer un pliage</button>
         <div id="zincFolderList"></div>
+      </div>
+
+      <!-- Choix du chantier avant de créer un pliage -->
+      <div id="zincSitePickerView" style="display:none;">
+        <button class="btn btn-outline" style="margin-bottom:12px;" onclick="closeZincSitePicker()">← Retour</button>
+        <div class="view-heading">Pour quel chantier ?</div>
+        <div id="zincSitePickerList"></div>
       </div>
 
       <!-- Dossier d'un chantier : liste de ses pliages -->
@@ -17302,17 +17312,27 @@ function ensureZincProfiles(){
 }
 
 /* --- Galerie principale (onglet Zinc) --- */
+/* v5.41.107 — sur demande de Rémi : l'accueil Zinc n'affiche plus TOUS les
+   chantiers (c'était confus, un chantier apparaissait même sans aucun
+   pliage). Seuls les chantiers qui ont déjà au moins un pliage enregistré
+   ressortent ici sous forme de cadre ; pour en créer un nouveau, on passe
+   par le bouton "+ Créer un pliage" → openZincSitePicker (choix du
+   chantier) → createFreeformZincProfile, qui fait apparaître le cadre dès
+   l'enregistrement du croquis. */
 function renderZincGallery(){
   ensureZincProfiles();
   closeZincFolder();
+  closeZincSitePicker();
 
   const container = document.getElementById('zincFolderList');
-  if(data.sites.length === 0){
-    container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.1-2.1z"/></svg></div><h3>Aucun chantier</h3><p>Crée un chantier dans l'onglet Chantiers pour pouvoir y ajouter des pliages.</p></div>`;
+  const sitesWithPliages = data.sites.filter(site => data.zincProfiles.some(p=>p.siteId===site.id));
+
+  if(sitesWithPliages.length === 0){
+    container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.1-2.1z"/></svg></div><h3>Aucun pliage</h3><p>Clique sur « + Créer un pliage » pour commencer.</p></div>`;
     return;
   }
 
-  container.innerHTML = data.sites.map(site=>{
+  container.innerHTML = sitesWithPliages.map(site=>{
     const profiles = data.zincProfiles.filter(p=>p.siteId===site.id);
     return `
       <div class="card photo-folder-card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}" onclick="openZincFolder('${site.id}')">
@@ -17324,6 +17344,47 @@ function renderZincGallery(){
       </div>
     `;
   }).join('');
+}
+
+/* v5.41.107 — écran "Pour quel chantier ?" affiché avant de créer un
+   pliage, ouvert par le bouton "+ Créer un pliage" de l'accueil Zinc.
+   Liste TOUS les chantiers (même sans pliage existant, contrairement à
+   renderZincGallery) puisque le but ici est justement d'en choisir un pour
+   y créer le tout premier pliage. */
+function openZincSitePicker(){
+  if(data.sites.length === 0){
+    showToast('Crée un chantier dans l\'onglet Chantiers avant d\'ajouter un pliage');
+    return;
+  }
+  document.getElementById('zincGalleryRoot').style.display = 'none';
+  document.getElementById('zincSitePickerView').style.display = 'block';
+
+  const container = document.getElementById('zincSitePickerList');
+  container.innerHTML = data.sites.map(site=>{
+    const count = data.zincProfiles.filter(p=>p.siteId===site.id).length;
+    return `
+      <div class="card photo-folder-card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}" onclick="pickZincSiteAndCreate('${site.id}')">
+        <div class="photo-folder-thumb placeholder"><img src="icons/zinc.png" alt="" style="width:32px;height:32px;object-fit:contain;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔧',style:'font-size:24px;'}))"></div>
+        <div class="photo-folder-info">
+          <h3>${escapeHtml(site.name)}</h3>
+          <div class="count">${count} pliage${count===1?'':'s'}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function closeZincSitePicker(){
+  document.getElementById('zincSitePickerView').style.display = 'none';
+}
+
+/* Choix du chantier fait dans le sélecteur : ferme le sélecteur et enchaîne
+   directement sur la création du pliage pour ce chantier (croquis). */
+function pickZincSiteAndCreate(siteId){
+  currentZincFolderSite = siteId;
+  closeZincSitePicker();
+  document.getElementById('zincGalleryRoot').style.display = 'block';
+  createFreeformZincProfile();
 }
 
 function openZincFolder(siteId){
@@ -32014,9 +32075,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.106';
+const APP_VERSION = '5.41.107';
 
 const CHANGELOG = [
+  {
+    version: '5.41.107',
+    date: '20/09/2026',
+    entries: [
+      { icon: '📁', text: "Onglet Pliage zinc entièrement revu : l'accueil n'affiche plus tous les chantiers d'office. Un seul bouton « + Créer un pliage » : il ouvre un choix « Pour quel chantier ? », tu sélectionnes le chantier puis crées le croquis normalement. Dès que le pliage est enregistré, le cadre du chantier apparaît sur l'accueil (et seulement les chantiers qui ont au moins un pliage y figurent)." },
+    ],
+  },
   {
     version: '5.41.106',
     date: '20/09/2026',
