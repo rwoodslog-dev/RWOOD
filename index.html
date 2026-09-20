@@ -17416,7 +17416,8 @@ function openZincSketchTool(profileId){
   const existing = (profile.sketchSegments && profile.sketchSegments.length) ? {
     segments: profile.sketchSegments.map(s => ({ p1:s.p1, p2:s.p2, text:String(Math.round(s.mm)) })),
     canvasWidth: profile.sketchCanvasWidth,
-    canvasHeight: profile.sketchCanvasHeight
+    canvasHeight: profile.sketchCanvasHeight,
+    boudin: profile.hasBoudin ? { mm: getProfileBoudinMm(profile) } : null // v5.41.96
   } : null;
 
   openSketchTool((blob, sketchData) => {
@@ -17427,6 +17428,11 @@ function openZincSketchTool(profileId){
     profile.sketchCanvasWidth = sketchData.canvasWidth;
     profile.sketchCanvasHeight = sketchData.canvasHeight;
     if(sketchData.pliageType) profile.pliageType = sketchData.pliageType;
+    // v5.41.96 — boudin choisi dans le croquis (Main-courante « avec boudin »),
+    // remplace l'ancien bouton « Ajouter un boudin » : développé 52mm par
+    // défaut, modifiable au tap sur le boudin, toujours rattaché au segment 1.
+    profile.hasBoudin = !!sketchData.boudin;
+    profile.boudinMm = sketchData.boudin ? sketchData.boudin.mm : null;
     // v5.41.91 — repris tel quel UNIQUEMENT si aucun segment n'a été
     // ajouté/supprimé depuis le gabarit (mêmes indices valables), sinon
     // le marquage pointerait sur les mauvais segments — mieux vaut l'omettre
@@ -17752,7 +17758,7 @@ async function _buildZincPdfDoc(profile){
   const site = data.sites.find(s => s.id === profile.siteId);
   const nom  = profile.name || 'Pliage sans nom';
   const developpe = formatMm(getProfileTotalLength(profile))
-                  + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
+                  + (profile.hasBoudin ? ` (dont boudin ${getProfileBoudinMm(profile)}mm)` : '');
   const pliageTypeCfg = PLIAGE_TYPES[getZincPliageType(profile)] || PLIAGE_TYPES.simple;
   const otherCumulPdf = computeZincCumulOther(profile);
   let cumulLabel = 'Cumul de traçage';
@@ -17940,9 +17946,9 @@ function applyZincEditModeVisibility(profile){
   const pdfCard = document.getElementById('zincPdfCard');
   if(pdfCard) pdfCard.style.display = zincIsEditMode ? 'none' : 'block';
   // v5.41.95 — bouton "Ajouter un boudin" retiré de cet écran sur demande de
-  // Rémi (le système sera repensé plus tard : main-courante souvent avec/sans
-  // boudin, cote de développé à ajouter…). toggleZincBoudin()/profile.hasBoudin
-  // et le calcul +65mm restent intacts dans le code, juste plus affichés ici.
+  // Rémi. v5.41.96 : le boudin se choisit maintenant DANS le croquis
+  // (Main-courante → Sans / Avec boudin, +52mm de développé modifiable au tap).
+  // toggleZincBoudin() reste dans le code mais n'est plus appelé par l'UI.
 
   const viewTitle = document.getElementById('zincViewTitle');
   if(!zincIsEditMode){
@@ -18110,7 +18116,7 @@ function renderZincEditor(){
    ne change pas). */
 function renderSketchZincEditor(profile){
   const total = getProfileTotalLength(profile);
-  document.getElementById('zincTotalLength').textContent = formatMm(total) + (profile.hasBoudin ? ` (dont boudin ${BOUDIN_DEVELOPPE_MM}mm)` : '');
+  document.getElementById('zincTotalLength').textContent = formatMm(total) + (profile.hasBoudin ? ` (dont boudin ${getProfileBoudinMm(profile)}mm)` : '');
 
   document.getElementById('zincSchema').innerHTML = buildSketchZincSchema(profile);
 }
@@ -18136,10 +18142,12 @@ function buildSketchZincSchema(profile){
 
   const xs = [], ys = [];
   segs.forEach(s => { xs.push(s.p1.x, s.p2.x); ys.push(s.p1.y, s.p2.y); });
-  const boudinRadius = profile.hasBoudin ? 26 : 0;
-  const minX = Math.min(...xs) - boudinRadius;
+  // v5.41.96 — boudin rattaché au segment 1 : sa géométrie entre dans l'emprise
+  const bg = profile.hasBoudin ? boudinGeom(segs[0], segs[1]) : null;
+  if(bg){ xs.push(bg.cx - bg.R, bg.cx + bg.R); ys.push(bg.cy - bg.R, bg.cy + bg.R + bg.R * 0.5); }
+  const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
-  const minY = Math.min(...ys) - (profile.hasBoudin ? boudinRadius : 0);
+  const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const w = Math.max(1, maxX - minX);
   const h = Math.max(1, maxY - minY);
@@ -18172,10 +18180,8 @@ function buildSketchZincSchema(profile){
   }).join('');
 
   let boudinSvg = '';
-  if(profile.hasBoudin){
-    const start = toSvg(segs[0].p1);
-    const r = boudinRadius * scale * 0.55;
-    boudinSvg = buildBoudinSvg(start, r);
+  if(bg){
+    boudinSvg = buildBoudinSvg(bg.pts.map(toSvg), toSvg({x:bg.cx, y:bg.cy}), bg.R * scale, getProfileBoudinMm(profile));
   }
 
   return `
@@ -18208,12 +18214,63 @@ function updateZincProfileName(name){
   saveData();
 }
 
-const BOUDIN_DEVELOPPE_MM = 65; // développé fixe du boudin (6,5 cm), du bout du boudin jusqu'à son point de croisement avec le reste du profil
+const BOUDIN_DEVELOPPE_MM = 52; // développé fixe ajouté par le boudin (v5.41.96, valeur donnée par Rémi), toujours rattaché au segment 1
+
+/* v5.41.96 — gabarit Main-courante AVEC boudin (dessin de Rémi) : 3 segments,
+   dessus plat (seg 1, là où s'accroche le boudin) → descente à 90° (seg 2) →
+   retour en biais à 45° (seg 3). Le ⭐ du cumul est le seg 1 (le plat du dessus). */
+const PLIAGE_TEMPLATE_MC_BOUDIN = {
+  segments: [
+    { dir: 0,   len: 2.2, angle: null },
+    { dir: 90,  len: 1.4, angle: 90   },
+    { dir: 225, len: 0.5, angle: 45   },
+  ],
+  markSegments: [0],
+};
+
+/* v5.41.96 — développé du boudin d'un pliage : 52mm par défaut, modifiable
+   par l'utilisateur (tap sur le boudin dans le croquis → profile.boudinMm). */
+function getProfileBoudinMm(profile){
+  if(!profile || !profile.hasBoudin) return 0;
+  const v = Number(profile.boudinMm);
+  return (Number.isFinite(v) && v > 0) ? Math.round(v) : BOUDIN_DEVELOPPE_MM;
+}
+
+/* v5.41.96 — géométrie du boudin, TOUJOURS accroché au début du segment 1
+   (seg1.p1) : spirale tangente au segment 1, qui part en arrière (sens -u) et
+   s'enroule du côté où part le segment 2 (comme sur le dessin de Rémi).
+   Fonction pure (coordonnées quelconques : canevas du croquis, SVG, PDF) —
+   le rayon est proportionnel à la longueur du segment 1 pour rester
+   cohérent quelle que soit l'échelle. Retourne { cx, cy, R, pts } ou null. */
+function boudinGeom(seg1, seg2){
+  if(!seg1 || !seg1.p1 || !seg1.p2) return null;
+  const dx = seg1.p2.x - seg1.p1.x, dy = seg1.p2.y - seg1.p1.y;
+  const len = Math.hypot(dx, dy);
+  if(len < 1e-6) return null;
+  const ux = dx / len, uy = dy / len;
+  let nx = -uy, ny = ux;
+  if(seg2 && seg2.p1 && seg2.p2){
+    const v2x = seg2.p2.x - seg2.p1.x, v2y = seg2.p2.y - seg2.p1.y;
+    if(nx * v2x + ny * v2y < 0){ nx = -nx; ny = -ny; }
+  } else if(ny < 0){ nx = -nx; ny = -ny; }
+  const R = len * 0.07;
+  const cx = seg1.p1.x + nx * R, cy = seg1.p1.y + ny * R;
+  const pts = [];
+  const turns = 1.6, steps = 56;
+  for(let k = 0; k <= steps; k++){
+    const f = k / steps;
+    const phi = f * turns * 2 * Math.PI;
+    const r = R * (1 - 0.62 * f);
+    const c = Math.cos(phi), s = Math.sin(phi);
+    pts.push({ x: cx + r * (-nx * c - ux * s), y: cy + r * (-ny * c - uy * s) });
+  }
+  return { cx, cy, R, nx, ny, pts };
+}
 
 /* Calcule le développé total du pliage : somme des cotes des segments du croquis + boudin éventuel */
 function getProfileTotalLength(profile){
   const segTotal = (profile.sketchSegments || []).reduce((sum, s) => sum + (s.mm || 0), 0);
-  return Math.round(segTotal) + (profile.hasBoudin ? BOUDIN_DEVELOPPE_MM : 0);
+  return Math.round(segTotal) + getProfileBoudinMm(profile);
 }
 
 /* Retourne les points (mm, coordonnées du canevas de croquis) du pliage, mis bout à bout */
@@ -18288,10 +18345,13 @@ function drawZincProfileCard(ctx, profile, x, y, w, h){
   const points = getProfilePoints(profile);
   const xs = points.map(p=>p.x);
   const ys = points.map(p=>p.y);
-  const boudinRadius = profile.hasBoudin ? 40 : 0;
-  const minX = Math.min(...xs) - boudinRadius;
+  // v5.41.96 — boudin rattaché au segment 1 (voir boudinGeom)
+  const segsB = profile.sketchSegments || [];
+  const bg = profile.hasBoudin ? boudinGeom(segsB[0], segsB[1]) : null;
+  if(bg){ xs.push(bg.cx - bg.R, bg.cx + bg.R); ys.push(bg.cy - bg.R, bg.cy + bg.R * 1.6); }
+  const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
-  const minY = Math.min(...ys) - (profile.hasBoudin ? boudinRadius : 0);
+  const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   const pw = Math.max(1, maxX - minX);
   const ph = Math.max(1, maxY - minY);
@@ -18316,17 +18376,17 @@ function drawZincProfileCard(ctx, profile, x, y, w, h){
   cPoints.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
   ctx.stroke();
 
-  // Boudin (spirale simplifiée en arc)
-  if(profile.hasBoudin){
-    const start = cPoints[0];
-    const r = boudinRadius * scale * 0.55;
+  // Boudin (spirale rattachée au segment 1)
+  if(bg){
+    const bp = bg.pts.map(toCanvas);
+    const bc = toCanvas({ x: bg.cx, y: bg.cy });
     ctx.beginPath();
-    ctx.arc(start.x - r, start.y, r, 0.3, Math.PI * 1.9);
+    bp.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.stroke();
     ctx.font = '13px sans-serif';
     ctx.fillStyle = '#B8A89A';
     ctx.textAlign = 'center';
-    ctx.fillText('boudin 65', start.x - r, start.y + r + 18);
+    ctx.fillText(`boudin +${getProfileBoudinMm(profile)}`, bc.x, bc.y + bg.R * scale + 18);
   }
 
   // Points de jonction
@@ -18415,10 +18475,13 @@ function deleteZincProfileFromDetail(profileId){
 
 /* Construit un schéma SVG en coupe à partir des segments (longueur + angle de virage cumulé) */
 /* Dessine la spirale du boudin (élément SVG réutilisable), juste avant un point de départ donné (déjà en coordonnées SVG) */
-function buildBoudinSvg(point, r){
+/* v5.41.96 — reçoit la spirale déjà projetée en coordonnées SVG (points),
+   son centre et son rayon, et le développé du boudin à afficher. */
+function buildBoudinSvg(svgPts, center, r, mm){
+  const d = svgPts.map((p, i) => (i ? 'L' : 'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ');
   return `
-    <circle class="zinc-boudin-circle" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${r.toFixed(1)}" fill="none" stroke="var(--wood)" stroke-width="3"/>
-    <text class="zinc-boudin-label" x="${point.x.toFixed(1)}" y="${(point.y + r + 16).toFixed(1)}" font-size="10" fill="var(--ink-soft)" text-anchor="middle">boudin 65</text>
+    <path class="zinc-boudin-circle" d="${d}" fill="none" stroke="var(--wood)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="zinc-boudin-label" x="${center.x.toFixed(1)}" y="${(center.y + r + 16).toFixed(1)}" font-size="10" fill="var(--ink-soft)" text-anchor="middle">boudin +${mm}</text>
   `;
 }
 
@@ -31428,9 +31491,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.95';
+const APP_VERSION = '5.41.96';
 
 const CHANGELOG = [
+  {
+    version: '5.41.96',
+    date: '20/09/2026',
+    entries: [
+      { icon: '🌀', text: "Pliage Main-courante : nouveau choix « Sans boudin / Avec boudin » au-dessus du croquis. « Avec boudin » dessine le croquis à 3 segments (dessus plat, descente 90°, retour 45°) avec le boudin accroché au début du segment 1 et un développé automatique de 52mm ajouté au total (ex : 50 + 30 + 15 + boudin = 147mm). Tap sur le boudin pour changer son développé." },
+      { icon: '🧾', text: "Le boudin s'affiche en spirale dans l'aperçu de coupe et le PDF, et sa valeur (52mm par défaut, avant 65mm) est mémorisée par pliage et synchronisée. Le bouton « Ajouter un boudin » n'est plus utilisé." },
+    ],
+  },
   {
     version: '5.41.95',
     date: '19/09/2026',
@@ -33990,6 +34061,7 @@ function _parseQRResult(raw){
       sketchCanvasWidth: payload.cw||null,
       sketchCanvasHeight: payload.ch||null,
       hasBoudin: !!payload.hasBoudin,
+      boudinMm: payload.boudinMm || null,
       pliageType: payload.pliageType || 'simple',
       cumulTracage: payload.cumulTracage || null,
       cumulTracageOrder: payload.cumulTracageOrder || null,
@@ -35211,6 +35283,7 @@ function shareViaQR(type, id, extra){
         siteName: site2 ? site2.name : '',
         total: getProfileTotalLength ? getProfileTotalLength(p) : 0,
         hasBoudin: !!p.hasBoudin,
+        boudinMm: p.boudinMm || null,
         cw: p.sketchCanvasWidth||0, ch: p.sketchCanvasHeight||0,
         segs: (p.sketchSegments||[]).map(s => ({ p1:s.p1, p2:s.p2, mm:s.mm })),
         pliageType: p.pliageType || 'simple',
@@ -46155,6 +46228,11 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
           <div class="chip" data-type="cheneau" onclick="_sketchSetPliageType('cheneau')">Chêneau</div>
           <div class="chip" data-type="noue" onclick="_sketchSetPliageType('noue')">Noue</div>
         </div>
+        <!-- v5.41.96 — Main-courante uniquement : avec / sans boudin -->
+        <div class="chip-row" id="sketchBoudinChips" style="display:none; margin-top:8px;">
+          <div class="chip" data-boudin="0" onclick="_sketchSetBoudin(false)">Sans boudin</div>
+          <div class="chip" data-boudin="1" onclick="_sketchSetBoudin(true)">Avec boudin</div>
+        </div>
       </div>
       <div id="sketchStepHint" class="hint" style="margin-bottom:10px; flex-shrink:0;">
         Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.
@@ -46200,6 +46278,9 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   // renvoyé dans sketchData au moment d'enregistrer.
   if(opts && opts.pliageTypeSelector){
     _sketch.pliageType = (opts.pliageType && PLIAGE_TYPES[opts.pliageType]) ? opts.pliageType : 'simple';
+    // v5.41.96 — boudin (Main-courante) : { mm } ou null. Repris d'un croquis existant.
+    _sketch.boudin = (_sketch.pliageType === 'main-courante' && existingSketch && existingSketch.boudin)
+      ? { mm: existingSketch.boudin.mm || BOUDIN_DEVELOPPE_MM } : null;
     const row = document.getElementById('sketchPliageTypeRow');
     if(row) row.style.display = 'block';
     _sketchRenderPliageTypeChips();
@@ -46289,6 +46370,7 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
         // v5.41.86 — priorité au tap sur un arc d'angle (zone plus petite et
         // plus excentrée qu'un segment) : testé en premier, sinon un tap visant
         // l'arc tomberait presque toujours sur le segment sous-jacent à la place.
+        if(_sketchHitBoudin(_sketch._downPos)){ _sketchShowBoudinMenu(); return; } // v5.41.96 : tap sur le boudin = changer son développé
         const angleIdx = _sketchNearestAngle(_sketch._downPos, dpr);
         if(angleIdx >= 0){ _sketchPromptAngle(angleIdx); return; }
         const idx = _sketchNearestSegment(_sketch._downPos, _sketch.segments, dpr);
@@ -46336,18 +46418,90 @@ function _sketchClose(){
 function _sketchSetPliageType(type){
   if(!_sketch || !PLIAGE_TYPES[type]) return;
   const changed = _sketch.pliageType !== type;
+  const tpl = PLIAGE_TEMPLATES[type];
+  if(changed && tpl){
+    const hasContent = _sketch.segments && _sketch.segments.length;
+    const hasCotes = hasContent && _sketch.segments.some(s => s.text && s.text.trim());
+    if(hasCotes && !confirm('Choisir ce type remplace le croquis actuel (les cotes déjà saisies seront perdues). Continuer ?')){
+      return; // refusé : on garde le type ET le dessin actuels
+    }
+  }
   _sketch.pliageType = type;
+  if(changed) _sketch.boudin = null; // v5.41.96 : le boudin ne concerne que Main-courante, et repart « sans » à chaque changement de type
   _sketchRenderPliageTypeChips();
 
-  const tpl = PLIAGE_TEMPLATES[type];
   if(!tpl || !changed) return; // 'simple' (pas de gabarit) ou re-tap sur la même puce : on ne touche pas au dessin
-
-  const hasContent = _sketch.segments && _sketch.segments.length;
-  const hasCotes = hasContent && _sketch.segments.some(s => s.text && s.text.trim());
-  if(hasCotes && !confirm('Choisir ce type remplace le croquis actuel (les cotes déjà saisies seront perdues). Continuer ?')){
-    return;
-  }
   _sketchApplyPliageTemplate(tpl);
+}
+
+/* v5.41.96 — Main-courante : choix AVEC / SANS boudin, affiché au-dessus du
+   croquis. « Avec » dessine le gabarit à 3 segments de Rémi (dessus plat = seg 1,
+   descente = seg 2, retour en biais 45° = seg 3) avec le boudin accroché au
+   début du segment 1 et un développé auto de 52mm ; « Sans » remet le gabarit
+   normal à 5 segments. */
+function _sketchSetBoudin(on){
+  if(!_sketch || _sketch.pliageType !== 'main-courante') return;
+  if(!!_sketch.boudin === !!on) return;
+  const hasCotes = _sketch.segments && _sketch.segments.some(s => s.text && s.text.trim());
+  if(hasCotes && !confirm('Changer avec/sans boudin remplace le croquis actuel (les cotes déjà saisies seront perdues). Continuer ?')) return;
+  _sketchCloseSegmentMenu();
+  _sketch.boudin = on ? { mm: BOUDIN_DEVELOPPE_MM } : null;
+  _sketchRenderPliageTypeChips();
+  _sketchApplyPliageTemplate(on ? PLIAGE_TEMPLATE_MC_BOUDIN : PLIAGE_TEMPLATES['main-courante']);
+}
+
+/* Boudin tapé : petit champ pour changer son développé (mm). */
+function _sketchHitBoudin(p){
+  const h = _sketch && _sketch.boudinHit;
+  return !!(h && Math.hypot(p.x - h.cx, p.y - h.cy) <= h.R * 1.15);
+}
+function _sketchShowBoudinMenu(){
+  _sketchCloseSegmentMenu();
+  const h = _sketch && _sketch.boudinHit;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!h || !_sketch.boudin || !wrap) return;
+  const canvas = _sketch.canvas;
+  const cssX = (h.cx / canvas.width) * canvas.offsetWidth;
+  const cssY = (h.cy / canvas.height) * canvas.offsetHeight;
+  const menu = document.createElement('div');
+  menu.id = 'sketchSegMenu'; // même id que le menu segment : fermé par _sketchCloseSegmentMenu
+  menu.style.cssText = 'position:absolute; z-index:8; display:flex; gap:6px; align-items:center; background:#1a1206; border:1.5px solid var(--wood,#C8862B); border-radius:10px; padding:6px; box-shadow:0 4px 14px rgba(0,0,0,.5); transform:translate(-50%, -110%);';
+  menu.style.left = Math.min(Math.max(cssX, 90), canvas.offsetWidth - 90) + 'px';
+  menu.style.top = Math.max(cssY, 40) + 'px';
+
+  const lbl = document.createElement('span');
+  lbl.textContent = 'Boudin';
+  lbl.style.cssText = 'color:#F0E6DC; font-size:12px; font-weight:700;';
+  const input = document.createElement('input');
+  input.type = 'number'; input.min = '1';
+  input.value = String(_sketch.boudin.mm);
+  input.placeholder = 'mm';
+  input.style.cssText = 'width:72px; background:#D89B5E; color:#1a1206; border:none; border-radius:7px; padding:8px 8px; font-size:13px; font-weight:800; text-align:center;';
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button'; delBtn.textContent = '🗑️'; delBtn.title = 'Retirer le boudin';
+  delBtn.style.cssText = 'background:#c85050; color:#fff; border:none; border-radius:7px; padding:8px 10px; font-size:14px; font-weight:800; cursor:pointer; flex-shrink:0;';
+
+  const commit = () => {
+    const mm = parseFloat(String(input.value).replace(',','.'));
+    if(!mm || mm <= 0){ showToast('Développé invalide — entre un nombre en mm'); return; }
+    _sketch.boudin.mm = Math.round(mm);
+    _sketchCloseSegmentMenu();
+    _sketchRenderLabelStep();
+  };
+  input.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); commit(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); _sketchCloseSegmentMenu(); }
+  });
+  input.onblur = () => { if(document.getElementById('sketchSegMenu')) commit(); };
+  delBtn.addEventListener('click', () => {
+    _sketchCloseSegmentMenu();
+    _sketch.boudin = null;
+    _sketchRenderPliageTypeChips();
+    _sketchRenderLabelStep();
+  });
+  menu.appendChild(lbl); menu.appendChild(input); menu.appendChild(delBtn);
+  wrap.appendChild(menu);
+  input.focus(); input.select();
 }
 
 /* Génère les segments du gabarit (marche vectorielle : direction en degrés,
@@ -46397,6 +46551,7 @@ function _sketchApplyPliageTemplate(tpl){
   _sketch.closed = false; // tous les gabarits sont des lignes ouvertes (voir schémas de Rémi)
   _sketch.step = 'label';
   _sketch.templateMarkSegments = tpl.markSegments || []; // repris par openZincSketchTool pour pré-cocher le cumul de traçage
+  if(_sketch.boudin) _sketchFitToCanvas(); // v5.41.96 : recadre en tenant compte de la place du boudin
   _sketchRenderLabelStep();
 }
 
@@ -46405,6 +46560,14 @@ function _sketchRenderPliageTypeChips(){
   document.querySelectorAll('#sketchPliageTypeChips .chip').forEach(chip => {
     chip.classList.toggle('selected', chip.dataset.type === _sketch.pliageType);
   });
+  // v5.41.96 — avec/sans boudin : visible seulement pour Main-courante
+  const bRow = document.getElementById('sketchBoudinChips');
+  if(bRow){
+    bRow.style.display = _sketch.pliageType === 'main-courante' ? 'flex' : 'none';
+    bRow.querySelectorAll('.chip').forEach(chip => {
+      chip.classList.toggle('selected', (chip.dataset.boudin === '1') === !!_sketch.boudin);
+    });
+  }
 }
 
 /* Simplification Douglas-Peucker : réduit un tracé à main levée (des
@@ -46629,6 +46792,29 @@ function _sketchRedrawShape(){
     ctx.lineCap = 'round';
     ctx.stroke();
   });
+  // v5.41.96 — boudin (Main-courante « avec boudin ») : spirale accrochée au
+  // début du segment 1, avec son développé (52mm par défaut, tap pour changer).
+  _sketch.boudinHit = null;
+  if(_sketch.boudin && segments.length){
+    const bg = boudinGeom(segments[0], segments[1]);
+    if(bg){
+      ctx.beginPath();
+      bg.pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 4 * dpr;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.stroke();
+      const lx = bg.cx + bg.nx * (bg.R + 16 * dpr), ly = bg.cy + bg.ny * (bg.R + 16 * dpr);
+      ctx.font = `bold ${13 * dpr}px -apple-system, Arial, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const btxt = 'boudin ' + _sketch.boudin.mm;
+      ctx.lineWidth = 3.5 * dpr; ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.strokeText(btxt, lx, ly);
+      ctx.fillStyle = '#B45309';
+      ctx.fillText(btxt, lx, ly);
+      _sketch.boudinHit = { cx: bg.cx, cy: bg.cy, R: bg.R };
+    }
+  }
   // Petits points aux sommets, pour un rendu propre "à la règle"
   const verts = new Set();
   segments.forEach(seg => { verts.add(JSON.stringify(seg.p1)); verts.add(JSON.stringify(seg.p2)); });
@@ -46813,6 +46999,10 @@ function _sketchFitToCanvas(){
   if(!segments || !segments.length) return;
   const xs = [], ys = [];
   segments.forEach(s => { xs.push(s.p1.x, s.p2.x); ys.push(s.p1.y, s.p2.y); });
+  if(_sketch.boudin){ // v5.41.96 : le boudin (rattaché au seg 1) fait partie de l'emprise
+    const bg = boudinGeom(segments[0], segments[1]);
+    if(bg){ xs.push(bg.cx - bg.R, bg.cx + bg.R); ys.push(bg.cy - bg.R, bg.cy + bg.R * 1.8); }
+  }
   const minX = Math.min(...xs), maxX = Math.max(...xs);
   const minY = Math.min(...ys), maxY = Math.max(...ys);
   const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
@@ -47062,6 +47252,7 @@ function _sketchFinish(){
     canvasWidth: canvas.width,
     canvasHeight: canvas.height,
     pliageType: _sketch.pliageType || undefined,
+    boudin: _sketch.boudin ? { mm: _sketch.boudin.mm } : null, // v5.41.96
     // v5.41.91 — segments (0-based, dans l'ordre du dessin) que le gabarit
     // choisi marque par défaut comme "partie qui varie" (fond de noue, plat
     // du dessus…), pour aider au moment du cumul de traçage. Uniquement
