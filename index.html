@@ -31528,9 +31528,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.100';
+const APP_VERSION = '5.41.101';
 
 const CHANGELOG = [
+  {
+    version: '5.41.101',
+    date: '20/09/2026',
+    entries: [
+      { icon: '🖱️', text: "Croquis du pliage — PC : clic droit maintenu + déplacer la souris permet maintenant de te déplacer dans le dessin une fois zoomé, comme le glisser à 1 doigt sur mobile. Le clic gauche garde son usage normal (dessiner/taper un segment)." },
+    ],
+  },
   {
     version: '5.41.100',
     date: '20/09/2026',
@@ -46404,6 +46411,18 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     return { x:(t.clientX - r.left) * (canvas.width/r.width), y:(t.clientY - r.top) * (canvas.height/r.height) };
   };
   const down = e => {
+    // v5.41.101 — sur PC (souris) : clic DROIT maintenu = déplacer la vue
+    // (pan), l'équivalent du glisser à 1 doigt sur mobile une fois zoomé.
+    // Le clic gauche garde son usage habituel (dessiner/taper un segment).
+    if(!e.touches && e.button === 2){
+      e.preventDefault();
+      _sketchCloseSegmentMenu();
+      _sketch.drawing = false;
+      _sketch._panning = true;
+      _sketch._panStart = { x: e.clientX, y: e.clientY };
+      _sketch._panStartPan = { x: _sketch.panX, y: _sketch.panY };
+      return;
+    }
     // v5.41.100 — un geste à 2 doigts sert à pincer-zoomer/déplacer la vue,
     // jamais à dessiner : dès qu'un 2e doigt touche l'écran, on abandonne le
     // tracé éventuel en cours et on bascule en mode pinch (voir _sketchPinchMove).
@@ -46425,6 +46444,15 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     _sketch._downPos = p; // v5.41.77 — mémorise le point de départ pour distinguer un TAP d'un vrai trait
   };
   const move = e => {
+    if(!_sketch) return; // v5.41.101 — écouteur posé sur window : filet de sécurité si l'outil a été fermé entretemps
+    if(_sketch._panning){
+      e.preventDefault();
+      _sketch.panX = _sketch._panStartPan.x + (e.clientX - _sketch._panStart.x);
+      _sketch.panY = _sketch._panStartPan.y + (e.clientY - _sketch._panStart.y);
+      _sketchClampPan();
+      _sketchApplyZoomTransform();
+      return;
+    }
     if(e.touches && e.touches.length >= 2){ e.preventDefault(); _sketchPinchMove(e); return; }
     if(_sketch._pinching) return; // un doigt relâché après un pinch : ignore jusqu'au prochain geste propre
     if(!_sketch.drawing) return;
@@ -46437,6 +46465,8 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     ctx.stroke();
   };
   const up = (e) => {
+    if(!_sketch) return; // v5.41.101 — filet de sécurité, voir move()
+    if(_sketch._panning){ _sketch._panning = false; return; }
     if(e && e.touches && e.touches.length >= 1){
       // v5.41.100 — il reste au moins un doigt posé après la fin d'un pinch
       // (l'utilisateur relâche progressivement) : on termine juste le pinch,
@@ -46489,8 +46519,14 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
       _sketchRenderLabelStep();
     }
   };
-  canvas.onmousedown = down; canvas.onmousemove = move; window.addEventListener('mouseup', up);
+  // v5.41.101 — mousemove/mouseup sur window (pas juste le canevas) : un
+  // clic droit maintenu qui sort du cadre du dessin doit continuer à
+  // déplacer la vue tant que le bouton reste enfoncé, comme un vrai pan.
+  canvas.onmousedown = down; window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   canvas.ontouchstart = down; canvas.ontouchmove = move; canvas.ontouchend = up;
+  // Empêche le menu contextuel du navigateur d'apparaître sur clic droit
+  // (sinon il s'ouvrirait par-dessus le croquis à chaque tentative de pan).
+  canvas.oncontextmenu = e => e.preventDefault();
 
   // Forme préchargée (édition d'un croquis existant) : afficher directement
   // l'étape "côtes" avec la forme dessinée, plutôt qu'un canevas vide.
