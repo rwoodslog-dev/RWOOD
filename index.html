@@ -5517,7 +5517,7 @@
 
         <!-- Générer PDF pour le fabricant plieur (visible en mode lecture) -->
         <div class="card" id="zincPdfCard" style="display:none;">
-          <button class="btn btn-primary btn-block" onclick="generateZincPdf()">
+          <button class="btn btn-primary btn-block" onclick="openZincPdfSettings()">
             <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 13h6M9 17h4"/></svg>
             Générer PDF (fabricant)
           </button>
@@ -6252,6 +6252,64 @@
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="resetCumulSelection()">Réinitialiser</button>
       <button class="btn btn-primary" onclick="saveCumulTracage()">Générer le cumul</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL : Réglages fiche fabricant (avant génération du PDF pliage) — v5.41.103 -->
+<div class="modal-overlay" id="modal-zincPdfSettings">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <span class="modal-title">📄 Fiche fabricant</span>
+      <button class="modal-close" onclick="closeModal('zincPdfSettings')">×</button>
+    </div>
+    <div style="padding:0 16px 8px; max-height:70vh; overflow-y:auto;">
+
+      <div class="hint" style="margin-bottom:10px;">Cadre le croquis, puis règle assemblage et métrage avant de générer le PDF.</div>
+
+      <!-- Cadrage du croquis (zoom + déplacement, comme l'outil de croquis) -->
+      <div class="calc-result-label" style="margin-bottom:6px;">Cadrage du croquis</div>
+      <div id="zincPdfFrameWrap" style="position:relative; width:100%; height:220px; background:#fff; border-radius:10px; overflow:hidden; border:1.5px solid var(--line); touch-action:none; margin-bottom:8px;">
+        <div id="zincPdfFrameSchema" style="position:absolute; inset:0; transform-origin:0 0;"></div>
+        <div style="position:absolute; bottom:8px; right:8px; display:flex; flex-direction:column; gap:6px;">
+          <button type="button" class="btn btn-outline" style="padding:5px 9px; background:rgba(26,18,6,0.85);" onclick="_zincPdfFrameZoomIn()">+</button>
+          <button type="button" class="btn btn-outline" style="padding:5px 9px; background:rgba(26,18,6,0.85);" onclick="_zincPdfFrameZoomReset()">⤢</button>
+          <button type="button" class="btn btn-outline" style="padding:5px 9px; background:rgba(26,18,6,0.85);" onclick="_zincPdfFrameZoomOut()">−</button>
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom:16px;">Glisse (ou clic droit maintenu sur PC) pour repositionner, pince ou +/− pour zoomer.</div>
+
+      <!-- Assemblage -->
+      <div class="calc-result-label" style="margin-bottom:6px;">Assemblage</div>
+      <div class="chip-row" id="zincPdfAssemblyChips" style="margin-bottom:8px;">
+        <div class="chip" data-assembly="0" onclick="_zincPdfSetAssembly(false)">Sans assemblage</div>
+        <div class="chip" data-assembly="1" onclick="_zincPdfSetAssembly(true)">Avec assemblage</div>
+      </div>
+      <div id="zincPdfOverlapField" class="field" style="display:none; margin-bottom:16px;">
+        <label>Recouvrement (mm)</label>
+        <input type="number" min="0" step="1" id="zincPdfOverlapMm" placeholder="Ex : 150">
+      </div>
+
+      <!-- Métrage fabrication -->
+      <div class="calc-result-label" style="margin-bottom:6px;">Métrage (mètre linéaire)</div>
+      <div class="chip-row" id="zincPdfMetrageChips" style="margin-bottom:8px;">
+        <div class="chip" data-metrage="simple" onclick="_zincPdfSetMetrageMode('simple')">Simple</div>
+        <div class="chip" data-metrage="multi" onclick="_zincPdfSetMetrageMode('multi')">Multi</div>
+      </div>
+      <div id="zincPdfMetrageSimpleField" class="field" style="display:none;">
+        <label>Longueur (mL)</label>
+        <input type="number" min="0" step="0.1" id="zincPdfMetrageSimpleML" placeholder="Ex : 15">
+      </div>
+      <div id="zincPdfMetrageMultiField" style="display:none;">
+        <div id="zincPdfMetrageLines" style="display:flex; flex-direction:column; gap:8px; margin-bottom:8px;"></div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="_zincPdfAddMetrageLine()">+ Ajouter une longueur</button>
+        <div class="hint" style="margin-top:8px;" id="zincPdfMetrageMultiTotal"></div>
+      </div>
+
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('zincPdfSettings')">Annuler</button>
+      <button class="btn btn-primary" onclick="_zincPdfSettingsGenerate()">Générer le PDF</button>
     </div>
   </div>
 </div>
@@ -17682,8 +17740,15 @@ function _zincPdfBuildSchemaHtml(profile){
 
 /* Convertit un aperçu de coupe en data URL PNG pour jsPDF.
    Rendu off-screen à partir du profil (fonctionne aussi depuis la liste,
-   sans éditeur ouvert). Fallback : SVG déjà présent dans #zincSchema. */
-function _zincPdfSchemaToImage(profile){
+   sans éditeur ouvert). Fallback : SVG déjà présent dans #zincSchema.
+   v5.41.103 — `frame` optionnel ({offX,offY,scale}, voir la modale "Fiche
+   fabricant") : recadre la zone du viewBox exportée en PDF, indépendamment
+   du cadrage affiché à l'écran dans l'éditeur (deux besoins différents —
+   l'écran garde toujours la forme entière visible, le PDF peut être zoomé/
+   décentré volontairement par l'utilisateur pour mettre en avant une partie
+   précise du pliage). offX/offY sont en unités du viewBox d'origine (avant
+   zoom), scale ≥ 1 réduit la zone visible (zoom avant). */
+function _zincPdfSchemaToImage(profile, frame){
   return new Promise(resolve => {
     let svg = null;
     let cleanup = null;
@@ -17713,6 +17778,18 @@ function _zincPdfSchemaToImage(profile){
     clone.setAttribute('width',  w);
     clone.setAttribute('height', h);
     clone.style.background = '#ffffff';
+    // v5.41.103 — applique le cadrage choisi par l'utilisateur en réécrivant
+    // le viewBox : scale>1 réduit la zone visible (zoom avant), offX/offY
+    // décale le coin haut-gauche de cette zone, toujours bornée à l'intérieur
+    // du viewBox d'origine pour ne jamais montrer de vide autour du dessin.
+    if(frame && frame.scale && frame.scale > 1 && vb.length === 4){
+      const [vx, vy, vw, vh] = vb;
+      const zw = vw / frame.scale, zh = vh / frame.scale;
+      const maxOffX = vw - zw, maxOffY = vh - zh;
+      const ox = Math.min(Math.max(frame.offX || 0, 0), maxOffX);
+      const oy = Math.min(Math.max(frame.offY || 0, 0), maxOffY);
+      clone.setAttribute('viewBox', `${(vx+ox).toFixed(1)} ${(vy+oy).toFixed(1)} ${zw.toFixed(1)} ${zh.toFixed(1)}`);
+    }
 
     // ── Forcer un tracé foncé à fort contraste sur fond blanc ──────────
     // Les couleurs d'origine utilisent des variables CSS (var(--wood),
@@ -17770,27 +17847,62 @@ function _zincPdfSchemaToImage(profile){
   });
 }
 
+/* v5.41.103 — formatte le métrage FABRICATION (profile.pdfSettings.metrageFab),
+   distinct du "Métrage chantier" (profile.metrage, quantité totale à couvrir
+   sur le chantier) : ici c'est le découpage demandé au fabricant, en mètre
+   linéaire. Mode simple : une seule longueur. Mode multi : plusieurs lignes
+   qté×longueur, regroupées par longueur identique pour l'affichage
+   ("1x15mL, 1x25mL, 2x10mL") avec un total. */
+function formatZincMetrageFab(mf){
+  if(!mf) return null;
+  if(mf.mode === 'simple'){
+    const ml = Number(mf.simpleML);
+    if(!ml || ml <= 0) return null;
+    return `${_fmtZincML(ml)}mL`;
+  }
+  if(mf.mode === 'multi'){
+    const lines = (mf.lines || []).filter(l => Number(l.lengthML) > 0 && Number(l.qty) > 0);
+    if(!lines.length) return null;
+    // Regroupe les lignes de même longueur (l'utilisateur peut en avoir ajouté plusieurs séparément)
+    const byLen = new Map();
+    lines.forEach(l => {
+      const len = Number(l.lengthML), qty = Math.round(Number(l.qty));
+      byLen.set(len, (byLen.get(len)||0) + qty);
+    });
+    const total = lines.reduce((s,l) => s + Number(l.lengthML) * Math.round(Number(l.qty)), 0);
+    const detail = Array.from(byLen.entries())
+      .sort((a,b) => b[0]-a[0])
+      .map(([len,qty]) => `${qty}x${_fmtZincML(len)}mL`)
+      .join(' + ');
+    return `Total ${_fmtZincML(total)}mL = ${detail}`;
+  }
+  return null;
+}
+function _fmtZincML(v){
+  const n = Math.round(v * 100) / 100;
+  return Number.isInteger(n) ? String(n) : String(n).replace('.', ',');
+}
+
 /* Construit le document jsPDF d'un pliage (réutilisable : partage OU upload synchro).
-   Retourne { doc, fileName, nom } ou null si jsPDF indisponible. */
-async function _buildZincPdfDoc(profile){
+   `pdfSettings` (optionnel) surcharge profile.pdfSettings pour CETTE génération
+   uniquement (passé par _zincPdfSettingsGenerate après réglage dans la modale) ;
+   sans lui, on retombe sur profile.pdfSettings déjà enregistré (synchro auto,
+   partage rapide…). Retourne { doc, fileName, nom } ou null si jsPDF indisponible. */
+async function _buildZincPdfDoc(profile, pdfSettings){
   const jsPDFLib = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if(!jsPDFLib) return null;
 
+  const settings = pdfSettings || profile.pdfSettings || null;
   const site = data.sites.find(s => s.id === profile.siteId);
   const nom  = profile.name || 'Pliage sans nom';
   const developpe = formatMm(getProfileTotalLength(profile))
                   + (profile.hasBoudin ? ` (dont boudin ${getProfileBoudinMm(profile)}mm)` : '');
-  const pliageTypeCfg = PLIAGE_TYPES[getZincPliageType(profile)] || PLIAGE_TYPES.simple;
-  const otherCumulPdf = computeZincCumulOther(profile);
-  let cumulLabel = 'Cumul de traçage';
-  let cumul = (profile.cumulTracage && profile.cumulTracage.length)
-              ? profile.cumulTracage.map(v => formatMm(v)).join('   →   ')
-              : null;
-  if(otherCumulPdf && pliageTypeCfg.maxMarks && cumul){
-    cumulLabel = pliageTypeCfg.baseIsTop ? 'Cumul de traçage — Haut' : 'Cumul de traçage — Bas';
-  }
-  const metrage = profile.metrage ? formatZincMetrageSummary(profile.metrage) : null;
-  const schemaImg = await _zincPdfSchemaToImage(profile);
+  const assembly = settings && settings.assembly;
+  const assemblyText = (assembly && assembly.on)
+    ? `Avec assemblage — recouvrement ${Math.round(Number(assembly.overlapMm)||0)}mm`
+    : 'Sans assemblage';
+  const metrageFabText = formatZincMetrageFab(settings && settings.metrageFab);
+  const schemaImg = await _zincPdfSchemaToImage(profile, settings && settings.frame);
 
   const doc    = new jsPDFLib({ orientation:'portrait', unit:'mm', format:'a4' });
   const pageW  = doc.internal.pageSize.getWidth();
@@ -17840,13 +17952,13 @@ async function _buildZincPdfDoc(profile){
     y += boxH + 6;
   };
 
+  // v5.41.103 — sur demande de Rémi : le cumul de traçage est retiré de la
+  // fiche fabricant (pas utile pour lui, c'est une info de pose chantier).
+  // Remplacé par Assemblage + Métrage (fabrication), réglés dans la modale
+  // "Fiche fabricant" juste avant génération.
   block('Développé total', developpe);
-  block(cumulLabel, cumul || 'Non défini');
-  if(otherCumulPdf && pliageTypeCfg.maxMarks && cumul){
-    const otherLabel = pliageTypeCfg.baseIsTop ? 'Cumul de traçage — Bas' : 'Cumul de traçage — Haut';
-    block(otherLabel, otherCumulPdf.map(v => formatMm(v)).join('   →   '));
-  }
-  block('Métrage chantier', metrage || 'Non défini');
+  block('Assemblage', assemblyText);
+  block('Métrage', metrageFabText || 'Non défini');
 
   const safeName = nom.replace(/[^\w\-]+/g,'_').slice(0,40);
   return { doc, fileName: `Pliage_${safeName}.pdf`, nom };
@@ -17935,11 +18047,11 @@ async function unsyncZincFromSite(siteId, zincProfileId){
 
 /* ═══ MODULE — ZincSync  (fin) ═══ */
 
-async function generateZincPdf(profileArg){
+async function generateZincPdf(profileArg, pdfSettingsArg){
   const profile = profileArg || getCurrentZincProfile();
   if(!profile){ showToast('Aucun pliage'); return; }
 
-  const built = await _buildZincPdfDoc(profile);
+  const built = await _buildZincPdfDoc(profile, pdfSettingsArg);
   if(!built){ showToast("Erreur PDF — rechargez l'app"); return; }
   showToast('⏳ Génération du PDF…');
   const { doc, fileName, nom } = built;
@@ -17956,6 +18068,246 @@ async function generateZincPdf(profileArg){
   } catch(e){
     if(e.name !== 'AbortError'){ doc.save(fileName); }
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ZincPdfSettings (v5.41.103)
+   Écran de réglages ouvert par "Générer PDF (fabricant)" AVANT la
+   génération : cadrage du croquis (zoom/pan comme l'outil de croquis),
+   avec/sans assemblage (+ recouvrement en mm), métrage fabrication
+   (simple ou multi-longueurs). Les réglages sont mémorisés sur
+   profile.pdfSettings pour être repris tels quels la prochaine fois.
+   ═══════════════════════════════════════════════════════════════════ */
+let _zincPdfFrame = { offX:0, offY:0, scale:1 }; // état d'édition en cours (unités du viewBox 320×260)
+const ZINC_PDF_FRAME_VB = { w:320, h:260 };
+const ZINC_PDF_ZOOM_MIN = 1;
+const ZINC_PDF_ZOOM_MAX = 5;
+const ZINC_PDF_ZOOM_STEP = 0.5;
+
+function openZincPdfSettings(){
+  const profile = getCurrentZincProfile();
+  if(!profile){ showToast('Aucun pliage'); return; }
+  if(!profile.sketchSegments || !profile.sketchSegments.length){ showToast('Dessine d\'abord la forme du pliage'); return; }
+
+  const saved = profile.pdfSettings || {};
+  _zincPdfFrame = saved.frame ? Object.assign({}, saved.frame) : { offX:0, offY:0, scale:1 };
+
+  // Cadrage : construit le schéma dans le mini-aperçu de la modale
+  const holder = document.getElementById('zincPdfFrameSchema');
+  if(holder) holder.innerHTML = buildSketchZincSchema(profile);
+  _zincPdfApplyFrameTransform();
+
+  // Assemblage
+  const assembly = saved.assembly || { on:false, overlapMm:null };
+  _zincPdfSetAssembly(!!assembly.on, true);
+  document.getElementById('zincPdfOverlapMm').value = assembly.overlapMm || '';
+
+  // Métrage fabrication
+  const mf = saved.metrageFab || { mode:'simple', simpleML:null, lines:[] };
+  _zincPdfMetrageLines = (mf.lines && mf.lines.length) ? mf.lines.map(l => Object.assign({}, l)) : [];
+  _zincPdfSetMetrageMode(mf.mode || 'simple', true);
+  document.getElementById('zincPdfMetrageSimpleML').value = mf.simpleML || '';
+  _zincPdfRenderMetrageLines();
+
+  openModal('zincPdfSettings');
+  _zincPdfSetupFramePanZoom();
+}
+
+/* ── Cadrage (zoom/pan) — même principe que le croquis (v5.41.100/101) :
+   transform CSS sur le conteneur du schéma, converti en viewBox au moment
+   de générer le PDF (voir _zincPdfSchemaToImage). ── */
+function _zincPdfApplyFrameTransform(){
+  const el = document.getElementById('zincPdfFrameSchema');
+  if(!el) return;
+  const wrap = document.getElementById('zincPdfFrameWrap');
+  const w = wrap ? wrap.clientWidth : 320, h = wrap ? wrap.clientHeight : 220;
+  // Convertit offX/offY (unités viewBox 320×260) en pixels écran pour le translate visuel.
+  const pxPerVbX = w / ZINC_PDF_FRAME_VB.w, pxPerVbY = h / ZINC_PDF_FRAME_VB.h;
+  el.style.transform = `scale(${_zincPdfFrame.scale}) translate(${-_zincPdfFrame.offX * pxPerVbX}px, ${-_zincPdfFrame.offY * pxPerVbY}px)`;
+}
+
+function _zincPdfFrameZoomAt(newScale){
+  newScale = Math.min(ZINC_PDF_ZOOM_MAX, Math.max(ZINC_PDF_ZOOM_MIN, newScale));
+  // Recentre approximativement sur le même point en ajustant offX/offY proportionnellement
+  const ratio = newScale / (_zincPdfFrame.scale || 1);
+  const zw = ZINC_PDF_FRAME_VB.w / newScale, zh = ZINC_PDF_FRAME_VB.h / newScale;
+  _zincPdfFrame.scale = newScale;
+  _zincPdfFrame.offX = Math.min(Math.max(_zincPdfFrame.offX * ratio, 0), ZINC_PDF_FRAME_VB.w - zw);
+  _zincPdfFrame.offY = Math.min(Math.max(_zincPdfFrame.offY * ratio, 0), ZINC_PDF_FRAME_VB.h - zh);
+  _zincPdfApplyFrameTransform();
+}
+function _zincPdfFrameZoomIn(){ _zincPdfFrameZoomAt((_zincPdfFrame.scale||1) + ZINC_PDF_ZOOM_STEP); }
+function _zincPdfFrameZoomOut(){ _zincPdfFrameZoomAt((_zincPdfFrame.scale||1) - ZINC_PDF_ZOOM_STEP); }
+function _zincPdfFrameZoomReset(){ _zincPdfFrame = { offX:0, offY:0, scale:1 }; _zincPdfApplyFrameTransform(); }
+
+function _zincPdfClampFrameOffset(){
+  const zw = ZINC_PDF_FRAME_VB.w / _zincPdfFrame.scale, zh = ZINC_PDF_FRAME_VB.h / _zincPdfFrame.scale;
+  _zincPdfFrame.offX = Math.min(Math.max(_zincPdfFrame.offX, 0), Math.max(0, ZINC_PDF_FRAME_VB.w - zw));
+  _zincPdfFrame.offY = Math.min(Math.max(_zincPdfFrame.offY, 0), Math.max(0, ZINC_PDF_FRAME_VB.h - zh));
+}
+
+/* Glisser (1 doigt / clic gauche) ou clic droit maintenu (PC, cohérent avec
+   l'outil de croquis) pour déplacer le cadrage ; pincement à 2 doigts pour
+   zoomer. Posé une seule fois par modale ouverte (dataset flag). */
+function _zincPdfSetupFramePanZoom(){
+  const wrap = document.getElementById('zincPdfFrameWrap');
+  if(!wrap || wrap.dataset.pzSetup) return;
+  wrap.dataset.pzSetup = 'true';
+
+  let dragging = false, dragStart = null, dragStartOff = null;
+  let pinching = false, pinchStartDist = 1, pinchStartScale = 1;
+
+  const toVbDelta = (dxPx, dyPx) => {
+    const w = wrap.clientWidth || 1, h = wrap.clientHeight || 1;
+    return {
+      dx: (dxPx / w) * (ZINC_PDF_FRAME_VB.w / _zincPdfFrame.scale),
+      dy: (dyPx / h) * (ZINC_PDF_FRAME_VB.h / _zincPdfFrame.scale),
+    };
+  };
+
+  const downHandler = e => {
+    if(e.touches && e.touches.length >= 2){
+      e.preventDefault();
+      const t0=e.touches[0], t1=e.touches[1];
+      pinching = true;
+      pinchStartDist = Math.hypot(t1.clientX-t0.clientX, t1.clientY-t0.clientY) || 1;
+      pinchStartScale = _zincPdfFrame.scale;
+      return;
+    }
+    if(!e.touches && e.button === 2){ e.preventDefault(); } // clic droit : pas de menu contextuel
+    if(e.touches && e.touches.length !== 1) return;
+    dragging = true;
+    const t = e.touches ? e.touches[0] : e;
+    dragStart = { x:t.clientX, y:t.clientY };
+    dragStartOff = { x:_zincPdfFrame.offX, y:_zincPdfFrame.offY };
+  };
+  const moveHandler = e => {
+    if(e.touches && e.touches.length >= 2){
+      e.preventDefault();
+      const t0=e.touches[0], t1=e.touches[1];
+      const dist = Math.hypot(t1.clientX-t0.clientX, t1.clientY-t0.clientY) || 1;
+      _zincPdfFrame.scale = Math.min(ZINC_PDF_ZOOM_MAX, Math.max(ZINC_PDF_ZOOM_MIN, pinchStartScale * (dist/pinchStartDist)));
+      _zincPdfClampFrameOffset();
+      _zincPdfApplyFrameTransform();
+      return;
+    }
+    if(pinching) return;
+    if(!dragging) return;
+    // Sur PC, seul le clic droit (button===2) déplace ; sur mobile, tout glisser à 1 doigt.
+    if(!e.touches && e.buttons !== 2) return;
+    e.preventDefault();
+    const t = e.touches ? e.touches[0] : e;
+    const { dx, dy } = toVbDelta(t.clientX - dragStart.x, t.clientY - dragStart.y);
+    _zincPdfFrame.offX = dragStartOff.x - dx;
+    _zincPdfFrame.offY = dragStartOff.y - dy;
+    _zincPdfClampFrameOffset();
+    _zincPdfApplyFrameTransform();
+  };
+  const upHandler = e => {
+    if(e && e.touches && e.touches.length >= 1) return;
+    dragging = false; pinching = false;
+  };
+
+  wrap.addEventListener('mousedown', downHandler);
+  window.addEventListener('mousemove', moveHandler);
+  window.addEventListener('mouseup', upHandler);
+  wrap.addEventListener('touchstart', downHandler, { passive:false });
+  wrap.addEventListener('touchmove', moveHandler, { passive:false });
+  wrap.addEventListener('touchend', upHandler);
+  wrap.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+/* ── Assemblage ── */
+let _zincPdfAssemblyOn = false;
+function _zincPdfSetAssembly(on, silent){
+  _zincPdfAssemblyOn = !!on;
+  document.querySelectorAll('#zincPdfAssemblyChips .chip').forEach(c => {
+    c.classList.toggle('selected', (c.dataset.assembly === '1') === _zincPdfAssemblyOn);
+  });
+  const field = document.getElementById('zincPdfOverlapField');
+  if(field) field.style.display = _zincPdfAssemblyOn ? 'block' : 'none';
+}
+
+/* ── Métrage fabrication ── */
+let _zincPdfMetrageMode = 'simple';
+let _zincPdfMetrageLines = []; // [{qty, lengthML}]
+
+function _zincPdfSetMetrageMode(mode, silent){
+  _zincPdfMetrageMode = mode;
+  document.querySelectorAll('#zincPdfMetrageChips .chip').forEach(c => {
+    c.classList.toggle('selected', c.dataset.metrage === mode);
+  });
+  document.getElementById('zincPdfMetrageSimpleField').style.display = mode === 'simple' ? 'block' : 'none';
+  document.getElementById('zincPdfMetrageMultiField').style.display  = mode === 'multi'  ? 'block' : 'none';
+  if(mode === 'multi' && !_zincPdfMetrageLines.length) _zincPdfAddMetrageLine(true);
+}
+
+function _zincPdfAddMetrageLine(silent){
+  _zincPdfMetrageLines.push({ qty:1, lengthML:null });
+  if(!silent) _zincPdfRenderMetrageLines();
+}
+function _zincPdfRemoveMetrageLine(i){
+  _zincPdfMetrageLines.splice(i, 1);
+  _zincPdfRenderMetrageLines();
+}
+function _zincPdfUpdateMetrageLine(i, field, value){
+  if(!_zincPdfMetrageLines[i]) return;
+  _zincPdfMetrageLines[i][field] = value === '' ? null : parseFloat(String(value).replace(',','.'));
+  _zincPdfRenderMetrageTotal();
+}
+function _zincPdfRenderMetrageLines(){
+  const el = document.getElementById('zincPdfMetrageLines');
+  if(!el) return;
+  el.innerHTML = _zincPdfMetrageLines.map((l, i) => `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <input type="number" min="1" step="1" value="${l.qty != null ? l.qty : ''}" placeholder="Qté"
+             style="width:60px;" onchange="_zincPdfUpdateMetrageLine(${i},'qty',this.value)">
+      <span style="color:var(--ink-soft); font-size:13px;">x</span>
+      <input type="number" min="0" step="0.1" value="${l.lengthML != null ? l.lengthML : ''}" placeholder="mL"
+             style="flex:1;" onchange="_zincPdfUpdateMetrageLine(${i},'lengthML',this.value)">
+      <span style="color:var(--ink-soft); font-size:12px;">mL</span>
+      <button type="button" class="btn btn-outline btn-sm" onclick="_zincPdfRemoveMetrageLine(${i})" title="Retirer">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  `).join('');
+  _zincPdfRenderMetrageTotal();
+}
+function _zincPdfRenderMetrageTotal(){
+  const el = document.getElementById('zincPdfMetrageMultiTotal');
+  if(!el) return;
+  const text = formatZincMetrageFab({ mode:'multi', lines:_zincPdfMetrageLines });
+  el.textContent = text ? text : 'Renseigne au moins une ligne';
+}
+
+/* ── Génération finale : lit tous les réglages, les enregistre sur le
+   profil (repris automatiquement la prochaine fois), puis génère le PDF. ── */
+function _zincPdfSettingsGenerate(){
+  const profile = getCurrentZincProfile();
+  if(!profile) return;
+
+  const overlapMm = parseFloat(document.getElementById('zincPdfOverlapMm').value);
+  if(_zincPdfAssemblyOn && (!overlapMm || overlapMm <= 0)){
+    showToast('Indique le recouvrement en mm, ou décoche "Avec assemblage"');
+    return;
+  }
+
+  const simpleML = parseFloat(document.getElementById('zincPdfMetrageSimpleML').value);
+  const metrageFab = _zincPdfMetrageMode === 'simple'
+    ? { mode:'simple', simpleML: (simpleML > 0 ? simpleML : null), lines:[] }
+    : { mode:'multi', simpleML:null, lines: _zincPdfMetrageLines.filter(l => l.qty > 0 && l.lengthML > 0) };
+
+  const pdfSettings = {
+    frame: Object.assign({}, _zincPdfFrame),
+    assembly: { on: _zincPdfAssemblyOn, overlapMm: _zincPdfAssemblyOn ? Math.round(overlapMm) : null },
+    metrageFab,
+  };
+
+  profile.pdfSettings = pdfSettings;
+  saveData();
+
+  closeModal('zincPdfSettings');
+  generateZincPdf(profile, pdfSettings);
 }
 
 /* ═══ MODULE — ZincPdf  (fin) ═══ */
@@ -18175,20 +18527,34 @@ function buildSketchZincSchema(profile){
 
   const margin = 30;
   const svgW = 320;
+  // v5.41.103 — code couleur : réserve une bande en bas du viewBox pour la
+  // légende (calculée plus bas, une fois les groupes de couleur connus),
+  // pour qu'elle fasse partie du MÊME <svg> que le schéma — indispensable
+  // pour rester visible dans le viewport écran (overflow:hidden, hauteur
+  // fixe) comme dans le PDF/l'image de partage, qui réutilisent tous ce SVG.
+  const legendH = 22;
   const svgH = 260;
-  const scale = Math.min((svgW - margin*2) / w, (svgH - margin*2) / h);
+  const schemaH = svgH - legendH;
+  const scale = Math.min((svgW - margin*2) / w, (schemaH - margin*2) / h);
 
   const toSvg = (p) => ({
     x: margin + (p.x - minX) * scale,
     y: margin + (p.y - minY) * scale
   });
 
-  const segLines = segs.map(seg => {
+  // v5.41.103 — code couleur par cote (voir computeZincCoteColors) : les
+  // segments qui partagent la même valeur ressortent dans la même couleur,
+  // trait ET texte, pour ne plus confondre par ex. deux "15" et deux "30"
+  // sur une Noue à 6 segments.
+  const { colorOf, legend } = computeZincCoteColors(segs);
+
+  const segLines = segs.map((seg, i) => {
     const p1 = toSvg(seg.p1), p2 = toSvg(seg.p2);
-    return `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}" x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" stroke="var(--wood)" stroke-width="4" stroke-linecap="round"/>`;
+    const color = colorOf.get(i) || 'var(--wood)';
+    return `<line x1="${p1.x.toFixed(1)}" y1="${p1.y.toFixed(1)}" x2="${p2.x.toFixed(1)}" y2="${p2.y.toFixed(1)}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`;
   }).join('');
 
-  const labels = segs.map(seg => {
+  const labels = segs.map((seg, i) => {
     const p1 = toSvg(seg.p1), p2 = toSvg(seg.p2);
     const midX = (p1.x + p2.x) / 2;
     const midY = (p1.y + p2.y) / 2;
@@ -18197,7 +18563,8 @@ function buildSketchZincSchema(profile){
     const nx = -dy / len, ny = dx / len;
     const off = 12;
     const tx = midX + nx * off, ty = midY + ny * off;
-    return `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" font-size="11" fill="var(--wood)" text-anchor="middle" font-weight="700">${Math.round(seg.mm)}</text>`;
+    const color = colorOf.get(i) || 'var(--wood)';
+    return `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" font-size="11" fill="${color}" text-anchor="middle" font-weight="700">${Math.round(seg.mm)}</text>`;
   }).join('');
 
   let boudinSvg = '';
@@ -18214,11 +18581,29 @@ function buildSketchZincSchema(profile){
   // preserveAspectRatio + un <svg> qui REMPLIT tout le conteneur (100%/100%)
   // avec object-fit-like "meet" : la forme est TOUJOURS entièrement visible,
   // centrée, jamais rognée, quelle que soit la taille du conteneur.
+  // v5.41.103 — légende DANS le même SVG (bande réservée par legendH),
+  // uniquement si au moins une cote est partagée par 2+ segments. Chaque
+  // entrée : petit trait de couleur + "XXmm", centrées côte à côte.
+  let legendSvg = '';
+  if(legend.length){
+    // largeur allouée par entrée : réduite si beaucoup de couleurs, pour ne jamais déborder du viewBox
+    const chipW = Math.min(46, (svgW - 20) / legend.length);
+    const totalW = legend.length * chipW;
+    const startX = (svgW - totalW) / 2;
+    const ly = svgH - legendH / 2;
+    legendSvg = legend.map((l, i) => {
+      const cx = startX + i * chipW;
+      return `<line x1="${cx.toFixed(1)}" y1="${ly.toFixed(1)}" x2="${(cx+12).toFixed(1)}" y2="${ly.toFixed(1)}" stroke="${l.color}" stroke-width="3" stroke-linecap="round"/>` +
+             `<text x="${(cx+16).toFixed(1)}" y="${ly.toFixed(1)}" font-size="10" font-weight="700" fill="${l.color}" text-anchor="start" dominant-baseline="middle">${l.mm}mm</text>`;
+    }).join('');
+  }
+
   return `
     <svg viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="xMidYMid meet" style="width:100%; height:100%; display:block;">
       ${segLines}
       ${boudinSvg}
       ${labels}
+      ${legendSvg}
     </svg>
   `;
 }
@@ -18264,6 +18649,38 @@ function getProfileBoudinMm(profile){
   if(!profile || !profile.hasBoudin) return 0;
   const v = Number(profile.boudinMm);
   return (Number.isFinite(v) && v > 0) ? Math.round(v) : BOUDIN_DEVELOPPE_MM;
+}
+
+/* v5.41.103 — code couleur par cote : sur demande de Rémi (confusion entre
+   deux segments à 15mm et 30mm sur la Noue, difficiles à distinguer sur le
+   schéma), tout groupe d'AU MOINS 2 segments partageant la même cote (mm
+   arrondi) reçoit une couleur dédiée — le trait ET le chiffre affiché, plus
+   une légende "15mm ── 30mm ──" à côté du schéma. Un segment dont la cote
+   est unique reste dans la couleur normale (var(--wood)). Retourne
+   { colorOf: Map<segIndex,color>, legend: [{mm,color}] } — utilisé par
+   buildSketchZincSchema (écran + export PDF via le même SVG) ET par le
+   rendu canvas de partage (shareSelectedZincProfiles). */
+const ZINC_COTE_COLORS = ['#E4572E','#F4C90C','#2E86AB','#4CAF50','#9C27B0','#FF7F50','#00BCD4','#795548'];
+function computeZincCoteColors(segs){
+  const groups = new Map(); // mm arrondi -> [segIndex,...]
+  (segs || []).forEach((s, i) => {
+    const mm = Math.round(s.mm || 0);
+    if(!mm) return;
+    if(!groups.has(mm)) groups.set(mm, []);
+    groups.get(mm).push(i);
+  });
+  const colorOf = new Map();
+  const legend = [];
+  let ci = 0;
+  // Ordre stable (valeur croissante) pour une légende prévisible d'un export à l'autre.
+  Array.from(groups.keys()).sort((a,b)=>a-b).forEach(mm => {
+    const idxs = groups.get(mm);
+    if(idxs.length < 2) return; // cote unique : pas besoin de la distinguer, reste couleur normale
+    const color = ZINC_COTE_COLORS[ci % ZINC_COTE_COLORS.length]; ci++;
+    idxs.forEach(i => colorOf.set(i, color));
+    legend.push({ mm, color });
+  });
+  return { colorOf, legend };
 }
 
 /* v5.41.96 — géométrie du boudin, TOUJOURS accroché au début du segment 1
@@ -31551,9 +31968,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.102';
+const APP_VERSION = '5.41.103';
 
 const CHANGELOG = [
+  {
+    version: '5.41.103',
+    date: '20/09/2026',
+    entries: [
+      { icon: '🖨️', text: "Génération PDF (fabricant) entièrement revue : un nouvel écran de réglages s'ouvre avant chaque génération. On y choisit le cadrage du croquis (zoom/déplacement libre, y compris clic droit maintenu sur PC), avec ou sans assemblage (avec recouvrement en mm si oui), et le métrage fabrication en mètre linéaire (simple ou multi avec plusieurs lignes quantité × longueur, total calculé automatiquement). Ces réglages sont mémorisés par pliage." },
+      { icon: '🎨', text: "Sur le croquis (écran et PDF) : les cotes de même valeur (ex : deux segments à 15mm) sont maintenant colorées de la même couleur, avec une légende affichant chaque valeur et sa couleur — plus facile de s'y retrouver sur une noue par exemple." },
+      { icon: '🗑️', text: "Le cumul de traçage n'apparaît plus sur la fiche PDF fabricant (pas utile pour lui) — il reste disponible normalement dans l'app pour le chantier." },
+    ],
+  },
   {
     version: '5.41.102',
     date: '20/09/2026',
