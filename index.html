@@ -7907,6 +7907,11 @@ async function initRwoodStorage(){
   // DELETED_MEDIA_KEY) — indispensable pour que le filtre s'applique dès
   // les premiers cycles de synchro, avant même qu'une fusion ne se produise.
   setTimeout(()=> { if(typeof _preloadDeletedMediaIds === 'function') _preloadDeletedMediaIds(); }, 3000);
+  // v5.41.102 — même précharge pour la tombstone des pliages zinc
+  // définitivement supprimés (voir DELETED_ZINC_KEY) : sans ce préchargement,
+  // le cache est vide au tout premier cycle de fusion et un pliage supprimé
+  // juste avant peut brièvement revenir le temps qu'un appel réseau finisse.
+  setTimeout(()=> { if(typeof _preloadDeletedZincIds === 'function') _preloadDeletedZincIds(); }, 3000);
   setTimeout(()=> pullSharedSites(), 4500);
   // Fix pointage vide au 1er lancement : re-render après que pullSharedSites a fini
   setTimeout(()=> { try{ if(currentHeuresMode === 'pointage') renderPointage(); }catch(e){} }, 5500);
@@ -8323,7 +8328,10 @@ function mergeSyncedData(local, remote){
   merged.itineraries = mergeArrayById(local.itineraries, remote.itineraries);
   merged.tasks = mergeArrayById(local.tasks, remote.tasks);
   merged.comptableSites = mergeArrayById(local.comptableSites, remote.comptableSites);
-  merged.zincProfiles = mergeArrayById(local.zincProfiles, remote.zincProfiles);
+  // v5.41.102 — exclut les pliages définitivement supprimés (tombstone) du
+  // résultat de la fusion, des deux côtés, sinon un appareil qui n'a pas
+  // encore vu la suppression le repousse indéfiniment (voir DELETED_ZINC_KEY).
+  merged.zincProfiles = _filterDeletedZinc(mergeArrayById(local.zincProfiles, remote.zincProfiles));
   merged.favorites = mergeArrayById(local.favorites, remote.favorites);
   // Fusion granulaire des pointages : aucun ouvrier n'écrase le pointage d'un collègue.
   merged.attendance = mergeAttendanceGranular(local.attendance, remote.attendance);
@@ -17316,8 +17324,14 @@ function deleteSelectedZincProfiles(){
   if(count === 0) return;
   if(!confirm(`Supprimer ${count} pliage${count > 1 ? 's' : ''} ?`)) return;
   ensureZincProfiles();
+  // v5.41.102 — tombstone : voir DELETED_ZINC_KEY / deleteZincProfile.
+  const toUnsync = data.zincProfiles
+    .filter(p => zincSelectedProfileIds.includes(p.id))
+    .map(p => ({ id: p.id, siteId: p.siteId }));
   data.zincProfiles = data.zincProfiles.filter(p=>!zincSelectedProfileIds.includes(p.id));
   saveData();
+  _addDeletedZincIds(zincSelectedProfileIds.slice());
+  toUnsync.forEach(({ id, siteId }) => { if(siteId) unsyncZincFromSite(siteId, id); });
   zincSelectedProfileIds = [];
   zincSelectMode = false;
   document.getElementById('zincSelectModeBtn').innerHTML = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12.5l3 3 5-6"/></svg> Sélectionner';
@@ -17363,8 +17377,15 @@ function renderZincProfileList(){
 function deleteZincProfile(profileId){
   if(!confirm('Supprimer ce pliage ?')) return;
   ensureZincProfiles();
+  const prof = data.zincProfiles.find(p=>p.id===profileId);
+  const siteId = prof && prof.siteId;
   data.zincProfiles = data.zincProfiles.filter(p=>p.id!==profileId);
   saveData();
+  // v5.41.102 — tombstone : sans ça, un autre appareil (ou le serveur, pas
+  // encore synchronisé) repousse l'ancienne version au prochain pull et le
+  // pliage "revient" — voir DELETED_ZINC_KEY.
+  _addDeletedZincIds([profileId]);
+  if(siteId) unsyncZincFromSite(siteId, profileId); // retire aussi le PDF partagé du chantier
   renderZincProfileList();
   renderZincGallery();
 }
@@ -18477,6 +18498,8 @@ function deleteZincProfileFromDetail(profileId){
   const siteId = (prof && prof.siteId) || currentDetailSite;
   data.zincProfiles = data.zincProfiles.filter(p=>p.id!==profileId);
   saveData();
+  // v5.41.102 — tombstone : voir DELETED_ZINC_KEY / deleteZincProfile.
+  _addDeletedZincIds([profileId]);
   // MODULE ZincSync : retirer aussi le pliage de la synchro conducteur
   if(siteId) unsyncZincFromSite(siteId, profileId);
   renderSiteZincList(currentDetailSite);
@@ -31528,9 +31551,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.101';
+const APP_VERSION = '5.41.102';
 
 const CHANGELOG = [
+  {
+    version: '5.41.102',
+    date: '20/09/2026',
+    entries: [
+      { icon: '🐛', text: "Corrigé un pliage supprimé qui pouvait revenir après une synchronisation (même principe que le correctif déjà en place pour les chantiers supprimés) : la suppression d'un pliage est maintenant mémorisée définitivement, elle résiste à n'importe quel appareil qui resynchronise ensuite avec l'ancienne version." },
+    ],
+  },
   {
     version: '5.41.101',
     date: '20/09/2026',
@@ -40157,6 +40187,87 @@ async function _removeDeletedSiteId(siteId){
       })
     });
   } catch(e){ /* silencieux */ }
+}
+
+/* v5.41.102 — Tombstone PLIAGES ZINC — même principe que DELETED_SITES_KEY :
+   mergeArrayById() fait volontairement une UNION locale/distant pour ne
+   jamais perdre un pliage ajouté ailleurs pendant une synchro, mais ça
+   annule silencieusement une suppression volontaire dès qu'un autre appareil
+   (ou le serveur, pas encore synchronisé au moment du delete) repousse
+   l'ancienne version. Rémi confirme que les pliages supprimés "reviennent à
+   chaque fois" — même bug que les chantiers avant l'ajout de leur tombstone.
+   Un id supprimé ici est mémorisé définitivement (localStorage + serveur) et
+   exclu de toute fusion/pull ultérieure, quel que soit l'appareil. */
+const DELETED_ZINC_KEY = 'company_deleted_zinc';
+const DELETED_ZINC_LOCAL_KEY = 'rwood_deleted_zinc_ids'; // cache local synchrone, lu avant même le premier appel réseau
+
+let _deletedZincIdsCache = null;
+
+function _loadDeletedZincIdsLocal(){
+  try{
+    const raw = localStorage.getItem(DELETED_ZINC_LOCAL_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function _saveDeletedZincIdsLocal(ids){
+  try{ localStorage.setItem(DELETED_ZINC_LOCAL_KEY, JSON.stringify(ids)); }catch(e){}
+}
+
+async function _fetchDeletedZincIds(){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(DELETED_ZINC_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return _loadDeletedZincIdsLocal();
+    const rows = await res.json();
+    if(!rows || !rows.length) return _loadDeletedZincIdsLocal();
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const ids = (d && d.ids) || [];
+    // Union avec le cache local : un id supprimé hors-ligne (pas encore
+    // poussé au serveur) doit rester filtré même si le serveur l'ignore encore.
+    const merged = Array.from(new Set([...ids, ..._loadDeletedZincIdsLocal()]));
+    _deletedZincIdsCache = merged;
+    return merged;
+  } catch(e){ return _loadDeletedZincIdsLocal(); }
+}
+
+/* Marque un ou plusieurs pliages comme définitivement supprimés : écrit
+   immédiatement en local (synchrone, résiste à une coupure réseau) puis
+   pousse au serveur pour que les autres appareils en tiennent compte. */
+async function _addDeletedZincIds(ids){
+  if(!ids || !ids.length) return;
+  const localIds = Array.from(new Set([..._loadDeletedZincIdsLocal(), ...ids]));
+  _saveDeletedZincIdsLocal(localIds);
+  _deletedZincIdsCache = localIds;
+  try{
+    const existing = await _fetchDeletedZincIds();
+    const merged = Array.from(new Set([...existing, ...ids]));
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        user_id: DELETED_ZINC_KEY,
+        updated_at: new Date().toISOString(),
+        data: JSON.stringify({ ids: merged })
+      })
+    });
+    _saveDeletedZincIdsLocal(merged);
+    _deletedZincIdsCache = merged;
+  }catch(e){ /* le cache local déjà écrit suffit à filtrer en attendant */ }
+}
+
+/* Filtre synchrone (pas d'appel réseau) réutilisant le cache local, pour que
+   mergeArrayById puisse exclure les pliages tombstoned sans devenir async. */
+function _filterDeletedZinc(profiles){
+  if(!Array.isArray(profiles) || !profiles.length) return profiles;
+  const ids = _deletedZincIdsCache || _loadDeletedZincIdsLocal();
+  if(!ids || !ids.length) return profiles;
+  const blacklist = new Set(ids);
+  return profiles.filter(p => !(p && blacklist.has(p.id)));
+}
+
+/* À appeler une fois au démarrage (comme _preloadDeletedMediaIds) pour que
+   _filterDeletedZinc dispose d'une liste à jour dès les premières fusions. */
+async function _preloadDeletedZincIds(){
+  _deletedZincIdsCache = await _fetchDeletedZincIds();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
