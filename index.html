@@ -32211,9 +32211,25 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.134';
+const APP_VERSION = '5.41.136';
 
 const CHANGELOG = [
+  {
+    version: '5.41.136',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif « le croquis rétrécit d'un coup » — la résolution du canvas ne se réajustait pas quand la sidebar changeait de hauteur (ex. juste après une découpe), ce qui étirait l'ancien dessin dans une boîte plus petite. Le canvas se réajuste maintenant automatiquement, sans perdre le contenu déjà dessiné." },
+    ],
+  },
+  {
+    version: '5.41.135',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif Découpe — elle figeait TOUT le croquis (plus moyen de sélectionner/déplacer aucune forme après une découpe), au lieu de ne figer que ce qui se trouve réellement dans la zone découpée. Le reste du dessin reste maintenant normalement sélectionnable et déplaçable." },
+      { icon: '🎯', text: "Croquis Paint : nouveau bouton « Positionner le fond » — une fois activé, la molette et le clic droit maintenu cadrent/zooment le FOND (plan/photo) indépendamment du croquis, pour zoomer sur une pièce précise avant de dessiner dessus. Un bouton « Recentrer le fond » réinitialise ce cadrage." },
+      { icon: '🔗', text: "Croquis Paint : le fond suit maintenant le zoom/déplacement du croquis (comme demandé) — il ne reste plus statique quand on zoome sur le dessin." },
+    ],
+  },
   {
     version: '5.41.134',
     date: '21/09/2026',
@@ -51897,6 +51913,8 @@ function openPaintSketchTool(onSave, existingPaint){
           <div>
             <button type="button" class="btn btn-outline" onclick="document.getElementById('paintBgFileInput').click()" style="width:100%;">🖼️ Fond (plan/photo)</button>
             <input type="file" id="paintBgFileInput" accept="image/*,application/pdf" style="display:none;" onchange="_paintPickBackground(event)">
+            <button type="button" id="paintBgPositionBtn" style="display:none;width:100%;margin-top:5px;padding:7px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer;" onclick="_paintToggleBgPositioning()">🎯 Positionner le fond</button>
+            <button type="button" id="paintBgResetBtn" class="btn btn-outline" style="display:none;width:100%;margin-top:5px;" onclick="_paintResetBgTransform()">↺ Recentrer le fond</button>
             <button type="button" id="paintBgClearBtn" class="btn btn-outline" style="display:none;width:100%;margin-top:5px;" onclick="_paintClearBackground()">🗑️ Retirer le fond</button>
           </div>
           <div>
@@ -51982,11 +52000,19 @@ function openPaintSketchTool(onSave, existingPaint){
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
     history: [],
     baseImage, baseHistory: [],
-    // v5.41.134 — fond optionnel (plan PDF ou photo) sur lequel dessiner :
+    // v5.41.135 — fond optionnel (plan PDF ou photo) sur lequel dessiner :
     // une image de référence, dessinée tout en dessous (avant baseImage et
     // les formes), jamais affectée par Découpe/Annuler/Tout effacer — on
     // dessine PAR-DESSUS un plan, on ne le modifie pas.
+    // Le fond suit le zoom/déplacement normal de la vue (`view`) comme le
+    // reste du croquis (pour rester aligné avec les traits dessinés dessus),
+    // mais a EN PLUS sa propre transformation (`bgTransform`) qu'on peut
+    // ajuster en mode « Positionner le fond » — pour cadrer/zoomer sur une
+    // pièce précise du plan AVANT de dessiner, indépendamment du zoom du
+    // croquis lui-même.
     bgImage: null,
+    bgTransform: { scale: 1, x: 0, y: 0 },
+    bgPositioning: false,
     // v5.41.130 — zoom/déplacement de la vue : ne modifie jamais les
     // coordonnées des formes, seulement la transformation d'affichage du
     // canvas (comme un plan qu'on regarde de plus ou moins près).
@@ -52001,6 +52027,40 @@ function openPaintSketchTool(onSave, existingPaint){
     const scaleX = canvas.width / sw, scaleY = canvas.height / sh;
     _paint.shapes = existingPaint.shapes.map(sh2 => _paintScaleShape(sh2, scaleX, scaleY));
   }
+
+  // v5.41.136 — CORRECTIF « le croquis rétrécit d'un coup » : la résolution
+  // interne du canvas (canvas.width/height) était figée à l'ouverture de
+  // l'outil, mais la boîte CSS de `wrap` peut changer de taille juste après
+  // (la sidebar affiche/masque des boutons selon le contexte — ex. après une
+  // découpe — ce qui reflow la mise en page). Le navigateur étire alors
+  // l'ancien buffer dans la nouvelle boîte CSS, ce qui SEMBLE un
+  // rétrécissement brutal du dessin. Un ResizeObserver sur `wrap` garde le
+  // buffer du canvas ET du calque figé (baseImage) toujours à la bonne
+  // résolution, en réempilant le contenu existant du calque figé dans le
+  // nouveau buffer (jamais dans les formes vectorielles, qui restent en
+  // coordonnées « monde » indépendantes de la résolution écran).
+  let _paintLastWrapSize = { w: canvas.width, h: canvas.height };
+  const paintResizeObserver = new ResizeObserver(() => {
+    if(!_paint) return;
+    const r2 = wrap.getBoundingClientRect();
+    const newW = Math.round(r2.width * _paint.dpr), newH = Math.round(r2.height * _paint.dpr);
+    if(newW < 1 || newH < 1) return;
+    if(newW === _paintLastWrapSize.w && newH === _paintLastWrapSize.h) return;
+    _paintLastWrapSize = { w: newW, h: newH };
+    // Recopier le calque figé existant dans un nouveau buffer à la bonne
+    // taille (mêmes pixels, jamais réétirés — juste replacés en haut à
+    // gauche ; le contenu hors du nouveau cadre est simplement rogné).
+    const newBase = document.createElement('canvas');
+    newBase.width = newW; newBase.height = newH;
+    newBase.getContext('2d').drawImage(_paint.baseImage, 0, 0);
+    _paint.baseImage = newBase;
+    canvas.width = newW; canvas.height = newH;
+    _paintRedraw();
+  });
+  paintResizeObserver.observe(wrap);
+  // Le observer doit s'arrêter quand l'outil se ferme, sinon il continue de
+  // tourner sur un `wrap` retiré du DOM.
+  _paint._resizeObserver = paintResizeObserver;
 
   _paintRenderToolList();
   _paintRenderSymbolList();
@@ -52033,8 +52093,23 @@ function openPaintSketchTool(onSave, existingPaint){
     const r = canvas.getBoundingClientRect();
     const cx = (ev.clientX - r.left) * (canvas.width/r.width);
     const cy = (ev.clientY - r.top) * (canvas.height/r.height);
-    const v = _paint.view;
     const factor = ev.deltaY < 0 ? 1.12 : 1/1.12;
+    // v5.41.135 — en mode « Positionner le fond », la molette zoome le FOND
+    // (bgTransform) plutôt que la vue du croquis (view) — pour cadrer/zoomer
+    // sur une pièce précise du plan indépendamment du zoom du croquis.
+    if(_paint.bgPositioning && _paint.bgImage){
+      const v = _paint.view, bt = _paint.bgTransform;
+      // Point du monde (coordonnées vue) sous le curseur, puis point local au fond.
+      const wx = (cx - v.x) / v.scale, wy = (cy - v.y) / v.scale;
+      const bx = (wx - bt.x) / bt.scale, by = (wy - bt.y) / bt.scale;
+      const newScale = Math.min(8, Math.max(0.1, bt.scale * factor));
+      bt.scale = newScale;
+      bt.x = wx - bx * bt.scale;
+      bt.y = wy - by * bt.scale;
+      _paintRedraw();
+      return;
+    }
+    const v = _paint.view;
     const newScale = Math.min(8, Math.max(0.25, v.scale * factor));
     // Zoom centré sous le curseur : le point du monde sous la souris reste sous la souris.
     const wx = (cx - v.x) / v.scale, wy = (cy - v.y) / v.scale;
@@ -52047,8 +52122,18 @@ function openPaintSketchTool(onSave, existingPaint){
   canvas.onmousedown = e => {
     e.preventDefault();
     if(e.button === 2){
+      // v5.41.135 — en mode « Positionner le fond », le clic droit déplace
+      // le FOND (bgTransform) plutôt que la vue du croquis.
+      if(_paint.bgPositioning && _paint.bgImage){
+        _paint.panning = true;
+        _paint.panBg = true;
+        _paint.panStart = { x:e.clientX, y:e.clientY };
+        _paint.panViewStart = { x:_paint.bgTransform.x, y:_paint.bgTransform.y };
+        return;
+      }
       // Clic droit : déplacement de la vue, quel que soit l'outil actif.
       _paint.panning = true;
+      _paint.panBg = false;
       _paint.panStart = { x:e.clientX, y:e.clientY };
       _paint.panViewStart = { x:_paint.view.x, y:_paint.view.y };
       return;
@@ -52118,8 +52203,10 @@ function openPaintSketchTool(onSave, existingPaint){
       const dx = e.clientX - _paint.panStart.x, dy = e.clientY - _paint.panStart.y;
       const r = canvas.getBoundingClientRect();
       const scaleX = canvas.width/r.width, scaleY = canvas.height/r.height;
-      _paint.view.x = _paint.panViewStart.x + dx * scaleX;
-      _paint.view.y = _paint.panViewStart.y + dy * scaleY;
+      // v5.41.135 — panBg : on déplace le FOND (bgTransform), pas la vue.
+      const target = _paint.panBg ? _paint.bgTransform : _paint.view;
+      target.x = _paint.panViewStart.x + dx * scaleX;
+      target.y = _paint.panViewStart.y + dy * scaleY;
       _paintRedraw();
       return;
     }
@@ -52146,7 +52233,7 @@ function openPaintSketchTool(onSave, existingPaint){
   };
   const finishDraw = e => {
     if(!_paint) return;
-    if(_paint.panning){ _paint.panning = false; return; }
+    if(_paint.panning){ _paint.panning = false; _paint.panBg = false; return; }
     if(_paint.resizing){ _paint.resizing = false; _paint.resizeHandle = null; return; }
     if(_paint.dragging){ _paint.dragging = false; return; }
     if(!_paint.drawing) return;
@@ -52246,6 +52333,10 @@ function _paintSetTool(id){
   if(!_paint) return;
   _paint.tool = id;
   _paint.selectedIdx = -1;
+  // v5.41.135 — choisir un outil de dessin sort automatiquement du mode
+  // « Positionner le fond », pour éviter de continuer à déplacer le plan
+  // par erreur pendant qu'on dessine.
+  if(_paint.bgPositioning){ _paint.bgPositioning = false; _paintUpdateBgPositionBtn(); }
   _paintUpdateDeleteBtn();
   _paintRenderToolList();
   _paintRenderSymbolList();
@@ -52365,16 +52456,33 @@ function _paintClearAll(){
    Les formes vectorielles sont ensuite vidées puisqu'elles font désormais
    partie du bitmap figé (elles ne sont plus sélectionnables/déplaçables
    individuellement — c'est le prix d'une vraie découpe, comme demandé). */
+/* v5.41.135 — CORRECTIF : la découpe aplatissait TOUTES les formes du
+   croquis (pas seulement celles touchées par la zone découpée), rendant
+   tout le reste du dessin non sélectionnable/déplaçable après coup. On ne
+   fige désormais QUE les formes dont le cadre englobant touche la zone
+   découpée ; les autres restent des formes vectorielles normales,
+   toujours sélectionnables et déplaçables avec l'outil Sélection. */
 function _paintCommitErase(x1, y1, x2, y2){
   if(!_paint) return;
   const rx0 = Math.min(x1,x2), ry0 = Math.min(y1,y2), rw = Math.abs(x2-x1), rh = Math.abs(y2-y1);
   if(rw < 1 || rh < 1) return;
+  const touched = [], untouched = [];
+  _paint.shapes.forEach(s => {
+    const b = _paintShapeBounds(s);
+    const overlaps = b.x1 < rx0+rw && b.x2 > rx0 && b.y1 < ry0+rh && b.y2 > ry0;
+    (overlaps ? touched : untouched).push(s);
+  });
+  if(!touched.length){
+    // Rien à découper dans cette zone : aucune forme touchée, rien à figer.
+    showToast('Aucun élément dans cette zone');
+    return;
+  }
   _paintPushHistory();
   const bctx = _paint.baseImage.getContext('2d');
-  // 1) Aplatir les formes vectorielles actuelles par-dessus le calque figé.
+  // 1) Aplatir UNIQUEMENT les formes touchées par-dessus le calque figé.
   bctx.save();
   bctx.setTransform(1,0,0,1,0,0);
-  _paintDrawShapesOn(bctx, _paint.shapes, -1, 1);
+  _paintDrawShapesOn(bctx, touched, -1, 1);
   bctx.restore();
   // 2) Percer un trou dans la zone découpée (alpha = 0, vraiment transparent).
   bctx.save();
@@ -52382,8 +52490,9 @@ function _paintCommitErase(x1, y1, x2, y2){
   bctx.fillStyle = '#000';
   bctx.fillRect(rx0, ry0, rw, rh);
   bctx.restore();
-  // 3) Les formes sont maintenant dans le bitmap : on vide le calque vectoriel.
-  _paint.shapes = [];
+  // 3) Seules les formes touchées ont rejoint le bitmap : les autres
+  // restent vectorielles, toujours sélectionnables/déplaçables.
+  _paint.shapes = untouched;
   _paint.selectedIdx = -1;
   _paint._baseHasContent = true;
   _paintUpdateDeleteBtn();
@@ -52416,9 +52525,12 @@ async function _paintPickBackground(ev){
       img = await _paintLoadImageFile(file);
     }
     _paint.bgImage = img;
+    _paint.bgTransform = { scale: 1, x: 0, y: 0 };
     document.getElementById('paintBgClearBtn').style.display = 'block';
+    document.getElementById('paintBgPositionBtn').style.display = 'block';
+    document.getElementById('paintBgResetBtn').style.display = 'block';
     _paintRedraw();
-    showToast('✅ Fond chargé');
+    showToast('✅ Fond chargé — active « Positionner le fond » pour le cadrer/zoomer avant de dessiner');
   } catch(err){
     console.error(err);
     showToast('❌ Impossible de charger ce fichier comme fond');
@@ -52456,8 +52568,37 @@ async function _paintRenderPdfToImage(file){
 function _paintClearBackground(){
   if(!_paint) return;
   _paint.bgImage = null;
-  const btn = document.getElementById('paintBgClearBtn');
-  if(btn) btn.style.display = 'none';
+  _paint.bgPositioning = false;
+  ['paintBgClearBtn','paintBgPositionBtn','paintBgResetBtn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if(btn) btn.style.display = 'none';
+  });
+  _paintUpdateBgPositionBtn();
+  _paintRedraw();
+}
+/* v5.41.135 — mode « Positionner le fond » : bascule ce que la molette et
+   le clic droit maintenu pilotent — la vue du croquis (par défaut) ou le
+   cadrage du fond lui-même (bgTransform), pour zoomer/cadrer sur une pièce
+   précise du plan avant de dessiner dessus, indépendamment du zoom du
+   croquis. Se désactive automatiquement dès qu'on choisit un outil de
+   dessin, pour éviter de continuer à déplacer le plan par erreur. */
+function _paintToggleBgPositioning(){
+  if(!_paint || !_paint.bgImage) return;
+  _paint.bgPositioning = !_paint.bgPositioning;
+  _paintUpdateBgPositionBtn();
+  showToast(_paint.bgPositioning ? '🎯 Molette et clic droit déplacent le FOND' : '✅ Molette et clic droit déplacent le croquis');
+}
+function _paintUpdateBgPositionBtn(){
+  const btn = document.getElementById('paintBgPositionBtn');
+  if(!btn || !_paint) return;
+  const on = _paint.bgPositioning;
+  btn.style.background = on ? 'var(--wood)' : 'var(--bg)';
+  btn.style.color = on ? '#1a0d00' : 'var(--ink)';
+  btn.style.borderColor = on ? 'var(--wood)' : 'var(--line)';
+}
+function _paintResetBgTransform(){
+  if(!_paint) return;
+  _paint.bgTransform = { scale: 1, x: 0, y: 0 };
   _paintRedraw();
 }
 
@@ -52803,21 +52944,30 @@ function _paintRedraw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
-  // v5.41.134 — fond optionnel (plan/photo), tout en dessous de tout le
-  // reste, jamais modifié par le dessin (Découpe/Annuler/Tout effacer ne le
-  // touchent pas) : on dessine PAR-DESSUS un plan, on ne l'altère pas.
-  if(_paint.bgImage) ctx.drawImage(_paint.bgImage, 0, 0, canvas.width, canvas.height);
-  // v5.41.132 — calque figé (résultat des découpes destructives déjà
-  // validées) : une image bitmap dessinée telle quelle, AVANT les formes
-  // vectorielles encore modifiables. Toujours en coordonnées canvas brutes
-  // (pas de transform vue), car son contenu est déjà « à l'échelle du monde ».
-  if(_paint.baseImage) ctx.drawImage(_paint.baseImage, 0, 0);
 
   // v5.41.130 — zoom/déplacement de la vue : une transformation globale du
-  // contexte, appliquée AVANT de dessiner formes/poignées/aperçu, pour que
-  // tout le reste du code continue de raisonner en coordonnées « monde ».
+  // contexte, appliquée AVANT de dessiner fond/formes/poignées/aperçu, pour
+  // que tout le reste du code continue de raisonner en coordonnées « monde ».
   const v = _paint.view;
   ctx.setTransform(v.scale, 0, 0, v.scale, v.x, v.y);
+
+  // v5.41.135 — fond optionnel (plan/photo) : suit le zoom/déplacement
+  // normal de la vue (reste aligné avec les traits dessinés dessus), PLUS
+  // sa propre transformation (bgTransform), composée par-dessus — pour
+  // cadrer/zoomer sur une pièce précise du plan indépendamment du zoom du
+  // croquis. Jamais modifié par Découpe/Annuler/Tout effacer.
+  if(_paint.bgImage){
+    const bt = _paint.bgTransform;
+    ctx.save();
+    ctx.translate(bt.x, bt.y);
+    ctx.scale(bt.scale, bt.scale);
+    ctx.drawImage(_paint.bgImage, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+  // v5.41.132 — calque figé (résultat des découpes destructives déjà
+  // validées) : une image bitmap dessinée telle quelle, à l'échelle de la
+  // vue comme le reste (coordonnées « monde »).
+  if(_paint.baseImage) ctx.drawImage(_paint.baseImage, 0, 0);
 
   _paintDrawShapesOn(ctx, _paint.shapes, _paint.selectedIdx, v.scale);
 
@@ -52871,6 +53021,9 @@ function _paintRedraw(){
 function _paintClose(){
   const m = document.getElementById('modal-paintTool');
   if(m) m.remove();
+  // v5.41.136 — stopper le ResizeObserver du canvas, sinon il continue de
+  // tourner (et de tenter de redessiner) sur un `wrap` retiré du DOM.
+  if(_paint && _paint._resizeObserver) _paint._resizeObserver.disconnect();
   _paint = null;
 }
 function _paintFinish(){
