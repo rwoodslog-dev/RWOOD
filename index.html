@@ -10867,6 +10867,24 @@ async function galerieDeleteConfirmed(){
 
 /* Lightbox plein écran. */
 let _galerieLbIndex = -1;
+/* v5.41.141 — ouvre l'image d'un message 'croquis' (Alertes/conversation)
+   dans la visionneuse plein écran zoomable de la Galerie, en lui donnant un
+   tableau d'UNE seule photo — réutilise tout le pincement/zoom/déplacement
+   déjà en place, sans dupliquer cette logique pour les conversations. */
+function _openCroquisLightbox(alertId){
+  let found = null;
+  for(const row of (_alertesChatRowsCache||[])){
+    const a = (row.alerts||[]).find(x => x.id === alertId);
+    if(a){ found = a; break; }
+  }
+  if(!found || !found.croquisUrl) return;
+  _galerieCurrentPhotos = [{
+    url: found.croquisUrl,
+    uploadedBy: found.senderName || '',
+    uploadedAt: found.createdAt || null,
+  }];
+  galerieOpenLightbox(0);
+}
 function galerieOpenLightbox(index){
   const photos = _galerieCurrentPhotos || [];
   if(!photos.length || index < 0 || index >= photos.length) return;
@@ -13694,7 +13712,7 @@ async function renderAlertesChatList(){
     return;
   }
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐' };
   const myId = getDeviceSyncId();
   const rows = [];
   if(broadcast.length) rows.push({ type:'broadcast', key:'__broadcast__', authId:null, name:'Toute l\'équipe', alerts: broadcast });
@@ -13754,11 +13772,17 @@ async function _renderChatThreadModal(row){
   }
   ex.classList.add('open');
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐' };
   const myId = getDeviceSyncId();
   const bubblesHtml = row.alerts.length ? row.alerts.slice().reverse().map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
     const txt = (a.text||'').replace(/^.*? : /,'');
+    // v5.41.141 — un message 'croquis' porte une image (croquisUrl) : elle
+    // s'affiche directement DANS la bulle, cliquable pour l'ouvrir en plein
+    // écran zoomable (réutilise le visionneuse photo de la Galerie).
+    const croquisImgHtml = (a.kind === 'croquis' && a.croquisUrl) ? `
+      <img src="${escapeHtml(a.croquisUrl)}" alt="Croquis" loading="lazy" onclick="event.stopPropagation(); _openCroquisLightbox('${a.id}')"
+        style="display:block;max-width:100%;width:220px;border-radius:8px;margin-top:6px;cursor:zoom-in;border:1px solid rgba(0,0,0,0.1);">` : '';
     if(a.direction === 'in'){
       const isRead = a.readBy && a.readBy.includes(myId);
       const actionHtml = row.type === 'broadcast' ? '' : _alertReceivedActionsHtml(a, isRead, myId, renderAlertesChatList, 'conv');
@@ -13766,6 +13790,7 @@ async function _renderChatThreadModal(row){
         <div style="display:flex;justify-content:flex-start;margin-bottom:10px;">
           <div style="max-width:85%;background:var(--bg-elev);border:1px solid var(--line);border-radius:14px 14px 14px 3px;padding:10px 13px;">
             <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
+            ${croquisImgHtml}
             <div style="font-size:10.5px;color:var(--ink-soft);margin-top:4px;">${dateLabel}</div>
             ${actionHtml ? `<div class="row-actions-wrap" style="margin-top:8px;">${actionHtml}</div>` : ''}
           </div>
@@ -13777,6 +13802,7 @@ async function _renderChatThreadModal(row){
       <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
         <div style="max-width:85%;background:var(--wood);color:#fff;border-radius:14px 14px 3px 14px;padding:10px 13px;">
           <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
+          ${croquisImgHtml}
           <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:right;">${dateLabel}</div>
           ${deleteHtml}
         </div>
@@ -13818,7 +13844,13 @@ async function _renderChatThreadModal(row){
   // JSON.stringify en &quot; (le JS ré-interprète correctement l'entité une
   // fois l'attribut lu par le navigateur).
   const nameJsonAttr = JSON.stringify(row.name).replace(/"/g, '&quot;');
-  const messageBoxHtml = (resendAuthId && row.type !== 'broadcast') ? `
+  // v5.41.141 — « Envoyer un croquis » directement dans la conversation :
+  // même gating que la zone de message (il faut connaître le destinataire,
+  // et ce n'est pas la diffusion "Toute l'équipe").
+  const canSendCroquis = resendAuthId && row.type !== 'broadcast';
+  const sketchBtnHtml = canSendCroquis ? `
+    <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_openSendCroquisFromChat('${resendAuthId}', ${nameJsonAttr})">📐 Envoyer un croquis</button>` : '';
+  const messageBoxHtml = canSendCroquis ? `
     <div style="display:flex; gap:6px;">
       <input type="text" id="chatThreadMsgInput" placeholder="Écris un message…" style="flex:1; padding:9px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:13.5px; font-family:inherit;"
         onkeydown="if(event.key==='Enter'){event.preventDefault();sendQuickMessageInThread('${resendAuthId}', ${nameJsonAttr});}">
@@ -13833,6 +13865,7 @@ async function _renderChatThreadModal(row){
       </div>
       <div style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
       ${otherKindsBtn}
+      ${sketchBtnHtml}
       ${messageBoxHtml}
     </div>`;
 
@@ -32211,9 +32244,32 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.138';
+const APP_VERSION = '5.41.141';
 
 const CHANGELOG = [
+  {
+    version: '5.41.141',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🖼️', text: "Croquis Paint : l'enregistrement cadre maintenant automatiquement sur ce qui a vraiment été dessiné (formes + calque figé), pour qu'un croquis fait en dézoomant/déplaçant la vue ne perde plus de formes hors-cadre à l'ouverture. Le visualisateur photo (zoom/déplacement au doigt ou à la molette) permet ensuite de regarder un détail de plus près." },
+      { icon: '📐', text: "Alertes : nouveau bouton « Envoyer un croquis » dans une conversation — dessine (Croquis Paint sur PC, à main levée sur mobile) et envoie directement à un chef ou un ouvrier, avec la possibilité de l'ajouter en même temps aux photos d'un chantier choisi." },
+    ],
+  },
+  {
+    version: '5.41.140',
+    date: '21/09/2026',
+    entries: [
+      { icon: '⋮', text: "Croquis Paint : nouveau menu ⋮ sur la forme sélectionnée (coin haut-droit du cadre) — monter/descendre le calque, dupliquer la forme, ou la faire pivoter par pas de 15° (gauche/droite)." },
+      { icon: '📐', text: "Croquis Paint : nouveaux boutons sous le croquis pour incliner TOUT le dessin — par pas de 15°, en choisissant l'angle directement, ou en remettant à zéro — pratique pour dessiner des chevrons ou une pente alignés sur l'angle du plan." },
+    ],
+  },
+  {
+    version: '5.41.139',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🗑️', text: "Croquis Paint : la touche Suppr (ou Retour arrière) supprime maintenant la forme sélectionnée, en plus du bouton dédié — pratique pour enchaîner les suppressions au clavier." },
+    ],
+  },
   {
     version: '5.41.138',
     date: '21/09/2026',
@@ -40717,7 +40773,7 @@ async function _deleteAlertFromMyConversation(alertId){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds, croquisData){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
@@ -40726,7 +40782,7 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
     alerts.push({
       id: uid(),
       text: text.trim(),
-      kind: kind || 'info',                   // 'info' | 'signature' | 'photo' | 'heures' | 'evenement' | 'depannage'
+      kind: kind || 'info',                   // 'info' | 'signature' | 'photo' | 'heures' | 'evenement' | 'depannage' | 'croquis'
       recipientType: recipientType,           // 'all' | 'device' | 'roles' | 'devices'
       recipientDeviceId: recipientDeviceId || null,
       recipientDeviceIds: recipientDeviceIds || null, // ex: ['dev_abc','dev_xyz'] — alerte groupée nominative
@@ -40747,6 +40803,10 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       depannageKeyboxMedia: (depannageData && depannageData.keyboxMedia) || null, // photo(s) boîte à clés
       depannageNotes: (depannageData && depannageData.notes) || null, // vraies notes tapées par l'expéditeur
       depannageMedia: _depannageMediaTagged, // médias de l'expéditeur (fusionnés avec ceux du destinataire via _addDepannageMedia)
+      // v5.41.141 — champs propres au type 'croquis' (envoi d'un croquis
+      // Paint/à main levée directement dans une conversation Alertes).
+      croquisUrl: (croquisData && croquisData.url) || null,
+      croquisPaintData: (croquisData && croquisData.paintData) || null, // pour le lexique quincaillerie (voir _paintLegendHtml)
       senderName: _senderName,
       createdAt: new Date().toISOString(),
       readBy: []
@@ -51693,6 +51753,116 @@ function _rcAddSketch(i){
   }
 }
 
+/* v5.41.141 — « Envoyer un croquis » depuis une conversation Alertes : on
+   dessine (Croquis Paint sur PC, croquis à main levée sur mobile — même
+   choix que _rcAddSketch ci-dessus), puis un petit panneau de confirmation
+   propose D'ENVOYER dans la conversation ET/OU d'ajouter la même image aux
+   photos d'un chantier choisi, avant l'envoi réel. */
+let _croquisPendingSend = null; // { blob, paintData, recipientAuthId, recipientName }
+function _openSendCroquisFromChat(recipientAuthId, recipientName){
+  const onDrawn = (blob, paintData) => {
+    _croquisPendingSend = { blob, paintData, recipientAuthId, recipientName };
+    _renderCroquisSendConfirm();
+  };
+  if(_paintIsDesktop()){
+    openPaintSketchTool((blob, paintData) => onDrawn(blob, paintData));
+  } else {
+    openSketchTool((blob) => onDrawn(blob, null));
+  }
+}
+function _renderCroquisSendConfirm(){
+  if(!_croquisPendingSend) return;
+  const ex = document.getElementById('modal-croquisSendConfirm');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-croquisSendConfirm';
+  const blobUrl = URL.createObjectURL(_croquisPendingSend.blob);
+  _croquisPendingSend._previewUrl = blobUrl; // révoqué à la fermeture (voir _closeCroquisSendConfirm)
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>📐 Envoyer le croquis</h2>
+        <button class="modal-close" onclick="_closeCroquisSendConfirm()">✕</button>
+      </div>
+      <img src="${blobUrl}" alt="Croquis" style="width:100%;border-radius:10px;border:1.5px solid var(--line);margin-bottom:12px;">
+      <div class="hint" style="margin-bottom:8px;">Envoyé à <strong>${escapeHtml(_croquisPendingSend.recipientName||'')}</strong> dans la conversation.</div>
+      <div style="margin-bottom:14px;">
+        <div style="font-size:11px;color:var(--ink-soft);margin-bottom:4px;font-weight:600;">🏗 Ajouter aussi aux photos d'un chantier (optionnel)</div>
+        <select id="croquisSendSiteSelect" style="width:100%;padding:7px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:13px;box-sizing:border-box;">
+          <option value="">— Aucun —</option>
+          ${(data.sites||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-outline btn-block" onclick="_closeCroquisSendConfirm()">Annuler</button>
+        <button class="btn btn-primary btn-block" id="croquisSendConfirmBtn" onclick="_confirmSendCroquis()">🚀 Envoyer</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+}
+function _closeCroquisSendConfirm(){
+  const m = document.getElementById('modal-croquisSendConfirm');
+  if(m) m.remove();
+  if(_croquisPendingSend && _croquisPendingSend._previewUrl) URL.revokeObjectURL(_croquisPendingSend._previewUrl);
+  _croquisPendingSend = null;
+}
+async function _confirmSendCroquis(){
+  if(!_croquisPendingSend) return;
+  const { blob, paintData, recipientAuthId, recipientName } = _croquisPendingSend;
+  const btn = document.getElementById('croquisSendConfirmBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Envoi…'; }
+  try{
+    const siteSel = document.getElementById('croquisSendSiteSelect');
+    const chosenSiteId = siteSel ? siteSel.value : '';
+    const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
+    // v5.41.141 — chemin de stockage : celui du chantier choisi s'il y en a
+    // un (cohérent avec les photos déjà envoyées sur ce chantier), sinon le
+    // même repli générique que _rcAddSketch ('depannage') pour un croquis
+    // qui n'est pas rattaché à un chantier précis.
+    const uploadSiteId = chosenSiteId || (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
+    const url = await uploadFileToSupabase(file, uploadSiteId, chosenSiteId ? undefined : { skipDropbox:true });
+
+    const p = data.settings && data.settings.myProfile;
+    const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+      || (data.settings && data.settings.teamName) || 'Un membre de l\'équipe';
+    const alertText = senderName + ' : 📐 t\'a envoyé un croquis';
+
+    const deviceId = await _resolveDeviceIdFromAuthId(recipientAuthId);
+    const ok = await sendAlert(
+      alertText, 'devices', null, recipientName, 'croquis', null, null,
+      deviceId ? [deviceId] : [], null, null, [recipientAuthId],
+      { url, paintData: paintData || null }
+    );
+    if(ok) notifyPush([recipientAuthId], 'RWOOD — Croquis reçu', senderName + ' t\'a envoyé un croquis', 'croquis', 'alertes');
+
+    // Ajout optionnel aux photos du chantier choisi — même fonction que
+    // partout ailleurs dans l'app (upload déjà fait, on ne le refait pas :
+    // on pousse directement l'entrée dans site.sharedMedia).
+    if(chosenSiteId){
+      const site = (data.sites||[]).find(s => s.id === chosenSiteId);
+      if(site){
+        if(!site.sharedMedia) site.sharedMedia = [];
+        site.sharedMedia.push({
+          id: uid(), name: 'Croquis', url, thumbUrl: null, type: 'photo', mimeType: 'image/png',
+          uploadedBy: senderName, uploadedAt: new Date().toISOString(), siteId: chosenSiteId, paintData: paintData || null,
+        });
+        saveData();
+        if(site.syncLive) await pushSharedSite(site);
+        else if(typeof syncAllSitesPushAll === 'function'){ try{ await syncAllSitesPushAll(); }catch(e){} }
+      }
+    }
+
+    if(!ok){ showToast('❌ Échec de l\'envoi'); if(btn){ btn.disabled=false; btn.textContent='🚀 Envoyer'; } return; }
+    showToast(chosenSiteId ? '✅ Croquis envoyé et ajouté au chantier' : '✅ Croquis envoyé');
+    _closeCroquisSendConfirm();
+    await _refreshOpenChatThread();
+  }catch(e){
+    showToast('❌ Échec de l\'envoi du croquis');
+    if(btn){ btn.disabled = false; btn.textContent = '🚀 Envoyer'; }
+  }
+}
+
 function _rcMediaGrid(i, target){
   const arr = _rc.stops[i][target];
   if(!arr.length) return '';
@@ -51982,10 +52152,36 @@ function openPaintSketchTool(onSave, existingPaint){
           <button type="button" class="btn btn-outline" onclick="_paintClearAll()">🧹 Tout effacer</button>
           <button type="button" class="btn btn-outline" onclick="_paintResetView()">🔍 Réinitialiser la vue</button>
         </div>
-        <div id="paintCanvasWrap" style="position:relative; flex:1; min-width:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); cursor:crosshair;">
-          <canvas id="paintCanvas" style="width:100%; height:100%; display:block;"></canvas>
-          <div style="position:absolute; bottom:8px; right:10px; font-size:10.5px; font-weight:700; color:#666; background:rgba(255,255,255,0.85); padding:2px 7px; border-radius:6px; pointer-events:none;">
-            Molette : zoom · Clic droit maintenu : déplacer
+        <div style="display:flex; flex-direction:column; flex:1; min-width:0; min-height:0;">
+          <div id="paintCanvasWrap" style="position:relative; flex:1; min-height:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); cursor:crosshair;">
+            <canvas id="paintCanvas" style="width:100%; height:100%; display:block;"></canvas>
+            <div style="position:absolute; bottom:8px; right:10px; font-size:10.5px; font-weight:700; color:#666; background:rgba(255,255,255,0.85); padding:2px 7px; border-radius:6px; pointer-events:none;">
+              Molette : zoom · Clic droit maintenu : déplacer
+            </div>
+            <!-- v5.41.140 — bouton ⋮ flottant sur la forme sélectionnée (coin
+                 haut-droit de son cadre) : ouvre un petit menu calque/duplication/
+                 rotation, positionné dynamiquement par _paintPositionShapeMenu(). -->
+            <button type="button" id="paintShapeMenuBtn" onclick="_paintToggleShapeMenu(event)"
+              style="display:none;position:absolute;width:22px;height:22px;border-radius:50%;border:1.5px solid rgba(78,161,255,0.95);background:#fff;color:#2a2118;font-size:13px;font-weight:900;line-height:1;align-items:center;justify-content:center;cursor:pointer;transform:translate(-50%,-50%);z-index:5;box-shadow:0 1px 4px rgba(0,0,0,0.25);">⋮</button>
+            <div id="paintShapeMenuPopup" style="display:none;position:absolute;flex-direction:column;gap:2px;background:#fff;border:1.5px solid var(--line);border-radius:8px;box-shadow:0 3px 10px rgba(0,0,0,0.2);padding:4px;transform:translate(-88%,0);z-index:6;min-width:170px;">
+              <button type="button" onclick="_paintLayerUp()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⬆️ Monter le calque</button>
+              <button type="button" onclick="_paintLayerDown()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⬇️ Descendre le calque</button>
+              <button type="button" onclick="_paintDuplicateSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⧉ Dupliquer</button>
+              <button type="button" onclick="_paintRotateSelected(-15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↺ Rotation gauche (15°)</button>
+              <button type="button" onclick="_paintRotateSelected(15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↻ Rotation droite (15°)</button>
+            </div>
+          </div>
+          <!-- v5.41.140 — rotation de TOUT le croquis (utile pour dessiner des
+               chevrons/une pente alignés sur un plan incliné) : pas de 15°,
+               valeur directe en degrés, et remise à zéro. -->
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding:8px;border-radius:10px;background:var(--bg);border:1.5px solid var(--line);flex-shrink:0;">
+            <span style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-right:2px;">Incliner le croquis</span>
+            <button type="button" class="btn btn-outline" style="padding:5px 10px;font-size:12px;" onclick="_paintRotateCanvas(-15)">↺ -15°</button>
+            <button type="button" class="btn btn-outline" style="padding:5px 10px;font-size:12px;" onclick="_paintRotateCanvas(15)">↻ +15°</button>
+            <select id="paintCanvasAngleSelect" style="padding:5px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;" onchange="_paintSetCanvasAngle(parseInt(this.value,10))">
+              ${Array.from({length:24}, (_,i) => i*15).map(a => `<option value="${a}">${a}°</option>`).join('')}
+            </select>
+            <button type="button" class="btn btn-outline" style="padding:5px 10px;font-size:12px;" onclick="_paintResetCanvasRotation()">↺ Remettre à zéro</button>
           </div>
         </div>
       </div>
@@ -52040,6 +52236,9 @@ function openPaintSketchTool(onSave, existingPaint){
     panning: false, panStart: null, panViewStart: null,
     // v5.41.130 — redimensionnement via poignées sur la forme sélectionnée.
     resizing: false, resizeHandle: null, resizeShapeStart: null, resizeBoundsStart: null,
+    // v5.41.140 — inclinaison globale du croquis (chevrons/pente) : angle
+    // cumulé affiché + instantané des formes à l'angle 0 (pour Remise à zéro).
+    canvasAngle: 0, canvasAngleBase: null,
   };
 
   if(existingPaint && Array.isArray(existingPaint.shapes) && existingPaint.shapes.length){
@@ -52081,6 +52280,38 @@ function openPaintSketchTool(onSave, existingPaint){
   // Le observer doit s'arrêter quand l'outil se ferme, sinon il continue de
   // tourner sur un `wrap` retiré du DOM.
   _paint._resizeObserver = paintResizeObserver;
+
+  // v5.41.139 — Suppr/Backspace supprime la forme sélectionnée, comme dans
+  // n'importe quel logiciel de dessin. On ignore la touche si le focus est
+  // dans un champ texte (ex. la saisie d'un texte du croquis), pour ne pas
+  // effacer une forme par accident en tapant. Écouteur retiré à la fermeture
+  // de l'outil (voir _paintClose), sinon il resterait actif hors du modal.
+  const paintKeydownHandler = (e) => {
+    if(!_paint) return;
+    if(e.key !== 'Delete' && e.key !== 'Backspace') return;
+    const active = document.activeElement;
+    const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+    if(isTyping) return;
+    if(_paint.selectedIdx < 0) return;
+    e.preventDefault();
+    _paintDeleteSelected();
+  };
+  document.addEventListener('keydown', paintKeydownHandler);
+  _paint._keydownHandler = paintKeydownHandler;
+
+  // v5.41.140 — ferme le menu ⋮ (calque/duplication/rotation) si on clique
+  // n'importe où ailleurs (sidebar, bouton ⋮ lui-même exclu — il gère son
+  // propre toggle via stopPropagation). Écouteur retiré à la fermeture de
+  // l'outil, comme le keydown ci-dessus.
+  const paintClickAwayHandler = (e) => {
+    if(!_paint || !_paintShapeMenuOpen) return;
+    const pop = document.getElementById('paintShapeMenuPopup');
+    const btn = document.getElementById('paintShapeMenuBtn');
+    if(pop && (pop.contains(e.target) || (btn && btn.contains(e.target)))) return;
+    _paintCloseShapeMenu();
+  };
+  document.addEventListener('click', paintClickAwayHandler);
+  _paint._clickAwayHandler = paintClickAwayHandler;
 
   _paintRenderToolList();
   _paintRenderSymbolList();
@@ -52142,6 +52373,7 @@ function openPaintSketchTool(onSave, existingPaint){
 
   canvas.onmousedown = e => {
     e.preventDefault();
+    _paintCloseShapeMenu();
     if(e.button === 2){
       // v5.41.135 — en mode « Positionner le fond », le clic droit déplace
       // le FOND (bgTransform) plutôt que la vue du croquis.
@@ -52464,7 +52696,107 @@ function _paintDeleteSelected(){
   _paint.shapes.splice(_paint.selectedIdx, 1);
   _paint.selectedIdx = -1;
   _paintUpdateDeleteBtn();
+  _paintCloseShapeMenu();
   _paintRedraw();
+}
+/* v5.41.140 — menu ⋮ sur la forme sélectionnée (coin haut-droit du cadre) :
+   monter/descendre le calque, dupliquer, rotation gauche/droite par pas de
+   15°. L'ordre de calque est simplement la position dans _paint.shapes
+   (dessiné dans l'ordre du tableau, donc « monter » = index+1). */
+function _paintLayerUp(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const i = _paint.selectedIdx;
+  if(i >= _paint.shapes.length - 1) return;
+  _paintPushHistory();
+  const tmp = _paint.shapes[i]; _paint.shapes[i] = _paint.shapes[i+1]; _paint.shapes[i+1] = tmp;
+  _paint.selectedIdx = i+1;
+  _paintRedraw(); _paintPositionShapeMenu();
+}
+function _paintLayerDown(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const i = _paint.selectedIdx;
+  if(i <= 0) return;
+  _paintPushHistory();
+  const tmp = _paint.shapes[i]; _paint.shapes[i] = _paint.shapes[i-1]; _paint.shapes[i-1] = tmp;
+  _paint.selectedIdx = i-1;
+  _paintRedraw(); _paintPositionShapeMenu();
+}
+function _paintDuplicateSelected(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const orig = _paint.shapes[_paint.selectedIdx];
+  const clone = JSON.parse(JSON.stringify(orig));
+  // Petit décalage pour que le doublon soit visible et attrapable
+  // séparément de l'original, plutôt que de tomber exactement dessus.
+  const off = 16 * _paint.dpr;
+  _paintTranslateShape(clone, orig, off, off);
+  _paintPushHistory();
+  _paint.shapes.push(clone);
+  _paint.selectedIdx = _paint.shapes.length - 1;
+  _paintUpdateDeleteBtn();
+  _paintRedraw(); _paintPositionShapeMenu();
+}
+function _paintRotateSelected(deltaDeg){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  _paintPushHistory();
+  const s = _paint.shapes[_paint.selectedIdx];
+  s.rotation = ((s.rotation || 0) + deltaDeg) % 360;
+  _paintRedraw();
+}
+let _paintShapeMenuOpen = false;
+function _paintToggleShapeMenu(ev){
+  if(ev) ev.stopPropagation();
+  _paintShapeMenuOpen = !_paintShapeMenuOpen;
+  _paintRenderShapeMenu();
+}
+function _paintCloseShapeMenu(){
+  _paintShapeMenuOpen = false;
+  const pop = document.getElementById('paintShapeMenuPopup');
+  if(pop) pop.style.display = 'none';
+}
+/* v5.41.140 — positionne le bouton ⋮ (et son popup) au coin haut-droit du
+   cadre englobant de la forme sélectionnée, en coordonnées ÉCRAN (converties
+   depuis les coordonnées « monde » via la transformation de vue courante),
+   pour qu'il reste collé au bon endroit quel que soit le zoom/déplacement. */
+function _paintPositionShapeMenu(){
+  const btn = document.getElementById('paintShapeMenuBtn');
+  const pop = document.getElementById('paintShapeMenuPopup');
+  if(!btn || !_paint) return;
+  if(_paint.tool !== 'select' || _paint.selectedIdx < 0 || !_paint.shapes[_paint.selectedIdx]){
+    btn.style.display = 'none';
+    if(pop) pop.style.display = 'none';
+    _paintShapeMenuOpen = false;
+    return;
+  }
+  const b = _paintShapeBounds(_paint.shapes[_paint.selectedIdx]);
+  const v = _paint.view;
+  const canvas = _paint.canvas;
+  const wrap = document.getElementById('paintCanvasWrap');
+  const cRect = canvas.getBoundingClientRect(), wRect = wrap.getBoundingClientRect();
+  const scaleX = cRect.width / canvas.width, scaleY = cRect.height / canvas.height;
+  const pad = 6 * _paint.dpr;
+  // Coin haut-droit du cadre (coordonnées monde → écran canvas → écran wrap).
+  const sx = (b.x2 + pad) * v.scale + v.x;
+  const sy = (b.y1 - pad) * v.scale + v.y;
+  let left = (sx * scaleX) + (cRect.left - wRect.left);
+  let top = (sy * scaleY) + (cRect.top - wRect.top);
+  // Reste toujours dans la zone visible du canvas (même si la forme touche
+  // un bord), pour que le bouton et son menu popup restent cliquables au
+  // lieu d'être rognés par overflow:hidden.
+  left = Math.min(Math.max(left, 14), wRect.width - 14);
+  top = Math.min(Math.max(top, 14), wRect.height - 14);
+  btn.style.display = 'flex';
+  btn.style.left = left + 'px';
+  btn.style.top = top + 'px';
+  if(_paintShapeMenuOpen) _paintRenderShapeMenu();
+}
+function _paintRenderShapeMenu(){
+  const pop = document.getElementById('paintShapeMenuPopup');
+  const btn = document.getElementById('paintShapeMenuBtn');
+  if(!pop || !btn) return;
+  if(!_paintShapeMenuOpen){ pop.style.display = 'none'; return; }
+  pop.style.left = btn.style.left;
+  pop.style.top = (parseFloat(btn.style.top) + 26) + 'px';
+  pop.style.display = 'flex';
 }
 function _paintPushHistory(){
   if(!_paint) return;
@@ -52507,6 +52839,11 @@ function _paintClearAll(){
   _paint.selectedIdx = -1;
   if(_paint.baseImage) _paint.baseImage.getContext('2d').clearRect(0, 0, _paint.baseImage.width, _paint.baseImage.height);
   _paint._baseHasContent = false;
+  // Rien à quoi revenir après un « Tout effacer » : la remise à zéro de
+  // l'inclinaison globale n'aurait plus de sens (plus aucune forme).
+  _paint.canvasAngle = 0;
+  _paint.canvasAngleBase = null;
+  _paintUpdateCanvasAngleSelect();
   _paintUpdateDeleteBtn();
   _paintRedraw();
 }
@@ -52579,6 +52916,108 @@ function _paintResetView(){
   if(!_paint) return;
   _paint.view = { scale:1, x:0, y:0 };
   _paintRedraw();
+}
+
+/* v5.41.140 — Incliner TOUT le croquis (demandé pour dessiner des chevrons/
+   une pente alignés sur un plan incliné, plus lisibles si le croquis entier
+   suit l'angle du plan plutôt que de rester à l'horizontale). Contrairement
+   à la rotation d'UNE forme (visuelle uniquement, voir _paintDrawOneShape),
+   ici on transforme réellement les COORDONNÉES de chaque forme (et le
+   calque figé baseImage), autour du centre du canvas — pour que la
+   sélection/le redimensionnement/la découpe continuent de raisonner
+   normalement ensuite, sans avoir à connaître un angle de vue global.
+   _paint.canvasAngle suit l'angle cumulé affiché (0-345°, pas de 15°) ;
+   _paint.canvasAngleBase mémorise shapes+baseImage à l'angle 0, capturé au
+   premier appel, pour que « Remettre à zéro » puisse revenir exactement à
+   l'état non incliné plutôt que de tourner à l'envers (imprécisions
+   d'arrondi cumulées sinon). */
+function _paintRotateGeometry(deltaDeg){
+  if(!_paint || !deltaDeg) return;
+  const canvas = _paint.canvas;
+  const cx = canvas.width/2, cy = canvas.height/2;
+  const rad = deltaDeg * Math.PI/180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const rotPt = (x,y) => {
+    const dx = x-cx, dy = y-cy;
+    return { x: cx + dx*cos - dy*sin, y: cy + dx*sin + dy*cos };
+  };
+  _paint.shapes.forEach(s => {
+    if(s.type === 'pen'){
+      s.points = s.points.map(p => rotPt(p.x, p.y));
+    } else if(s.type === 'text'){
+      const r = rotPt(s.x, s.y); s.x = r.x; s.y = r.y;
+    } else {
+      const p1 = rotPt(s.x1, s.y1), p2 = rotPt(s.x2, s.y2);
+      s.x1=p1.x; s.y1=p1.y; s.x2=p2.x; s.y2=p2.y;
+    }
+    if(s.holes && s.holes.length){
+      s.holes = s.holes.map(h => {
+        const p1 = rotPt(h.x1,h.y1), p2 = rotPt(h.x2,h.y2);
+        return { x1:p1.x, y1:p1.y, x2:p2.x, y2:p2.y };
+      });
+    }
+    // La forme visuelle tourne avec le croquis ; sa rotation individuelle
+    // (menu ⋮) s'additionne simplement à l'angle global du croquis.
+    if(s.rotation) s.rotation = (s.rotation + deltaDeg) % 360;
+  });
+  if(_paint.baseImage){
+    const newBase = document.createElement('canvas');
+    newBase.width = canvas.width; newBase.height = canvas.height;
+    const bctx = newBase.getContext('2d');
+    bctx.translate(cx, cy); bctx.rotate(rad); bctx.translate(-cx, -cy);
+    bctx.drawImage(_paint.baseImage, 0, 0);
+    _paint.baseImage = newBase;
+  }
+}
+function _paintRotateCanvas(deltaDeg){
+  if(!_paint) return;
+  if(!_paint.canvasAngleBase){
+    _paint.canvasAngleBase = {
+      shapes: JSON.stringify(_paint.shapes),
+      baseImage: _paint.baseImage ? _paint.baseImage.toDataURL('image/png') : null,
+    };
+  }
+  _paintPushHistory();
+  _paintRotateGeometry(deltaDeg);
+  _paint.canvasAngle = ((_paint.canvasAngle || 0) + deltaDeg + 360) % 360;
+  _paintUpdateCanvasAngleSelect();
+  _paintRedraw();
+}
+function _paintSetCanvasAngle(targetDeg){
+  if(!_paint) return;
+  const current = _paint.canvasAngle || 0;
+  let delta = targetDeg - current;
+  if(!delta) return;
+  _paintRotateCanvas(delta);
+}
+function _paintResetCanvasRotation(){
+  if(!_paint || !_paint.canvasAngleBase) return;
+  _paintPushHistory();
+  _paint.shapes = JSON.parse(_paint.canvasAngleBase.shapes);
+  _paint.selectedIdx = -1;
+  _paintUpdateDeleteBtn();
+  const finish = () => {
+    _paint.canvasAngle = 0;
+    _paint.canvasAngleBase = null;
+    _paintUpdateCanvasAngleSelect();
+    _paintRedraw();
+  };
+  if(_paint.canvasAngleBase.baseImage){
+    const img = new Image();
+    img.onload = () => {
+      const bctx = _paint.baseImage.getContext('2d');
+      bctx.clearRect(0,0,_paint.baseImage.width,_paint.baseImage.height);
+      bctx.drawImage(img,0,0);
+      finish();
+    };
+    img.src = _paint.canvasAngleBase.baseImage;
+  } else {
+    finish();
+  }
+}
+function _paintUpdateCanvasAngleSelect(){
+  const sel = document.getElementById('paintCanvasAngleSelect');
+  if(sel && _paint) sel.value = String(_paint.canvasAngle || 0);
 }
 
 /* v5.41.134 — Fond (plan/photo) : dessiner PAR-DESSUS un plan PDF ou une
@@ -53061,6 +53500,21 @@ function _paintDrawSymbolRect(ctx, symbol, x1, y1, x2, y2, color, dpr){
    sélection), extrait pour être réutilisable à la fois en dessin direct et
    dans le calque temporaire isolé qu'utilise la découpe partielle. */
 function _paintDrawOneShape(ctx, s){
+  // v5.41.140 — rotation INDIVIDUELLE de la forme (menu ⋮ sur la sélection) :
+  // pivote autour du centre de son propre cadre englobant, en degrés fixes
+  // (par pas de 15°). N'affecte jamais les coordonnées stockées (s.x1/x2/…),
+  // seulement le rendu — donc redimensionner/déplacer restent cohérents
+  // ensuite (le cadre englobant garde les mêmes coordonnées, juste tourné
+  // visuellement), comme pour la rotation d'un calque dans un logiciel de dessin.
+  const hasRotation = s.rotation && s.type !== 'text';
+  if(hasRotation){
+    const b = _paintShapeBounds(s);
+    const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(s.rotation * Math.PI/180);
+    ctx.translate(-cx, -cy);
+  }
   ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
   ctx.lineWidth = s.width || 3;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -53097,6 +53551,7 @@ function _paintDrawOneShape(ctx, s){
   } else if(s.type === 'symbol'){
     _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
   }
+  if(hasRotation) ctx.restore();
 }
 // v5.41.137 — calque temporaire réutilisé pour isoler chaque forme trouée
 // (créé une fois, redimensionné si besoin) : éviter une allocation par forme/frame.
@@ -53238,6 +53693,10 @@ function _paintRedraw(){
     ctx.restore();
   }
   ctx.setTransform(1,0,0,1,0,0);
+  // v5.41.140 — repositionne le bouton ⋮ flottant (menu calque/duplication/
+  // rotation) sur le coin de la sélection à chaque redessin, pour qu'il
+  // suive un déplacement/redimensionnement/zoom en temps réel.
+  _paintPositionShapeMenu();
 }
 
 function _paintClose(){
@@ -53246,7 +53705,48 @@ function _paintClose(){
   // v5.41.136 — stopper le ResizeObserver du canvas, sinon il continue de
   // tourner (et de tenter de redessiner) sur un `wrap` retiré du DOM.
   if(_paint && _paint._resizeObserver) _paint._resizeObserver.disconnect();
+  if(_paint && _paint._keydownHandler) document.removeEventListener('keydown', _paint._keydownHandler);
+  if(_paint && _paint._clickAwayHandler) document.removeEventListener('click', _paint._clickAwayHandler);
   _paint = null;
+}
+/* v5.41.141 — bornes réelles du contenu dessiné (formes + calque figé),
+   en coordonnées « monde » (indépendantes du zoom/déplacement de vue en
+   cours) : sert à CADRER l'export sur ce qui a vraiment été dessiné, au
+   lieu d'exporter systématiquement le rectangle plein cadre du canvas —
+   ce qui, si on avait dézoomé/déplacé la vue avant de dessiner, pouvait
+   couper des formes hors de l'image enregistrée ou les rendre minuscules.
+   Le FOND (plan/photo) n'est volontairement PAS inclus dans ce calcul :
+   c'est une référence à dessiner par-dessus, pas le contenu du croquis —
+   sauf s'il n'y a justement RIEN d'autre (voir appelant). */
+function _paintContentBounds(){
+  let b = null;
+  const grow = (bx) => {
+    if(!bx) return;
+    if(!b) b = { x1:bx.x1, y1:bx.y1, x2:bx.x2, y2:bx.y2 };
+    else { b.x1 = Math.min(b.x1,bx.x1); b.y1 = Math.min(b.y1,bx.y1); b.x2 = Math.max(b.x2,bx.x2); b.y2 = Math.max(b.y2,bx.y2); }
+  };
+  _paint.shapes.forEach(s => grow(_paintShapeBounds(s)));
+  // Calque figé (aplati par d'anciennes découpes) : ses pixels réellement
+  // peints ne couvrent pas forcément tout le canvas — on scanne le canal
+  // alpha pour ne cadrer que sur la zone effectivement peinte.
+  if(_paint._baseHasContent && _paint.baseImage){
+    try{
+      const bw = _paint.baseImage.width, bh = _paint.baseImage.height;
+      const data = _paint.baseImage.getContext('2d').getImageData(0,0,bw,bh).data;
+      let minX=bw, minY=bh, maxX=-1, maxY=-1;
+      const step = 4; // échantillonnage par pas de 4px : assez précis, largement assez rapide
+      for(let y=0; y<bh; y+=step){
+        for(let x=0; x<bw; x+=step){
+          if(data[(y*bw+x)*4+3] > 0){
+            if(x<minX) minX=x; if(x>maxX) maxX=x;
+            if(y<minY) minY=y; if(y>maxY) maxY=y;
+          }
+        }
+      }
+      if(maxX >= minX) grow({ x1:minX, y1:minY, x2:maxX, y2:maxY });
+    }catch(e){ /* silencieux — on retombe sur les formes seules */ }
+  }
+  return b;
 }
 function _paintFinish(){
   if(!_paint) return;
@@ -53256,20 +53756,46 @@ function _paintFinish(){
   // sans aucun tracé par-dessus (le plan seul peut être le croquis voulu).
   if(!_paint.shapes.length && !_paint._baseHasContent && !_paint.bgImage){ showToast('Dessine quelque chose avant d\'enregistrer'); return; }
   const { canvas, onSave, shapes } = _paint;
+  // v5.41.141 — CADRAGE AUTOMATIQUE sur le contenu réellement dessiné : on
+  // calcule les bornes de toutes les formes (+ calque figé), on ajoute une
+  // marge fixe, et l'export se fait sur un canvas hors-écran DIMENSIONNÉ à
+  // cette zone (pas forcément la taille du canvas affiché à l'écran) — pour
+  // qu'ouvrir le croquis sur un autre téléphone/PC montre TOUT ce qui a été
+  // dessiné dès l'ouverture, quel que soit le zoom/déplacement utilisé
+  // pendant le dessin. On peut ensuite zoomer/se déplacer dans le
+  // visualisateur (lightbox photo) pour regarder un détail de plus près.
+  // S'il n'y a QUE le fond (plan/photo, aucune forme/calque dessus), on
+  // garde le cadrage plein canvas d'origine (rien à cadrer dessus).
+  const contentBounds = _paintContentBounds();
+  const margin = 24 * _paint.dpr;
+  let cropX = 0, cropY = 0, cropW = canvas.width, cropH = canvas.height;
+  if(contentBounds){
+    cropX = Math.max(0, Math.floor(contentBounds.x1 - margin));
+    cropY = Math.max(0, Math.floor(contentBounds.y1 - margin));
+    const cropX2 = Math.min(canvas.width,  Math.ceil(contentBounds.x2 + margin));
+    const cropY2 = Math.min(canvas.height, Math.ceil(contentBounds.y2 + margin));
+    cropW = Math.max(1, cropX2 - cropX);
+    cropH = Math.max(1, cropY2 - cropY);
+  }
   // v5.41.130 — l'export doit toujours capturer le croquis EN ENTIER, quel
   // que soit le zoom/déplacement de vue en cours au moment d'enregistrer :
   // on redessine sur un canvas hors-écran avec une vue identité (scale=1,
-  // pas de déplacement), sans les poignées ni la sélection.
-  const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = canvas.width; exportCanvas.height = canvas.height;
-  const exportCtx = exportCanvas.getContext('2d');
+  // pas de déplacement, mais DÉCALÉE de -cropX/-cropY pour ne garder que la
+  // zone cadrée), sans les poignées ni la sélection.
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = canvas.width; fullCanvas.height = canvas.height;
+  const fullCtx = fullCanvas.getContext('2d');
   const savedView = _paint.view, savedSelected = _paint.selectedIdx, savedCtx = _paint.ctx, savedCanvas = _paint.canvas;
   _paint.view = { scale:1, x:0, y:0 };
   _paint.selectedIdx = -1;
-  _paint.ctx = exportCtx; _paint.canvas = exportCanvas;
+  _paint.ctx = fullCtx; _paint.canvas = fullCanvas;
   _paintRedraw();
   _paint.view = savedView; _paint.selectedIdx = savedSelected;
   _paint.ctx = savedCtx; _paint.canvas = savedCanvas;
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = cropW; exportCanvas.height = cropH;
+  const exportCtx = exportCanvas.getContext('2d');
+  exportCtx.drawImage(fullCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
   exportCanvas.toBlob(blob => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const paintData = { shapes: JSON.parse(JSON.stringify(shapes)), w: canvas.width, h: canvas.height };
