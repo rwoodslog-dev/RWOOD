@@ -32211,9 +32211,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.133';
+const APP_VERSION = '5.41.134';
 
 const CHANGELOG = [
+  {
+    version: '5.41.134',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🖼️', text: "Croquis Paint : nouveau bouton « Fond (plan/photo) » — choisis un PDF de plan ou une image, elle s'affiche en fond du croquis pour dessiner directement par-dessus (annoter un plan, pointer une quincaillerie sur une photo…)." },
+    ],
+  },
   {
     version: '5.41.133',
     date: '21/09/2026',
@@ -51888,6 +51895,11 @@ function openPaintSketchTool(onSave, existingPaint){
       <div style="display:flex; gap:12px; flex:1; min-height:0;">
         <div style="width:150px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
           <div>
+            <button type="button" class="btn btn-outline" onclick="document.getElementById('paintBgFileInput').click()" style="width:100%;">🖼️ Fond (plan/photo)</button>
+            <input type="file" id="paintBgFileInput" accept="image/*,application/pdf" style="display:none;" onchange="_paintPickBackground(event)">
+            <button type="button" id="paintBgClearBtn" class="btn btn-outline" style="display:none;width:100%;margin-top:5px;" onclick="_paintClearBackground()">🗑️ Retirer le fond</button>
+          </div>
+          <div>
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Outils</div>
             <div id="paintToolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
@@ -51970,6 +51982,11 @@ function openPaintSketchTool(onSave, existingPaint){
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
     history: [],
     baseImage, baseHistory: [],
+    // v5.41.134 — fond optionnel (plan PDF ou photo) sur lequel dessiner :
+    // une image de référence, dessinée tout en dessous (avant baseImage et
+    // les formes), jamais affectée par Découpe/Annuler/Tout effacer — on
+    // dessine PAR-DESSUS un plan, on ne le modifie pas.
+    bgImage: null,
     // v5.41.130 — zoom/déplacement de la vue : ne modifie jamais les
     // coordonnées des formes, seulement la transformation d'affichage du
     // canvas (comme un plan qu'on regarde de plus ou moins près).
@@ -52381,6 +52398,69 @@ function _paintResetView(){
   _paintRedraw();
 }
 
+/* v5.41.134 — Fond (plan/photo) : dessiner PAR-DESSUS un plan PDF ou une
+   photo, pour annoter directement dessus (relever une cote, pointer une
+   quincaillerie sur une photo de chantier, etc.). Le fond est étiré pour
+   remplir tout le canvas (comme une image de calque, pas une forme qu'on
+   déplace) — le croquis reste dimensionné par la fenêtre de l'outil. */
+async function _paintPickBackground(ev){
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if(!file || !_paint) return;
+  showToast('⏳ Chargement du fond…');
+  try{
+    let img;
+    if(file.type === 'application/pdf' || /\.pdf$/i.test(file.name||'')){
+      img = await _paintRenderPdfToImage(file);
+    } else {
+      img = await _paintLoadImageFile(file);
+    }
+    _paint.bgImage = img;
+    document.getElementById('paintBgClearBtn').style.display = 'block';
+    _paintRedraw();
+    showToast('✅ Fond chargé');
+  } catch(err){
+    console.error(err);
+    showToast('❌ Impossible de charger ce fichier comme fond');
+  }
+}
+function _paintLoadImageFile(file){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function _paintRenderPdfToImage(file){
+  await _ensurePdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const page = await pdf.getPage(1); // v5.41.134 — première page du plan (usage courant pour un plan PDF)
+  // Rendu à une résolution confortable pour lire les détails du plan une fois zoomé.
+  const targetW = 1600;
+  const baseVp = page.getViewport({ scale: 1 });
+  const scale = targetW / baseVp.width;
+  const viewport = page.getViewport({ scale });
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = Math.round(viewport.width);
+  tmpCanvas.height = Math.round(viewport.height);
+  const tmpCtx = tmpCanvas.getContext('2d');
+  await page.render({ canvasContext: tmpCtx, viewport }).promise;
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.src = tmpCanvas.toDataURL('image/png');
+  });
+}
+function _paintClearBackground(){
+  if(!_paint) return;
+  _paint.bgImage = null;
+  const btn = document.getElementById('paintBgClearBtn');
+  if(btn) btn.style.display = 'none';
+  _paintRedraw();
+}
+
 function _paintShapeBounds(s){
   if(s.type === 'pen'){
     const xs = s.points.map(p=>p.x), ys = s.points.map(p=>p.y);
@@ -52723,6 +52803,10 @@ function _paintRedraw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // v5.41.134 — fond optionnel (plan/photo), tout en dessous de tout le
+  // reste, jamais modifié par le dessin (Découpe/Annuler/Tout effacer ne le
+  // touchent pas) : on dessine PAR-DESSUS un plan, on ne l'altère pas.
+  if(_paint.bgImage) ctx.drawImage(_paint.bgImage, 0, 0, canvas.width, canvas.height);
   // v5.41.132 — calque figé (résultat des découpes destructives déjà
   // validées) : une image bitmap dessinée telle quelle, AVANT les formes
   // vectorielles encore modifiables. Toujours en coordonnées canvas brutes
@@ -52793,8 +52877,9 @@ function _paintFinish(){
   if(!_paint) return;
   // v5.41.132 — après une découpe destructive, les formes peuvent être
   // vides (tout est aplati dans baseImage) : ne pas bloquer l'enregistrement
-  // dans ce cas, seulement si RIEN n'a été dessiné du tout.
-  if(!_paint.shapes.length && !_paint._baseHasContent){ showToast('Dessine quelque chose avant d\'enregistrer'); return; }
+  // dans ce cas. v5.41.134 — idem si un fond (plan/photo) est chargé, même
+  // sans aucun tracé par-dessus (le plan seul peut être le croquis voulu).
+  if(!_paint.shapes.length && !_paint._baseHasContent && !_paint.bgImage){ showToast('Dessine quelque chose avant d\'enregistrer'); return; }
   const { canvas, onSave, shapes } = _paint;
   // v5.41.130 — l'export doit toujours capturer le croquis EN ENTIER, quel
   // que soit le zoom/déplacement de vue en cours au moment d'enregistrer :
