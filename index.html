@@ -32211,9 +32211,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.136';
+const APP_VERSION = '5.41.137';
 
 const CHANGELOG = [
+  {
+    version: '5.41.137',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif Découpe — couper un morceau d'une forme (ex. un coin de rectangle) la rendait figée et non déplaçable. Maintenant la forme reste un seul bloc vectoriel, toujours sélectionnable/déplaçable/redimensionnable, avec le trou de la découpe qui la suit dans ses déplacements." },
+    ],
+  },
   {
     version: '5.41.136',
     date: '21/09/2026',
@@ -52461,40 +52468,53 @@ function _paintClearAll(){
    tout le reste du dessin non sélectionnable/déplaçable après coup. On ne
    fige désormais QUE les formes dont le cadre englobant touche la zone
    découpée ; les autres restent des formes vectorielles normales,
-   toujours sélectionnables et déplaçables avec l'outil Sélection. */
+   toujours sélectionnables et déplaçables avec l'outil Sélection.
+   v5.41.137 — CORRECTIF : même une forme partiellement découpée devenait
+   figée (non déplaçable). Maintenant on ajoute un « trou » (s.holes) à la
+   forme touchée AU LIEU de l'aplatir : elle reste un objet vectoriel
+   complet, toujours sélectionnable/déplaçable/redimensionnable en bloc, le
+   trou suivant ses déplacements (voir _paintTranslateShape/_paintScaleShape).
+   Le calque figé (baseImage) ne sert plus qu'aux traits déjà anciens qui
+   avaient été aplatis par une version précédente de l'outil. */
 function _paintCommitErase(x1, y1, x2, y2){
   if(!_paint) return;
   const rx0 = Math.min(x1,x2), ry0 = Math.min(y1,y2), rw = Math.abs(x2-x1), rh = Math.abs(y2-y1);
   if(rw < 1 || rh < 1) return;
-  const touched = [], untouched = [];
+  let touchedAny = false;
   _paint.shapes.forEach(s => {
     const b = _paintShapeBounds(s);
     const overlaps = b.x1 < rx0+rw && b.x2 > rx0 && b.y1 < ry0+rh && b.y2 > ry0;
-    (overlaps ? touched : untouched).push(s);
+    if(overlaps) touchedAny = true;
   });
-  if(!touched.length){
-    // Rien à découper dans cette zone : aucune forme touchée, rien à figer.
+  // Le calque figé (fond aplati par d'anciennes découpes) est lui aussi
+  // réellement percé — pour lui, pas de forme à garder déplaçable.
+  const rBase = _paint.baseImage.getContext('2d').getImageData(rx0, ry0, Math.max(1,Math.round(rw)), Math.max(1,Math.round(rh)));
+  const baseHasPixels = rBase.data.some((v,i) => i % 4 === 3 && v > 0); // un pixel non transparent ?
+  if(!touchedAny && !baseHasPixels){
     showToast('Aucun élément dans cette zone');
     return;
   }
   _paintPushHistory();
-  const bctx = _paint.baseImage.getContext('2d');
-  // 1) Aplatir UNIQUEMENT les formes touchées par-dessus le calque figé.
-  bctx.save();
-  bctx.setTransform(1,0,0,1,0,0);
-  _paintDrawShapesOn(bctx, touched, -1, 1);
-  bctx.restore();
-  // 2) Percer un trou dans la zone découpée (alpha = 0, vraiment transparent).
-  bctx.save();
-  bctx.globalCompositeOperation = 'destination-out';
-  bctx.fillStyle = '#000';
-  bctx.fillRect(rx0, ry0, rw, rh);
-  bctx.restore();
-  // 3) Seules les formes touchées ont rejoint le bitmap : les autres
-  // restent vectorielles, toujours sélectionnables/déplaçables.
-  _paint.shapes = untouched;
+  if(touchedAny){
+    _paint.shapes = _paint.shapes.map(s => {
+      const b = _paintShapeBounds(s);
+      const overlaps = b.x1 < rx0+rw && b.x2 > rx0 && b.y1 < ry0+rh && b.y2 > ry0;
+      if(!overlaps) return s;
+      const holes = (s.holes || []).concat([{ x1:rx0, y1:ry0, x2:rx0+rw, y2:ry0+rh }]);
+      return Object.assign({}, s, { holes });
+    });
+  }
+  if(baseHasPixels){
+    // Perce aussi le calque figé, pour le contenu qui y avait déjà été aplati.
+    const bctx = _paint.baseImage.getContext('2d');
+    bctx.save();
+    bctx.setTransform(1,0,0,1,0,0);
+    bctx.globalCompositeOperation = 'destination-out';
+    bctx.fillStyle = '#000';
+    bctx.fillRect(rx0, ry0, rw, rh);
+    bctx.restore();
+  }
   _paint.selectedIdx = -1;
-  _paint._baseHasContent = true;
   _paintUpdateDeleteBtn();
   _paintRedraw();
 }
@@ -52633,6 +52653,11 @@ function _paintTranslateShape(shape, orig, dx, dy){
     shape.x1 = orig.x1 + dx; shape.y1 = orig.y1 + dy;
     shape.x2 = orig.x2 + dx; shape.y2 = orig.y2 + dy;
   }
+  // v5.41.137 — les trous d'une découpe partielle (s.holes) suivent la
+  // forme quand elle est déplacée, exactement comme son contour.
+  if(orig.holes && orig.holes.length){
+    shape.holes = orig.holes.map(h => ({ x1:h.x1+dx, y1:h.y1+dy, x2:h.x2+dx, y2:h.y2+dy }));
+  }
 }
 function _paintScaleShape(s, sx, sy){
   const c = JSON.parse(JSON.stringify(s));
@@ -52640,6 +52665,12 @@ function _paintScaleShape(s, sx, sy){
   if(c.type === 'pen') c.points = c.points.map(p => ({ x:p.x*sx, y:p.y*sy }));
   else if(c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*avg; if(c.boxW) c.boxW*=sx; }
   else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; }
+  // v5.41.137 — les trous suivent la mise à l'échelle de la forme (même
+  // transformation, depuis l'origine — cohérent avec _paintResizeShape qui
+  // ramène d'abord la forme au repère de l'ancre avant d'appeler ceci).
+  if(c.holes && c.holes.length){
+    c.holes = c.holes.map(h => ({ x1:h.x1*sx, y1:h.y1*sy, x2:h.x2*sx, y2:h.y2*sy }));
+  }
   return c;
 }
 
@@ -52896,38 +52927,92 @@ function _paintDrawSymbolRect(ctx, symbol, x1, y1, x2, y2, color, dpr){
    _paintRedraw pour être réutilisable lors de l'aplatissement (découpe
    destructive) comme lors de l'affichage normal. `selectedIdx` = -1 pour
    ne dessiner aucun cadre de sélection (cas de l'aplatissement). */
+/* v5.41.137 — dessine UNE forme sur un contexte donné (sans le cadre de
+   sélection), extrait pour être réutilisable à la fois en dessin direct et
+   dans le calque temporaire isolé qu'utilise la découpe partielle. */
+function _paintDrawOneShape(ctx, s){
+  ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
+  ctx.lineWidth = s.width || 3;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if(s.type === 'pen'){
+    ctx.beginPath();
+    s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+    ctx.stroke();
+  } else if(s.type === 'line'){
+    ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
+  } else if(s.type === 'rect'){
+    const rx0 = Math.min(s.x1,s.x2), ry0 = Math.min(s.y1,s.y2), rw = Math.abs(s.x2-s.x1), rh = Math.abs(s.y2-s.y1);
+    // v5.41.127 — remplissage matériau dessiné D'ABORD (sous le contour),
+    // motif à taille fixe (comme la quincaillerie) pour rester lisible
+    // quelle que soit la taille du rectangle.
+    if(s.fill) _paintDrawFillPattern(ctx, s.fill, rx0, ry0, rw, rh, _paint.dpr);
+    ctx.strokeRect(rx0, ry0, rw, rh);
+  } else if(s.type === 'circle'){
+    const rx = Math.abs(s.x2-s.x1)/2, ry = Math.abs(s.y2-s.y1)/2;
+    const cx = (s.x1+s.x2)/2, cy = (s.y1+s.y2)/2;
+    ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke();
+  } else if(s.type === 'triangle'){
+    const cx = (s.x1+s.x2)/2;
+    ctx.beginPath(); ctx.moveTo(cx, s.y1); ctx.lineTo(s.x1, s.y2); ctx.lineTo(s.x2, s.y2); ctx.closePath(); ctx.stroke();
+  } else if(s.type === 'text'){
+    ctx.font = `700 ${s.size}px sans-serif`;
+    ctx.fillText(s.text, s.x, s.y);
+  } else if(s.type === 'symbol'){
+    _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
+  }
+}
+// v5.41.137 — calque temporaire réutilisé pour isoler chaque forme trouée
+// (créé une fois, redimensionné si besoin) : éviter une allocation par forme/frame.
+let _paintHoleLayer = null;
 function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
   shapes.forEach((s, idx) => {
-    ctx.save();
-    ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
-    ctx.lineWidth = s.width || 3;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    if(s.type === 'pen'){
-      ctx.beginPath();
-      s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.stroke();
-    } else if(s.type === 'line'){
-      ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
-    } else if(s.type === 'rect'){
-      const rx0 = Math.min(s.x1,s.x2), ry0 = Math.min(s.y1,s.y2), rw = Math.abs(s.x2-s.x1), rh = Math.abs(s.y2-s.y1);
-      // v5.41.127 — remplissage matériau dessiné D'ABORD (sous le contour),
-      // motif à taille fixe (comme la quincaillerie) pour rester lisible
-      // quelle que soit la taille du rectangle.
-      if(s.fill) _paintDrawFillPattern(ctx, s.fill, rx0, ry0, rw, rh, _paint.dpr);
-      ctx.strokeRect(rx0, ry0, rw, rh);
-    } else if(s.type === 'circle'){
-      const rx = Math.abs(s.x2-s.x1)/2, ry = Math.abs(s.y2-s.y1)/2;
-      const cx = (s.x1+s.x2)/2, cy = (s.y1+s.y2)/2;
-      ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke();
-    } else if(s.type === 'triangle'){
-      const cx = (s.x1+s.x2)/2;
-      ctx.beginPath(); ctx.moveTo(cx, s.y1); ctx.lineTo(s.x1, s.y2); ctx.lineTo(s.x2, s.y2); ctx.closePath(); ctx.stroke();
-    } else if(s.type === 'text'){
-      ctx.font = `700 ${s.size}px sans-serif`;
-      ctx.fillText(s.text, s.x, s.y);
-    } else if(s.type === 'symbol'){
-      _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
+    if(s.holes && s.holes.length){
+      // v5.41.137 — Découpe PARTIELLE d'une forme : on dessine CETTE forme
+      // seule sur un calque isolé (mêmes dimensions que le canvas principal,
+      // en coordonnées « monde » non transformées), on perce ses trous
+      // dedans avec destination-out — qui ne mange alors QUE cette forme,
+      // jamais ce qu'il y a en dessous — puis on compose le résultat sur le
+      // contexte principal. La forme reste un seul objet vectoriel : elle
+      // continue d'être sélectionnable/déplaçable/redimensionnable en bloc,
+      // le(s) trou(s) se déplaçant avec elle (voir _paintTranslateShape/
+      // _paintScaleShape, qui transforment aussi s.holes).
+      const cw = _paint.baseImage.width, ch = _paint.baseImage.height;
+      if(!_paintHoleLayer || _paintHoleLayer.width !== cw || _paintHoleLayer.height !== ch){
+        _paintHoleLayer = document.createElement('canvas');
+        _paintHoleLayer.width = cw; _paintHoleLayer.height = ch;
+      }
+      const lctx = _paintHoleLayer.getContext('2d');
+      lctx.setTransform(1,0,0,1,0,0);
+      lctx.clearRect(0, 0, cw, ch);
+      lctx.save();
+      _paintDrawOneShape(lctx, s);
+      lctx.restore();
+      lctx.save();
+      lctx.globalCompositeOperation = 'destination-out';
+      lctx.fillStyle = '#000';
+      s.holes.forEach(h => {
+        lctx.fillRect(Math.min(h.x1,h.x2), Math.min(h.y1,h.y2), Math.abs(h.x2-h.x1), Math.abs(h.y2-h.y1));
+      });
+      lctx.restore();
+      // v5.41.137 — le calque (comme baseImage) est en coordonnées « monde »
+      // (= pixels canvas bruts) : on le compose SOUS la transformation vue
+      // déjà active (v.scale/x/y), sans y toucher — exactement comme
+      // baseImage, pour qu'il zoome/se déplace avec le reste du croquis.
+      ctx.save();
+      ctx.drawImage(_paintHoleLayer, 0, 0);
+      ctx.restore();
+      if(idx === selectedIdx){
+        ctx.save();
+        const b = _paintShapeBounds(s);
+        ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/scale; ctx.setLineDash([5/scale,4/scale]);
+        ctx.strokeRect(b.x1-6, b.y1-6, (b.x2-b.x1)+12, (b.y2-b.y1)+12);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+      return;
     }
+    ctx.save();
+    _paintDrawOneShape(ctx, s);
     if(idx === selectedIdx){
       const b = _paintShapeBounds(s);
       ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/scale; ctx.setLineDash([5/scale,4/scale]);
