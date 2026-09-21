@@ -32211,9 +32211,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.117';
+const APP_VERSION = '5.41.118';
 
 const CHANGELOG = [
+  {
+    version: '5.41.118',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🛠️', text: "Feuille de route de dépannage : carte de chantier allégée — juste le nom (cliquable, ouvre Waze) puis « Détail » et « Dépannage fini », sans la liste des tâches affichée en dessous qui prenait trop de place. La boîte à clés, les tâches (cochables) et les photos restent dans le Détail." },
+      { icon: '⏱️', text: "« Dépannage fini » propose désormais d'ajouter directement le temps passé au pointage du jour : on indique la durée, et ça remplit automatiquement une ligne « multi chantier » (chantier existant ou chantier libre avec adresse/zone) — à la fin de la tournée, la fiche d'heures du jour est déjà pré-remplie comme après une saisie manuelle." },
+    ],
+  },
   {
     version: '5.41.117',
     date: '21/09/2026',
@@ -51128,21 +51136,20 @@ function renderRoutePane(){
     const stops = (r.stops||[]).map((s, i) => {
       const isCur = cur && cur.id === s.id;
       const done = s.status === 'done';
-      const tasks = (s.tasks||[]).map(t => `
-        <label style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:13px;">
-          <input type="checkbox" ${t.done?'checked':''} style="margin-top:3px;flex-shrink:0;"
-            onchange="routeToggleTask('${r._key}','${r.id}','${s.id}','${t.id}',this.checked)">
-          <span style="${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${escapeHtml(t.label)}</span>
-        </label>`).join('');
       if(done){
         return `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--card);opacity:.7;">
           <div style="font-size:13px;font-weight:700;color:#4CAF79;">✅ ${i+1}. ${escapeHtml(s.name)}</div></div>`;
       }
+      // v5.41.118 — carte condensée : le nom du chantier (cliquable → Waze,
+      // évite de répéter l'adresse juste en dessous) + Détail (boîte à clés,
+      // tâches, photos) + Dépannage fini. Les tâches ne s'affichent plus ici
+      // une par une (trop de place) : elles vivent dans le Détail.
+      const nameLine = s.address
+        ? `<button type="button" onclick="openWazeAddress(${_routeJsArg(s.address)})" style="display:block;width:100%;text-align:left;background:none;border:none;padding:0;color:var(--ink);font-size:14px;font-weight:800;cursor:pointer;text-decoration:underline;text-decoration-color:var(--wood);">📍 ${i+1}. ${escapeHtml(s.name)}</button>`
+        : `<div style="font-size:14px;font-weight:800;">${i+1}. ${escapeHtml(s.name)}</div>`;
       return `<div style="border:1.5px solid ${isCur?'var(--wood)':'var(--line)'};border-radius:10px;padding:8px 10px;margin-bottom:8px;background:${isCur?'var(--card)':'transparent'};">
-        <div style="font-size:14px;font-weight:800;">${i+1}. ${escapeHtml(s.name)}</div>
-        ${s.address ? `<button type="button" onclick="openWazeAddress(${_routeJsArg(s.address)})" style="display:block;width:100%;text-align:left;background:none;border:none;padding:4px 0;color:var(--wood);font-size:12.5px;cursor:pointer;text-decoration:underline;">📍 ${escapeHtml(s.address)} — Waze</button>` : ''}
-        <div style="margin:4px 0 6px;">${tasks || '<div class="hint">Aucune tâche.</div>'}</div>
-        <div style="display:flex;gap:6px;">
+        ${nameLine}
+        <div style="display:flex;gap:6px;margin-top:8px;">
           <button type="button" onclick="openRouteStopDetail('${r._key}','${r.id}','${s.id}')" style="flex:1;padding:8px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-weight:700;font-size:12.5px;cursor:pointer;">Détail</button>
           ${isCur ? `<button type="button" onclick="routeFinishStop('${r._key}','${r.id}','${s.id}')" style="flex:1.4;padding:8px;border:none;border-radius:8px;background:#4CAF79;color:#fff;font-weight:800;font-size:12.5px;cursor:pointer;">✅ Dépannage fini</button>` : ''}
         </div>
@@ -51167,6 +51174,49 @@ async function routeToggleTask(key, routeId, stopId, taskId, checked){
   if(!r) showToast('⚠️ Coche non synchronisée (réseau)');
 }
 
+/* v5.41.118 — à la fin d'un chantier de la feuille de route, propose
+   d'ajouter directement le temps passé au pointage du jour (mode multi
+   chantier, comme si l'ouvrier avait rempli sa fiche à la main). Le
+   chantier réel (siteId connu) est repris tel quel ; un chantier saisi
+   libre devient une ligne "chantier libre" avec nom + adresse. Le texte
+   des tâches de la feuille est ajouté dans les notes de la ligne pour ne
+   rien perdre (le sélecteur "Tâche" du pointage ne connaît que TRANCHES). */
+async function _routeOfferPointage(stop){
+  const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
+  if(!myWorkerId) return; // rôle sans fiche d'heures (ex: comptable) — rien à proposer
+  if(!confirm(`Ajouter « ${stop.name} » au pointage du jour ?`)) return;
+  let h = prompt('Combien de temps as-tu passé sur ce dépannage ? (en heures, ex : 2 ou 1.5)', '');
+  if(h === null) return;
+  h = roundHoursToHalf(h);
+  if(h === '' || isNaN(h) || h <= 0){ showToast('Durée invalide — non ajoutée au pointage'); return; }
+
+  const dateKey = new Date().toISOString().slice(0,10);
+  if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: data.sites[0]?.id || null, workers: {} };
+  const today = data.attendance[dateKey];
+  if(!today.workers[myWorkerId]) today.workers[myWorkerId] = { hours: '', panier: false, task: '' };
+  const entry = today.workers[myWorkerId];
+  entry.mode = 'multi';
+  if(!Array.isArray(entry.sites)) entry.sites = [];
+
+  const taskLabel = (stop.tasks||[]).map(t => t.label).join(', ');
+  const realSite = stop.siteId && (data.sites||[]).some(s => s.id === stop.siteId);
+  const row = realSite
+    ? { siteId: stop.siteId, hours: h, task: '', routeNote: taskLabel }
+    : { siteId: '__custom__', customName: stop.name || 'Chantier libre', customAddr: stop.address || '', customZone: '', hours: h, task: '', routeNote: taskLabel };
+  entry.sites.push(row);
+  saveData();
+  schedulePointageSync();
+  if(typeof renderPointage === 'function') try{ renderPointage(); }catch(e){}
+  showToast(`✅ ${h}h ajoutée${h>1?'s':''} au pointage du jour`);
+
+  // Zone auto pour un chantier libre avec adresse — même logique que la
+  // saisie manuelle du multi-chantier (_pointageMultiCalcZone).
+  if(!realSite && row.customAddr && typeof _pointageMultiCalcZone === 'function'){
+    const idx = entry.sites.length - 1;
+    _pointageMultiCalcZone(dateKey, myWorkerId, idx);
+  }
+}
+
 async function routeFinishStop(key, routeId, stopId){
   const local = _routeCache.find(r => r.id === routeId);
   const ls = local && local.stops.find(s => s.id === stopId);
@@ -51176,6 +51226,10 @@ async function routeFinishStop(key, routeId, stopId){
     ? `${pending} tâche(s) non cochée(s). Terminer quand même « ${ls.name} » ?`
     : `Terminer le dépannage « ${ls.name} » ?`;
   if(!confirm(msg)) return;
+  // v5.41.118 — proposer d'ajouter ce dépannage au pointage du jour AVANT de
+  // clore le chantier (on ne perd pas la saisie si le réseau traîne pour la
+  // clôture elle-même). Refus ou annulation = on continue quand même.
+  await _routeOfferPointage(ls);
   const now = new Date().toISOString();
   const me = _routeMyName();
   let justDone = false;
@@ -51228,16 +51282,18 @@ function openRouteStopDetail(key, routeId, stopId){
   div.innerHTML = `
     <div class="modal">
       <div class="modal-header"><h2>🛠️ ${escapeHtml(s.name)}</h2><button class="modal-close" onclick="document.getElementById('modal-routeDetail').remove()">×</button></div>
-      <div class="hint" style="margin-bottom:10px;">Feuille de <strong>${escapeHtml(r.createdBy && r.createdBy.name || '—')}</strong></div>
-      ${s.address ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">Adresse</div>
-        <div style="font-weight:700;margin:2px 0 8px;">${escapeHtml(s.address)}</div>
-        <button class="btn btn-primary btn-block" onclick="openWazeAddress(${_routeJsArg(s.address)})">📍 Ouvrir dans Waze</button></div>` : ''}
+      <div class="hint" style="margin-bottom:10px;">Feuille de <strong>${escapeHtml(r.createdBy && r.createdBy.name || '—')}</strong>${s.address ? ' — tape le nom du chantier pour ouvrir Waze' : ''}</div>
       ${(s.keybox || (s.keyboxMedia||[]).length) ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">🔑 Boîte à clés</div>
         ${s.keybox ? `<div style="font-size:20px;font-weight:800;letter-spacing:1px;margin:4px 0;word-break:break-all;">${escapeHtml(s.keybox)}</div>
         <button class="btn btn-outline" onclick="navigator.clipboard&&navigator.clipboard.writeText(${_routeJsArg(s.keybox)}).then(()=>showToast('Code copié'))">Copier</button>` : ''}
         ${(s.keyboxMedia||[]).length ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px;">${mediaHtml(s.keyboxMedia)}</div>` : ''}</div>` : ''}
       <div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">Tâches à réaliser</div>
-        ${(s.tasks||[]).map(t => `<div style="padding:4px 0;font-size:14px;${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${t.done?'☑':'☐'} ${escapeHtml(t.label)}</div>`).join('') || '<div class="hint">Aucune tâche.</div>'}</div>
+        ${(s.tasks||[]).map(t => `
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:14px;">
+          <input type="checkbox" ${t.done?'checked':''} style="margin-top:3px;flex-shrink:0;"
+            onchange="routeToggleTask('${key}','${routeId}','${s.id}','${t.id}',this.checked); this.nextElementSibling.style.textDecoration=this.checked?'line-through':'none';">
+          <span style="${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${escapeHtml(t.label)}</span>
+        </label>`).join('') || '<div class="hint">Aucune tâche.</div>'}</div>
       ${s.notes ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">Notes</div><div style="white-space:pre-wrap;font-size:14px;">${escapeHtml(s.notes)}</div></div>` : ''}
       ${(s.media||[]).length ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Photos / fichiers du conducteur</div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">${mediaHtml(s.media)}</div></div>` : ''}
