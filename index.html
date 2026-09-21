@@ -5093,6 +5093,7 @@
     <section class="view" id="view-zone-chantier">
       <div class="view-heading">Zone Chantier</div>
       <div id="zoneChantierMap"></div>
+      <div id="zoneChantierLegend"></div>
       <div id="zoneChantierList"></div>
     </section>
 
@@ -14010,6 +14011,29 @@ let _zoneMapMarkers = [];
    et être centré/ouvert à l'arrivée sur la carte. Consommé une seule fois. */
 let _zoneFocusSiteId = null;
 
+/* v5.41.112 — iPhone : la carte ne s'affichait pas quand Leaflet (chargé
+   depuis unpkg) n'était pas prêt (réseau lent, bloqueur, PWA) — le rendu
+   plantait en silence. On le recharge à la demande depuis un 2e CDN. */
+function _ensureLeaflet(){
+  if(window.L && L.map) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let done = false;
+    const finish = ok => { if(!done){ done = true; resolve(ok); } };
+    if(!document.getElementById('leafletCssFallback')){
+      const css = document.createElement('link');
+      css.id = 'leafletCssFallback'; css.rel = 'stylesheet';
+      css.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';
+      document.head.appendChild(css);
+    }
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js';
+    sc.onload = () => finish(!!(window.L && L.map));
+    sc.onerror = () => finish(false);
+    document.head.appendChild(sc);
+    setTimeout(() => finish(!!(window.L && L.map)), 8000);
+  });
+}
+
 async function renderZoneChantier(){
   const listEl = document.getElementById('zoneChantierList');
   const mapEl  = document.getElementById('zoneChantierMap');
@@ -14020,7 +14044,12 @@ async function renderZoneChantier(){
   const depotAddress = data.settings.depotAddress || 'Dépôt';
   const bareme = data.settings.trajetBareme || [];
 
-  // ── CARTE ──
+  // ── CARTE ──  (isolée : si elle échoue, la liste des zones s'affiche quand même)
+  const leafletOk = await _ensureLeaflet();
+  if(!leafletOk){
+    mapEl.innerHTML = `<div style="padding:24px;text-align:center;font-size:13px;color:var(--ink-soft);">Carte indisponible (connexion ?)<br><button class="btn btn-outline btn-sm" style="margin-top:10px;" onclick="renderZoneChantier()">Réessayer</button></div>`;
+  } else try {
+  if(mapEl.querySelector('button') && !_zoneMap) mapEl.innerHTML = '';
   if(!_zoneMap){
     const center = depot ? [depot.lat, depot.lng] : [44.837, -0.579];
     _zoneMap = L.map('zoneChantierMap', { zoomControl:true }).setView(center, 10);
@@ -14045,6 +14074,8 @@ async function renderZoneChantier(){
         color: color, weight: 1.5, opacity: 0.7,
         fillColor: color, fillOpacity: 0.04
       }).bindTooltip('Zone ' + z.zone + ' — jusqu\'à ' + z.maxKm + ' km', { sticky:true })
+        // v5.41.112 — iPhone : pas de survol, donc le détail s'ouvre aussi au TAP.
+        .bindPopup('<strong>Zone ' + z.zone + '</strong><br>' + (z.minKm != null ? z.minKm + ' – ' : 'jusqu\'à ') + z.maxKm + ' km' + (z.trajet != null ? '<br>' + Number(z.trajet).toFixed(2) + ' €/jour de trajet' : ''))
         .addTo(_zoneMap);
       _zoneMapMarkers.push(circle);
     });
@@ -14067,7 +14098,7 @@ async function renderZoneChantier(){
   // Pins chantiers
   const resolved = await Promise.all(sites.map(async site => {
     let geo = site._geo || null;
-    if(!geo && site.address){ geo = await geocodeAddress(site.address); if(geo) site._geo = geo; }
+    try{ if(!geo && site.address){ geo = await geocodeAddress(site.address); if(geo) site._geo = geo; } }catch(e){ geo = null; }
     return { site, geo };
   }));
   saveData();
@@ -14103,6 +14134,32 @@ async function renderZoneChantier(){
   } else if(bounds.length > 1) _zoneMap.fitBounds(bounds, { padding:[24,24] });
   else if(bounds.length === 1) _zoneMap.setView(bounds[0], 12);
   setTimeout(() => _zoneMap.invalidateSize(), 120);
+  setTimeout(() => _zoneMap.invalidateSize(), 500); // iOS : la vue finit de s'afficher après le 1er calcul
+  if(!window._zoneMapResizeBound){
+    window._zoneMapResizeBound = true;
+    const fix = () => { if(_zoneMap) setTimeout(() => _zoneMap.invalidateSize(), 200); };
+    window.addEventListener('resize', fix);
+    window.addEventListener('orientationchange', fix);
+  }
+  } catch(e){
+    mapEl.innerHTML = `<div style="padding:24px;text-align:center;font-size:13px;color:var(--ink-soft);">Impossible d'afficher la carte.<br><button class="btn btn-outline btn-sm" style="margin-top:10px;" onclick="_zoneMap=null;renderZoneChantier()">Réessayer</button></div>`;
+    _zoneMap = null;
+  }
+
+  // ── LÉGENDE DES ZONES (visible sans survol, donc utilisable sur iPhone) ──
+  const legendEl = document.getElementById('zoneChantierLegend');
+  if(legendEl){
+    const zc = ['#6FA37E','#7B9FD1','#A084CA','#E8AC3D','#E07A63','#5FB4B8'];
+    legendEl.innerHTML = bareme.length ? `<div class="card" style="padding:10px 12px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:800;margin-bottom:6px;">Détail des zones (depuis le dépôt)</div>
+      ${[...bareme].map((z, i) => { const idx = bareme.length - 1 - i; return `<div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0;">
+        <span style="width:12px;height:12px;border-radius:50%;background:${zc[idx % zc.length]};flex-shrink:0;"></span>
+        <span style="font-weight:700;">Zone ${escapeHtml(String(z.zone))}</span>
+        <span style="color:var(--ink-soft);">${z.minKm != null ? z.minKm + ' – ' : 'jusqu\'à '}${z.maxKm} km</span>
+        ${z.trajet != null ? `<span style="margin-left:auto;font-weight:700;">${Number(z.trajet).toFixed(2)} €/j</span>` : ''}
+      </div>`; }).join('')}
+    </div>` : '';
+  }
 
   // ── LISTE : groupée par zone, sans bouton itinéraire ──
   if(!sites.length){
@@ -21662,6 +21719,38 @@ async function _pointageCalcZone(){
   }catch(e){ if(hint) hint.textContent='Erreur de calcul, choisis la zone manuellement.'; }
 }
 
+/* v5.41.111 — Multi chantier : un chantier libre peut être saisi avec son
+   ADRESSE seule (l'ouvrier ne connaît pas toujours la zone) : géocodage →
+   distance au dépôt → zone du barème, écrite dans row.customZone (même champ
+   que le choix manuel, donc la prime de trajet n'a rien à changer). */
+async function _pointageMultiCalcZone(dateKey, workerId, i){
+  const entry = data.attendance[dateKey] && data.attendance[dateKey].workers[workerId];
+  const row = entry && Array.isArray(entry.sites) && entry.sites[i];
+  if(!row) return;
+  const hint = document.getElementById('pmHint_' + i);
+  const say = t => { if(hint) hint.textContent = t; };
+  const addr = (row.customAddr || '').trim();
+  if(!addr){ say('Tape une adresse avant de calculer.'); return; }
+  if(!data.settings.depotAddress){ say("Renseigne l'adresse du dépôt dans Paramètres → Prime de trajet."); return; }
+  say('Calcul en cours…');
+  try{
+    if(!data.settings.depotCoords){
+      const dgeo = await geocodeAddress(data.settings.depotAddress);
+      if(dgeo){ data.settings.depotCoords = dgeo; saveData(); }
+    }
+    if(!data.settings.depotCoords){ say('Adresse du dépôt introuvable.'); return; }
+    const geo = await geocodeAddress(addr);
+    if(!geo){ say('Adresse introuvable — choisis la zone à la main.'); return; }
+    const km = Math.round(haversineKm(data.settings.depotCoords.lat, data.settings.depotCoords.lng, geo.lat, geo.lng) * 10) / 10;
+    const zone = findTrajetZone(km);
+    row.customKm = km;
+    row.customZone = zone || '';
+    saveData();
+    schedulePointageSync();
+    renderPointage();
+  }catch(e){ say('Erreur de calcul, choisis la zone manuellement.'); }
+}
+
 /* Bloc de saisie "Multi chantier" pour un ouvrier donné :
    1) une rangée de chips — on TAPE directement les chantiers faits dans la
       journée (plusieurs à la fois), dans l'ordre du tap : le 1er sert de
@@ -21711,7 +21800,13 @@ function _renderPointageMultiSiteRows(dateKey, workerId, entry){
           <option value="">— Zone —</option>
           ${ZONES_TRAJET.map(z=>`<option value="${z}"${row.customZone===z?' selected':''}>Zone ${z}</option>`).join('')}
         </select>
-      </div>` : ''}
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:4px;">
+        <input type="text" id="pmAddr_${i}" placeholder="Adresse (calcule la zone toute seule)" style="flex:1;" value="${escapeHtml(row.customAddr||'')}"
+          onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'customAddr', this.value); _pointageMultiCalcZone('${dateKey}','${workerId}',${i});">
+        <button type="button" class="btn btn-outline btn-sm" style="flex-shrink:0;" onclick="_pointageMultiCalcZone('${dateKey}','${workerId}',${i})">📍 Zone</button>
+      </div>
+      <div class="hint" id="pmHint_${i}" style="margin-bottom:8px;">${row.customKm ? `${row.customKm} km du dépôt${row.customZone?` → Zone ${row.customZone}`:' — hors barème'}` : ''}</div>` : ''}
       <div style="display:flex;gap:6px;">
         <input type="number" min="0" max="24" step="0.5" placeholder="Heures faites" style="flex:1;" value="${row.hours||''}"
           onchange="updatePointageSiteRow('${dateKey}','${workerId}',${i},'hours', this.value); this.value = roundHoursToHalf(this.value);">
@@ -32093,9 +32188,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.110';
+const APP_VERSION = '5.41.112';
 
 const CHANGELOG = [
+  {
+    version: '5.41.112',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🗺️', text: "Onglet Zone sur iPhone : le détail des zones s'ouvre maintenant au toucher (les cercles n'étaient lisibles qu'au survol de la souris) et une légende « Détail des zones » (km + tarif par zone) s'affiche sous la carte. La carte se recharge aussi toute seule si sa bibliothèque n'a pas pu se charger, avec un bouton Réessayer, et la liste des zones s'affiche même si la carte échoue." },
+    ],
+  },
+  {
+    version: '5.41.111',
+    date: '21/09/2026',
+    entries: [
+      { icon: '📍', text: "Pointage — Multi chantier : sur un « Chantier libre », on peut maintenant saisir l'adresse du chantier (au lieu de connaître la zone). La distance au dépôt et la zone de trajet se calculent automatiquement ; le choix manuel de la zone reste possible." },
+    ],
+  },
   {
     version: '5.41.110',
     date: '21/09/2026',
