@@ -32211,9 +32211,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.129';
+const APP_VERSION = '5.41.130';
 
 const CHANGELOG = [
+  {
+    version: '5.41.130',
+    date: '21/09/2026',
+    entries: [
+      { icon: '✂️', text: "Croquis Paint : nouvel outil Découpe — sélectionne une zone et l'efface (révèle le fond blanc), pratique pour créer une encoche dans un rectangle." },
+      { icon: '↔️', text: "Croquis Paint : la forme sélectionnée avec l'outil Sélection affiche maintenant des poignées sur ses 4 coins pour la redimensionner directement (comme dans Paint Windows)." },
+      { icon: '🔍', text: "Croquis Paint : zoom à la molette (centré sous le curseur) et déplacement de la vue au clic droit maintenu, avec un bouton « Réinitialiser la vue »." },
+    ],
+  },
   {
     version: '5.41.129',
     date: '21/09/2026',
@@ -51811,6 +51820,7 @@ const PAINT_TOOLS = [
   { id:'circle',   label:'Cercle',     icon:'◯' },
   { id:'triangle', label:'Triangle',   icon:'△' },
   { id:'text',     label:'Texte',      icon:'A' },
+  { id:'erase',    label:'Découpe',    icon:'✂️' },
 ];
 /* Quincaillerie — dessinée en vecteur (canvas), pas des images. Se place
    comme une ligne (glisser du point de départ au point d'arrivée) : ce
@@ -51888,9 +51898,13 @@ function openPaintSketchTool(onSave, existingPaint){
           <button type="button" class="btn btn-outline" id="paintDeleteBtn" style="display:none;" onclick="_paintDeleteSelected()">🗑️ Supprimer la forme</button>
           <button type="button" class="btn btn-outline" onclick="_paintUndo()">↺ Annuler</button>
           <button type="button" class="btn btn-outline" onclick="_paintClearAll()">🧹 Tout effacer</button>
+          <button type="button" class="btn btn-outline" onclick="_paintResetView()">🔍 Réinitialiser la vue</button>
         </div>
         <div id="paintCanvasWrap" style="position:relative; flex:1; min-width:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); cursor:crosshair;">
           <canvas id="paintCanvas" style="width:100%; height:100%; display:block;"></canvas>
+          <div style="position:absolute; bottom:8px; right:10px; font-size:10.5px; font-weight:700; color:#666; background:rgba(255,255,255,0.85); padding:2px 7px; border-radius:6px; pointer-events:none;">
+            Molette : zoom · Clic droit maintenu : déplacer
+          </div>
         </div>
       </div>
       <div style="display:flex; gap:8px; margin-top:12px; flex-shrink:0;">
@@ -51912,7 +51926,14 @@ function openPaintSketchTool(onSave, existingPaint){
     canvas, ctx, dpr, onSave,
     tool: 'pen', color: PAINT_COLORS[0], lineWidth: 3, fontSize: 16, textMode: 'fit', fillMaterial: 'none',
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
-    history: []
+    history: [],
+    // v5.41.130 — zoom/déplacement de la vue : ne modifie jamais les
+    // coordonnées des formes, seulement la transformation d'affichage du
+    // canvas (comme un plan qu'on regarde de plus ou moins près).
+    view: { scale: 1, x: 0, y: 0 },
+    panning: false, panStart: null, panViewStart: null,
+    // v5.41.130 — redimensionnement via poignées sur la forme sélectionnée.
+    resizing: false, resizeHandle: null, resizeShapeStart: null, resizeBoundsStart: null,
   };
 
   if(existingPaint && Array.isArray(existingPaint.shapes) && existingPaint.shapes.length){
@@ -51932,15 +51953,61 @@ function openPaintSketchTool(onSave, existingPaint){
   _paintUpdateFontSizeRow();
   _paintUpdateFillRow();
 
+  // v5.41.130 — `pos()` convertit les coordonnées écran en coordonnées
+  // « monde » (celles stockées dans les formes), en inversant le zoom/
+  // déplacement de la vue — ainsi tout le code de dessin/sélection reste
+  // inchangé, seule la vue à l'écran change.
   const pos = e => {
     const r = canvas.getBoundingClientRect();
-    return { x:(e.clientX - r.left) * (canvas.width/r.width), y:(e.clientY - r.top) * (canvas.height/r.height) };
+    const cx = (e.clientX - r.left) * (canvas.width/r.width);
+    const cy = (e.clientY - r.top) * (canvas.height/r.height);
+    const v = _paint.view;
+    return { x:(cx - v.x) / v.scale, y:(cy - v.y) / v.scale };
   };
+
+  // v5.41.130 — clic droit maintenu = déplacement de la vue (pan), comme
+  // demandé. On désactive le menu contextuel du navigateur sur le canvas.
+  wrap.addEventListener('contextmenu', ev => ev.preventDefault());
+  canvas.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const cx = (ev.clientX - r.left) * (canvas.width/r.width);
+    const cy = (ev.clientY - r.top) * (canvas.height/r.height);
+    const v = _paint.view;
+    const factor = ev.deltaY < 0 ? 1.12 : 1/1.12;
+    const newScale = Math.min(8, Math.max(0.25, v.scale * factor));
+    // Zoom centré sous le curseur : le point du monde sous la souris reste sous la souris.
+    const wx = (cx - v.x) / v.scale, wy = (cy - v.y) / v.scale;
+    v.scale = newScale;
+    v.x = cx - wx * v.scale;
+    v.y = cy - wy * v.scale;
+    _paintRedraw();
+  }, { passive:false });
 
   canvas.onmousedown = e => {
     e.preventDefault();
+    if(e.button === 2){
+      // Clic droit : déplacement de la vue, quel que soit l'outil actif.
+      _paint.panning = true;
+      _paint.panStart = { x:e.clientX, y:e.clientY };
+      _paint.panViewStart = { x:_paint.view.x, y:_paint.view.y };
+      return;
+    }
     const p = pos(e);
     if(_paint.tool === 'select'){
+      // v5.41.130 — si une forme est déjà sélectionnée, on teste d'abord les
+      // poignées de redimensionnement (coins) avant de tester un déplacement.
+      if(_paint.selectedIdx >= 0){
+        const h = _paintHandleAt(p, _paint.shapes[_paint.selectedIdx]);
+        if(h){
+          _paintPushHistory();
+          _paint.resizing = true;
+          _paint.resizeHandle = h;
+          _paint.resizeShapeStart = JSON.parse(JSON.stringify(_paint.shapes[_paint.selectedIdx]));
+          _paint.resizeBoundsStart = _paintShapeBounds(_paint.resizeShapeStart);
+          return;
+        }
+      }
       const idx = _paintHitTest(p);
       _paint.selectedIdx = idx;
       if(idx >= 0){
@@ -51950,6 +52017,15 @@ function openPaintSketchTool(onSave, existingPaint){
       }
       _paintUpdateDeleteBtn();
       _paintRedraw();
+      return;
+    }
+    if(_paint.tool === 'erase'){
+      // v5.41.130 — Découpe : on trace un rectangle comme pour l'outil
+      // Rectangle, mais au lâcher on POUSSE une forme 'erase' qui, dessinée
+      // à sa place dans l'ordre des calques, repeint la zone en blanc —
+      // donnant l'impression de « découper » une encoche jusqu'au fond.
+      _paint.drawing = true;
+      _paint.start = p;
       return;
     }
     // v5.41.125 — Texte a deux modes, choisis dans la sidebar (_paint.textMode) :
@@ -51978,7 +52054,21 @@ function openPaintSketchTool(onSave, existingPaint){
   };
   canvas.onmousemove = e => {
     if(!_paint) return;
+    if(_paint.panning){
+      const dx = e.clientX - _paint.panStart.x, dy = e.clientY - _paint.panStart.y;
+      const r = canvas.getBoundingClientRect();
+      const scaleX = canvas.width/r.width, scaleY = canvas.height/r.height;
+      _paint.view.x = _paint.panViewStart.x + dx * scaleX;
+      _paint.view.y = _paint.panViewStart.y + dy * scaleY;
+      _paintRedraw();
+      return;
+    }
     const p = pos(e);
+    if(_paint.resizing && _paint.selectedIdx >= 0){
+      _paintResizeShape(_paint.shapes[_paint.selectedIdx], _paint.resizeShapeStart, _paint.resizeBoundsStart, _paint.resizeHandle, p);
+      _paintRedraw();
+      return;
+    }
     if(_paint.dragging && _paint.selectedIdx >= 0){
       const dx = p.x - _paint.dragStart.x, dy = p.y - _paint.dragStart.y;
       _paintTranslateShape(_paint.shapes[_paint.selectedIdx], _paint.dragShapeStart, dx, dy);
@@ -51996,12 +52086,20 @@ function openPaintSketchTool(onSave, existingPaint){
   };
   const finishDraw = e => {
     if(!_paint) return;
+    if(_paint.panning){ _paint.panning = false; return; }
+    if(_paint.resizing){ _paint.resizing = false; _paint.resizeHandle = null; return; }
     if(_paint.dragging){ _paint.dragging = false; return; }
     if(!_paint.drawing) return;
     _paint.drawing = false;
     const isShapeTool = ['line','rect','circle','triangle'].includes(_paint.tool);
     const isSymbolTool = PAINT_SYMBOLS.some(s => s.id === _paint.tool);
-    if(isShapeTool && _paint.current){
+    if(_paint.tool === 'erase' && _paint.current){
+      // v5.41.130 — Découpe : repeint la zone tracée en blanc, à sa place
+      // dans l'ordre des calques (elle « mange » ce qui est dessous, comme
+      // une encoche découpée jusqu'au fond de la feuille).
+      _paintPushHistory();
+      _paint.shapes.push({ type:'erase', x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y });
+    } else if(isShapeTool && _paint.current){
       _paintPushHistory();
       const shape = { type:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color, width:_paint.lineWidth*dpr };
       // v5.41.127 — un rectangle peut porter un remplissage matériau
@@ -52169,6 +52267,14 @@ function _paintClearAll(){
   _paintUpdateDeleteBtn();
   _paintRedraw();
 }
+/* v5.41.130 — remet le zoom/déplacement de la vue à l'état initial (utile
+   après avoir zoomé/déplacé pour retravailler un détail) ; ne touche pas
+   au contenu du croquis, seulement à la façon dont on le regarde. */
+function _paintResetView(){
+  if(!_paint) return;
+  _paint.view = { scale:1, x:0, y:0 };
+  _paintRedraw();
+}
 
 function _paintShapeBounds(s){
   if(s.type === 'pen'){
@@ -52209,6 +52315,60 @@ function _paintScaleShape(s, sx, sy){
   else if(c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*avg; if(c.boxW) c.boxW*=sx; }
   else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; }
   return c;
+}
+
+/* v5.41.130 — poignées de redimensionnement, affichées sur les 4 coins du
+   cadre de sélection (mêmes coordonnées que le pointillé bleu dessiné dans
+   _paintRedraw). Taille FIXE à l'écran (indépendante du zoom de la vue et
+   du zoom de la forme) pour rester facile à attraper à la souris. */
+const PAINT_HANDLE_SIZE = 9; // en pixels canvas (× dpr), pas proportionnel à la forme
+function _paintHandlePositions(bounds){
+  const pad = 6 * (_paint ? _paint.dpr : 1);
+  const x1 = bounds.x1-pad, y1 = bounds.y1-pad, x2 = bounds.x2+pad, y2 = bounds.y2+pad;
+  return [
+    { id:'nw', x:x1, y:y1 }, { id:'ne', x:x2, y:y1 },
+    { id:'sw', x:x1, y:y2 }, { id:'se', x:x2, y:y2 },
+  ];
+}
+function _paintHandleAt(p, shape){
+  if(!shape) return null;
+  const bounds = _paintShapeBounds(shape);
+  const r = PAINT_HANDLE_SIZE * (_paint.dpr || 1);
+  const handles = _paintHandlePositions(bounds);
+  for(const h of handles){
+    if(Math.abs(p.x - h.x) <= r && Math.abs(p.y - h.y) <= r) return h.id;
+  }
+  return null;
+}
+/* v5.41.130 — redimensionne la forme sélectionnée en tirant un coin : le
+   coin OPPOSÉ reste fixe (comme dans Paint Windows), et le coin tiré suit
+   la souris. On calcule un facteur d'échelle par axe à partir des bornes
+   d'origine, puis on applique une mise à l'échelle centrée sur le coin fixe
+   (translation + _paintScaleShape, qui met à l'échelle depuis l'origine). */
+function _paintResizeShape(shape, origShape, origBounds, handle, p){
+  // Coin ANCRE (reste fixe) = coin opposé à la poignée tirée.
+  const anchorX = (handle === 'nw' || handle === 'sw') ? origBounds.x2 : origBounds.x1;
+  const anchorY = (handle === 'nw' || handle === 'ne') ? origBounds.y2 : origBounds.y1;
+  const origW = origBounds.x2 - origBounds.x1, origH = origBounds.y2 - origBounds.y1;
+  if(origW < 1 || origH < 1) return;
+  const minSize = 4 * _paint.dpr;
+  let dx = p.x - anchorX, dy = p.y - anchorY;
+  if(Math.abs(dx) < minSize) dx = (dx < 0 ? -1 : 1) * minSize;
+  if(Math.abs(dy) < minSize) dy = (dy < 0 ? -1 : 1) * minSize;
+  // Facteur d'échelle SIGNÉ par axe : le signe suit le sens du glisser par
+  // rapport au coin ancre d'origine, ce qui permet aussi de « retourner »
+  // la forme si on passe le curseur de l'autre côté de l'ancre.
+  const origDx = (handle === 'nw' || handle === 'sw') ? -origW : origW;
+  const origDy = (handle === 'nw' || handle === 'ne') ? -origH : origH;
+  const sx = dx / origDx, sy = dy / origDy;
+  // On ramène la forme d'origine au repère de l'ancre (ancre → 0,0), on met
+  // à l'échelle depuis l'origine (_paintScaleShape), puis on la replace.
+  const shifted = JSON.parse(JSON.stringify(origShape));
+  _paintTranslateShape(shifted, origShape, -anchorX, -anchorY);
+  const scaled = _paintScaleShape(shifted, sx, sy);
+  const replaced = JSON.parse(JSON.stringify(scaled));
+  _paintTranslateShape(replaced, scaled, anchorX, anchorY);
+  Object.assign(shape, replaced);
 }
 
 /* v5.41.127 — remplissage matériau d'un rectangle (bois/béton/brique
@@ -52359,11 +52519,33 @@ function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
 function _paintRedraw(){
   if(!_paint) return;
   const { ctx, canvas } = _paint;
+  ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
+  // v5.41.130 — zoom/déplacement de la vue : une transformation globale du
+  // contexte, appliquée AVANT de dessiner formes/poignées/aperçu, pour que
+  // tout le reste du code continue de raisonner en coordonnées « monde ».
+  const v = _paint.view;
+  ctx.setTransform(v.scale, 0, 0, v.scale, v.x, v.y);
+
   _paint.shapes.forEach((s, idx) => {
     ctx.save();
+    if(s.type === 'erase'){
+      // v5.41.130 — Découpe : repeint la zone en blanc, à sa place dans
+      // l'ordre des calques (n'efface que ce qui est dessous, comme une
+      // encoche découpée jusqu'au fond de la feuille).
+      const rx0 = Math.min(s.x1,s.x2), ry0 = Math.min(s.y1,s.y2), rw = Math.abs(s.x2-s.x1), rh = Math.abs(s.y2-s.y1);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(rx0, ry0, rw, rh);
+      if(idx === _paint.selectedIdx){
+        ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/v.scale; ctx.setLineDash([5/v.scale,4/v.scale]);
+        ctx.strokeRect(rx0, ry0, rw, rh);
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+      return;
+    }
     ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
     ctx.lineWidth = s.width || 3;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -52395,18 +52577,36 @@ function _paintRedraw(){
     }
     if(idx === _paint.selectedIdx){
       const b = _paintShapeBounds(s);
-      ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5,4]);
+      ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/v.scale; ctx.setLineDash([5/v.scale,4/v.scale]);
       ctx.strokeRect(b.x1-6, b.y1-6, (b.x2-b.x1)+12, (b.y2-b.y1)+12);
       ctx.setLineDash([]);
     }
     ctx.restore();
   });
 
+  // v5.41.130 — poignées de redimensionnement sur la forme sélectionnée
+  // (outil Sélection uniquement). Taille FIXE à l'écran : on les dessine
+  // en divisant par le zoom de la vue pour qu'elles restent attrapables.
+  if(_paint.tool === 'select' && _paint.selectedIdx >= 0 && _paint.shapes[_paint.selectedIdx]){
+    const b = _paintShapeBounds(_paint.shapes[_paint.selectedIdx]);
+    const handles = _paintHandlePositions(b);
+    const r = PAINT_HANDLE_SIZE / v.scale;
+    ctx.save();
+    handles.forEach(h => {
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = 'rgba(78,161,255,0.95)';
+      ctx.lineWidth = 1.5/v.scale;
+      ctx.beginPath(); ctx.rect(h.x-r/2, h.y-r/2, r, r); ctx.fill(); ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   // Aperçu en cours de tracé (avant le mouseup) : formes, quincaillerie
-  // (segment en pointillés) et texte (rectangle en pointillés).
+  // (segment en pointillés), texte (rectangle en pointillés) et découpe
+  // (rectangle blanc semi-transparent, pour prévisualiser la zone effacée).
   if(_paint.drawing && _paint.current){
     ctx.save();
-    ctx.strokeStyle = _paint.color; ctx.lineWidth = _paint.lineWidth * _paint.dpr; ctx.setLineDash([6,4]);
+    ctx.strokeStyle = _paint.color; ctx.lineWidth = _paint.lineWidth * _paint.dpr / v.scale; ctx.setLineDash([6/v.scale,4/v.scale]);
     const s = { x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y };
     if(_paint.tool === 'line'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
     else if(_paint.tool === 'rect'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
@@ -52414,8 +52614,14 @@ function _paintRedraw(){
     else if(_paint.tool === 'triangle'){ const cx=(s.x1+s.x2)/2; ctx.beginPath(); ctx.moveTo(cx,s.y1); ctx.lineTo(s.x1,s.y2); ctx.lineTo(s.x2,s.y2); ctx.closePath(); ctx.stroke(); }
     else if(PAINT_SYMBOLS.some(sy => sy.id === _paint.tool)){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
     else if(_paint.tool === 'text'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
+    else if(_paint.tool === 'erase'){
+      ctx.fillStyle = 'rgba(255,80,80,0.25)';
+      ctx.fillRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1));
+      ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1));
+    }
     ctx.restore();
   }
+  ctx.setTransform(1,0,0,1,0,0);
 }
 
 function _paintClose(){
@@ -52427,7 +52633,21 @@ function _paintFinish(){
   if(!_paint) return;
   if(!_paint.shapes.length){ showToast('Dessine quelque chose avant d\'enregistrer'); return; }
   const { canvas, onSave, shapes } = _paint;
-  canvas.toBlob(blob => {
+  // v5.41.130 — l'export doit toujours capturer le croquis EN ENTIER, quel
+  // que soit le zoom/déplacement de vue en cours au moment d'enregistrer :
+  // on redessine sur un canvas hors-écran avec une vue identité (scale=1,
+  // pas de déplacement), sans les poignées ni la sélection.
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = canvas.width; exportCanvas.height = canvas.height;
+  const exportCtx = exportCanvas.getContext('2d');
+  const savedView = _paint.view, savedSelected = _paint.selectedIdx, savedCtx = _paint.ctx, savedCanvas = _paint.canvas;
+  _paint.view = { scale:1, x:0, y:0 };
+  _paint.selectedIdx = -1;
+  _paint.ctx = exportCtx; _paint.canvas = exportCanvas;
+  _paintRedraw();
+  _paint.view = savedView; _paint.selectedIdx = savedSelected;
+  _paint.ctx = savedCtx; _paint.canvas = savedCanvas;
+  exportCanvas.toBlob(blob => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const paintData = { shapes: JSON.parse(JSON.stringify(shapes)), w: canvas.width, h: canvas.height };
     onSave(blob, paintData);
