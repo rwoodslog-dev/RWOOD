@@ -32211,9 +32211,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.124';
+const APP_VERSION = '5.41.126';
 
 const CHANGELOG = [
+  {
+    version: '5.41.126',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🔩', text: "Croquis Paint : les hachures de la vis, les anneaux du goujon et la tête de la pointe ont maintenant une taille FIXE, peu importe la longueur tracée (avant, le motif s'étirait et finissait par ressembler à une échelle sur les tracés longs)." },
+      { icon: '🟰', text: "Croquis Paint : le goujon est maintenant un contour fermé (rectangle complet) au lieu de deux lignes parallèles ouvertes." },
+      { icon: '🔤', text: "Croquis Paint : l'outil Texte propose maintenant deux modes — « S'adapte » (trace un rectangle, la police s'ajuste à sa hauteur, comme avant) ou « Police fixe » (choisis une taille dans la sidebar, un clic pose le texte) — avec un ⓘ qui explique la différence." },
+    ],
+  },
   {
     version: '5.41.124',
     date: '21/09/2026',
@@ -51775,6 +51784,20 @@ function openPaintSketchTool(onSave, existingPaint){
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Outils</div>
             <div id="paintToolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
+          <div id="paintFontSizeRow" style="display:none;">
+            <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;display:flex;align-items:center;gap:5px;">
+              Texte
+              <button type="button" onclick="_paintShowTextModeInfo()" title="Comment ça marche"
+                style="width:15px;height:15px;border-radius:50%;border:1px solid var(--ink-soft);background:none;color:var(--ink-soft);font-size:10px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;">ⓘ</button>
+            </div>
+            <div style="display:flex;gap:4px;margin-bottom:6px;">
+              <button type="button" id="paintTextModeFit" onclick="_paintSetTextMode('fit')" style="flex:1;padding:5px 4px;font-size:11px;font-weight:700;border-radius:6px;cursor:pointer;">S'adapte</button>
+              <button type="button" id="paintTextModeFixed" onclick="_paintSetTextMode('fixed')" style="flex:1;padding:5px 4px;font-size:11px;font-weight:700;border-radius:6px;cursor:pointer;">Police fixe</button>
+            </div>
+            <select id="paintFontSizeSelect" disabled style="width:100%;padding:6px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12.5px;">
+              ${[12,14,16,18,22,28,36,48].map(n => `<option value="${n}" ${n===16?'selected':''}>${n} px</option>`).join('')}
+            </select>
+          </div>
           <div>
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Quincaillerie</div>
             <div id="paintSymbolList" style="display:flex;flex-direction:column;gap:4px;"></div>
@@ -51812,7 +51835,7 @@ function openPaintSketchTool(onSave, existingPaint){
 
   _paint = {
     canvas, ctx, dpr, onSave,
-    tool: 'pen', color: PAINT_COLORS[0], lineWidth: 3,
+    tool: 'pen', color: PAINT_COLORS[0], lineWidth: 3, fontSize: 16, textMode: 'fit',
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
     history: []
   };
@@ -51829,6 +51852,8 @@ function openPaintSketchTool(onSave, existingPaint){
   _paintRedraw();
 
   document.getElementById('paintWidthRange').oninput = (e) => { _paint.lineWidth = parseInt(e.target.value,10) || 3; };
+  document.getElementById('paintFontSizeSelect').onchange = (e) => { _paint.fontSize = parseInt(e.target.value,10) || 16; };
+  _paintUpdateFontSizeRow();
 
   const pos = e => {
     const r = canvas.getBoundingClientRect();
@@ -51850,12 +51875,23 @@ function openPaintSketchTool(onSave, existingPaint){
       _paintRedraw();
       return;
     }
-    // v5.41.124 — texte et quincaillerie (vis/goujon/pointe) se placent
-    // maintenant EXACTEMENT comme une ligne : on glisse du point de départ
-    // au point d'arrivée, ce geste fixant à la fois position, longueur et
-    // orientation. Le texte demande sa taille de police une fois le
-    // rectangle tracé (pas avant), le contenu du texte est demandé au
-    // relâchement (finishDraw), comme ça l'utilisateur voit d'abord la zone.
+    // v5.41.125 — Texte a deux modes, choisis dans la sidebar (_paint.textMode) :
+    // « fixed » = police fixe choisie à l'avance, un simple CLIC pose le texte ;
+    // « fit » (par défaut, historique) = on trace un rectangle et la police
+    // s'adapte à sa hauteur, demandée juste après (voir finishDraw).
+    if(_paint.tool === 'text' && _paint.textMode === 'fixed'){
+      const txt = prompt('Texte à inscrire sur le croquis :', '');
+      if(txt && txt.trim()){
+        _paintPushHistory();
+        _paint.shapes.push({ type:'text', x:p.x, y:p.y, text:txt.trim(), color:_paint.color, size: _paint.fontSize * dpr });
+        _paintRedraw();
+      }
+      return;
+    }
+    // v5.41.124 — la quincaillerie (vis/goujon/pointe) se place EXACTEMENT
+    // comme une ligne : on glisse du point de départ au point d'arrivée, ce
+    // geste fixant à la fois position, longueur et orientation. Texte en
+    // mode « fit » suit le même geste de glisser (voir finishDraw).
     _paint.drawing = true;
     _paint.start = p;
     if(_paint.tool === 'pen'){
@@ -51899,11 +51935,11 @@ function openPaintSketchTool(onSave, existingPaint){
         _paintPushHistory();
         _paint.shapes.push({ type:'symbol', symbol:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color });
       }
-    } else if(_paint.tool === 'text' && _paint.current){
+    } else if(_paint.tool === 'text' && _paint.textMode !== 'fixed' && _paint.current){
       const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
       const boxW = Math.abs(x2 - x1);
-      // Taille de police demandée APRÈS avoir tracé la zone : par défaut
-      // proportionnelle à la hauteur du rectangle tracé, modifiable.
+      // Mode « s'adapte à la sélection » : taille de police demandée APRÈS
+      // avoir tracé la zone, par défaut proportionnelle à sa hauteur.
       const suggested = Math.max(10, Math.round(Math.abs(y2 - y1) / dpr * 0.7)) || 16;
       const sizeStr = prompt('Taille de la police (en pixels) :', String(suggested));
       if(sizeStr !== null){
@@ -51966,9 +52002,39 @@ function _paintSetTool(id){
   _paintUpdateDeleteBtn();
   _paintRenderToolList();
   _paintRenderSymbolList();
+  _paintUpdateFontSizeRow();
   const wrap = document.getElementById('paintCanvasWrap');
   if(wrap) wrap.style.cursor = id === 'select' ? 'default' : (id === 'text' ? 'text' : 'crosshair');
   _paintRedraw();
+}
+/* v5.41.125 — le bloc « Texte » (sous les Outils dans la sidebar) n'est
+   affiché que lorsque l'outil Texte est actif. Deux modes :
+   - « fit » (par défaut, historique) : on trace un rectangle et la police
+     s'adapte à sa hauteur, demandée juste après.
+   - « fixed » : la taille choisie ici s'applique, un simple clic pose le
+     texte (comme Paint Windows). */
+function _paintUpdateFontSizeRow(){
+  const row = document.getElementById('paintFontSizeRow');
+  if(row) row.style.display = (_paint && _paint.tool === 'text') ? 'block' : 'none';
+  if(!_paint) return;
+  const fitBtn = document.getElementById('paintTextModeFit');
+  const fixedBtn = document.getElementById('paintTextModeFixed');
+  const sel = document.getElementById('paintFontSizeSelect');
+  const isFixed = _paint.textMode === 'fixed';
+  [[fitBtn,!isFixed],[fixedBtn,isFixed]].forEach(([b,on]) => { if(!b) return;
+    b.style.background = on ? 'var(--wood)' : 'var(--card)';
+    b.style.color = on ? '#1a0d00' : 'var(--ink)';
+    b.style.border = '1.5px solid ' + (on ? 'var(--wood)' : 'var(--line)');
+  });
+  if(sel) sel.disabled = !isFixed;
+}
+function _paintSetTextMode(mode){
+  if(!_paint) return;
+  _paint.textMode = mode;
+  _paintUpdateFontSizeRow();
+}
+function _paintShowTextModeInfo(){
+  alert('« S\'adapte » : trace un rectangle avec la souris, la taille du texte s\'ajuste à la hauteur tracée.\n\n« Police fixe » : choisis une taille ci-dessous, puis un simple clic pose le texte à cette taille.');
 }
 function _paintSetColor(c){
   if(!_paint) return;
@@ -52068,20 +52134,28 @@ function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
   const px = -uy, py = ux;                     // perpendiculaire
   const w = Math.max(2, 3 * (dpr||1));          // épaisseur des traits secondaires
   ctx.lineWidth = w;
+  // v5.41.126 — toutes les tailles ci-dessous sont FIXES (en pixels réels,
+  // via dpr), jamais une fraction de `len` : une vis de 500px de long doit
+  // avoir les mêmes hachures qu'une vis de 20px, pas un motif étiré qui
+  // finit par ressembler à une échelle (retour direct de Rémi).
+  const headLen = 9 * (dpr||1);   // demi-largeur de la tête (vis/pointe)
+  const tickLen = 5 * (dpr||1);   // demi-longueur d'une hachure de filetage (vis)
+  const tickGap = 9 * (dpr||1);   // espacement fixe entre deux hachures (vis)
+  const half    = 5 * (dpr||1);   // demi-largeur du goujon (écartement des 2 montants)
+  const ringGap = 11 * (dpr||1);  // espacement fixe entre deux anneaux (goujon)
   switch(symbol){
-    case 'vis': { // tige + tête (perpendiculaire au départ) + hachures obliques façon filetage
+    case 'vis': { // tige + tête (perpendiculaire au départ) + hachures obliques façon filetage, taille fixe
       ctx.lineWidth = Math.max(2, 2.2*(dpr||1));
       ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
-      const headLen = Math.min(len*0.28, 12*(dpr||1));
       ctx.beginPath();
       ctx.moveTo(x1 - px*headLen, y1 - py*headLen);
       ctx.lineTo(x1 + px*headLen, y1 + py*headLen);
       ctx.stroke();
-      const nTicks = Math.max(2, Math.round(len / (10*(dpr||1))));
-      for(let k=1;k<nTicks;k++){
-        const t = k/nTicks;
-        const cx = x1 + (x2-x1)*t, cy = y1 + (y2-y1)*t;
-        const tickLen = len*0.06;
+      const nTicks = Math.max(1, Math.floor(len / tickGap));
+      for(let k=1;k<=nTicks;k++){
+        const d = k*tickGap;
+        if(d >= len) break;
+        const cx = x1 + ux*d, cy = y1 + uy*d;
         ctx.beginPath();
         ctx.moveTo(cx - px*tickLen - ux*tickLen, cy - py*tickLen - uy*tickLen);
         ctx.lineTo(cx + px*tickLen - ux*tickLen, cy + py*tickLen - uy*tickLen);
@@ -52089,23 +52163,27 @@ function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
       }
       break;
     }
-    case 'gougon': { // tube (deux lignes parallèles) + anneaux de striage
-      const half = Math.max(3*(dpr||1), len*0.06);
+    case 'gougon': { // tube fermé (contour rectangulaire complet, pas juste 2 lignes ouvertes) + anneaux de striage, taille fixe
       ctx.lineWidth = Math.max(2, 2*(dpr||1));
-      ctx.beginPath(); ctx.moveTo(x1+px*half, y1+py*half); ctx.lineTo(x2+px*half, y2+py*half); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x1-px*half, y1-py*half); ctx.lineTo(x2-px*half, y2-py*half); ctx.stroke();
-      const nRings = Math.max(2, Math.round(len / (14*(dpr||1))));
-      for(let k=1;k<nRings;k++){
-        const t = k/nRings;
-        const cx = x1 + (x2-x1)*t, cy = y1 + (y2-y1)*t;
+      ctx.beginPath();
+      ctx.moveTo(x1+px*half, y1+py*half);
+      ctx.lineTo(x2+px*half, y2+py*half);
+      ctx.lineTo(x2-px*half, y2-py*half);
+      ctx.lineTo(x1-px*half, y1-py*half);
+      ctx.closePath();
+      ctx.stroke();
+      const nRings = Math.max(1, Math.floor(len / ringGap));
+      for(let k=1;k<=nRings;k++){
+        const d = k*ringGap;
+        if(d >= len) break;
+        const cx = x1 + ux*d, cy = y1 + uy*d;
         ctx.beginPath(); ctx.moveTo(cx-px*half, cy-py*half); ctx.lineTo(cx+px*half, cy+py*half); ctx.stroke();
       }
       break;
     }
-    case 'pointe': { // simple T : tige (le segment tracé) + barre perpendiculaire au départ (tête du clou)
+    case 'pointe': { // simple T : tige (le segment tracé) + barre perpendiculaire au départ (tête), taille fixe
       ctx.lineWidth = Math.max(2, 2.2*(dpr||1));
       ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
-      const headLen = Math.min(len*0.32, 14*(dpr||1));
       ctx.beginPath();
       ctx.moveTo(x1 - px*headLen, y1 - py*headLen);
       ctx.lineTo(x1 + px*headLen, y1 + py*headLen);
