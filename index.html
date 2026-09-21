@@ -32211,9 +32211,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.123';
+const APP_VERSION = '5.41.124';
 
 const CHANGELOG = [
+  {
+    version: '5.41.124',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🔩', text: "Croquis Paint : les symboles se limitent maintenant à Vis, Goujon et Pointe (renommés « Quincaillerie »), et la pointe est un simple T (tige + tête) au lieu d'un clou avec pointe triangulaire." },
+      { icon: '✏️', text: "Croquis Paint : placer une vis, un goujon ou une pointe se fait maintenant exactement comme tracer une ligne — on glisse du point de départ au point d'arrivée, ce qui fixe à la fois la position, la longueur et l'orientation de la quincaillerie." },
+      { icon: '🔤', text: "Croquis Paint : l'outil Texte se sélectionne maintenant en traçant un rectangle (comme les autres formes), puis demande la taille de la police avant le contenu du texte." },
+    ],
+  },
   {
     version: '5.41.123',
     date: '21/09/2026',
@@ -51729,15 +51738,14 @@ const PAINT_TOOLS = [
   { id:'triangle', label:'Triangle',   icon:'△' },
   { id:'text',     label:'Texte',      icon:'A' },
 ];
-/* Symboles métier — dessinés en vecteur (canvas), pas des images : chaque
-   entrée fournit un draw(ctx, x, y, size, color) et une étiquette. */
+/* Quincaillerie — dessinée en vecteur (canvas), pas des images. Se place
+   comme une ligne (glisser du point de départ au point d'arrivée) : ce
+   geste fixe à la fois la position, la longueur ET l'orientation de la
+   vis/du goujon/de la pointe, exactement comme l'outil Ligne. */
 const PAINT_SYMBOLS = [
   { id:'vis',     label:'Vis' },
   { id:'gougon',  label:'Goujon' },
   { id:'pointe',  label:'Pointe' },
-  { id:'chevron', label:'Chevron' },
-  { id:'poteau',  label:'Poteau bois' },
-  { id:'bardage', label:'Bardage' },
 ];
 
 let _paint = null;
@@ -51768,7 +51776,7 @@ function openPaintSketchTool(onSave, existingPaint){
             <div id="paintToolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
           <div>
-            <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Symboles</div>
+            <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Quincaillerie</div>
             <div id="paintSymbolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
           <div>
@@ -51842,22 +51850,12 @@ function openPaintSketchTool(onSave, existingPaint){
       _paintRedraw();
       return;
     }
-    if(_paint.tool === 'text'){
-      const txt = prompt('Texte à inscrire sur le croquis :', '');
-      if(txt && txt.trim()){
-        _paintPushHistory();
-        _paint.shapes.push({ type:'text', x:p.x, y:p.y, text:txt.trim(), color:_paint.color, size: 14 * dpr * 1.4 });
-        _paintRedraw();
-      }
-      return;
-    }
-    if(PAINT_SYMBOLS.some(s => s.id === _paint.tool)){
-      _paintPushHistory();
-      _paint.shapes.push({ type:'symbol', symbol:_paint.tool, x:p.x, y:p.y, size: 26 * dpr, color:_paint.color });
-      _paintRedraw();
-      return;
-    }
-    // pen / line / rect / circle / triangle
+    // v5.41.124 — texte et quincaillerie (vis/goujon/pointe) se placent
+    // maintenant EXACTEMENT comme une ligne : on glisse du point de départ
+    // au point d'arrivée, ce geste fixant à la fois position, longueur et
+    // orientation. Le texte demande sa taille de police une fois le
+    // rectangle tracé (pas avant), le contenu du texte est demandé au
+    // relâchement (finishDraw), comme ça l'utilisateur voit d'abord la zone.
     _paint.drawing = true;
     _paint.start = p;
     if(_paint.tool === 'pen'){
@@ -51888,9 +51886,36 @@ function openPaintSketchTool(onSave, existingPaint){
     if(_paint.dragging){ _paint.dragging = false; return; }
     if(!_paint.drawing) return;
     _paint.drawing = false;
-    if(['line','rect','circle','triangle'].includes(_paint.tool) && _paint.current){
+    const isShapeTool = ['line','rect','circle','triangle'].includes(_paint.tool);
+    const isSymbolTool = PAINT_SYMBOLS.some(s => s.id === _paint.tool);
+    if(isShapeTool && _paint.current){
       _paintPushHistory();
       _paint.shapes.push({ type:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color, width:_paint.lineWidth*dpr });
+    } else if(isSymbolTool && _paint.current){
+      // Segment trop court (quasi un simple clic) : on ignore plutôt que de
+      // poser une quincaillerie invisible de longueur nulle.
+      const dist = Math.hypot(_paint.current.x - _paint.start.x, _paint.current.y - _paint.start.y);
+      if(dist >= 8 * dpr){
+        _paintPushHistory();
+        _paint.shapes.push({ type:'symbol', symbol:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color });
+      }
+    } else if(_paint.tool === 'text' && _paint.current){
+      const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
+      const boxW = Math.abs(x2 - x1);
+      // Taille de police demandée APRÈS avoir tracé la zone : par défaut
+      // proportionnelle à la hauteur du rectangle tracé, modifiable.
+      const suggested = Math.max(10, Math.round(Math.abs(y2 - y1) / dpr * 0.7)) || 16;
+      const sizeStr = prompt('Taille de la police (en pixels) :', String(suggested));
+      if(sizeStr !== null){
+        const fontSize = parseInt(sizeStr, 10);
+        if(fontSize && fontSize > 0){
+          const txt = prompt('Texte à inscrire sur le croquis :', '');
+          if(txt && txt.trim()){
+            _paintPushHistory();
+            _paint.shapes.push({ type:'text', x:Math.min(x1,x2), y:Math.max(y1,y2), text:txt.trim(), color:_paint.color, size: fontSize * dpr, boxW: boxW || null });
+          }
+        }
+      }
     }
     _paint.current = null;
     _paintRedraw();
@@ -51925,13 +51950,12 @@ function _paintRenderColorGrid(){
       style="width:100%;aspect-ratio:1;border-radius:6px;border:2px solid ${_paint.color===c?'var(--wood)':'var(--line)'};background:${c};cursor:pointer;"></button>`).join('');
 }
 function _paintSymbolPreviewSvg(id){
+  // v5.41.124 — aperçus alignés sur le rendu réel (tige + tête perpendiculaire) :
+  // la pointe est maintenant un simple T (tige + barre), plus de tête triangulaire.
   const svgs = {
-    vis: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="12" y1="2" x2="12" y2="20" stroke="currentColor" stroke-width="2"/><line x1="7" y1="2" x2="17" y2="2" stroke="currentColor" stroke-width="2"/><line x1="9" y1="8" x2="15" y2="10" stroke="currentColor" stroke-width="1.5"/><line x1="9" y1="12" x2="15" y2="14" stroke="currentColor" stroke-width="1.5"/><line x1="9" y1="16" x2="15" y2="18" stroke="currentColor" stroke-width="1.5"/></svg>',
-    gougon: '<svg viewBox="0 0 24 24" width="14" height="14"><rect x="9" y="2" width="6" height="20" rx="2" stroke="currentColor" stroke-width="2" fill="none"/><line x1="9" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5"/><line x1="9" y1="14" x2="15" y2="14" stroke="currentColor" stroke-width="1.5"/></svg>',
-    pointe: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="12" y1="4" x2="12" y2="18" stroke="currentColor" stroke-width="2"/><path d="M12 18 L8 22 M12 18 L16 22" stroke="currentColor" stroke-width="2" fill="none"/><line x1="8" y1="4" x2="16" y2="4" stroke="currentColor" stroke-width="2"/></svg>',
-    chevron: '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M3 8 L12 3 L21 8" stroke="currentColor" stroke-width="2" fill="none"/><path d="M3 14 L12 9 L21 14" stroke="currentColor" stroke-width="2" fill="none"/></svg>',
-    poteau: '<svg viewBox="0 0 24 24" width="14" height="14"><rect x="8" y="2" width="8" height="20" stroke="currentColor" stroke-width="2" fill="none"/><line x1="8" y1="8" x2="16" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="8" y1="14" x2="16" y2="14" stroke="currentColor" stroke-width="1.2"/></svg>',
-    bardage: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="2" y1="5" x2="22" y2="5" stroke="currentColor" stroke-width="2"/><line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" stroke-width="2"/><line x1="2" y1="15" x2="22" y2="15" stroke="currentColor" stroke-width="2"/><line x1="2" y1="20" x2="22" y2="20" stroke="currentColor" stroke-width="2"/></svg>'
+    vis: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="12" y1="3" x2="12" y2="21" stroke="currentColor" stroke-width="2"/><line x1="7" y1="3" x2="17" y2="3" stroke="currentColor" stroke-width="2"/><line x1="9" y1="9" x2="14" y2="10.5" stroke="currentColor" stroke-width="1.3"/><line x1="9" y1="13" x2="14" y2="14.5" stroke="currentColor" stroke-width="1.3"/><line x1="9" y1="17" x2="14" y2="18.5" stroke="currentColor" stroke-width="1.3"/></svg>',
+    gougon: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="9" y1="3" x2="9" y2="21" stroke="currentColor" stroke-width="1.6"/><line x1="15" y1="3" x2="15" y2="21" stroke="currentColor" stroke-width="1.6"/><line x1="9" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="9" y1="13" x2="15" y2="13" stroke="currentColor" stroke-width="1.2"/><line x1="9" y1="18" x2="15" y2="18" stroke="currentColor" stroke-width="1.2"/></svg>',
+    pointe: '<svg viewBox="0 0 24 24" width="14" height="14"><line x1="12" y1="3" x2="12" y2="21" stroke="currentColor" stroke-width="2"/><line x1="7" y1="3" x2="17" y2="3" stroke="currentColor" stroke-width="2"/></svg>',
   };
   return svgs[id] || '';
 }
@@ -51995,10 +52019,11 @@ function _paintShapeBounds(s){
     const xs = s.points.map(p=>p.x), ys = s.points.map(p=>p.y);
     return { x1:Math.min(...xs), y1:Math.min(...ys), x2:Math.max(...xs), y2:Math.max(...ys) };
   }
-  if(s.type === 'symbol' || s.type === 'text'){
+  if(s.type === 'text'){
     const half = (s.size || 20);
-    return { x1:s.x-half, y1:s.y-half, x2:s.x+half, y2:s.y+half };
+    return { x1:s.x-half*0.3, y1:s.y-half*1.2, x2:s.x+(s.boxW||half*4)+half*0.3, y2:s.y+half*0.3 };
   }
+  // 'symbol' (vis/goujon/pointe) se place comme 'line'/'rect'/'circle'/'triangle' : x1/y1/x2/y2.
   return { x1:Math.min(s.x1,s.x2), y1:Math.min(s.y1,s.y2), x2:Math.max(s.x1,s.x2), y2:Math.max(s.y1,s.y2) };
 }
 function _paintHitTest(p){
@@ -52013,53 +52038,80 @@ function _paintHitTest(p){
 function _paintTranslateShape(shape, orig, dx, dy){
   if(shape.type === 'pen'){
     shape.points = orig.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy }));
-  } else if(shape.type === 'symbol' || shape.type === 'text'){
+  } else if(shape.type === 'text'){
     shape.x = orig.x + dx; shape.y = orig.y + dy;
   } else {
+    // 'line' / 'rect' / 'circle' / 'triangle' / 'symbol'
     shape.x1 = orig.x1 + dx; shape.y1 = orig.y1 + dy;
     shape.x2 = orig.x2 + dx; shape.y2 = orig.y2 + dy;
   }
 }
 function _paintScaleShape(s, sx, sy){
   const c = JSON.parse(JSON.stringify(s));
+  const avg = (sx+sy)/2;
   if(c.type === 'pen') c.points = c.points.map(p => ({ x:p.x*sx, y:p.y*sy }));
-  else if(c.type === 'symbol' || c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*((sx+sy)/2); }
-  else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; }
+  else if(c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*avg; if(c.boxW) c.boxW*=sx; }
+  else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; }
   return c;
 }
 
-function _paintDrawSymbol(ctx, symbol, x, y, size, color){
+/* v5.41.124 — dessinée le long d'un SEGMENT (x1,y1 → x2,y2), comme une
+   ligne : la longueur et l'orientation du tracé deviennent celles de la
+   quincaillerie. `dpr` sert à garder les hachures/traits secondaires à une
+   taille lisible quel que soit le zoom écran (pixel ratio). */
+function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
   ctx.save();
-  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = Math.max(2, size*0.08); ctx.lineCap='round'; ctx.lineJoin='round';
-  const s = size;
+  ctx.strokeStyle = color; ctx.fillStyle = color;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const len = Math.hypot(x2-x1, y2-y1) || 1;
+  const ux = (x2-x1)/len, uy = (y2-y1)/len;   // vecteur unitaire le long du segment
+  const px = -uy, py = ux;                     // perpendiculaire
+  const w = Math.max(2, 3 * (dpr||1));          // épaisseur des traits secondaires
+  ctx.lineWidth = w;
   switch(symbol){
-    case 'vis': // ligne verticale + tête + hachures façon filetage
-      ctx.beginPath(); ctx.moveTo(x, y-s); ctx.lineTo(x, y+s); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x-s*0.5, y-s); ctx.lineTo(x+s*0.5, y-s); ctx.stroke();
-      for(let k=-1;k<=1;k++){ ctx.beginPath(); ctx.moveTo(x-s*0.35, y+k*s*0.35); ctx.lineTo(x+s*0.35, y+k*s*0.35+s*0.2); ctx.stroke(); }
+    case 'vis': { // tige + tête (perpendiculaire au départ) + hachures obliques façon filetage
+      ctx.lineWidth = Math.max(2, 2.2*(dpr||1));
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      const headLen = Math.min(len*0.28, 12*(dpr||1));
+      ctx.beginPath();
+      ctx.moveTo(x1 - px*headLen, y1 - py*headLen);
+      ctx.lineTo(x1 + px*headLen, y1 + py*headLen);
+      ctx.stroke();
+      const nTicks = Math.max(2, Math.round(len / (10*(dpr||1))));
+      for(let k=1;k<nTicks;k++){
+        const t = k/nTicks;
+        const cx = x1 + (x2-x1)*t, cy = y1 + (y2-y1)*t;
+        const tickLen = len*0.06;
+        ctx.beginPath();
+        ctx.moveTo(cx - px*tickLen - ux*tickLen, cy - py*tickLen - uy*tickLen);
+        ctx.lineTo(cx + px*tickLen - ux*tickLen, cy + py*tickLen - uy*tickLen);
+        ctx.stroke();
+      }
       break;
-    case 'gougon': // cheville ronde avec traits (goujon bois)
-      ctx.beginPath(); ctx.rect(x-s*0.3, y-s, s*0.6, s*2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x-s*0.3, y-s*0.3); ctx.lineTo(x+s*0.3, y-s*0.3); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x-s*0.3, y+s*0.3); ctx.lineTo(x+s*0.3, y+s*0.3); ctx.stroke();
+    }
+    case 'gougon': { // tube (deux lignes parallèles) + anneaux de striage
+      const half = Math.max(3*(dpr||1), len*0.06);
+      ctx.lineWidth = Math.max(2, 2*(dpr||1));
+      ctx.beginPath(); ctx.moveTo(x1+px*half, y1+py*half); ctx.lineTo(x2+px*half, y2+py*half); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x1-px*half, y1-py*half); ctx.lineTo(x2-px*half, y2-py*half); ctx.stroke();
+      const nRings = Math.max(2, Math.round(len / (14*(dpr||1))));
+      for(let k=1;k<nRings;k++){
+        const t = k/nRings;
+        const cx = x1 + (x2-x1)*t, cy = y1 + (y2-y1)*t;
+        ctx.beginPath(); ctx.moveTo(cx-px*half, cy-py*half); ctx.lineTo(cx+px*half, cy+py*half); ctx.stroke();
+      }
       break;
-    case 'pointe': // clou : tige + tête + pointe triangulaire
-      ctx.beginPath(); ctx.moveTo(x, y-s); ctx.lineTo(x, y+s*0.5); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x, y+s*0.5); ctx.lineTo(x-s*0.35, y+s); ctx.lineTo(x+s*0.35, y+s); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(x-s*0.4, y-s); ctx.lineTo(x+s*0.4, y-s); ctx.stroke();
+    }
+    case 'pointe': { // simple T : tige (le segment tracé) + barre perpendiculaire au départ (tête du clou)
+      ctx.lineWidth = Math.max(2, 2.2*(dpr||1));
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      const headLen = Math.min(len*0.32, 14*(dpr||1));
+      ctx.beginPath();
+      ctx.moveTo(x1 - px*headLen, y1 - py*headLen);
+      ctx.lineTo(x1 + px*headLen, y1 + py*headLen);
+      ctx.stroke();
       break;
-    case 'chevron': // toit en V (deux pentes)
-      ctx.beginPath(); ctx.moveTo(x-s, y+s*0.5); ctx.lineTo(x, y-s*0.6); ctx.lineTo(x+s, y+s*0.5); ctx.stroke();
-      break;
-    case 'poteau': // rectangle vertical structuré (bois)
-      ctx.beginPath(); ctx.rect(x-s*0.4, y-s, s*0.8, s*2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x-s*0.4, y-s*0.3); ctx.lineTo(x+s*0.4, y-s*0.3); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x-s*0.4, y+s*0.3); ctx.lineTo(x+s*0.4, y+s*0.3); ctx.stroke();
-      break;
-    case 'bardage': // lattes horizontales empilées
-      for(let k=-1;k<=1;k++){ ctx.beginPath(); ctx.moveTo(x-s, y+k*s*0.7); ctx.lineTo(x+s, y+k*s*0.7); ctx.stroke(); }
-      ctx.beginPath(); ctx.rect(x-s, y-s, s*2, s*2); ctx.stroke();
-      break;
+    }
   }
   ctx.restore();
 }
@@ -52094,7 +52146,7 @@ function _paintRedraw(){
       ctx.font = `700 ${s.size}px sans-serif`;
       ctx.fillText(s.text, s.x, s.y);
     } else if(s.type === 'symbol'){
-      _paintDrawSymbol(ctx, s.symbol, s.x, s.y, s.size, s.color);
+      _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
     }
     if(idx === _paint.selectedIdx){
       const b = _paintShapeBounds(s);
@@ -52105,8 +52157,9 @@ function _paintRedraw(){
     ctx.restore();
   });
 
-  // Aperçu en cours de tracé (ligne/rect/cercle/triangle avant le mouseup)
-  if(_paint.drawing && _paint.current && ['line','rect','circle','triangle'].includes(_paint.tool)){
+  // Aperçu en cours de tracé (avant le mouseup) : formes, quincaillerie
+  // (segment en pointillés) et texte (rectangle en pointillés).
+  if(_paint.drawing && _paint.current){
     ctx.save();
     ctx.strokeStyle = _paint.color; ctx.lineWidth = _paint.lineWidth * _paint.dpr; ctx.setLineDash([6,4]);
     const s = { x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y };
@@ -52114,6 +52167,8 @@ function _paintRedraw(){
     else if(_paint.tool === 'rect'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
     else if(_paint.tool === 'circle'){ const rx=Math.abs(s.x2-s.x1)/2, ry=Math.abs(s.y2-s.y1)/2, cx=(s.x1+s.x2)/2, cy=(s.y1+s.y2)/2; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke(); }
     else if(_paint.tool === 'triangle'){ const cx=(s.x1+s.x2)/2; ctx.beginPath(); ctx.moveTo(cx,s.y1); ctx.lineTo(s.x1,s.y2); ctx.lineTo(s.x2,s.y2); ctx.closePath(); ctx.stroke(); }
+    else if(PAINT_SYMBOLS.some(sy => sy.id === _paint.tool)){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
+    else if(_paint.tool === 'text'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
     ctx.restore();
   }
 }
