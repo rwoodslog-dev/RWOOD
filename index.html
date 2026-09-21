@@ -14654,7 +14654,7 @@ function deleteSiteDocument(siteId, docId){
 const SUPA_BUCKET = 'rwood-shared';
 
 /* Upload un fichier vers Supabase Storage — retourne l'URL publique */
-async function uploadFileToSupabase(file, siteId){
+async function uploadFileToSupabase(file, siteId, opts){
   // Détecter le type MIME de façon fiable
   let mimeType = file.type || '';
   if(!mimeType || mimeType === 'application/octet-stream'){
@@ -14707,7 +14707,9 @@ async function uploadFileToSupabase(file, siteId){
 
   // Sauvegarde auto vers Dropbox (non bloquante) : copie du média dans le
   // Dropbox de l'entreprise. Inactif tant que Dropbox n'est pas configuré.
-  if(typeof backupMediaToDropbox === 'function'){
+  // v5.41.110 — opts.skipDropbox : le Dropbox est réservé aux photos et
+  // documents de chantier ; les pliages/croquis (PDF zinc) n'y vont jamais.
+  if(!(opts && opts.skipDropbox) && typeof backupMediaToDropbox === 'function'){
     backupMediaToDropbox(file, siteId);
   }
 
@@ -15014,7 +15016,7 @@ async function dropboxBackupAllExisting(){
     const items = [];
     (data.sites || []).forEach(site => {
       (site.sharedMedia || []).forEach(m => {
-        if(m && m.url) items.push({ siteId: site.id, media: m });
+        if(m && m.url && m.type !== 'zinc') items.push({ siteId: site.id, media: m }); // v5.41.110 : pas les pliages
       });
     });
 
@@ -18109,7 +18111,7 @@ async function syncZincToSite(profile){
     const blob = built.doc.output('blob');
     const file = new File([blob], built.fileName, { type:'application/pdf' });
 
-    const url = await uploadFileToSupabase(file, site.id);
+    const url = await uploadFileToSupabase(file, site.id, { skipDropbox:true }); // v5.41.110 : pliages jamais vers Dropbox
 
     const uploader = (function(){
       const p = data.settings.myProfile || {};
@@ -18169,7 +18171,19 @@ async function generateZincPdf(profileArg, pdfSettingsArg){
   try{
     const blob = doc.output('blob');
     const file = new File([blob], fileName, { type:'application/pdf' });
-    if(navigator.canShare && navigator.canShare({ files:[file] })){
+    // v5.41.110 — sur PC : fenêtre "Enregistrer sous" de l'explorateur de
+    // fichiers (au lieu du menu Partager). Mobile : partage, comme avant.
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    if(!isMobile && window.showSaveFilePicker){
+      const handle = await window.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [{ description:'Document PDF', accept:{ 'application/pdf':['.pdf'] } }]
+      });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      showToast('✅ PDF enregistré');
+    } else if(isMobile && navigator.canShare && navigator.canShare({ files:[file] })){
       await navigator.share({ files:[file], title:nom });
     } else {
       doc.save(fileName);
@@ -32079,9 +32093,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.109';
+const APP_VERSION = '5.41.110';
 
 const CHANGELOG = [
+  {
+    version: '5.41.110',
+    date: '21/09/2026',
+    entries: [
+      { icon: '💻', text: "PDF fabricant sur PC : la génération ouvre maintenant la fenêtre « Enregistrer sous » de l'explorateur de fichiers au lieu du menu Partager (le partage reste actif sur mobile)." },
+      { icon: '📦', text: "Dropbox réservé aux photos et documents de chantier : les pliages/croquis (PDF zinc) ne sont plus envoyés vers Dropbox, ni automatiquement, ni par « Envoyer tout l'existant »." },
+    ],
+  },
   {
     version: '5.41.109',
     date: '20/09/2026',
