@@ -32211,9 +32211,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.119';
+const APP_VERSION = '5.41.120';
 
 const CHANGELOG = [
+  {
+    version: '5.41.120',
+    date: '21/09/2026',
+    entries: [
+      { icon: '⏱️', text: "Feuille de route de dépannage → pointage : « Dépannage fini » ouvre maintenant une vraie petite fiche (heures + Tâche effectuée, avec la même liste que la fiche de pointage) au lieu d'un simple champ texte pour la durée." },
+    ],
+  },
   {
     version: '5.41.119',
     date: '21/09/2026',
@@ -51198,36 +51205,74 @@ async function _routeOfferPointage(stop){
   const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
   if(!myWorkerId) return; // rôle sans fiche d'heures (ex: comptable) — rien à proposer
   if(!confirm(`Ajouter « ${stop.name} » au pointage du jour ?`)) return;
-  let h = prompt('Combien de temps as-tu passé sur ce dépannage ? (en heures, ex : 2 ou 1.5)', '');
-  if(h === null) return;
-  h = roundHoursToHalf(h);
-  if(h === '' || isNaN(h) || h <= 0){ showToast('Durée invalide — non ajoutée au pointage'); return; }
+  // v5.41.120 — au lieu d'un simple prompt() texte pour la durée, une vraie
+  // petite modale reprenant EXACTEMENT les deux champs de la fiche de
+  // pointage multi-chantier : heures + tâche (TRANCHES), pour que ce soit
+  // cohérent avec ce que l'ouvrier remplit d'habitude.
+  const tasksSummary = (stop.tasks||[]).map(t => t.label).join(', ');
+  await new Promise(resolve => {
+    const ex = document.getElementById('modal-routePointage'); if(ex) ex.remove();
+    const div = document.createElement('div');
+    div.className = 'modal-overlay open';
+    div.id = 'modal-routePointage';
+    div.style.zIndex = 650;
+    div.innerHTML = `
+      <div class="modal">
+        <div class="modal-header"><h2>⏱️ Pointage — ${escapeHtml(stop.name)}</h2>
+          <button class="modal-close" id="rpClose">×</button></div>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Heures passées sur ce chantier</label>
+          <input type="number" id="rpHours" min="0" max="24" step="0.5" placeholder="Ex : 2 ou 1.5" style="width:100%;box-sizing:border-box;">
+        </div>
+        <div class="field" style="margin-bottom:14px;">
+          <label>Tâche effectuée</label>
+          <select id="rpTask" style="width:100%;box-sizing:border-box;">
+            <option value="">— Tâche —</option>
+            ${TRANCHES.map(t=>`<option value="${escapeHtml(t.label)}">${escapeHtml(t.label)}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn btn-primary btn-block" id="rpSave">✓ Ajouter au pointage du jour</button>
+      </div>`;
+    document.body.appendChild(div);
+    const close = () => { div.remove(); resolve(null); };
+    document.getElementById('rpClose').onclick = close;
+    document.getElementById('rpSave').onclick = () => {
+      const hEl = document.getElementById('rpHours');
+      const tEl = document.getElementById('rpTask');
+      const h = roundHoursToHalf(hEl.value);
+      if(h === '' || isNaN(h) || h <= 0){ showToast('Indique une durée valide'); return; }
+      div.remove();
+      resolve({ hours: h, task: tEl.value || '' });
+    };
+  }).then(result => {
+    if(!result) return;
+    const { hours: h, task } = result;
 
-  const dateKey = new Date().toISOString().slice(0,10);
-  if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: data.sites[0]?.id || null, workers: {} };
-  const today = data.attendance[dateKey];
-  if(!today.workers[myWorkerId]) today.workers[myWorkerId] = { hours: '', panier: false, task: '' };
-  const entry = today.workers[myWorkerId];
-  entry.mode = 'multi';
-  if(!Array.isArray(entry.sites)) entry.sites = [];
+    const dateKey = new Date().toISOString().slice(0,10);
+    if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: data.sites[0]?.id || null, workers: {} };
+    const today = data.attendance[dateKey];
+    if(!today.workers[myWorkerId]) today.workers[myWorkerId] = { hours: '', panier: false, task: '' };
+    const entry = today.workers[myWorkerId];
+    entry.mode = 'multi';
+    if(!Array.isArray(entry.sites)) entry.sites = [];
 
-  const taskLabel = (stop.tasks||[]).map(t => t.label).join(', ');
-  const realSite = stop.siteId && (data.sites||[]).some(s => s.id === stop.siteId);
-  const row = realSite
-    ? { siteId: stop.siteId, hours: h, task: '', routeNote: taskLabel }
-    : { siteId: '__custom__', customName: stop.name || 'Chantier libre', customAddr: stop.address || '', customZone: '', hours: h, task: '', routeNote: taskLabel };
-  entry.sites.push(row);
-  saveData();
-  schedulePointageSync();
-  if(typeof renderPointage === 'function') try{ renderPointage(); }catch(e){}
-  showToast(`✅ ${h}h ajoutée${h>1?'s':''} au pointage du jour`);
+    const realSite = stop.siteId && (data.sites||[]).some(s => s.id === stop.siteId);
+    const row = realSite
+      ? { siteId: stop.siteId, hours: h, task, routeNote: tasksSummary }
+      : { siteId: '__custom__', customName: stop.name || 'Chantier libre', customAddr: stop.address || '', customZone: '', hours: h, task, routeNote: tasksSummary };
+    entry.sites.push(row);
+    saveData();
+    schedulePointageSync();
+    if(typeof renderPointage === 'function') try{ renderPointage(); }catch(e){}
+    showToast(`✅ ${h}h ajoutée${h>1?'s':''} au pointage du jour`);
 
-  // Zone auto pour un chantier libre avec adresse — même logique que la
-  // saisie manuelle du multi-chantier (_pointageMultiCalcZone).
-  if(!realSite && row.customAddr && typeof _pointageMultiCalcZone === 'function'){
-    const idx = entry.sites.length - 1;
-    _pointageMultiCalcZone(dateKey, myWorkerId, idx);
-  }
+    // Zone auto pour un chantier libre avec adresse — même logique que la
+    // saisie manuelle du multi-chantier (_pointageMultiCalcZone).
+    if(!realSite && row.customAddr && typeof _pointageMultiCalcZone === 'function'){
+      const idx = entry.sites.length - 1;
+      _pointageMultiCalcZone(dateKey, myWorkerId, idx);
+    }
+  });
 }
 
 async function routeFinishStop(key, routeId, stopId){
