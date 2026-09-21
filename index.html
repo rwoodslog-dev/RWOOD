@@ -13172,6 +13172,13 @@ function openAlerteComposeGroup(){
 
   const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
   const isChefOnly = myRole === 'chef'; // le chef ne peut envoyer que des dépannages
+  // v5.41.117 — le dépannage est désormais une « feuille de route » : le
+  // chef passe directement au composeur dédié (pré-rempli en cas de renvoi).
+  if(isChefOnly){
+    const src = _pendingResendDepannage; _pendingResendDepannage = null;
+    openRouteCompose(_routePrefillFromResend(src));
+    return;
+  }
 
   const ex = document.getElementById('modal-alerteCompose');
   if(ex) ex.remove();
@@ -13287,9 +13294,11 @@ function openAlerteComposeGroup(){
   // Renvoi d'un dépannage existant (depuis l'Historique Dépannage) : on
   // force le type et on pré-remplit tous les champs avec les mêmes infos.
   if(_pendingResendDepannage){
-    const src = _pendingResendDepannage;
-    _pendingResendDepannage = null;
     _setAlerteComposeType('depannage');
+    return;
+  }
+  if(false){
+    const src = null;
 
     const siteSelect = document.getElementById('alerteDepannageSiteSelect');
     const siteFree = document.getElementById('alerteDepannageSiteFree');
@@ -13333,7 +13342,21 @@ function openAlerteComposeGroup(){
    champs propres (date d'événement, champs dépannage) et adapte les
    modèles de message. */
 let _alerteComposeType = 'info';
+function _routePrefillFromResend(src){
+  if(!src) return null;
+  return { siteId: src.depannageSiteId || '', name: src.depannageSiteName || '', address: src.depannageAddress || '',
+    keybox: src.depannageKeybox || '', keyboxMedia: src.depannageKeyboxMedia || [], media: src.depannageMedia || [],
+    tasks: src.depannageTools || [], notes: (src.text || '').replace(/^.*? : /,'') };
+}
 function _setAlerteComposeType(type){
+  if(type === 'depannage'){
+    // v5.41.117 — remplacé par la feuille de route de dépannage.
+    const modal = document.getElementById('modal-alerteCompose');
+    if(modal) modal.remove();
+    const src = _pendingResendDepannage; _pendingResendDepannage = null;
+    openRouteCompose(_routePrefillFromResend(src));
+    return;
+  }
   _alerteComposeType = type;
   document.querySelectorAll('#alerteTypeRow .chip').forEach(c => c.classList.toggle('selected', c.dataset.type === type));
   const eventFields = document.getElementById('alerteEventFields');
@@ -32188,9 +32211,25 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.112';
+const APP_VERSION = '5.41.117';
 
 const CHANGELOG = [
+  {
+    version: '5.41.117',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🛠️', text: "Dépannage → « Feuille de route » : le conducteur/patron/chef compose une tournée avec plusieurs chantiers (chantier existant = nom, adresse et boîte à clés automatiques, ou saisie libre), des tâches ordonnées par chantier, photos et boîte à clés, puis l'envoie à un chef ou un ouvrier. Remplace complètement l'ancienne alerte Dépannage." },
+      { icon: '📌', text: "Nouvel onglet « Feuille de route » dans la bulle À faire : chantiers dans l'ordre, tap sur l'adresse = Waze, « Détail » = code boîte à clés, infos et photos, cases indicatives, « Dépannage fini » passe au chantier suivant. Partagée avec l'équipe du chef comme la liste à faire." },
+      { icon: '🔔', text: "Notification « Dépannage crée la feuille de route » à la réception ; à la fin de la tournée, le conducteur est notifié avec le récapitulatif, et un historique des feuilles est disponible dans le composeur." },
+    ],
+  },
+  {
+    version: '5.41.116',
+    date: '21/09/2026',
+    entries: [
+      { icon: '↩️', text: "Annulé les changements des versions 5.41.113 à 5.41.115 sur les notifications (rappels, écran « Envoyer une alerte », demande de signature) à la demande de Rémi — la 5.41.112 fonctionnait déjà correctement sur ces points. Retour exact au comportement de la 5.41.112, le reste (pliage zinc, onglet Zone, etc.) est inchangé." },
+    ],
+  },
   {
     version: '5.41.112',
     date: '21/09/2026',
@@ -37767,14 +37806,15 @@ function _renderPinnedBubble(pn){
   // MODULE — Notes : respect du toggle "bulle flottante" (défaut activé)
   if(data.settings && data.settings.notesBubbleEnabled === false){ bubble.style.display='none'; return; }
   const tasks = (pn && pn.tasks) || [];
-  if(!tasks.length){ bubble.style.display='none'; return; }
+  const routeN = (typeof routeActiveCount === 'function') ? routeActiveCount() : 0;
+  if(!tasks.length && !routeN){ bubble.style.display='none'; return; }
 
   // Icône FIXE de la bulle À faire : image note.png (bloc-notes + crayon).
   const emojiEl = document.getElementById('pinnedBubbleEmoji');
   if(emojiEl){ emojiEl.innerHTML = '<img src="icons/note.png" alt="À faire" style="width:28px;height:28px;object-fit:contain;display:block;">'; }
 
   // Badge nombre de tâches non-faites
-  const undone = tasks.filter(t=>!t.done).length;
+  const undone = tasks.filter(t=>!t.done).length + routeN;
   const badge = document.getElementById('pinnedNoteBadge');
   if(badge){
     if(undone > 0){
@@ -38048,6 +38088,7 @@ function togglePinnedNotePopup(e){
   // temps du réseau, mais les données restent à jour à chaque ouverture.
   _renderPinnedTasksInPopup();
   _syncActiveTodoList().then(_renderPinnedTasksInPopup);
+  if(typeof routeOnPopupOpen === 'function') routeOnPopupOpen();
 
   const inp = document.getElementById('pinnedPopupAddInput');
   if(inp) inp.value = '';
@@ -50894,6 +50935,11 @@ async function comptaEditEnsurePulled(){
   <!-- Sélecteur du chef suivi — visible uniquement pour le rôle "ouvrier".
        Chef/conducteur/patron/comptable gèrent leur propre liste, pas de
        sélecteur (voir togglePinnedNotePopup / _activeTodoSyncKey — v5.41.47). -->
+  <div id="pinnedTabsRow" style="display:none;gap:6px;margin-bottom:8px;">
+    <button id="pinnedTabList" type="button" onclick="_pinnedSwitchTab('list')" style="flex:1;padding:6px 4px;border:1.5px solid var(--line);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--card);color:var(--ink);">📌 Liste</button>
+    <button id="pinnedTabRoute" type="button" onclick="_pinnedSwitchTab('route')" style="flex:1.6;padding:6px 4px;border:1.5px solid var(--line);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--card);color:var(--ink);">🛠️ Feuille de route <span id="routeTabCount"></span></button>
+  </div>
+  <div id="routeTabPane" style="display:none;overflow-y:auto;-webkit-overflow-scrolling:touch;max-height:calc(100vh - 150px);"></div>
   <select id="chefTodoSelectorPopup" onchange="onChefTodoSelectorChange(this.value)"
     style="display:none; width:100%; padding:8px 10px; border:1.5px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:12.5px; margin-bottom:10px;">
     <option value="">— Choisir un chef —</option>
@@ -50921,6 +50967,552 @@ async function comptaEditEnsurePulled(){
   </div>
 </div>
 
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   FEUILLE DE ROUTE DE DÉPANNAGE (v5.41.117)
+   Remplace l'ancienne alerte « Dépannage » mono-chantier.
+   - Le conducteur/patron/chef compose une tournée : plusieurs chantiers
+     (existants ou saisis à la main), chacun avec ses tâches, ses photos
+     et sa boîte à clés, puis l'envoie à un chef ou un ouvrier.
+   - Stockage : table rwood_sync, clé « route_<authId destinataire> »,
+     data = { routes:[…] }. Un ouvrier lit sa propre clé + celle du chef
+     qu'il suit (même principe que la liste « à faire » d'équipe), donc
+     chef et ouvriers voient / cochent la même feuille.
+   - Toute modif = lecture → modification → écriture (pas d'écrasement
+     aveugle), la case « fini » d'un chantier ne se défait jamais.
+   ═══════════════════════════════════════════════════════════════════ */
+const ROUTE_KEY_PREFIX = 'route_';
+let _routeCache = [];          // feuilles actives affichées (chacune porte _key)
+
+function _routeMyAuthId(){ return (data.settings && data.settings.auth && data.settings.auth.authId) || null; }
+function _routeMyName(){
+  const p = data.settings && data.settings.myProfile;
+  return (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'La direction';
+}
+async function _routePull(key){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return { routes: [] };
+    const rows = await res.json();
+    if(!rows || !rows.length) return { routes: [] };
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && Array.isArray(d.routes)) ? d : { routes: [] };
+  }catch(e){ return { routes: [] }; }
+}
+async function _routeWrite(key, obj){
+  // Nettoyage : feuilles terminées depuis plus de 45 jours supprimées.
+  const limit = Date.now() - 45*86400000;
+  obj.routes = (obj.routes||[]).filter(r => !(r.status === 'done' && r.doneAt && new Date(r.doneAt).getTime() < limit));
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: key, updated_at: new Date().toISOString(), data: JSON.stringify(obj) })
+    });
+    return res.ok;
+  }catch(e){ return false; }
+}
+/* Lecture → fn(route) → écriture, sur la clé d'origine de la feuille. */
+async function _routeMutate(key, routeId, fn){
+  const d = await _routePull(key);
+  const r = d.routes.find(x => x.id === routeId);
+  if(!r) return null;
+  fn(r);
+  r.updatedAt = new Date().toISOString();
+  const ok = await _routeWrite(key, d);
+  return ok ? r : null;
+}
+async function _routeAddToKey(key, route){
+  const d = await _routePull(key);
+  const i = d.routes.findIndex(x => x.id === route.id);
+  if(i >= 0) d.routes[i] = route; else d.routes.push(route);
+  return _routeWrite(key, d);
+}
+
+/* Charge les feuilles ACTIVES qui me concernent : ma clé + (ouvrier) celle
+   du chef suivi. */
+async function routeLoadMine(){
+  const me = _routeMyAuthId();
+  if(!me){ _routeCache = []; return _routeCache; }
+  const keys = [ROUTE_KEY_PREFIX + me];
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const followed = (typeof _getFollowedChefId === 'function') ? _getFollowedChefId() : null;
+  if(role === 'ouvrier' && followed && followed !== me) keys.push(ROUTE_KEY_PREFIX + followed);
+  const out = [];
+  const results = await Promise.all(keys.map(k => _routePull(k)));
+  results.forEach((d, i) => d.routes.forEach(r => {
+    if(r.status !== 'done') out.push(Object.assign({}, r, { _key: keys[i] }));
+  }));
+  out.sort((a,b) => (a.createdAt||'').localeCompare(b.createdAt||''));
+  _routeCache = out;
+  return out;
+}
+function _routeUpdateIndicators(){
+  const n = _routeCache.length;
+  const c = document.getElementById('routeTabCount');
+  if(c) c.textContent = n ? '(' + n + ')' : '';
+  try{ if(typeof _renderPinnedBubble === 'function' && typeof _getPinnedNote === 'function') _renderPinnedBubble(_getPinnedNote()); }catch(e){}
+}
+function routeActiveCount(){ return _routeCache.length; }
+/* Vérif silencieuse au démarrage / retour au premier plan : toast si une
+   nouvelle feuille est arrivée. */
+let _routeSeenIds = null;
+async function routeBootCheck(){
+  if(!_routeMyAuthId()) return;
+  const list = await routeLoadMine();
+  const ids = new Set(list.map(r => r.id));
+  if(_routeSeenIds){
+    const fresh = list.filter(r => !_routeSeenIds.has(r.id));
+    if(fresh.length) showToast('🛠️ Nouvelle feuille de route de dépannage');
+  } else if(list.length){
+    showToast('🛠️ Feuille de route de dépannage à faire');
+  }
+  _routeSeenIds = ids;
+  _routeUpdateIndicators();
+}
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') routeBootCheck(); });
+setTimeout(routeBootCheck, 3500);
+setInterval(routeBootCheck, 5 * 60 * 1000);
+
+/* ── Onglets du popup « À faire » ─────────────────────────────────── */
+let _pinnedTab = 'list';
+function _pinnedSwitchTab(tab){
+  _pinnedTab = tab;
+  const isRoute = tab === 'route';
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const sel = document.getElementById('chefTodoSelectorPopup');
+  if(sel) sel.style.display = (!isRoute && role === 'ouvrier') ? '' : 'none';
+  const list = document.getElementById('pinnedTaskList');
+  const add = document.getElementById('pinnedPopupAddRow');
+  const pane = document.getElementById('routeTabPane');
+  if(list) list.style.display = isRoute ? 'none' : '';
+  if(add) add.style.display = isRoute ? 'none' : '';
+  if(pane) pane.style.display = isRoute ? 'block' : 'none';
+  const bl = document.getElementById('pinnedTabList'), br = document.getElementById('pinnedTabRoute');
+  [[bl,!isRoute],[br,isRoute]].forEach(([b,on]) => { if(!b) return;
+    b.style.background = on ? 'var(--wood)' : 'var(--card)';
+    b.style.color = on ? '#1a0d00' : 'var(--ink)';
+    b.style.borderColor = on ? 'var(--wood)' : 'var(--line)';
+  });
+  if(isRoute) renderRoutePane();
+}
+/* Appelée à l'ouverture du popup : affiche les onglets et choisit l'onglet. */
+async function routeOnPopupOpen(){
+  const row = document.getElementById('pinnedTabsRow');
+  if(row) row.style.display = 'flex';
+  _pinnedSwitchTab(_routeCache.length ? 'route' : 'list');
+  await routeLoadMine();
+  _routeUpdateIndicators();
+  const noTasks = !((_getPinnedNote().tasks||[]).length);
+  if(_routeCache.length && _pinnedTab === 'list' && noTasks) _pinnedSwitchTab('route');
+  else if(_pinnedTab === 'route') renderRoutePane();
+}
+
+function _routeCurrentStop(r){ return (r.stops||[]).find(s => s.status !== 'done') || null; }
+function _routeJsArg(str){ return escapeHtml(JSON.stringify(String(str||''))); }
+function renderRoutePane(){
+  const pane = document.getElementById('routeTabPane');
+  if(!pane) return;
+  if(!_routeCache.length){
+    pane.innerHTML = '<div class="hint" style="text-align:center;padding:14px 4px;">Aucune feuille de route en cours.</div>';
+    return;
+  }
+  pane.innerHTML = _routeCache.map(r => {
+    const cur = _routeCurrentStop(r);
+    const total = (r.stops||[]).length;
+    const doneN = (r.stops||[]).filter(s => s.status === 'done').length;
+    const when = r.createdAt ? new Date(r.createdAt).toLocaleDateString('fr-FR', {day:'numeric', month:'short'}) : '';
+    const head = `<div style="font-size:11px;color:var(--ink-soft);margin-bottom:6px;">De <strong>${escapeHtml(r.createdBy && r.createdBy.name || '—')}</strong>${when ? ' · ' + when : ''} · chantier ${Math.min(doneN+1,total)}/${total}</div>`;
+    const stops = (r.stops||[]).map((s, i) => {
+      const isCur = cur && cur.id === s.id;
+      const done = s.status === 'done';
+      const tasks = (s.tasks||[]).map(t => `
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:13px;">
+          <input type="checkbox" ${t.done?'checked':''} style="margin-top:3px;flex-shrink:0;"
+            onchange="routeToggleTask('${r._key}','${r.id}','${s.id}','${t.id}',this.checked)">
+          <span style="${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${escapeHtml(t.label)}</span>
+        </label>`).join('');
+      if(done){
+        return `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--card);opacity:.7;">
+          <div style="font-size:13px;font-weight:700;color:#4CAF79;">✅ ${i+1}. ${escapeHtml(s.name)}</div></div>`;
+      }
+      return `<div style="border:1.5px solid ${isCur?'var(--wood)':'var(--line)'};border-radius:10px;padding:8px 10px;margin-bottom:8px;background:${isCur?'var(--card)':'transparent'};">
+        <div style="font-size:14px;font-weight:800;">${i+1}. ${escapeHtml(s.name)}</div>
+        ${s.address ? `<button type="button" onclick="openWazeAddress(${_routeJsArg(s.address)})" style="display:block;width:100%;text-align:left;background:none;border:none;padding:4px 0;color:var(--wood);font-size:12.5px;cursor:pointer;text-decoration:underline;">📍 ${escapeHtml(s.address)} — Waze</button>` : ''}
+        <div style="margin:4px 0 6px;">${tasks || '<div class="hint">Aucune tâche.</div>'}</div>
+        <div style="display:flex;gap:6px;">
+          <button type="button" onclick="openRouteStopDetail('${r._key}','${r.id}','${s.id}')" style="flex:1;padding:8px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-weight:700;font-size:12.5px;cursor:pointer;">Détail</button>
+          ${isCur ? `<button type="button" onclick="routeFinishStop('${r._key}','${r.id}','${s.id}')" style="flex:1.4;padding:8px;border:none;border-radius:8px;background:#4CAF79;color:#fff;font-weight:800;font-size:12.5px;cursor:pointer;">✅ Dépannage fini</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px;">${head}${stops}</div>`;
+  }).join('');
+}
+
+async function routeToggleTask(key, routeId, stopId, taskId, checked){
+  const local = _routeCache.find(r => r.id === routeId);
+  const ls = local && local.stops.find(s => s.id === stopId);
+  const lt = ls && ls.tasks.find(t => t.id === taskId);
+  if(lt){ lt.done = !!checked; }
+  const now = new Date().toISOString();
+  const me = _routeMyName();
+  const r = await _routeMutate(key, routeId, rt => {
+    const s = rt.stops.find(x => x.id === stopId);
+    const t = s && s.tasks.find(x => x.id === taskId);
+    if(t){ t.done = !!checked; t.updatedAt = now; t.doneBy = checked ? me : null; t.doneAt = checked ? now : null; }
+  });
+  if(!r) showToast('⚠️ Coche non synchronisée (réseau)');
+}
+
+async function routeFinishStop(key, routeId, stopId){
+  const local = _routeCache.find(r => r.id === routeId);
+  const ls = local && local.stops.find(s => s.id === stopId);
+  if(!ls) return;
+  const pending = (ls.tasks||[]).filter(t => !t.done).length;
+  const msg = pending
+    ? `${pending} tâche(s) non cochée(s). Terminer quand même « ${ls.name} » ?`
+    : `Terminer le dépannage « ${ls.name} » ?`;
+  if(!confirm(msg)) return;
+  const now = new Date().toISOString();
+  const me = _routeMyName();
+  let justDone = false;
+  const r = await _routeMutate(key, routeId, rt => {
+    const s = rt.stops.find(x => x.id === stopId);
+    if(s && s.status !== 'done'){ s.status = 'done'; s.doneAt = now; s.doneBy = me; s.updatedAt = now; }
+    if(rt.stops.every(x => x.status === 'done') && rt.status !== 'done'){
+      rt.status = 'done'; rt.doneAt = now; rt.doneBy = me; justDone = true;
+    }
+  });
+  if(!r){ showToast('⚠️ Réseau indisponible — réessaie'); return; }
+  if(justDone){
+    _routeNotifyDone(r);
+    showToast('🎉 Feuille de route terminée');
+  } else {
+    const nxt = _routeCurrentStop(r);
+    showToast(nxt ? '➡️ Chantier suivant : ' + nxt.name : '✅ Chantier terminé');
+  }
+  await routeLoadMine();
+  _routeUpdateIndicators();
+  renderRoutePane();
+  const det = document.getElementById('modal-routeDetail'); if(det) det.remove();
+}
+function _routeRecap(r){
+  const stops = r.stops || [];
+  const tot = stops.reduce((n,s) => n + (s.tasks||[]).length, 0);
+  const ok = stops.reduce((n,s) => n + (s.tasks||[]).filter(t => t.done).length, 0);
+  return { stopsN: stops.length, tot, ok };
+}
+function _routeNotifyDone(r){
+  if(!r.createdBy || !r.createdBy.authId) return;
+  const rc = _routeRecap(r);
+  const body = `${r.doneBy || 'Équipe'} a terminé : ${rc.stopsN} chantier(s), ${rc.ok}/${rc.tot} tâche(s) cochée(s).`;
+  notifyPush([r.createdBy.authId], 'RWOOD — Feuille de route terminée', body, 'route-done-' + r.id, '/');
+}
+
+/* ── Détail d'un chantier de la feuille ──────────────────────────── */
+function openRouteStopDetail(key, routeId, stopId){
+  const r = _routeCache.find(x => x.id === routeId);
+  const s = r && r.stops.find(x => x.id === stopId);
+  if(!s) return;
+  const ex = document.getElementById('modal-routeDetail'); if(ex) ex.remove();
+  const mediaHtml = (arr) => (arr||[]).map(m => m.type === 'photo'
+    ? `<img src="${escapeHtml(m.url)}" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="openPhotoFullscreen(${_routeJsArg(m.url)},'')">`
+    : `<a href="${escapeHtml(m.url)}" target="_blank" style="display:flex;align-items:center;justify-content:center;aspect-ratio:1;border-radius:8px;background:var(--card);font-size:12px;text-align:center;padding:4px;color:var(--ink);">📄 ${escapeHtml(m.name||'Fichier')}</a>`).join('');
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-routeDetail';
+  div.style.zIndex = 600;
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header"><h2>🛠️ ${escapeHtml(s.name)}</h2><button class="modal-close" onclick="document.getElementById('modal-routeDetail').remove()">×</button></div>
+      <div class="hint" style="margin-bottom:10px;">Feuille de <strong>${escapeHtml(r.createdBy && r.createdBy.name || '—')}</strong></div>
+      ${s.address ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">Adresse</div>
+        <div style="font-weight:700;margin:2px 0 8px;">${escapeHtml(s.address)}</div>
+        <button class="btn btn-primary btn-block" onclick="openWazeAddress(${_routeJsArg(s.address)})">📍 Ouvrir dans Waze</button></div>` : ''}
+      ${(s.keybox || (s.keyboxMedia||[]).length) ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">🔑 Boîte à clés</div>
+        ${s.keybox ? `<div style="font-size:20px;font-weight:800;letter-spacing:1px;margin:4px 0;word-break:break-all;">${escapeHtml(s.keybox)}</div>
+        <button class="btn btn-outline" onclick="navigator.clipboard&&navigator.clipboard.writeText(${_routeJsArg(s.keybox)}).then(()=>showToast('Code copié'))">Copier</button>` : ''}
+        ${(s.keyboxMedia||[]).length ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px;">${mediaHtml(s.keyboxMedia)}</div>` : ''}</div>` : ''}
+      <div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">Tâches à réaliser</div>
+        ${(s.tasks||[]).map(t => `<div style="padding:4px 0;font-size:14px;${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${t.done?'☑':'☐'} ${escapeHtml(t.label)}</div>`).join('') || '<div class="hint">Aucune tâche.</div>'}</div>
+      ${s.notes ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);">Notes</div><div style="white-space:pre-wrap;font-size:14px;">${escapeHtml(s.notes)}</div></div>` : ''}
+      ${(s.media||[]).length ? `<div class="card" style="margin-bottom:10px;"><div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Photos / fichiers du conducteur</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">${mediaHtml(s.media)}</div></div>` : ''}
+    </div>`;
+  document.body.appendChild(div);
+}
+
+/* ═══════════ COMPOSITION (conducteur / patron / chef) ═══════════ */
+let _rc = null; // { recipients:[{authId,name}], stops:[…] }
+function _rcNewStop(){
+  return { id: uid(), mode:'site', siteId:'', name:'', address:'', keybox:'', keyboxMedia:[], media:[], tasks:[], notes:'', status:'todo' };
+}
+/* Point d'entrée : appelé depuis la modale d'alerte (chip Dépannage) ou
+   directement pour un chef. Reprend les destinataires cochés. */
+function openRouteCompose(prefill){
+  const authIds = [..._alerteSelectedAuthIds];
+  if(!authIds.length){ showToast('Sélectionne au moins un destinataire'); return; }
+  const recipients = authIds.map(id => {
+    const m = _alerteMembersCache.find(u => u.authId === id);
+    return { authId: id, name: m ? m.name : id };
+  });
+  _rc = { recipients, stops: [ _rcNewStop() ] };
+  if(prefill){
+    const st = _rc.stops[0];
+    st.mode = prefill.siteId ? 'site' : 'free';
+    st.siteId = prefill.siteId || ''; st.name = prefill.name || ''; st.address = prefill.address || '';
+    st.keybox = prefill.keybox || ''; st.keyboxMedia = (prefill.keyboxMedia||[]).slice(); st.media = (prefill.media||[]).slice();
+    st.tasks = (prefill.tasks||[]).map(l => ({ id: uid(), label: l, done:false }));
+    st.notes = prefill.notes || '';
+  }
+  const ex = document.getElementById('modal-routeCompose'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-routeCompose';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🛠️ Feuille de route</h2>
+        <button class="modal-close" onclick="closeRouteCompose()">×</button>
+      </div>
+      <div class="hint" style="margin-bottom:10px;">Pour : <strong>${_rc.recipients.map(r => escapeHtml(r.name)).join(', ')}</strong></div>
+      <div id="rcStops"></div>
+      <button type="button" class="btn btn-outline btn-block" style="margin:6px 0 12px;" onclick="_rcAddStop()">＋ Ajouter un chantier</button>
+      <button class="btn btn-primary btn-block" id="rcSendBtn" onclick="routeSend()">🚀 Envoyer la feuille de route</button>
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openRouteHistory()">📜 Historique des feuilles</button>
+    </div>`;
+  document.body.appendChild(div);
+  _rcRender();
+}
+function closeRouteCompose(){
+  const m = document.getElementById('modal-routeCompose'); if(m) m.remove();
+  _rc = null;
+  _alerteSelectedAuthIds.clear();
+  _updateAlerteSelectionBar();
+  if(typeof renderAlertesConducteurList === 'function') renderAlertesConducteurList();
+}
+function _rcAddStop(){ _rc.stops.push(_rcNewStop()); _rcRender(); }
+function _rcRemoveStop(i){ if(_rc.stops.length <= 1){ showToast('Il faut au moins un chantier'); return; } _rc.stops.splice(i,1); _rcRender(); }
+function _rcMoveStop(i, d){ const j = i + d; if(j < 0 || j >= _rc.stops.length) return; const t = _rc.stops[i]; _rc.stops[i] = _rc.stops[j]; _rc.stops[j] = t; _rcRender(); }
+function _rcSet(i, field, val){ _rc.stops[i][field] = val; }
+function _rcPickSite(i, siteId){
+  const st = _rc.stops[i];
+  if(siteId === '__libre__'){ st.mode = 'free'; st.siteId = ''; }
+  else if(!siteId){ st.mode = 'site'; st.siteId = ''; st.name = ''; st.address = ''; st.keybox = ''; st.keyboxMedia = []; }
+  else {
+    const s = (data.sites||[]).find(x => x.id === siteId);
+    st.mode = 'site'; st.siteId = siteId;
+    if(s){
+      st.name = s.name || ''; st.address = s.address || ''; st.keybox = s.keyboxCode || '';
+      st.keyboxMedia = (s.keyboxPhoto && /^https?:/.test(s.keyboxPhoto)) ? [{ url: s.keyboxPhoto, name:'Boîte à clés', type:'photo' }] : [];
+    }
+  }
+  _rcRender();
+}
+function _rcAddTask(i){
+  const inp = document.getElementById('rcTaskInput_' + i);
+  const v = inp ? inp.value.trim() : '';
+  if(!v) return;
+  _rc.stops[i].tasks.push({ id: uid(), label: v, done:false });
+  _rcRender();
+  const again = document.getElementById('rcTaskInput_' + i); if(again) again.focus();
+}
+function _rcRemoveTask(i, j){ _rc.stops[i].tasks.splice(j,1); _rcRender(); }
+function _rcMoveTask(i, j, d){ const a = _rc.stops[i].tasks, k = j + d; if(k < 0 || k >= a.length) return; const t = a[j]; a[j] = a[k]; a[k] = t; _rcRender(); }
+function _rcRemoveMedia(i, target, j){ _rc.stops[i][target].splice(j,1); _rcRender(); }
+
+function _rcPickMedia(i, target){
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*,application/pdf'; input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const files = Array.from(input.files || []); input.remove();
+    if(!files.length) return;
+    showToast('⏳ Envoi en cours…');
+    const st = _rc.stops[i];
+    let done = 0, failed = 0;
+    for(const file of files){
+      try{
+        const isImage = (file.type||'').startsWith('image/');
+        let up = file;
+        if(isImage){ const jpeg = await _photoToJpegFile(file); if(jpeg) up = jpeg; }
+        const realSite = st.siteId && (data.sites||[]).some(s => s.id === st.siteId);
+        const url = await uploadFileToSupabase(up, realSite ? st.siteId : ((data.sites && data.sites[0] && data.sites[0].id) || 'depannage'), realSite ? undefined : { skipDropbox:true });
+        st[target].push({ url, name: file.name, type: isImage ? 'photo' : 'pdf', uploadedAt: new Date().toISOString() });
+        done++;
+      }catch(e){ failed++; }
+    }
+    showToast(failed ? `${done} ajouté(s), ${failed} échec` : `✅ ${done} ajouté(s)`);
+    if(_rc) _rcRender();
+  };
+  input.click();
+}
+
+function _rcMediaGrid(i, target){
+  const arr = _rc.stops[i][target];
+  if(!arr.length) return '';
+  return `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:6px 0;">` + arr.map((m, j) => `
+    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--card);">
+      ${m.type === 'photo' ? `<img src="${escapeHtml(m.url)}" style="width:100%;height:100%;object-fit:cover;">`
+        : `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:22px;">📄</div>`}
+      <button type="button" onclick="_rcRemoveMedia(${i},'${target}',${j})" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;border:none;font-size:13px;cursor:pointer;line-height:1;">×</button>
+    </div>`).join('') + `</div>`;
+}
+function _rcRender(){
+  const host = document.getElementById('rcStops');
+  if(!host || !_rc) return;
+  const iconBtn = 'background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:15px;padding:2px 6px;';
+  host.innerHTML = _rc.stops.map((st, i) => `
+    <div class="card" style="margin-bottom:12px;border:1.5px solid var(--wood);">
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:8px;">
+        <div style="flex:1;font-weight:800;color:var(--wood);">Chantier ${i+1}</div>
+        <button type="button" style="${iconBtn}" onclick="_rcMoveStop(${i},-1)" title="Monter">▲</button>
+        <button type="button" style="${iconBtn}" onclick="_rcMoveStop(${i},1)" title="Descendre">▼</button>
+        <button type="button" style="${iconBtn}color:var(--red);" onclick="_rcRemoveStop(${i})" title="Retirer">✕</button>
+      </div>
+      <div class="field" style="margin-bottom:8px;">
+        <label>Chantier</label>
+        <select onchange="_rcPickSite(${i}, this.value)">
+          <option value="">— Choisir un chantier existant —</option>
+          ${(data.sites||[]).map(s => `<option value="${s.id}" ${st.siteId===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}
+          <option value="__libre__" ${st.mode==='free'?'selected':''}>Autre / saisie libre…</option>
+        </select>
+      </div>
+      <div class="field" style="margin-bottom:8px;"><label>Nom</label>
+        <input type="text" value="${escapeHtml(st.name)}" placeholder="Nom du chantier ou du client" oninput="_rcSet(${i},'name',this.value)"></div>
+      <div class="field" style="margin-bottom:8px;"><label>Adresse</label>
+        <input type="text" value="${escapeHtml(st.address)}" placeholder="Adresse exacte" oninput="_rcSet(${i},'address',this.value)"></div>
+      <div class="field" style="margin-bottom:8px;"><label><img src="icons/boitecles.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Boîte à clés</label>
+        <input type="text" value="${escapeHtml(st.keybox)}" placeholder="Code / infos boîte à clés" oninput="_rcSet(${i},'keybox',this.value)">
+        ${_rcMediaGrid(i,'keyboxMedia')}
+        <button type="button" class="btn btn-outline btn-block" style="margin-top:6px;" onclick="_rcPickMedia(${i},'keyboxMedia')">Ajouter une photo de la boîte à clés</button></div>
+      <div class="field" style="margin-bottom:8px;"><label>Tâches à réaliser</label>
+        ${st.tasks.map((t, j) => `
+          <div style="display:flex;align-items:center;gap:4px;padding:5px 0;border-bottom:1px solid var(--line);">
+            <span style="flex:1;font-size:13px;">${j+1}. ${escapeHtml(t.label)}</span>
+            <button type="button" style="${iconBtn}" onclick="_rcMoveTask(${i},${j},-1)">▲</button>
+            <button type="button" style="${iconBtn}" onclick="_rcMoveTask(${i},${j},1)">▼</button>
+            <button type="button" style="${iconBtn}color:var(--red);" onclick="_rcRemoveTask(${i},${j})">×</button>
+          </div>`).join('') || '<div class="hint" style="padding:4px 0;">Aucune tâche ajoutée.</div>'}
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <input type="text" id="rcTaskInput_${i}" placeholder="Ex : Récupérer la grue" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();_rcAddTask(${i});}">
+          <button type="button" class="btn btn-outline" onclick="_rcAddTask(${i})">+ Ajouter</button>
+        </div></div>
+      <div class="field" style="margin-bottom:8px;"><label>Photos / fichiers</label>
+        ${_rcMediaGrid(i,'media')}
+        <button type="button" class="btn btn-outline btn-block" onclick="_rcPickMedia(${i},'media')"><img src="icons/import.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> Ajouter un média</button></div>
+      <div class="field"><label>Notes (optionnel)</label>
+        <textarea rows="2" placeholder="Instructions pour ce chantier…" oninput="_rcSet(${i},'notes',this.value)" style="width:100%;box-sizing:border-box;">${escapeHtml(st.notes)}</textarea></div>
+    </div>`).join('');
+}
+
+async function routeSend(){
+  if(!_rc) return;
+  // Tâche saisie mais pas encore ajoutée : on l'ajoute pour ne rien perdre.
+  _rc.stops.forEach((st, i) => {
+    const inp = document.getElementById('rcTaskInput_' + i);
+    if(inp && inp.value.trim()){ st.tasks.push({ id: uid(), label: inp.value.trim(), done:false }); inp.value = ''; }
+  });
+  for(let i = 0; i < _rc.stops.length; i++){
+    const st = _rc.stops[i];
+    if(!st.name.trim()){ showToast(`Chantier ${i+1} : indique un nom`); _rcRender(); return; }
+    if(!st.tasks.length){ showToast(`Chantier ${i+1} : ajoute au moins une tâche`); _rcRender(); return; }
+  }
+  const btn = document.getElementById('rcSendBtn');
+  if(btn){ if(btn.disabled) return; btn.disabled = true; btn.textContent = '⏳ Envoi…'; }
+  const now = new Date().toISOString();
+  const route = {
+    id: uid(), createdAt: now, updatedAt: now, status: 'active',
+    createdBy: { authId: _routeMyAuthId(), name: _routeMyName() },
+    recipients: _rc.recipients.slice(),
+    stops: _rc.stops.map(st => ({
+      id: st.id, siteId: st.siteId || null, name: st.name.trim(), address: st.address.trim(),
+      keybox: st.keybox.trim(), keyboxMedia: st.keyboxMedia.slice(), media: st.media.slice(),
+      notes: st.notes.trim(), status: 'todo',
+      tasks: st.tasks.map(t => ({ id: t.id, label: t.label, done:false }))
+    }))
+  };
+  const results = await Promise.all(route.recipients.map(r => _routeAddToKey(ROUTE_KEY_PREFIX + r.authId, route)));
+  if(!results.some(Boolean)){
+    showToast('❌ Envoi impossible (réseau) — réessaie');
+    if(btn){ btn.disabled = false; btn.textContent = '🚀 Envoyer la feuille de route'; }
+    return;
+  }
+  // Historique local du conducteur
+  if(!data.settings) data.settings = {};
+  if(!Array.isArray(data.settings.routeHistory)) data.settings.routeHistory = [];
+  data.settings.routeHistory.unshift({
+    id: route.id, createdAt: now, status: 'active',
+    recipients: route.recipients.slice(),
+    stops: route.stops.map(s => ({ name: s.name, tasks: s.tasks.map(t => t.label) }))
+  });
+  data.settings.routeHistory = data.settings.routeHistory.slice(0, 100);
+  saveData();
+  notifyPush(route.recipients.map(r => r.authId), 'RWOOD — Dépannage', 'Dépannage crée la feuille de route', 'route-' + route.id, '/');
+  const failedN = results.filter(x => !x).length;
+  showToast(failedN ? `⚠️ Envoyée, ${failedN} destinataire(s) en échec` : '✅ Feuille de route envoyée');
+  const m = document.getElementById('modal-routeCompose'); if(m) m.remove();
+  _rc = null;
+  _alerteSelectedAuthIds.clear();
+  _updateAlerteSelectionBar();
+  const ac = document.getElementById('modal-alerteCompose'); if(ac) ac.remove();
+  if(typeof renderAlertesConducteurList === 'function') renderAlertesConducteurList();
+}
+
+/* ── Historique (conducteur) ─────────────────────────────────────── */
+async function openRouteHistory(){
+  const ex = document.getElementById('modal-routeHistory'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-routeHistory';
+  div.style.zIndex = 600;
+  div.innerHTML = `<div class="modal"><div class="modal-header"><h2>📜 Historique des feuilles</h2>
+    <button class="modal-close" onclick="document.getElementById('modal-routeHistory').remove()">×</button></div>
+    <div id="routeHistoryBody"><div class="hint">⏳ Chargement…</div></div></div>`;
+  document.body.appendChild(div);
+  const hist = (data.settings && data.settings.routeHistory) || [];
+  const body = document.getElementById('routeHistoryBody');
+  if(!hist.length){ body.innerHTML = '<div class="hint">Aucune feuille envoyée pour l\'instant.</div>'; return; }
+  // Rafraîchit l'état (une lecture par destinataire distinct).
+  const keys = [...new Set(hist.flatMap(h => (h.recipients||[]).map(r => ROUTE_KEY_PREFIX + r.authId)))];
+  const pulled = {};
+  await Promise.all(keys.map(async k => { pulled[k] = (await _routePull(k)).routes; }));
+  let changed = false;
+  hist.forEach(h => {
+    let live = null;
+    for(const r of (h.recipients||[])){
+      const f = (pulled[ROUTE_KEY_PREFIX + r.authId]||[]).find(x => x.id === h.id);
+      if(f && (!live || f.status === 'done' || (f.updatedAt||'') > (live.updatedAt||''))) live = f;
+    }
+    if(live){
+      h.live = { status: live.status, doneAt: live.doneAt || null, doneBy: live.doneBy || null,
+        stops: live.stops.map(s => ({ name: s.name, status: s.status, tasks: s.tasks.map(t => ({ label: t.label, done: !!t.done })) })) };
+      if(h.status !== live.status){ h.status = live.status; changed = true; }
+    }
+  });
+  if(changed) saveData();
+  body.innerHTML = hist.map(h => {
+    const d = new Date(h.createdAt).toLocaleDateString('fr-FR', {day:'numeric', month:'short', year:'numeric'});
+    const to = (h.recipients||[]).map(r => escapeHtml(r.name)).join(', ');
+    const badge = h.status === 'done'
+      ? '<span style="color:#4CAF79;font-weight:800;">✅ Terminée</span>'
+      : '<span style="color:var(--wood);font-weight:800;">⏳ En cours</span>';
+    const stops = h.live
+      ? h.live.stops.map(s => `<div style="margin-top:6px;"><div style="font-weight:700;font-size:13px;">${s.status==='done'?'✅':'▫️'} ${escapeHtml(s.name)}</div>${
+          s.tasks.map(t => `<div style="font-size:12px;padding-left:14px;${t.done?'':'color:var(--ink-soft);'}">${t.done?'☑':'☐'} ${escapeHtml(t.label)}</div>`).join('')}</div>`).join('')
+      : (h.stops||[]).map(s => `<div style="margin-top:6px;"><div style="font-weight:700;font-size:13px;">▫️ ${escapeHtml(s.name)}</div>${
+          (s.tasks||[]).map(t => `<div style="font-size:12px;padding-left:14px;color:var(--ink-soft);">☐ ${escapeHtml(t)}</div>`).join('')}</div>`).join('');
+    const doneLine = h.status === 'done' && h.live && h.live.doneAt
+      ? `<div style="font-size:12px;color:var(--ink-soft);">Terminée le ${new Date(h.live.doneAt).toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}${h.live.doneBy ? ' par ' + escapeHtml(h.live.doneBy) : ''}</div>` : '';
+    return `<div class="card" style="margin-bottom:10px;"><div style="display:flex;justify-content:space-between;gap:8px;"><strong>${d}</strong>${badge}</div>
+      <div style="font-size:12px;color:var(--ink-soft);">Pour : ${to}</div>${doneLine}${stops}</div>`;
+  }).join('');
+}
+</script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
 <div id="pinnedLinkMenu" style="display:none;" onclick="event.stopPropagation()">
