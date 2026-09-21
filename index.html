@@ -32244,9 +32244,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.141';
+const APP_VERSION = '5.41.143';
 
 const CHANGELOG = [
+  {
+    version: '5.41.143',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif « Incliner le croquis » — chaque forme tournait sur elle-même au lieu que toute la feuille bascule ensemble. L'inclinaison tourne maintenant la VUE (comme tourner la feuille de dessin) : les formes gardent leur orientation les unes par rapport aux autres, zoom/déplacement/dessin restent cohérents à n'importe quel angle." },
+    ],
+  },
+  {
+    version: '5.41.142',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif — une forme tournée via le menu ⋮ devenait impossible à resélectionner/déplacer (la zone cliquable était restée à l'ancien emplacement visuel). Elle reste maintenant sélectionnable et déplaçable normalement après une rotation." },
+    ],
+  },
   {
     version: '5.41.141',
     date: '21/09/2026',
@@ -52232,13 +52246,12 @@ function openPaintSketchTool(onSave, existingPaint){
     // v5.41.130 — zoom/déplacement de la vue : ne modifie jamais les
     // coordonnées des formes, seulement la transformation d'affichage du
     // canvas (comme un plan qu'on regarde de plus ou moins près).
-    view: { scale: 1, x: 0, y: 0 },
+    // v5.41.143 — rotation ajoutée (degrés) : même principe, un angle de
+    // caméra qui ne touche à AUCUNE coordonnée de forme (voir _paintRedraw).
+    view: { scale: 1, x: 0, y: 0, rotation: 0 },
     panning: false, panStart: null, panViewStart: null,
     // v5.41.130 — redimensionnement via poignées sur la forme sélectionnée.
     resizing: false, resizeHandle: null, resizeShapeStart: null, resizeBoundsStart: null,
-    // v5.41.140 — inclinaison globale du croquis (chevrons/pente) : angle
-    // cumulé affiché + instantané des formes à l'angle 0 (pour Remise à zéro).
-    canvasAngle: 0, canvasAngleBase: null,
   };
 
   if(existingPaint && Array.isArray(existingPaint.shapes) && existingPaint.shapes.length){
@@ -52333,8 +52346,7 @@ function openPaintSketchTool(onSave, existingPaint){
     const r = canvas.getBoundingClientRect();
     const cx = (e.clientX - r.left) * (canvas.width/r.width);
     const cy = (e.clientY - r.top) * (canvas.height/r.height);
-    const v = _paint.view;
-    return { x:(cx - v.x) / v.scale, y:(cy - v.y) / v.scale };
+    return _paintScreenToWorld(cx, cy);
   };
 
   // v5.41.130 — clic droit maintenu = déplacement de la vue (pan), comme
@@ -52350,24 +52362,30 @@ function openPaintSketchTool(onSave, existingPaint){
     // (bgTransform) plutôt que la vue du croquis (view) — pour cadrer/zoomer
     // sur une pièce précise du plan indépendamment du zoom du croquis.
     if(_paint.bgPositioning && _paint.bgImage){
-      const v = _paint.view, bt = _paint.bgTransform;
-      // Point du monde (coordonnées vue) sous le curseur, puis point local au fond.
-      const wx = (cx - v.x) / v.scale, wy = (cy - v.y) / v.scale;
-      const bx = (wx - bt.x) / bt.scale, by = (wy - bt.y) / bt.scale;
+      const bt = _paint.bgTransform;
+      // Point du monde (coordonnées vue, rotation comprise) sous le
+      // curseur, puis point local au fond.
+      const w = _paintScreenToWorld(cx, cy);
+      const bx = (w.x - bt.x) / bt.scale, by = (w.y - bt.y) / bt.scale;
       const newScale = Math.min(8, Math.max(0.1, bt.scale * factor));
       bt.scale = newScale;
-      bt.x = wx - bx * bt.scale;
-      bt.y = wy - by * bt.scale;
+      bt.x = w.x - bx * bt.scale;
+      bt.y = w.y - by * bt.scale;
       _paintRedraw();
       return;
     }
     const v = _paint.view;
     const newScale = Math.min(8, Math.max(0.25, v.scale * factor));
-    // Zoom centré sous le curseur : le point du monde sous la souris reste sous la souris.
-    const wx = (cx - v.x) / v.scale, wy = (cy - v.y) / v.scale;
+    // Zoom centré sous le curseur : le point du monde sous la souris reste
+    // sous la souris, rotation de la vue comprise. v.x/v.y se recalculent
+    // dans le repère « point écran non tourné » (celui où scale/x/y
+    // s'appliquent avant la rotation, voir _paintRedraw) — d'où l'usage de
+    // _paintUnrotateScreenPoint ici plutôt que du point « monde » complet.
+    const w = _paintScreenToWorld(cx, cy);
+    const u = _paintUnrotateScreenPoint(cx, cy);
     v.scale = newScale;
-    v.x = cx - wx * v.scale;
-    v.y = cy - wy * v.scale;
+    v.x = u.x - w.x * v.scale;
+    v.y = u.y - w.y * v.scale;
     _paintRedraw();
   }, { passive:false });
 
@@ -52453,13 +52471,26 @@ function openPaintSketchTool(onSave, existingPaint){
   canvas.onmousemove = e => {
     if(!_paint) return;
     if(_paint.panning){
-      const dx = e.clientX - _paint.panStart.x, dy = e.clientY - _paint.panStart.y;
+      let dx = e.clientX - _paint.panStart.x, dy = e.clientY - _paint.panStart.y;
       const r = canvas.getBoundingClientRect();
       const scaleX = canvas.width/r.width, scaleY = canvas.height/r.height;
+      dx *= scaleX; dy *= scaleY;
+      // v5.41.143 — v.x/v.y (et bt.x/bt.y) vivent dans un repère « avant
+      // rotation » (voir _paintRedraw : la rotation de la vue est appliquée
+      // EN PREMIER, puis scale/x/y, puis bgTransform) : un glisser souris
+      // (delta écran RÉEL, donc APRÈS rotation) doit être tourné en sens
+      // inverse avant d'être appliqué, sinon glisser vers la droite ne
+      // déplacerait plus le croquis vers la droite à l'écran une fois le
+      // croquis incliné.
+      if(_paint.view.rotation){
+        const rad = -_paint.view.rotation * Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad);
+        const rdx = dx*cos - dy*sin, rdy = dx*sin + dy*cos;
+        dx = rdx; dy = rdy;
+      }
       // v5.41.135 — panBg : on déplace le FOND (bgTransform), pas la vue.
       const target = _paint.panBg ? _paint.bgTransform : _paint.view;
-      target.x = _paint.panViewStart.x + dx * scaleX;
-      target.y = _paint.panViewStart.y + dy * scaleY;
+      target.x = _paint.panViewStart.x + dx;
+      target.y = _paint.panViewStart.y + dy;
       _paintRedraw();
       return;
     }
@@ -52768,15 +52799,15 @@ function _paintPositionShapeMenu(){
     return;
   }
   const b = _paintShapeBounds(_paint.shapes[_paint.selectedIdx]);
-  const v = _paint.view;
   const canvas = _paint.canvas;
   const wrap = document.getElementById('paintCanvasWrap');
   const cRect = canvas.getBoundingClientRect(), wRect = wrap.getBoundingClientRect();
   const scaleX = cRect.width / canvas.width, scaleY = cRect.height / canvas.height;
   const pad = 6 * _paint.dpr;
-  // Coin haut-droit du cadre (coordonnées monde → écran canvas → écran wrap).
-  const sx = (b.x2 + pad) * v.scale + v.x;
-  const sy = (b.y1 - pad) * v.scale + v.y;
+  // Coin haut-droit du cadre (coordonnées monde → écran canvas, rotation de
+  // la vue comprise via _paintWorldToScreen → écran wrap).
+  const s = _paintWorldToScreen(b.x2 + pad, b.y1 - pad);
+  const sx = s.x, sy = s.y;
   let left = (sx * scaleX) + (cRect.left - wRect.left);
   let top = (sy * scaleY) + (cRect.top - wRect.top);
   // Reste toujours dans la zone visible du canvas (même si la forme touche
@@ -52839,11 +52870,9 @@ function _paintClearAll(){
   _paint.selectedIdx = -1;
   if(_paint.baseImage) _paint.baseImage.getContext('2d').clearRect(0, 0, _paint.baseImage.width, _paint.baseImage.height);
   _paint._baseHasContent = false;
-  // Rien à quoi revenir après un « Tout effacer » : la remise à zéro de
-  // l'inclinaison globale n'aurait plus de sens (plus aucune forme).
-  _paint.canvasAngle = 0;
-  _paint.canvasAngleBase = null;
-  _paintUpdateCanvasAngleSelect();
+  // v5.41.143 — l'inclinaison (view.rotation) est un réglage de VUE, pas du
+  // contenu : « Tout effacer » n'y touche plus (elle a son propre bouton
+  // « Remettre à zéro » dédié, voir _paintResetCanvasRotation).
   _paintUpdateDeleteBtn();
   _paintRedraw();
 }
@@ -52911,113 +52940,50 @@ function _paintCommitErase(x1, y1, x2, y2){
 }
 /* v5.41.130 — remet le zoom/déplacement de la vue à l'état initial (utile
    après avoir zoomé/déplacé pour retravailler un détail) ; ne touche pas
-   au contenu du croquis, seulement à la façon dont on le regarde. */
+   au contenu du croquis, seulement à la façon dont on le regarde.
+   v5.41.143 — l'inclinaison (view.rotation) a son propre bouton « Remettre
+   à zéro » dédié : on la conserve ici, pour que « Réinitialiser la vue »
+   ne fasse que recentrer/dézoomer sans changer l'angle choisi. */
 function _paintResetView(){
   if(!_paint) return;
-  _paint.view = { scale:1, x:0, y:0 };
+  _paint.view = { scale:1, x:0, y:0, rotation:_paint.view.rotation||0 };
   _paintRedraw();
 }
 
-/* v5.41.140 — Incliner TOUT le croquis (demandé pour dessiner des chevrons/
-   une pente alignés sur un plan incliné, plus lisibles si le croquis entier
-   suit l'angle du plan plutôt que de rester à l'horizontale). Contrairement
-   à la rotation d'UNE forme (visuelle uniquement, voir _paintDrawOneShape),
-   ici on transforme réellement les COORDONNÉES de chaque forme (et le
-   calque figé baseImage), autour du centre du canvas — pour que la
-   sélection/le redimensionnement/la découpe continuent de raisonner
-   normalement ensuite, sans avoir à connaître un angle de vue global.
-   _paint.canvasAngle suit l'angle cumulé affiché (0-345°, pas de 15°) ;
-   _paint.canvasAngleBase mémorise shapes+baseImage à l'angle 0, capturé au
-   premier appel, pour que « Remettre à zéro » puisse revenir exactement à
-   l'état non incliné plutôt que de tourner à l'envers (imprécisions
-   d'arrondi cumulées sinon). */
-function _paintRotateGeometry(deltaDeg){
-  if(!_paint || !deltaDeg) return;
-  const canvas = _paint.canvas;
-  const cx = canvas.width/2, cy = canvas.height/2;
-  const rad = deltaDeg * Math.PI/180;
-  const cos = Math.cos(rad), sin = Math.sin(rad);
-  const rotPt = (x,y) => {
-    const dx = x-cx, dy = y-cy;
-    return { x: cx + dx*cos - dy*sin, y: cy + dx*sin + dy*cos };
-  };
-  _paint.shapes.forEach(s => {
-    if(s.type === 'pen'){
-      s.points = s.points.map(p => rotPt(p.x, p.y));
-    } else if(s.type === 'text'){
-      const r = rotPt(s.x, s.y); s.x = r.x; s.y = r.y;
-    } else {
-      const p1 = rotPt(s.x1, s.y1), p2 = rotPt(s.x2, s.y2);
-      s.x1=p1.x; s.y1=p1.y; s.x2=p2.x; s.y2=p2.y;
-    }
-    if(s.holes && s.holes.length){
-      s.holes = s.holes.map(h => {
-        const p1 = rotPt(h.x1,h.y1), p2 = rotPt(h.x2,h.y2);
-        return { x1:p1.x, y1:p1.y, x2:p2.x, y2:p2.y };
-      });
-    }
-    // La forme visuelle tourne avec le croquis ; sa rotation individuelle
-    // (menu ⋮) s'additionne simplement à l'angle global du croquis.
-    if(s.rotation) s.rotation = (s.rotation + deltaDeg) % 360;
-  });
-  if(_paint.baseImage){
-    const newBase = document.createElement('canvas');
-    newBase.width = canvas.width; newBase.height = canvas.height;
-    const bctx = newBase.getContext('2d');
-    bctx.translate(cx, cy); bctx.rotate(rad); bctx.translate(-cx, -cy);
-    bctx.drawImage(_paint.baseImage, 0, 0);
-    _paint.baseImage = newBase;
-  }
-}
+/* v5.41.143 — Incliner TOUT le croquis = tourner la VUE (comme si on
+   tournait la feuille de dessin), PAS les formes individuellement. Version
+   précédente (5.41.140) transformait les coordonnées de chaque forme, ce
+   qui les faisait paraître tourner CHACUNE sur elle-même (un rectangle
+   redessiné en biais redevient un rectangle « droit » via strokeRect, donc
+   visuellement il pivotait sur place au lieu que tout le croquis bascule
+   ensemble) — signalé par Rémi, corrigé ici.
+   _paint.view.rotation (degrés) est un simple angle de caméra : aucune
+   coordonnée de forme n'est modifiée. _paintRedraw() l'applique comme une
+   rotation autour du centre du canvas, en plus du zoom/déplacement
+   existant ; pos(e) (clic → coordonnées monde) et le zoom à la
+   molette appliquent la rotation inverse pour que dessiner/sélectionner
+   reste intuitif quel que soit l'angle affiché. */
 function _paintRotateCanvas(deltaDeg){
   if(!_paint) return;
-  if(!_paint.canvasAngleBase){
-    _paint.canvasAngleBase = {
-      shapes: JSON.stringify(_paint.shapes),
-      baseImage: _paint.baseImage ? _paint.baseImage.toDataURL('image/png') : null,
-    };
-  }
-  _paintPushHistory();
-  _paintRotateGeometry(deltaDeg);
-  _paint.canvasAngle = ((_paint.canvasAngle || 0) + deltaDeg + 360) % 360;
+  _paint.view.rotation = ((_paint.view.rotation||0) + deltaDeg + 360) % 360;
   _paintUpdateCanvasAngleSelect();
   _paintRedraw();
 }
 function _paintSetCanvasAngle(targetDeg){
   if(!_paint) return;
-  const current = _paint.canvasAngle || 0;
-  let delta = targetDeg - current;
-  if(!delta) return;
-  _paintRotateCanvas(delta);
+  _paint.view.rotation = ((targetDeg%360)+360)%360;
+  _paintUpdateCanvasAngleSelect();
+  _paintRedraw();
 }
 function _paintResetCanvasRotation(){
-  if(!_paint || !_paint.canvasAngleBase) return;
-  _paintPushHistory();
-  _paint.shapes = JSON.parse(_paint.canvasAngleBase.shapes);
-  _paint.selectedIdx = -1;
-  _paintUpdateDeleteBtn();
-  const finish = () => {
-    _paint.canvasAngle = 0;
-    _paint.canvasAngleBase = null;
-    _paintUpdateCanvasAngleSelect();
-    _paintRedraw();
-  };
-  if(_paint.canvasAngleBase.baseImage){
-    const img = new Image();
-    img.onload = () => {
-      const bctx = _paint.baseImage.getContext('2d');
-      bctx.clearRect(0,0,_paint.baseImage.width,_paint.baseImage.height);
-      bctx.drawImage(img,0,0);
-      finish();
-    };
-    img.src = _paint.canvasAngleBase.baseImage;
-  } else {
-    finish();
-  }
+  if(!_paint) return;
+  _paint.view.rotation = 0;
+  _paintUpdateCanvasAngleSelect();
+  _paintRedraw();
 }
 function _paintUpdateCanvasAngleSelect(){
   const sel = document.getElementById('paintCanvasAngleSelect');
-  if(sel && _paint) sel.value = String(_paint.canvasAngle || 0);
+  if(sel && _paint) sel.value = String(_paint.view.rotation || 0);
 }
 
 /* v5.41.134 — Fond (plan/photo) : dessiner PAR-DESSUS un plan PDF ou une
@@ -53127,12 +53093,29 @@ function _paintShapeBounds(s){
   // 'symbol' (vis/goujon/pointe) se place comme 'line'/'rect'/'circle'/'triangle' : x1/y1/x2/y2.
   return { x1:Math.min(s.x1,s.x2), y1:Math.min(s.y1,s.y2), x2:Math.max(s.x1,s.x2), y2:Math.max(s.y1,s.y2) };
 }
+/* v5.41.142 — annule la rotation VISUELLE d'une forme (menu ⋮) sur un point
+   donné, pour pouvoir continuer à tester/cliquer une forme tournée avec les
+   mêmes bornes (non tournées) que celles stockées dans s.x1/y1/x2/y2 — la
+   rotation n'est qu'un rendu (voir _paintDrawOneShape), jamais appliquée
+   aux coordonnées elles-mêmes. Sans ça, une forme tournée restait
+   sélectionnable/déplaçable seulement à son ANCIEN emplacement visuel. */
+function _paintUnrotatePoint(p, shape){
+  if(!shape || !shape.rotation || shape.type === 'text') return p;
+  const b = _paintShapeBounds(shape);
+  const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+  const rad = -shape.rotation * Math.PI/180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = p.x-cx, dy = p.y-cy;
+  return { x: cx + dx*cos - dy*sin, y: cy + dx*sin + dy*cos };
+}
 function _paintHitTest(p){
   if(!_paint) return -1;
   for(let i = _paint.shapes.length - 1; i >= 0; i--){
-    const b = _paintShapeBounds(_paint.shapes[i]);
+    const s = _paint.shapes[i];
+    const b = _paintShapeBounds(s);
     const pad = 10 * _paint.dpr;
-    if(p.x >= b.x1-pad && p.x <= b.x2+pad && p.y >= b.y1-pad && p.y <= b.y2+pad) return i;
+    const pt = _paintUnrotatePoint(p, s);
+    if(pt.x >= b.x1-pad && pt.x <= b.x2+pad && pt.y >= b.y1-pad && pt.y <= b.y2+pad) return i;
   }
   return -1;
 }
@@ -53185,8 +53168,12 @@ function _paintHandleAt(p, shape){
   const bounds = _paintShapeBounds(shape);
   const r = PAINT_HANDLE_SIZE * (_paint.dpr || 1);
   const handles = _paintHandlePositions(bounds);
+  // v5.41.142 — mêmes bornes non tournées que les poignées AFFICHÉES (voir
+  // _paintRedraw, qui les dessine aussi sur le cadre non tourné) : on
+  // ramène le point cliqué dans ce même repère avant de comparer.
+  const pt = _paintUnrotatePoint(p, shape);
   for(const h of handles){
-    if(Math.abs(p.x - h.x) <= r && Math.abs(p.y - h.y) <= r) return h.id;
+    if(Math.abs(pt.x - h.x) <= r && Math.abs(pt.y - h.y) <= r) return h.id;
   }
   return null;
 }
@@ -53615,6 +53602,47 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
   });
 }
 
+/* v5.41.143 — convertit un point ÉCRAN (coordonnées pixels canvas, avant
+   toute transformation) en coordonnées « monde » (celles stockées dans les
+   formes), en inversant EXACTEMENT la transformation que _paintRedraw
+   applique pour l'affichage (rotation autour du centre du canvas, PUIS
+   zoom/déplacement — un point monde p devient à l'écran RotCentre(p*scale +
+   (x,y))). On applique donc ici l'inverse DANS L'ORDRE INVERSE : on défait
+   d'abord la rotation (RotCentre⁻¹ sur le point écran), puis le zoom/
+   déplacement. Centralisé ici (au lieu de dupliquer ce calcul dans pos(e)
+   et dans le zoom à la molette) pour que les deux restent forcément
+   synchronisés avec le rendu. */
+function _paintUnrotateScreenPoint(cx, cy){
+  const v = _paint.view;
+  const canvas = _paint.canvas;
+  if(!v.rotation) return { x:cx, y:cy };
+  const rad = -v.rotation * Math.PI/180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = cx - canvas.width/2, dy = cy - canvas.height/2;
+  return { x: canvas.width/2 + dx*cos - dy*sin, y: canvas.height/2 + dx*sin + dy*cos };
+}
+function _paintScreenToWorld(cx, cy){
+  const v = _paint.view;
+  const u = _paintUnrotateScreenPoint(cx, cy);
+  return { x:(u.x - v.x) / v.scale, y:(u.y - v.y) / v.scale };
+}
+/* v5.41.143 — sens inverse de _paintScreenToWorld : coordonnées « monde »
+   (celles stockées dans les formes) → coordonnées écran (pixels canvas),
+   même transformation que _paintRedraw (scale/déplacement PUIS rotation
+   autour du centre du canvas). Sert à positionner un élément HTML flottant
+   (le bouton ⋮ du menu forme) sur une forme, quel que soit l'angle de vue. */
+function _paintWorldToScreen(wx, wy){
+  const v = _paint.view;
+  const canvas = _paint.canvas;
+  let x = wx*v.scale + v.x, y = wy*v.scale + v.y;
+  if(v.rotation){
+    const rad = v.rotation * Math.PI/180, cos = Math.cos(rad), sin = Math.sin(rad);
+    const dx = x - canvas.width/2, dy = y - canvas.height/2;
+    x = canvas.width/2 + dx*cos - dy*sin;
+    y = canvas.height/2 + dx*sin + dy*cos;
+  }
+  return { x, y };
+}
 function _paintRedraw(){
   if(!_paint) return;
   const { ctx, canvas } = _paint;
@@ -53625,8 +53653,20 @@ function _paintRedraw(){
   // v5.41.130 — zoom/déplacement de la vue : une transformation globale du
   // contexte, appliquée AVANT de dessiner fond/formes/poignées/aperçu, pour
   // que tout le reste du code continue de raisonner en coordonnées « monde ».
+  // v5.41.143 — rotation de la VUE (incliner tout le croquis) composée
+  // AUTOUR DU CENTRE DU CANVAS, en plus du zoom/déplacement : équivalent à
+  // tourner la feuille de dessin, sans toucher aux coordonnées des formes
+  // (voir _paintRotateCanvas). Ordre : centre canvas → rotation → retour →
+  // zoom/déplacement habituel, exactement comme le fait pos(e) en sens
+  // inverse pour convertir un clic écran en coordonnées « monde ».
   const v = _paint.view;
-  ctx.setTransform(v.scale, 0, 0, v.scale, v.x, v.y);
+  ctx.setTransform(1,0,0,1,0,0);
+  if(v.rotation){
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.rotate(v.rotation * Math.PI/180);
+    ctx.translate(-canvas.width/2, -canvas.height/2);
+  }
+  ctx.transform(v.scale, 0, 0, v.scale, v.x, v.y);
 
   // v5.41.135 — fond optionnel (plan/photo) : suit le zoom/déplacement
   // normal de la vue (reste aligné avec les traits dessinés dessus), PLUS
@@ -53768,25 +53808,45 @@ function _paintFinish(){
   // garde le cadrage plein canvas d'origine (rien à cadrer dessus).
   const contentBounds = _paintContentBounds();
   const margin = 24 * _paint.dpr;
+  // v5.41.143 — le croquis peut être incliné (_paint.view.rotation) : cette
+  // rotation est une VUE (caméra), les coordonnées des formes restent donc
+  // non tournées. On rend le plein canvas À cette rotation (pour que
+  // l'image enregistrée montre le croquis comme affiché à l'écran), puis on
+  // fait tourner les bornes du contenu par le MÊME angle (autour du centre
+  // du canvas) avant de cadrer, pour cadrer sur la zone réellement occupée
+  // à l'écran plutôt que sur les coordonnées non tournées des formes.
+  const rot = (_paint.view.rotation || 0) * Math.PI/180;
+  const cw2 = canvas.width/2, ch2 = canvas.height/2;
+  const rotCorner = (x,y) => {
+    const dx=x-cw2, dy=y-ch2, cos=Math.cos(rot), sin=Math.sin(rot);
+    return { x: cw2 + dx*cos - dy*sin, y: ch2 + dx*sin + dy*cos };
+  };
   let cropX = 0, cropY = 0, cropW = canvas.width, cropH = canvas.height;
   if(contentBounds){
-    cropX = Math.max(0, Math.floor(contentBounds.x1 - margin));
-    cropY = Math.max(0, Math.floor(contentBounds.y1 - margin));
-    const cropX2 = Math.min(canvas.width,  Math.ceil(contentBounds.x2 + margin));
-    const cropY2 = Math.min(canvas.height, Math.ceil(contentBounds.y2 + margin));
+    const corners = [
+      rotCorner(contentBounds.x1, contentBounds.y1), rotCorner(contentBounds.x2, contentBounds.y1),
+      rotCorner(contentBounds.x1, contentBounds.y2), rotCorner(contentBounds.x2, contentBounds.y2),
+    ];
+    const rx1 = Math.min(...corners.map(p=>p.x)), rx2 = Math.max(...corners.map(p=>p.x));
+    const ry1 = Math.min(...corners.map(p=>p.y)), ry2 = Math.max(...corners.map(p=>p.y));
+    cropX = Math.max(0, Math.floor(rx1 - margin));
+    cropY = Math.max(0, Math.floor(ry1 - margin));
+    const cropX2 = Math.min(canvas.width,  Math.ceil(rx2 + margin));
+    const cropY2 = Math.min(canvas.height, Math.ceil(ry2 + margin));
     cropW = Math.max(1, cropX2 - cropX);
     cropH = Math.max(1, cropY2 - cropY);
   }
   // v5.41.130 — l'export doit toujours capturer le croquis EN ENTIER, quel
-  // que soit le zoom/déplacement de vue en cours au moment d'enregistrer :
-  // on redessine sur un canvas hors-écran avec une vue identité (scale=1,
-  // pas de déplacement, mais DÉCALÉE de -cropX/-cropY pour ne garder que la
-  // zone cadrée), sans les poignées ni la sélection.
+  // que soit le ZOOM/DÉPLACEMENT en cours au moment d'enregistrer : on
+  // redessine sur un canvas hors-écran avec un zoom/déplacement identité
+  // (scale=1, pas de déplacement), mais en GARDANT la rotation choisie —
+  // c'est un vrai réglage du croquis (comme incliner la feuille), pas un
+  // simple cadrage de travail —, sans les poignées ni la sélection.
   const fullCanvas = document.createElement('canvas');
   fullCanvas.width = canvas.width; fullCanvas.height = canvas.height;
   const fullCtx = fullCanvas.getContext('2d');
   const savedView = _paint.view, savedSelected = _paint.selectedIdx, savedCtx = _paint.ctx, savedCanvas = _paint.canvas;
-  _paint.view = { scale:1, x:0, y:0 };
+  _paint.view = { scale:1, x:0, y:0, rotation: savedView.rotation||0 };
   _paint.selectedIdx = -1;
   _paint.ctx = fullCtx; _paint.canvas = fullCanvas;
   _paintRedraw();
