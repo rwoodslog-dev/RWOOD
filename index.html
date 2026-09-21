@@ -32244,9 +32244,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.143';
+const APP_VERSION = '5.41.145';
 
 const CHANGELOG = [
+  {
+    version: '5.41.145',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif important — à l'enregistrement, le croquis pouvait être coupé (ex. le haut d'un montant manquant) si des formes avaient été dessinées après avoir déplacé/dézoomé la vue, ou avec le croquis incliné. Le cadrage automatique ne limite plus l'export à la taille de l'écran : il s'agrandit désormais pour contenir tout le contenu réellement dessiné, quel que soit le zoom/déplacement utilisé pendant le dessin." },
+    ],
+  },
+  {
+    version: '5.41.144',
+    date: '21/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif — le cadre de sélection (pointillés bleus), les poignées de redimensionnement et le bouton ⋮ restaient affichés à plat quand une forme était tournée via le menu ⋮, au lieu de suivre son orientation réelle. Ils pivotent maintenant avec la forme." },
+    ],
+  },
   {
     version: '5.41.143',
     date: '21/09/2026',
@@ -52798,15 +52812,26 @@ function _paintPositionShapeMenu(){
     _paintShapeMenuOpen = false;
     return;
   }
-  const b = _paintShapeBounds(_paint.shapes[_paint.selectedIdx]);
+  const selShape = _paint.shapes[_paint.selectedIdx];
+  const b = _paintShapeBounds(selShape);
   const canvas = _paint.canvas;
   const wrap = document.getElementById('paintCanvasWrap');
   const cRect = canvas.getBoundingClientRect(), wRect = wrap.getBoundingClientRect();
   const scaleX = cRect.width / canvas.width, scaleY = cRect.height / canvas.height;
   const pad = 6 * _paint.dpr;
-  // Coin haut-droit du cadre (coordonnées monde → écran canvas, rotation de
-  // la vue comprise via _paintWorldToScreen → écran wrap).
-  const s = _paintWorldToScreen(b.x2 + pad, b.y1 - pad);
+  // Coin haut-droit du cadre : d'abord tourné par la rotation VISUELLE de la
+  // forme elle-même (menu ⋮, autour de son propre centre — même repère que
+  // le cadre de sélection dessiné dans _paintDrawShapesOn), PUIS converti en
+  // écran via _paintWorldToScreen (qui gère séparément la rotation de la VUE).
+  let cornerX = b.x2 + pad, cornerY = b.y1 - pad;
+  if(selShape.rotation && selShape.type !== 'text'){
+    const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+    const rad = selShape.rotation * Math.PI/180, cos = Math.cos(rad), sin = Math.sin(rad);
+    const dx = cornerX-cx, dy = cornerY-cy;
+    cornerX = cx + dx*cos - dy*sin;
+    cornerY = cy + dx*sin + dy*cos;
+  }
+  const s = _paintWorldToScreen(cornerX, cornerY);
   const sx = s.x, sy = s.y;
   let left = (sx * scaleX) + (cRect.left - wRect.left);
   let top = (sy * scaleY) + (cRect.top - wRect.top);
@@ -53583,6 +53608,10 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
       if(idx === selectedIdx){
         ctx.save();
         const b = _paintShapeBounds(s);
+        if(s.rotation && s.type !== 'text'){
+          const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+          ctx.translate(cx, cy); ctx.rotate(s.rotation * Math.PI/180); ctx.translate(-cx, -cy);
+        }
         ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/scale; ctx.setLineDash([5/scale,4/scale]);
         ctx.strokeRect(b.x1-6, b.y1-6, (b.x2-b.x1)+12, (b.y2-b.y1)+12);
         ctx.setLineDash([]);
@@ -53594,9 +53623,20 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
     _paintDrawOneShape(ctx, s);
     if(idx === selectedIdx){
       const b = _paintShapeBounds(s);
+      ctx.save();
+      // v5.41.144 — le cadre de sélection (pointillés bleus) doit suivre la
+      // rotation VISUELLE de la forme (menu ⋮), sinon il reste affiché à
+      // plat pendant que la forme tourne dedans — signalé par Rémi. Même
+      // pivot que _paintDrawOneShape : autour du centre du cadre englobant
+      // (non tourné), qui est aussi le repère utilisé par le hit-test.
+      if(s.rotation && s.type !== 'text'){
+        const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+        ctx.translate(cx, cy); ctx.rotate(s.rotation * Math.PI/180); ctx.translate(-cx, -cy);
+      }
       ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.lineWidth = 1.5/scale; ctx.setLineDash([5/scale,4/scale]);
       ctx.strokeRect(b.x1-6, b.y1-6, (b.x2-b.x1)+12, (b.y2-b.y1)+12);
       ctx.setLineDash([]);
+      ctx.restore();
     }
     ctx.restore();
   });
@@ -53612,14 +53652,26 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
    déplacement. Centralisé ici (au lieu de dupliquer ce calcul dans pos(e)
    et dans le zoom à la molette) pour que les deux restent forcément
    synchronisés avec le rendu. */
+/* v5.41.145 — le pivot de rotation de la vue est normalement le centre du
+   canvas affiché (canvas.width/2, canvas.height/2). Mais à l'export, quand
+   le contenu déborde de ce canvas (dessiné après avoir déplacé/dézoomé la
+   vue), on doit rendre sur un canvas hors-écran PLUS GRAND pour ne rien
+   perdre — auquel cas le pivot ne doit PAS suivre ce nouveau centre (sinon
+   la rotation ne s'aligne plus avec ce qui était affiché à l'écran).
+   _paint._rotationCenter (optionnel) fixe alors explicitement le pivot ;
+   par défaut (écran normal), on retombe sur le centre du canvas comme avant. */
+function _paintRotationCenter(){
+  if(_paint._rotationCenter) return _paint._rotationCenter;
+  return { x: _paint.canvas.width/2, y: _paint.canvas.height/2 };
+}
 function _paintUnrotateScreenPoint(cx, cy){
   const v = _paint.view;
-  const canvas = _paint.canvas;
   if(!v.rotation) return { x:cx, y:cy };
+  const c = _paintRotationCenter();
   const rad = -v.rotation * Math.PI/180;
   const cos = Math.cos(rad), sin = Math.sin(rad);
-  const dx = cx - canvas.width/2, dy = cy - canvas.height/2;
-  return { x: canvas.width/2 + dx*cos - dy*sin, y: canvas.height/2 + dx*sin + dy*cos };
+  const dx = cx - c.x, dy = cy - c.y;
+  return { x: c.x + dx*cos - dy*sin, y: c.y + dx*sin + dy*cos };
 }
 function _paintScreenToWorld(cx, cy){
   const v = _paint.view;
@@ -53633,13 +53685,13 @@ function _paintScreenToWorld(cx, cy){
    (le bouton ⋮ du menu forme) sur une forme, quel que soit l'angle de vue. */
 function _paintWorldToScreen(wx, wy){
   const v = _paint.view;
-  const canvas = _paint.canvas;
   let x = wx*v.scale + v.x, y = wy*v.scale + v.y;
   if(v.rotation){
+    const c = _paintRotationCenter();
     const rad = v.rotation * Math.PI/180, cos = Math.cos(rad), sin = Math.sin(rad);
-    const dx = x - canvas.width/2, dy = y - canvas.height/2;
-    x = canvas.width/2 + dx*cos - dy*sin;
-    y = canvas.height/2 + dx*sin + dy*cos;
+    const dx = x - c.x, dy = y - c.y;
+    x = c.x + dx*cos - dy*sin;
+    y = c.y + dx*sin + dy*cos;
   }
   return { x, y };
 }
@@ -53662,9 +53714,10 @@ function _paintRedraw(){
   const v = _paint.view;
   ctx.setTransform(1,0,0,1,0,0);
   if(v.rotation){
-    ctx.translate(canvas.width/2, canvas.height/2);
+    const c = _paintRotationCenter();
+    ctx.translate(c.x, c.y);
     ctx.rotate(v.rotation * Math.PI/180);
-    ctx.translate(-canvas.width/2, -canvas.height/2);
+    ctx.translate(-c.x, -c.y);
   }
   ctx.transform(v.scale, 0, 0, v.scale, v.x, v.y);
 
@@ -53675,10 +53728,17 @@ function _paintRedraw(){
   // croquis. Jamais modifié par Découpe/Annuler/Tout effacer.
   if(_paint.bgImage){
     const bt = _paint.bgTransform;
+    // v5.41.145 — le fond doit toujours être dessiné à la taille de l'ÉCRAN
+    // D'ORIGINE (comme quand il a été positionné), jamais à la taille du
+    // canvas de rendu courant : lors de l'export, ce dernier peut être plus
+    // grand que l'écran (voir _paintFinish, cadrage sans découpe du haut/bas
+    // du contenu), et utiliser canvas.width/height ici étirerait le fond au
+    // lieu de le garder identique à ce qui était affiché pendant le dessin.
+    const bgSize = _paint._screenCanvasSize || { w: canvas.width, h: canvas.height };
     ctx.save();
     ctx.translate(bt.x, bt.y);
     ctx.scale(bt.scale, bt.scale);
-    ctx.drawImage(_paint.bgImage, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(_paint.bgImage, 0, 0, bgSize.w, bgSize.h);
     ctx.restore();
   }
   // v5.41.132 — calque figé (résultat des découpes destructives déjà
@@ -53692,10 +53752,20 @@ function _paintRedraw(){
   // (outil Sélection uniquement). Taille FIXE à l'écran : on les dessine
   // en divisant par le zoom de la vue pour qu'elles restent attrapables.
   if(_paint.tool === 'select' && _paint.selectedIdx >= 0 && _paint.shapes[_paint.selectedIdx]){
-    const b = _paintShapeBounds(_paint.shapes[_paint.selectedIdx]);
+    const selShape = _paint.shapes[_paint.selectedIdx];
+    const b = _paintShapeBounds(selShape);
     const handles = _paintHandlePositions(b);
     const r = PAINT_HANDLE_SIZE / v.scale;
     ctx.save();
+    // v5.41.144 — mêmes poignées suivent la rotation VISUELLE de la forme
+    // (menu ⋮), pour rester sur les coins réels tels qu'affichés — comme le
+    // cadre de sélection (voir _paintDrawShapesOn). Le hit-test (souris →
+    // poignée) applique déjà la rotation inverse (_paintHandleAt), donc les
+    // positions cliquables restent cohérentes avec ce qui est dessiné ici.
+    if(selShape.rotation && selShape.type !== 'text'){
+      const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+      ctx.translate(cx, cy); ctx.rotate(selShape.rotation * Math.PI/180); ctx.translate(-cx, -cy);
+    }
     handles.forEach(h => {
       ctx.fillStyle = '#fff';
       ctx.strokeStyle = 'rgba(78,161,255,0.95)';
@@ -53821,7 +53891,21 @@ function _paintFinish(){
     const dx=x-cw2, dy=y-ch2, cos=Math.cos(rot), sin=Math.sin(rot);
     return { x: cw2 + dx*cos - dy*sin, y: ch2 + dx*sin + dy*cos };
   };
+  // v5.41.145 — CORRECTIF : les bornes du contenu (contentBounds, puis leurs
+  // coins tournés) peuvent tomber EN DEHORS du rectangle [0,canvas.width] ×
+  // [0,canvas.height] — par exemple si on a dessiné après avoir déplacé/
+  // dézoomé la vue, les formes ont des coordonnées « monde » qui dépassent
+  // largement la taille du canvas visible à l'écran. L'ancienne version
+  // bornait le cadrage à cette taille fixe (Math.min(canvas.width, …)),
+  // coupant purement et simplement tout ce qui dépassait — exactement le
+  // bug remonté par Rémi (croquis incomplet à l'ouverture, ex. le haut d'un
+  // montant coupé). Le cadrage n'est donc plus jamais borné à
+  // canvas.width/height : le canvas de rendu « plein » est maintenant
+  // DIMENSIONNÉ pour contenir tout le contenu, avec un décalage écran
+  // (screenOffsetX/Y, en espace ÉCRAN c-à-d APRÈS rotation) qui replace
+  // tout dans un cadre positif avant de cadrer.
   let cropX = 0, cropY = 0, cropW = canvas.width, cropH = canvas.height;
+  let renderW = canvas.width, renderH = canvas.height, screenOffsetX = 0, screenOffsetY = 0;
   if(contentBounds){
     const corners = [
       rotCorner(contentBounds.x1, contentBounds.y1), rotCorner(contentBounds.x2, contentBounds.y1),
@@ -53829,27 +53913,49 @@ function _paintFinish(){
     ];
     const rx1 = Math.min(...corners.map(p=>p.x)), rx2 = Math.max(...corners.map(p=>p.x));
     const ry1 = Math.min(...corners.map(p=>p.y)), ry2 = Math.max(...corners.map(p=>p.y));
-    cropX = Math.max(0, Math.floor(rx1 - margin));
-    cropY = Math.max(0, Math.floor(ry1 - margin));
-    const cropX2 = Math.min(canvas.width,  Math.ceil(rx2 + margin));
-    const cropY2 = Math.min(canvas.height, Math.ceil(ry2 + margin));
-    cropW = Math.max(1, cropX2 - cropX);
-    cropH = Math.max(1, cropY2 - cropY);
+    const rawX1 = Math.floor(rx1 - margin), rawY1 = Math.floor(ry1 - margin);
+    const rawX2 = Math.ceil(rx2 + margin),  rawY2 = Math.ceil(ry2 + margin);
+    // Le rendu « plein » doit couvrir à la fois le rectangle original du
+    // canvas (0..width/height, pour ne rien perdre de ce qui y est visible)
+    // ET les bornes du contenu, même si elles débordent largement.
+    const fullX1 = Math.min(0, rawX1), fullY1 = Math.min(0, rawY1);
+    const fullX2 = Math.max(canvas.width,  rawX2), fullY2 = Math.max(canvas.height, rawY2);
+    screenOffsetX = -fullX1; screenOffsetY = -fullY1;
+    renderW = Math.max(1, fullX2 - fullX1); renderH = Math.max(1, fullY2 - fullY1);
+    cropX = rawX1 + screenOffsetX; cropY = rawY1 + screenOffsetY;
+    cropW = Math.max(1, rawX2 - rawX1); cropH = Math.max(1, rawY2 - rawY1);
   }
   // v5.41.130 — l'export doit toujours capturer le croquis EN ENTIER, quel
   // que soit le ZOOM/DÉPLACEMENT en cours au moment d'enregistrer : on
-  // redessine sur un canvas hors-écran avec un zoom/déplacement identité
-  // (scale=1, pas de déplacement), mais en GARDANT la rotation choisie —
-  // c'est un vrai réglage du croquis (comme incliner la feuille), pas un
-  // simple cadrage de travail —, sans les poignées ni la sélection.
+  // redessine sur un canvas hors-écran avec un zoom identité, en GARDANT la
+  // rotation choisie — c'est un vrai réglage du croquis (comme incliner la
+  // feuille), pas un simple cadrage de travail —, sans les poignées ni la
+  // sélection.
+  // v5.41.145 — le pivot de rotation reste le centre du canvas D'ORIGINE
+  // (_paint._rotationCenter, voir _paintRotationCenter) même si le canvas de
+  // rendu est agrandi, pour que la rotation s'aligne exactement avec ce qui
+  // était affiché à l'écran. Le décalage screenOffsetX/Y voulu est un
+  // décalage ÉCRAN (post-rotation) : comme v.x/v.y s'appliquent AVANT la
+  // rotation dans _paintRedraw, on les définit avec la version tournée en
+  // sens inverse de ce décalage (RotPivot(p + v) = RotPivot(p) + Rot(v)).
+  const cosR = Math.cos(-rot), sinR = Math.sin(-rot);
+  const preRotOffsetX = screenOffsetX*cosR - screenOffsetY*sinR;
+  const preRotOffsetY = screenOffsetX*sinR + screenOffsetY*cosR;
   const fullCanvas = document.createElement('canvas');
-  fullCanvas.width = canvas.width; fullCanvas.height = canvas.height;
+  fullCanvas.width = renderW; fullCanvas.height = renderH;
   const fullCtx = fullCanvas.getContext('2d');
   const savedView = _paint.view, savedSelected = _paint.selectedIdx, savedCtx = _paint.ctx, savedCanvas = _paint.canvas;
-  _paint.view = { scale:1, x:0, y:0, rotation: savedView.rotation||0 };
+  _paint._rotationCenter = { x: cw2, y: ch2 };
+  // v5.41.145 — mémorise la taille de l'écran D'ORIGINE pendant que le canvas
+  // de rendu est temporairement agrandi, pour que le dessin du fond (voir
+  // _paintRedraw) ne l'étire pas à la nouvelle taille (plus grande).
+  _paint._screenCanvasSize = { w: canvas.width, h: canvas.height };
+  _paint.view = { scale:1, x:preRotOffsetX, y:preRotOffsetY, rotation: savedView.rotation||0 };
   _paint.selectedIdx = -1;
   _paint.ctx = fullCtx; _paint.canvas = fullCanvas;
   _paintRedraw();
+  _paint._rotationCenter = null;
+  _paint._screenCanvasSize = null;
   _paint.view = savedView; _paint.selectedIdx = savedSelected;
   _paint.ctx = savedCtx; _paint.canvas = savedCanvas;
   const exportCanvas = document.createElement('canvas');
