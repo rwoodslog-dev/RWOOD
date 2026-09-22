@@ -32438,9 +32438,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.154';
+const APP_VERSION = '5.41.155';
 
 const CHANGELOG = [
+  {
+    version: '5.41.155',
+    date: '22/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : la liste « Pointer aussi pour » (v5.41.154) restait vide en pratique car basée seulement sur les destinataires de la feuille de route — toi-même exclu quand tu exécutes ta propre feuille. Elle se base désormais sur ton carnet d'ouvriers (le même que la fiche d'heures), toujours disponible." },
+    ],
+  },
   {
     version: '5.41.154',
     date: '22/09/2026',
@@ -51895,32 +51902,47 @@ async function routeOnPopupOpen(){
 function _routeCurrentStop(r){ return (r.stops||[]).find(s => s.status !== 'done') || null; }
 function _routeJsArg(str){ return escapeHtml(JSON.stringify(String(str||''))); }
 
-/* v5.41.154 — candidats "ouvriers à synchroniser" pour un stop donné :
-   destinataires de la feuille de route (toujours peuplé) + ouvriers déjà
-   assignés au chantier réel s'il y en a, moi exclu. Fonction partagée entre
-   la carte (case à cocher visible en permanence sous les tâches) et la
-   modale de pointage (Dépannage fini). */
+/* v5.41.155 — candidats "ouvriers à synchroniser" pour un stop donné.
+   v5.41.154 ne proposait que route.recipients + site.assignedWorkers : vide
+   dès que le chef teste/exécute sa PROPRE feuille de route (il est le seul
+   destinataire, donc exclu de la liste) — aucune section ne s'affichait,
+   signalé par Rémi. Source principale désormais : le carnet d'ouvriers local
+   du chef (data.workers, le même que celui de la fiche d'heures / bouton
+   "Ajouter un ouvrier") — toujours peuplé, disponible hors-ligne, pas besoin
+   d'un authId réseau. route.recipients + site.assignedWorkers restent inclus
+   en complément (utile côté ouvrier qui suit la feuille d'un chef). */
 function _routeTeamCandidatesFor(route, stop){
   const realSiteObj = stop && stop.siteId && (data.sites||[]).find(s => s.id === stop.siteId);
+  const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
   const myAuthId = _routeMyAuthId();
-  const candMap = new Map();
+  const candMap = new Map(); // clé = authId si connu, sinon 'local:' + id local
+  const addCand = (key, c) => { if(key && !candMap.has(key)) candMap.set(key, c); };
+  (data.workers || []).forEach(w => {
+    if(!w || w.id === myWorkerId) return;
+    if(w.active === false) return;
+    addCand(w.authId || ('local:' + w.id), { authId: w.authId || null, workerId: w.id, name: w.name });
+  });
   (route && route.recipients || []).forEach(r => {
-    if(r && r.authId && r.authId !== myAuthId) candMap.set(r.authId, { authId: r.authId, name: r.name });
+    if(r && r.authId && r.authId !== myAuthId) addCand(r.authId, { authId: r.authId, name: r.name });
   });
   if(realSiteObj){
     (realSiteObj.assignedWorkers || []).forEach(w => {
-      if(w && w.authId && w.authId !== myAuthId && !candMap.has(w.authId)) candMap.set(w.authId, w);
+      if(w && w.authId && w.authId !== myAuthId) addCand(w.authId, w);
     });
   }
   return [...candMap.values()];
 }
-/* Sélection courante par stop : { [stopId]: Set(authId) }. Cochée sur la
-   carte, relue au moment de "Dépannage fini" pour pré-cocher la même
+/* Clé stable d'un candidat (authId réseau si connu, sinon id local du
+   carnet d'ouvriers) — utilisée pour la sélection cochée et pour retrouver
+   le worker local correspondant au moment du pointage. */
+function _routeCandKey(c){ return (c && (c.authId || (c.workerId ? ('local:' + c.workerId) : null))) || null; }
+/* Sélection courante par stop : { [stopId]: Set(clé candidat) }. Cochée sur
+   la carte, relue au moment de "Dépannage fini" pour pré-cocher la même
    sélection dans la modale de pointage (pas besoin de recocher). */
 window._routeTeamSelection = window._routeTeamSelection || {};
-function routeToggleTeamMember(stopId, authId, checked){
+function routeToggleTeamMember(stopId, key, checked){
   const sel = window._routeTeamSelection[stopId] || (window._routeTeamSelection[stopId] = new Set());
-  if(checked) sel.add(authId); else sel.delete(authId);
+  if(checked) sel.add(key); else sel.delete(key);
 }
 function renderRoutePane(){
   const pane = document.getElementById('routeTabPane');
@@ -51976,12 +51998,12 @@ function renderRoutePane(){
       const teamLine = teamCands.length ? `<div style="margin-top:10px;">
         <div style="font-size:11.5px;font-weight:700;color:var(--ink-soft);margin-bottom:4px;">👥 Pointer aussi pour :</div>
         <div style="display:flex;flex-direction:column;gap:5px;">
-          ${teamCands.map((w,ti) => `
-            <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg);border:1.5px solid var(--line);border-radius:8px;font-size:12.5px;cursor:pointer;" id="rtTeamRow_${s.id}_${ti}">
-              <input type="checkbox" ${selSet.has(w.authId)?'checked':''} style="width:16px;height:16px;accent-color:var(--wood);flex-shrink:0;"
-                onchange="routeToggleTeamMember('${s.id}','${w.authId}',this.checked);document.getElementById('rtTeamRow_${s.id}_${ti}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
+          ${teamCands.map((w,ti) => { const ck = _routeCandKey(w); const pre = ck && selSet.has(ck); return `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg);border:1.5px solid ${pre?'var(--wood)':'var(--line)'};border-radius:8px;font-size:12.5px;cursor:pointer;" id="rtTeamRow_${s.id}_${ti}">
+              <input type="checkbox" ${pre?'checked':''} style="width:16px;height:16px;accent-color:var(--wood);flex-shrink:0;"
+                onchange="routeToggleTeamMember('${s.id}',${_routeJsArg(ck)},this.checked);document.getElementById('rtTeamRow_${s.id}_${ti}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
               <span style="font-weight:700;">🔧 ${escapeHtml(w.name||'Ouvrier')}</span>
-            </label>`).join('')}
+            </label>`; }).join('')}
         </div>
       </div>` : '';
       return `<div style="border:1.5px solid ${isCur?'var(--wood)':'var(--line)'};border-radius:10px;padding:8px 10px;margin-bottom:8px;background:${isCur?'var(--card)':'transparent'};">
@@ -52039,6 +52061,22 @@ function _routeFindOrCreateWorkerByAuth(u){
   return w;
 }
 
+/* v5.41.155 — résout un candidat de la liste "Pointer aussi pour" (carte ou
+   modale) vers son worker local (data.workers). Le candidat peut porter un
+   workerId direct (source : data.workers lui-même, cas normal quand le chef
+   coche dans son propre carnet d'ouvriers) ou seulement un authId (source :
+   route.recipients / site.assignedWorkers, cas d'un ouvrier qui suit la
+   feuille d'un chef) — dans ce second cas on retombe sur le pont existant. */
+function _routeResolveTeamCandidate(c){
+  if(!c) return null;
+  if(c.workerId){
+    const w = (data.workers||[]).find(x => x.id === c.workerId);
+    if(w) return w;
+  }
+  if(c.authId) return _routeFindOrCreateWorkerByAuth(c);
+  return null;
+}
+
 /* v5.41.118 — à la fin d'un chantier de la feuille de route, propose
    d'ajouter directement le temps passé au pointage du jour (mode multi
    chantier, comme si l'ouvrier avait rempli sa fiche à la main). Le
@@ -52076,7 +52114,7 @@ async function _routeOfferPointage(stop, route){
           <label>Synchroniser aussi pour ces ouvriers</label>
           <div class="hint" style="margin-bottom:6px;">Coche qui était avec toi — même heures, même tâche, ajoutées et validées avec ta fiche.</div>
           <div id="rpTeamList" style="display:flex;flex-direction:column;gap:6px;max-height:32vh;overflow-y:auto;">
-            ${teamCandidates.map((w,i) => { const pre = preSel.has(w.authId); return `
+            ${teamCandidates.map((w,i) => { const pre = preSel.has(_routeCandKey(w)); return `
               <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1.5px solid ${pre?'var(--wood)':'var(--line)'};border-radius:9px;cursor:pointer;" id="rpTeamRow_${i}">
                 <input type="checkbox" id="rpTeamCb_${i}" ${pre?'checked':''} style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"
                   onchange="document.getElementById('rpTeamRow_${i}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
@@ -52144,7 +52182,7 @@ async function _routeOfferPointage(stop, route){
     // valide pour l'équipe en un seul geste, sur demande de Rémi.
     const teamWorkerIds = [];
     (team||[]).forEach(u => {
-      const w = _routeFindOrCreateWorkerByAuth(u);
+      const w = _routeResolveTeamCandidate(u);
       if(!w) return;
       teamWorkerIds.push(w.id);
       if(!today.workers[w.id]) today.workers[w.id] = { hours: '', panier: false, task: '' };
