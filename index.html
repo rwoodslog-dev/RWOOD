@@ -32556,9 +32556,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.160';
+const APP_VERSION = '5.41.161';
 
 const CHANGELOG = [
+  {
+    version: '5.41.161',
+    date: '22/09/2026',
+    entries: [
+      { icon: '⏱️', text: "Feuille de route → « Synchro ouvrier » : les ouvriers cochés ne sont plus ajoutés à la fiche du chef. Chacun reçoit maintenant sur son propre compte une fiche du jour pré-remplie (chantier, heures, tâche), non validée — il n'a plus qu'à vérifier, ajouter un chantier ou le panier repas si besoin, puis valider et signer lui-même." },
+    ],
+  },
   {
     version: '5.41.160',
     date: '22/09/2026',
@@ -51981,6 +51988,96 @@ async function _routeAddToKey(key, route){
   return _routeWrite(key, d);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — PointageSuggest (v5.41.161)
+   Quand le chef coche des ouvriers dans "Synchro ouvrier" (feuille de
+   route → Dépannage fini), il NE DOIT PLUS écrire directement dans SA
+   PROPRE fiche d'heures locale pour ces ouvriers (c'était le comportement
+   v5.41.150-160 — corrigé sur demande explicite de Rémi : "il faut juste
+   que de son côté sur son compte utilisateur, dans son pointage, ça lui
+   remplisse sa fiche"). À la place : on dépose une PROPOSITION dans une
+   boîte dédiée à CHAQUE ouvrier coché (clé = son propre authId, même
+   principe que ROUTE_KEY_PREFIX pour la feuille de route elle-même). C'est
+   le DEVICE DE L'OUVRIER LUI-MÊME qui, à son prochain démarrage/retour au
+   premier plan, lit sa boîte et pré-remplit SA PROPRE fiche du jour en mode
+   multi-chantier (non validée, non signée) — il n'a plus qu'à vérifier,
+   ajouter un chantier/le panier repas si besoin, puis valider et signer
+   lui-même. Rien n'est écrit dans data.attendance d'un autre compte que le
+   sien : chaque appareil ne modifie jamais que SES PROPRES données locales,
+   exactement comme pour tout le reste de la synchro. */
+const POINTAGE_SUGGEST_KEY_PREFIX = 'pointage_suggest_';
+async function _pointageSuggestPull(authId){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(POINTAGE_SUGGEST_KEY_PREFIX + authId) + '&select=data', { headers:{'Prefer':''} });
+    if(!res.ok) return { items: [] };
+    const rows = await res.json();
+    if(!rows || !rows.length) return { items: [] };
+    const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    return (d && Array.isArray(d.items)) ? d : { items: [] };
+  }catch(e){ return { items: [] }; }
+}
+async function _pointageSuggestWrite(authId, obj){
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: POINTAGE_SUGGEST_KEY_PREFIX + authId, updated_at: new Date().toISOString(), data: JSON.stringify(obj) })
+    });
+    return res.ok;
+  }catch(e){ return false; }
+}
+/* Dépose UNE proposition de pointage dans la boîte de l'ouvrier `authId`
+   (lecture → ajout → écriture, jamais d'écrasement aveugle des propositions
+   déjà en attente pour lui). */
+async function _pointageSuggestAdd(authId, item){
+  const d = await _pointageSuggestPull(authId);
+  d.items.push(item);
+  return _pointageSuggestWrite(authId, d);
+}
+/* Lue par L'OUVRIER LUI-MÊME (voir _pointageSuggestApplyPending, appelée au
+   démarrage/retour au premier plan) : récupère ce qui l'attend, l'intègre
+   dans SA PROPRE fiche du jour (data.attendance local), puis vide sa boîte
+   (les entrées consommées ne doivent pas réapparaître à la prochaine
+   ouverture). */
+async function _pointageSuggestApplyPending(){
+  const myAuthId = _routeMyAuthId();
+  const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
+  if(!myAuthId || !myWorkerId) return;
+  const d = await _pointageSuggestPull(myAuthId);
+  if(!d.items.length) return;
+  let added = 0;
+  const byChef = {};
+  d.items.forEach(item => {
+    const dateKey = item.dateKey || new Date().toISOString().slice(0,10);
+    if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: data.sites[0]?.id || null, workers: {} };
+    const today = data.attendance[dateKey];
+    if(!today.workers[myWorkerId]) today.workers[myWorkerId] = { hours: '', panier: false, task: '' };
+    const entry = today.workers[myWorkerId];
+    entry.mode = 'multi';
+    if(!Array.isArray(entry.sites)) entry.sites = [];
+    const row = item.realSite
+      ? { siteId: item.siteId, hours: item.hours, task: item.task, routeNote: item.routeNote || '' }
+      : { siteId: '__custom__', customName: item.customName || 'Chantier libre', customAddr: item.customAddr || '', customZone: '', hours: item.hours, task: item.task, routeNote: item.routeNote || '' };
+    entry.sites.push(row);
+    if(!item.realSite && row.customAddr && typeof _pointageMultiCalcZone === 'function'){
+      _pointageMultiCalcZone(dateKey, myWorkerId, entry.sites.length - 1);
+    }
+    added++;
+    byChef[item.fromName || 'ton chef'] = (byChef[item.fromName || 'ton chef']||0) + 1;
+  });
+  if(added){
+    saveData();
+    await _pointageSuggestWrite(myAuthId, { items: [] }); // boîte vidée : ne réapparaît plus
+    const names = Object.keys(byChef).join(', ');
+    showToast(`⏱️ Ta fiche d'heures a été pré-remplie par ${names} (${added} chantier${added>1?'s':''}) — vérifie et valide.`);
+    if(typeof renderPointage === 'function') try{ renderPointage(); }catch(e){}
+  }
+}
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') _pointageSuggestApplyPending(); });
+setTimeout(_pointageSuggestApplyPending, 4000);
+setInterval(_pointageSuggestApplyPending, 5 * 60 * 1000);
+/* ═══ MODULE — PointageSuggest · fin ═══ */
+
 /* Charge les feuilles ACTIVES qui me concernent : ma clé + (ouvrier) celle
    du chef suivi. */
 async function routeLoadMine(){
@@ -52296,7 +52393,7 @@ async function _routeOfferPointage(stop, route){
       div.remove();
       resolve({ hours: h, task: tEl.value || '', team: selectedTeam });
     };
-  }).then(result => {
+  }).then(async result => {
     if(!result) return;
     const { hours: h, task, team } = result;
 
@@ -52309,53 +52406,40 @@ async function _routeOfferPointage(stop, route){
       ? { siteId: stop.siteId, hours: h, task, routeNote: tasksSummary }
       : { siteId: '__custom__', customName: stop.name || 'Chantier libre', customAddr: stop.address || '', customZone: '', hours: h, task, routeNote: tasksSummary };
 
-    // Ma propre ligne
+    // Ma propre ligne (le chef pointe pour LUI-MÊME comme d'habitude).
     if(!today.workers[myWorkerId]) today.workers[myWorkerId] = { hours: '', panier: false, task: '' };
     const entry = today.workers[myWorkerId];
     entry.mode = 'multi';
     if(!Array.isArray(entry.sites)) entry.sites = [];
     const myRow = buildRow();
     entry.sites.push(myRow);
-
-    // v5.41.150 — même heures/tâche pour chaque ouvrier coché, et la
-    // journée est marquée validée+signée pour tout le monde en même temps
-    // que la mienne (voir _pointageDoValidate plus bas) : le chef pointe et
-    // valide pour l'équipe en un seul geste, sur demande de Rémi.
-    const teamWorkerIds = [];
-    (team||[]).forEach(u => {
-      const w = _routeResolveTeamCandidate(u);
-      if(!w) return;
-      teamWorkerIds.push(w.id);
-      if(!today.workers[w.id]) today.workers[w.id] = { hours: '', panier: false, task: '' };
-      const wEntry = today.workers[w.id];
-      wEntry.mode = 'multi';
-      if(!Array.isArray(wEntry.sites)) wEntry.sites = [];
-      wEntry.sites.push(buildRow());
-      // Zone auto pour un chantier libre avec adresse, pour cet ouvrier aussi.
-      if(!realSite && myRow.customAddr && typeof _pointageMultiCalcZone === 'function'){
-        _pointageMultiCalcZone(dateKey, w.id, wEntry.sites.length - 1);
-      }
-    });
-
     saveData();
+    schedulePointageSync();
 
-    if(teamWorkerIds.length){
-      // Validation + synchronisation immédiates pour le chef ET l'équipe
-      // cochée, en un seul geste (au lieu du bouton "Valider" habituel qui
-      // ne concerne que soi-même) — signature du chef, comme lorsqu'il
-      // valide sa propre fiche. extraWorkerIds fait sortir explicitement les
-      // fiches des coéquipiers cochés de la RÈGLE STRICTE de
-      // pushPointageToSupabase (sinon elles restent bloquées en local sur
-      // le téléphone du chef, sans jamais atteindre le serveur / la
-      // comptable — bug identifié en revue avant envoi).
-      const chefSig = (data.settings && data.settings.signature) || null;
-      today.validated = true;
-      today.signature = chefSig;
-      saveData();
-      pushPointageToSupabase(teamWorkerIds); // push immédiat, inclut le chef + l'équipe cochée
-      showToast(`✅ ${h}h ajoutée${h>1?'s':''} et validée pour toi + ${teamWorkerIds.length} ouvrier${teamWorkerIds.length>1?'s':''}`);
+    // v5.41.161 — sur demande explicite de Rémi : les ouvriers cochés ne
+    // doivent JAMAIS être ajoutés à MA fiche à moi. On dépose plutôt une
+    // proposition dans LEUR PROPRE boîte (POINTAGE_SUGGEST_KEY_PREFIX,
+    // identifiée par leur authId) : c'est ENSUITE leur appareil à EUX qui,
+    // en lisant sa boîte, remplit SA PROPRE fiche du jour — non validée,
+    // à eux de vérifier/compléter (chantier en plus, panier repas) puis de
+    // valider et signer. Voir _pointageSuggestAdd/_pointageSuggestApplyPending.
+    const fromName = _routeMyName();
+    const suggestItem = {
+      dateKey, hours: h, task, routeNote: tasksSummary,
+      realSite, siteId: realSite ? stop.siteId : null,
+      customName: stop.name || 'Chantier libre', customAddr: stop.address || '',
+      fromName, createdAt: new Date().toISOString(),
+    };
+    const notified = [];
+    for(const u of (team||[])){
+      if(!u || !u.authId) continue;
+      const ok = await _pointageSuggestAdd(u.authId, suggestItem);
+      if(ok) notified.push(u.name || 'Ouvrier');
+    }
+
+    if(notified.length){
+      showToast(`✅ ${h}h ajoutée${h>1?'s':''} pour toi — fiche pré-remplie envoyée à ${notified.join(', ')}`);
     } else {
-      schedulePointageSync();
       showToast(`✅ ${h}h ajoutée${h>1?'s':''} au pointage du jour`);
     }
 
