@@ -32616,9 +32616,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.168';
+const APP_VERSION = '5.41.169';
 
 const CHANGELOG = [
+  {
+    version: '5.41.169',
+    date: '22/09/2026',
+    entries: [
+      { icon: '➜', text: "Croquis Paint : nouvel outil « Flèche » dans le ruban — on glisse d'un point A à un point B pour tracer une flèche simple, puis on peut la courber en sélectionnant la flèche (outil Sélection) et en tirant sur la petite poignée ronde qui apparaît au milieu." },
+      { icon: '🐛', text: "Correctif écrou borgne (goujon/écrou) : le dôme débordait sur la première alvéole au lieu de rester collé à l'extérieur de la pièce — corrigé, quelle que soit l'orientation (horizontale/verticale/en biais)." },
+    ],
+  },
   {
     version: '5.41.168',
     date: '22/09/2026',
@@ -53138,6 +53146,13 @@ const PAINT_TOOLS = [
   // d'arrivée trace une ligne avec une flèche à chaque bout, puis demande
   // le texte à afficher dessus (ex. une longueur). Voir finishDraw.
   { id:'distance', label:'Distance',   icon:'↔' },
+  // v5.41.169 — flèche simple, demande de Rémi : on glisse d'un point A à
+  // un point B (comme Ligne), UNE seule tête de flèche à l'arrivée (B), et
+  // on peut ensuite la courber en tirant sur la poignée ronde qui apparaît
+  // au milieu quand la flèche est sélectionnée (outil Sélection) — voir
+  // _paintDrawArrowShape / _paintArrowCurveHandlePos / le bloc "poignée
+  // courbure" dans paintDown/paintMove (mousedown/mousemove du modal).
+  { id:'arrow',    label:'Flèche',     icon:'➜' },
 ];
 /* Quincaillerie — dessinée en vecteur (canvas), pas des images. Deux modes
    de pose, selon `placement` :
@@ -53574,6 +53589,18 @@ function openPaintSketchTool(onSave, existingPaint){
       return;
     }
     if(_paint.tool === 'select'){
+      // v5.41.169 — si une flèche est sélectionnée, on teste d'abord sa
+      // poignée de courbure (cercle au milieu) avant les poignées de coin —
+      // tirer dessus courbe la flèche au lieu de la redimensionner.
+      if(_paint.selectedIdx >= 0){
+        const selShape = _paint.shapes[_paint.selectedIdx];
+        if(selShape.type === 'arrow' && _paintNearArrowCurveHandle(p, selShape)){
+          _paintPushHistory();
+          _paint.curving = true;
+          _paint.curveShapeStart = JSON.parse(JSON.stringify(selShape));
+          return;
+        }
+      }
       // v5.41.130 — si une forme est déjà sélectionnée, on teste d'abord les
       // poignées de redimensionnement (coins) avant de tester un déplacement.
       if(_paint.selectedIdx >= 0){
@@ -53678,6 +53705,11 @@ function openPaintSketchTool(onSave, existingPaint){
       return;
     }
     const p = pos(e);
+    if(_paint.curving && _paint.selectedIdx >= 0){
+      _paintUpdateArrowCurve(_paint.shapes[_paint.selectedIdx], _paint.curveShapeStart, p);
+      _paintRedraw();
+      return;
+    }
     if(_paint.resizing && _paint.selectedIdx >= 0){
       _paintResizeShape(_paint.shapes[_paint.selectedIdx], _paint.resizeShapeStart, _paint.resizeBoundsStart, _paint.resizeHandle, p);
       _paintRedraw();
@@ -53709,6 +53741,7 @@ function openPaintSketchTool(onSave, existingPaint){
   const finishDraw = e => {
     if(!_paint) return;
     if(_paint.panning){ _paint.panning = false; _paint.panBg = false; return; }
+    if(_paint.curving){ _paint.curving = false; return; }
     if(_paint.resizing){ _paint.resizing = false; _paint.resizeHandle = null; return; }
     if(_paint.dragging){ _paint.dragging = false; return; }
     if(!_paint.drawing) return;
@@ -53726,6 +53759,16 @@ function openPaintSketchTool(onSave, existingPaint){
           _paintPushHistory();
           _paint.shapes.push({ type:'distance', x1, y1, x2, y2, text:(txt||'').trim(), color:_paint.color, width:_paint.lineWidth*dpr, dash: _paint.pendingDash || null });
         }
+      }
+    } else if(_paint.tool === 'arrow' && _paint.current){
+      // v5.41.169 — Flèche simple : glisser du point A (départ) au point B
+      // (arrivée, où se pose la tête de flèche), comme l'outil Ligne. Droite
+      // à la création (curve:0) — se courbe ensuite en tirant sur la
+      // poignée ronde du milieu une fois la flèche sélectionnée.
+      const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
+      if(Math.hypot(x2-x1, y2-y1) >= 8*dpr){
+        _paintPushHistory();
+        _paint.shapes.push({ type:'arrow', x1, y1, x2, y2, curve:0, color:_paint.color, width:_paint.lineWidth*dpr, dash: _paint.pendingDash || null });
       }
     } else if(_paint.tool === 'erase' && _paint.current){
       // v5.41.132 — Découpe DESTRUCTIVE : supprime réellement tout ce qui se
@@ -54015,8 +54058,8 @@ function _paintUpdateDashRow(){
   const row = document.getElementById('paintDashRow');
   if(!row) return;
   const s = (_paint && _paint.selectedIdx >= 0) ? _paint.shapes[_paint.selectedIdx] : null;
-  const editingShape = s && (s.type === 'line' || s.type === 'distance');
-  const drawingTool = _paint && !editingShape && (_paint.tool === 'line' || _paint.tool === 'distance');
+  const editingShape = s && (s.type === 'line' || s.type === 'distance' || s.type === 'arrow');
+  const drawingTool = _paint && !editingShape && (_paint.tool === 'line' || _paint.tool === 'distance' || _paint.tool === 'arrow');
   const applicable = editingShape || drawingTool;
   row.style.display = applicable ? 'block' : 'none';
   if(applicable){
@@ -54028,7 +54071,7 @@ function _paintUpdateDashRow(){
 function _paintCycleSelectedDash(){
   if(!_paint) return;
   const s = (_paint.selectedIdx >= 0) ? _paint.shapes[_paint.selectedIdx] : null;
-  if(s && (s.type === 'line' || s.type === 'distance')){
+  if(s && (s.type === 'line' || s.type === 'distance' || s.type === 'arrow')){
     _paintPushHistory();
     const curIdx = PAINT_DASH_CYCLE.indexOf(s.dash || null);
     s.dash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
@@ -54038,7 +54081,7 @@ function _paintCycleSelectedDash(){
   }
   // Pas de forme sélectionnée : on change le style qui sera appliqué à la
   // PROCHAINE ligne/cote tracée (outil Ligne/Distance actif).
-  if(_paint.tool === 'line' || _paint.tool === 'distance'){
+  if(_paint.tool === 'line' || _paint.tool === 'distance' || _paint.tool === 'arrow'){
     const curIdx = PAINT_DASH_CYCLE.indexOf(_paint.pendingDash || null);
     _paint.pendingDash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
     _paintUpdateDashRow();
@@ -54599,6 +54642,18 @@ function _paintShapeBounds(s){
     const r = 52 * (_paint ? _paint.dpr : 1);
     return { x1:s.x1-r, y1:s.y1-r, x2:s.x1+r, y2:s.y1+r };
   }
+  if(s.type === 'arrow' && s.curve){
+    // v5.41.169 — une flèche courbée peut « sortir » de la boîte x1/y1-x2/y2
+    // (le point de contrôle est décalé perpendiculairement au segment) : on
+    // élargit le cadre englobant pour inclure le point de contrôle, sinon la
+    // flèche resterait partiellement inclique/hors du cadre de sélection
+    // une fois courbée.
+    const cp = _paintArrowControlPoint(s);
+    return {
+      x1: Math.min(s.x1, s.x2, cp.x), y1: Math.min(s.y1, s.y2, cp.y),
+      x2: Math.max(s.x1, s.x2, cp.x), y2: Math.max(s.y1, s.y2, cp.y),
+    };
+  }
   // 'symbol' (vis/goujon/pointe) se place comme 'line'/'rect'/'circle'/'triangle' : x1/y1/x2/y2.
   return { x1:Math.min(s.x1,s.x2), y1:Math.min(s.y1,s.y2), x2:Math.max(s.x1,s.x2), y2:Math.max(s.y1,s.y2) };
 }
@@ -54653,7 +54708,7 @@ function _paintScaleShape(s, sx, sy){
   const avg = (sx+sy)/2;
   if(c.type === 'pen' || c.type === 'polygon') c.points = c.points.map(p => ({ x:p.x*sx, y:p.y*sy }));
   else if(c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*avg; if(c.boxW) c.boxW*=sx; }
-  else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; }
+  else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; if(c.curve) c.curve*=avg; }
   // v5.41.137 — les trous suivent la mise à l'échelle de la forme (même
   // transformation, depuis l'origine — cohérent avec _paintResizeShape qui
   // ramène d'abord la forme au repère de l'ancre avant d'appeler ceci).
@@ -54698,6 +54753,30 @@ function _paintHandleAt(p, shape){
     if(Math.abs(pt.x - h.x) <= r && Math.abs(pt.y - h.y) <= r) return h.id;
   }
   return null;
+}
+/* v5.41.169 — poignée de courbure d'une flèche : un cercle affiché sur son
+   point de contrôle actuel (milieu du segment + décalage s.curve), qu'on
+   peut tirer pour courber la flèche (voir _paintArrowControlPoint et le
+   rendu de cette poignée dans _paintRedraw). Rayon de détection généreux
+   (comme les poignées de coin) pour rester facile à attraper à la souris. */
+const PAINT_ARROW_CURVE_HANDLE_R = 11;
+function _paintNearArrowCurveHandle(p, shape){
+  if(!shape || shape.type !== 'arrow') return false;
+  const cp = _paintArrowControlPoint(shape);
+  const pt = _paintUnrotatePoint(p, shape);
+  const r = PAINT_ARROW_CURVE_HANDLE_R * (_paint.dpr || 1);
+  return Math.hypot(pt.x - cp.x, pt.y - cp.y) <= r;
+}
+/* Met à jour s.curve pour que le point de contrôle suive la souris (`p`),
+   en projetant le déplacement sur la perpendiculaire au segment d'origine
+   — seul le décalage PERPENDICULAIRE compte pour courber (glisser le long
+   du segment lui-même n'aurait pas de sens ici). */
+function _paintUpdateArrowCurve(shape, origShape, p){
+  const dx = origShape.x2-origShape.x1, dy = origShape.y2-origShape.y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const nx = -dy/len, ny = dx/len;
+  const mx = (origShape.x1+origShape.x2)/2, my = (origShape.y1+origShape.y2)/2;
+  shape.curve = (p.x-mx)*nx + (p.y-my)*ny;
 }
 /* v5.41.130 — redimensionne la forme sélectionnée en tirant un coin : le
    coin OPPOSÉ reste fixe (comme dans Paint Windows), et le coin tiré suit
@@ -55042,18 +55121,32 @@ function _paintDrawSymbolRect(ctx, symbol, x1, y1, x2, y2, color, dpr){
     // (arc) qui ferme l'extrémité « a=0 » — comme le pictogramme de référence.
     // Le dôme reçoit aussi le fond gris métallisé, pour rester une seule
     // pièce visuellement cohérente (pas de blanc entre corps et dôme).
-    // L'arc est dessiné dans le repère local (centre = pt(0, diam/2), rayon
-    // = diam/2), puis son plan de base tourné pour matcher ux/uy/px/py —
-    // ctx.arc ne connaît que des angles écran, donc on pivote le contexte.
+    // v5.41.169 — CORRECTIF : le dôme débordait sur la 1ère alvéole au lieu
+    // de rester collé à l'extérieur de la boîte (le sens de rotation via
+    // ctx.rotate() partait dans le mauvais sens un tour sur deux, selon
+    // l'orientation — trop fragile). On construit maintenant l'arc en
+    // additionnant directement des points dans le repère local (a,b) via
+    // pt(a,b) — sans ctx.rotate — donc pas d'ambiguïté de sens possible :
+    // demi-cercle de centre (a=0, b=diam/2), rayon diam/2, qui va du point
+    // (a=0,b=0) au point (a=0,b=diam) en passant par (a=-diam/2,b=diam/2),
+    // donc TOUJOURS à l'extérieur de la boîte (côté a<0, avant a=0), quelle
+    // que soit l'orientation ux/uy/px/py.
+    const domeR = diam/2, domeCb = diam/2;
     ctx.save();
-    const domeCenter = pt(0, diam/2);
-    const domeAngle = Math.atan2(py, px); // direction de l'axe perpendiculaire (b croissant) à l'écran
-    ctx.translate(domeCenter.x, domeCenter.y);
-    ctx.rotate(domeAngle - Math.PI/2); // aligne le "haut" du dôme (b=0, a<0) vers -a local
     ctx.fillStyle = PAINT_METAL_FILL;
-    ctx.beginPath(); ctx.arc(0, 0, diam/2, Math.PI, 0, false); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    const nSeg = 24;
+    for(let i=0;i<=nSeg;i++){
+      const theta = -Math.PI/2 + Math.PI * (i/nSeg); // -PI/2 → +PI/2
+      const a = -domeR * Math.cos(theta);            // 0 → -domeR → 0 (toujours <= 0)
+      const b = domeCb + domeR * Math.sin(theta);     // 0 → domeCb → diam
+      const p = pt(a, b);
+      if(i === 0){ ctx.moveTo(p.x, p.y); } else { ctx.lineTo(p.x, p.y); }
+    }
+    ctx.closePath();
+    ctx.fill();
     ctx.strokeStyle = color;
-    ctx.beginPath(); ctx.arc(0, 0, diam/2, Math.PI, 0, false); ctx.stroke();
+    ctx.stroke();
     ctx.restore();
     ctx.strokeStyle = color;
     ctx.strokeRect(bx, by, bw, bh);
@@ -55159,6 +55252,8 @@ function _paintDrawOneShape(ctx, s){
     _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
   } else if(s.type === 'distance'){
     _paintDrawDistanceShape(ctx, s, _paint.dpr);
+  } else if(s.type === 'arrow'){
+    _paintDrawArrowShape(ctx, s, _paint.dpr);
   } else if(s.type === 'marker'){
     _paintDrawMarkerShape(ctx, s, _paint.dpr);
   }
@@ -55218,6 +55313,58 @@ function _paintDrawDistanceShape(ctx, s, dpr){
     ctx.fillText(s.text, 0, 0);
     ctx.restore();
   }
+  ctx.restore();
+}
+/* v5.41.169 — Flèche simple, courbable : une ligne droite à la création
+   (s.curve = 0), avec UNE tête de flèche à l'arrivée (x2,y2) — contrairement
+   à Distance qui a une flèche à CHAQUE bout et sert à coter une longueur.
+   La courbure se fait en tirant la poignée ronde du milieu (voir
+   _paintArrowCurveHandlePos) : s.curve est un décalage, en pixels réels
+   (× dpr, jamais proportionnel à la longueur), du point de contrôle par
+   rapport au milieu du segment, le long de la perpendiculaire (nx,ny) —
+   0 = droite. Le tracé est une courbe de Bézier QUADRATIQUE (un seul point
+   de contrôle, assez pour "plier" une flèche sans la complexité d'une
+   double courbure) ; la tête suit la TANGENTE réelle de la courbe à
+   l'arrivée (dérivée de la Bézier en t=1), pas juste x1→x2, pour rester
+   bien orientée même très courbée. */
+function _paintArrowControlPoint(s){
+  const mx = (s.x1+s.x2)/2, my = (s.y1+s.y2)/2;
+  const dx = s.x2-s.x1, dy = s.y2-s.y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const nx = -dy/len, ny = dx/len;
+  const curve = s.curve || 0;
+  return { x: mx + nx*curve, y: my + ny*curve };
+}
+function _paintDrawArrowShape(ctx, s, dpr){
+  const cp = _paintArrowControlPoint(s);
+  ctx.save();
+  ctx.strokeStyle = s.color || '#1a1206';
+  ctx.fillStyle = s.color || '#1a1206';
+  ctx.lineWidth = s.width || (3*dpr);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if(s.dash === 'dashed') ctx.setLineDash([16*dpr, 9*dpr]);
+  else if(s.dash === 'dotted') ctx.setLineDash([16*dpr, 7*dpr, 1.5*dpr, 7*dpr]);
+  else ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(s.x1, s.y1);
+  ctx.quadraticCurveTo(cp.x, cp.y, s.x2, s.y2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Tangente de la Bézier quadratique en t=1 : B'(1) = 2*(P2 - P1) où P1 =
+  // point de contrôle, P2 = point d'arrivée — donne la direction RÉELLE de
+  // la courbe à l'arrivée (pas x1→x2), pour une tête toujours bien orientée.
+  let tdx = s.x2 - cp.x, tdy = s.y2 - cp.y;
+  const tlen = Math.hypot(tdx,tdy) || 1;
+  tdx /= tlen; tdy /= tlen;
+  const tnx = -tdy, tny = tdx;
+  const headLen = 13 * dpr, headW = 5.5 * dpr;
+  const backX = s.x2 - tdx*headLen, backY = s.y2 - tdy*headLen;
+  ctx.beginPath();
+  ctx.moveTo(s.x2, s.y2);
+  ctx.lineTo(backX + tnx*headW, backY + tny*headW);
+  ctx.lineTo(backX - tnx*headW, backY - tny*headW);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
 }
 /* v5.41.151 — repère technique (épaisseur/axe/rameneret), porté de
@@ -55492,6 +55639,26 @@ function _paintRedraw(){
     });
     ctx.restore();
   }
+  // v5.41.169 — poignée de courbure (cercle) d'une flèche sélectionnée, sur
+  // son point de contrôle actuel — distincte des 4 poignées de coin
+  // (redimensionnement) : tirer dessus courbe la flèche au lieu de la
+  // redimensionner (voir _paintNearArrowCurveHandle/_paintUpdateArrowCurve).
+  if(_paint.tool === 'select' && _paint.selectedIdx >= 0 && _paint.shapes[_paint.selectedIdx] && _paint.shapes[_paint.selectedIdx].type === 'arrow'){
+    const selShape = _paint.shapes[_paint.selectedIdx];
+    const cp = _paintArrowControlPoint(selShape);
+    const rr = PAINT_ARROW_CURVE_HANDLE_R / v.scale;
+    ctx.save();
+    if(selShape.rotation){
+      const b = _paintShapeBounds(selShape);
+      const cx = (b.x1+b.x2)/2, cy = (b.y1+b.y2)/2;
+      ctx.translate(cx, cy); ctx.rotate(selShape.rotation * Math.PI/180); ctx.translate(-cx, -cy);
+    }
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(78,161,255,0.95)';
+    ctx.lineWidth = 1.5/v.scale;
+    ctx.beginPath(); ctx.arc(cp.x, cp.y, rr, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
 
   // Aperçu en cours de tracé (avant le mouseup) : formes, quincaillerie
   // (segment en pointillés), texte (rectangle en pointillés) et découpe
@@ -55502,6 +55669,7 @@ function _paintRedraw(){
     const s = { x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y };
     if(_paint.tool === 'line'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
     else if(_paint.tool === 'distance'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
+    else if(_paint.tool === 'arrow'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
     else if(_paint.tool === 'rect'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
     else if(_paint.tool === 'circle'){ const rx=Math.abs(s.x2-s.x1)/2, ry=Math.abs(s.y2-s.y1)/2, cx=(s.x1+s.x2)/2, cy=(s.y1+s.y2)/2; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke(); }
     else if(_paint.tool === 'triangle'){ const cx=(s.x1+s.x2)/2; ctx.beginPath(); ctx.moveTo(cx,s.y1); ctx.lineTo(s.x1,s.y2); ctx.lineTo(s.x2,s.y2); ctx.closePath(); ctx.stroke(); }
