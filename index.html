@@ -32244,9 +32244,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.145';
+const APP_VERSION = '5.41.146';
 
 const CHANGELOG = [
+  {
+    version: '5.41.146',
+    date: '22/09/2026',
+    entries: [
+      { icon: '🎨', text: "Croquis Paint : les motifs matériau (bois, béton, brique creuse, isolant) sont maintenant disponibles sur TOUTES les formes fermées (rectangle, cercle, triangle, forme libre), plus seulement le rectangle." },
+      { icon: '⬡', text: "Croquis Paint : nouvel outil « Forme libre » — trace un contour point par point (clic = un sommet), se referme en cliquant près du premier point ou avec Entrée, puis se remplit comme les autres formes (couleur pleine ou motif matériau). Permet de dessiner ex. une cheville/crampon de forme quelconque." },
+      { icon: '✂️', text: "Croquis Paint : nouvel outil « Découpe libre » — découpe le croquis en suivant une ligne tracée point par point (même geste que Forme libre), au lieu d'être limité à un rectangle : permet de découper en biais, en L, ou toute forme voulue." },
+    ],
+  },
   {
     version: '5.41.145',
     date: '21/09/2026',
@@ -52081,8 +52090,10 @@ const PAINT_TOOLS = [
   { id:'rect',     label:'Rectangle',  icon:'▭' },
   { id:'circle',   label:'Cercle',     icon:'◯' },
   { id:'triangle', label:'Triangle',   icon:'△' },
+  { id:'polygon',  label:'Forme libre',icon:'⬡' },
   { id:'text',     label:'Texte',      icon:'A' },
   { id:'erase',    label:'Découpe',    icon:'✂️' },
+  { id:'eraseLine',label:'Découpe libre', icon:'〰️✂️' },
 ];
 /* Quincaillerie — dessinée en vecteur (canvas), pas des images. Deux modes
    de pose, selon `placement` :
@@ -52242,6 +52253,10 @@ function openPaintSketchTool(onSave, existingPaint){
     canvas, ctx, dpr, onSave,
     tool: 'pen', color: PAINT_COLORS[0], lineWidth: 3, fontSize: 16, textMode: 'fit', fillMaterial: 'none', fillColor: '#4EA1FF',
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
+    // v5.41.146 — tracé « Forme libre »/« Découpe libre » en cours (sommets
+    // posés point à point) : { points:[...], cursor:{x,y}|null }, ou null
+    // hors tracé — voir _paintClosePolyDraft.
+    polyDraft: null,
     history: [],
     baseImage, baseHistory: [],
     // v5.41.135 — fond optionnel (plan PDF ou photo) sur lequel dessiner :
@@ -52315,10 +52330,18 @@ function openPaintSketchTool(onSave, existingPaint){
   // de l'outil (voir _paintClose), sinon il resterait actif hors du modal.
   const paintKeydownHandler = (e) => {
     if(!_paint) return;
-    if(e.key !== 'Delete' && e.key !== 'Backspace') return;
     const active = document.activeElement;
     const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
     if(isTyping) return;
+    // v5.41.146 — Forme libre / Découpe libre : Entrée valide le tracé en
+    // cours (ferme la forme même sans re-cliquer près du point de départ),
+    // Échap annule le tracé en cours — pratique au clavier en plus du clic
+    // près du premier point.
+    if((_paint.tool === 'polygon' || _paint.tool === 'eraseLine') && _paint.polyDraft){
+      if(e.key === 'Enter'){ e.preventDefault(); _paintClosePolyDraft(); return; }
+      if(e.key === 'Escape'){ e.preventDefault(); _paint.polyDraft = null; _paintRedraw(); return; }
+    }
+    if(e.key !== 'Delete' && e.key !== 'Backspace') return;
     if(_paint.selectedIdx < 0) return;
     e.preventDefault();
     _paintDeleteSelected();
@@ -52458,6 +52481,26 @@ function openPaintSketchTool(onSave, existingPaint){
       _paint.start = p;
       return;
     }
+    // v5.41.146 — « Forme libre » et « Découpe libre » : on pose les points
+    // un par un (CLIC = un sommet, pas de glisser), comme un outil polygone
+    // classique. Un clic près du premier point (une fois ≥3 sommets posés)
+    // referme la forme — voir _paintClosePolyDraft. Entrée/Échap au clavier
+    // en complément (voir paintKeydownHandler). _paint.polyDraft porte le
+    // tracé en cours, distinct de _paint.shapes tant qu'il n'est pas fermé.
+    if(_paint.tool === 'polygon' || _paint.tool === 'eraseLine'){
+      const closeRadius = 12 * dpr;
+      if(_paint.polyDraft && _paint.polyDraft.points.length >= 3){
+        const first = _paint.polyDraft.points[0];
+        if(Math.hypot(p.x-first.x, p.y-first.y) <= closeRadius){
+          _paintClosePolyDraft();
+          return;
+        }
+      }
+      if(!_paint.polyDraft) _paint.polyDraft = { points: [] };
+      _paint.polyDraft.points.push(p);
+      _paintRedraw();
+      return;
+    }
     // v5.41.125 — Texte a deux modes, choisis dans la sidebar (_paint.textMode) :
     // « fixed » = police fixe choisie à l'avance, un simple CLIC pose le texte ;
     // « fit » (par défaut, historique) = on trace un rectangle et la police
@@ -52520,6 +52563,14 @@ function openPaintSketchTool(onSave, existingPaint){
       _paintRedraw();
       return;
     }
+    // v5.41.146 — aperçu « élastique » du tracé en cours (Forme libre /
+    // Découpe libre) : un segment pointillé du dernier sommet posé jusqu'au
+    // curseur, pour voir où tombera le prochain point avant de cliquer.
+    if((_paint.tool === 'polygon' || _paint.tool === 'eraseLine') && _paint.polyDraft){
+      _paint.polyDraft.cursor = p;
+      _paintRedraw();
+      return;
+    }
     if(!_paint.drawing) return;
     if(_paint.tool === 'pen'){
       _paint.shapes[_paint.shapes.length-1].points.push(p);
@@ -52551,14 +52602,17 @@ function openPaintSketchTool(onSave, existingPaint){
       // v5.41.138 — « Couleur pleine » : disponible aussi pour cercle et
       // triangle (pas seulement rectangle), pour dessiner par ex. une
       // cheville/crampon en aplat d'une couleur au choix.
+      // v5.41.146 — les motifs matériau (bois/béton/brique/isolant) sont
+      // maintenant disponibles sur TOUTES les formes fermées (rectangle,
+      // cercle, triangle), pas seulement le rectangle — demande de Rémi
+      // (ex. une cheville ronde en coupe bois). Le rendu se fait par un
+      // clip() sur le contour de la forme (voir _paintDrawOneShape).
       const fillableShape = ['rect','circle','triangle'].includes(_paint.tool);
       if(fillableShape && _paint.fillMaterial && _paint.fillMaterial !== 'none'){
         if(_paint.fillMaterial === 'pleine'){
           shape.fill = 'pleine';
           shape.fillColor = _paint.fillColor;
-        } else if(_paint.tool === 'rect'){
-          // les motifs matériau (bois/béton/brique/isolant) restent réservés
-          // au rectangle (représentation d'une coupe de matériau).
+        } else {
           shape.fill = _paint.fillMaterial;
         }
       }
@@ -52642,6 +52696,10 @@ function _paintSymbolPreviewSvg(id){
 }
 function _paintSetTool(id){
   if(!_paint) return;
+  // v5.41.146 — changer d'outil annule un tracé « Forme libre »/« Découpe
+  // libre » en cours (sinon il resterait suspendu, invisible, en attendant
+  // qu'on revienne sur le même outil pour le reprendre — source de confusion).
+  if(_paint.tool !== id && _paint.polyDraft) _paint.polyDraft = null;
   _paint.tool = id;
   _paint.selectedIdx = -1;
   // v5.41.135 — choisir un outil de dessin sort automatiquement du mode
@@ -52659,31 +52717,16 @@ function _paintSetTool(id){
 }
 /* v5.41.127 — le sélecteur de remplissage (sous « Texte » dans la sidebar)
    n'est utile que lorsqu'un outil de forme fermée est actif.
-   v5.41.138 — étendu à Cercle et Triangle (pas seulement Rectangle) pour
-   pouvoir les remplir d'une couleur pleine (ex. une cheville/crampon rond) ;
-   les motifs matériau (bois/béton/brique/isolant) restent réservés au
-   Rectangle dans le <select> lui-même (filtré à la sélection de la forme). */
+   v5.41.138 — étendu à Cercle et Triangle pour la couleur pleine.
+   v5.41.146 — les motifs matériau (bois/béton/brique/isolant) sont
+   maintenant proposés pour TOUTES les formes fermées (rectangle, cercle,
+   triangle, forme libre), plus seulement le rectangle — demande de Rémi. */
 function _paintUpdateFillRow(){
   const row = document.getElementById('paintFillRow');
-  const isFillable = _paint && ['rect','circle','triangle'].includes(_paint.tool);
+  const isFillable = _paint && ['rect','circle','triangle','polygon'].includes(_paint.tool);
   if(row) row.style.display = isFillable ? 'block' : 'none';
   const sel = document.getElementById('paintFillSelect');
-  if(sel){
-    // Les options de motif matériau n'ont de sens que pour un rectangle
-    // (représentation d'une coupe) : masquées pour cercle/triangle.
-    const isRect = _paint && _paint.tool === 'rect';
-    Array.from(sel.options).forEach(opt => {
-      if(['bois','beton','brique','isolant'].includes(opt.value)){
-        opt.style.display = isRect ? '' : 'none';
-      }
-    });
-    if(!isRect && ['bois','beton','brique','isolant'].includes(_paint.fillMaterial)){
-      _paint.fillMaterial = 'none';
-      sel.value = 'none';
-    } else {
-      sel.value = _paint.fillMaterial || 'none';
-    }
-  }
+  if(sel) sel.value = (_paint && _paint.fillMaterial) || 'none';
   _paintUpdateFillColorRow();
 }
 function _paintUpdateFillColorRow(){
@@ -52963,6 +53006,86 @@ function _paintCommitErase(x1, y1, x2, y2){
   _paintUpdateDeleteBtn();
   _paintRedraw();
 }
+/* v5.41.146 — referme le tracé « Forme libre » (_paint.tool==='polygon') ou
+   « Découpe libre » (_paint.tool==='eraseLine') en cours (_paint.polyDraft),
+   déclenché par un clic près du premier point ou par Entrée au clavier.
+   Moins de 3 sommets = tracé trop court pour former une surface : annulé
+   silencieusement (comme un simple clic accidentel). */
+function _paintClosePolyDraft(){
+  if(!_paint || !_paint.polyDraft) return;
+  const points = _paint.polyDraft.points;
+  _paint.polyDraft = null;
+  if(points.length < 3) { _paintRedraw(); return; }
+  if(_paint.tool === 'polygon'){
+    _paintPushHistory();
+    const shape = { type:'polygon', points, color:_paint.color, width:_paint.lineWidth*_paint.dpr };
+    // v5.41.146 — même logique de remplissage que rectangle/cercle/triangle :
+    // couleur pleine ou motif matériau (bois/béton/brique/isolant), choisi
+    // dans le même sélecteur « Remplissage » de la sidebar.
+    if(_paint.fillMaterial && _paint.fillMaterial !== 'none'){
+      if(_paint.fillMaterial === 'pleine'){ shape.fill = 'pleine'; shape.fillColor = _paint.fillColor; }
+      else shape.fill = _paint.fillMaterial;
+    }
+    _paint.shapes.push(shape);
+    _paintRedraw();
+  } else if(_paint.tool === 'eraseLine'){
+    _paintCommitEraseLine(points);
+  }
+}
+/* v5.41.146 — Découpe LIBRE : même principe destructif que _paintCommitErase
+   (rectangle), mais la zone à supprimer est un polygone quelconque tracé
+   point à point (voir _paintClosePolyDraft) — permet de découper en biais,
+   en L, ou toute autre forme, pas seulement des rectangles axés sur les axes.
+   Le test de recouvrement forme/zone reste une comparaison de BOÎTES
+   englobantes (comme pour la découpe rectangle) : suffisant en pratique
+   (une forme dont le cadre ne touche pas la zone ne peut de toute façon pas
+   être concernée), le clip destination-out se charge ensuite de ne retirer
+   QUE les pixels réellement à l'intérieur du polygone. */
+function _paintCommitEraseLine(points){
+  if(!_paint) return;
+  const xs = points.map(p=>p.x), ys = points.map(p=>p.y);
+  const rx0 = Math.min(...xs), ry0 = Math.min(...ys), rx1 = Math.max(...xs), ry1 = Math.max(...ys);
+  const rw = rx1-rx0, rh = ry1-ry0;
+  if(rw < 1 || rh < 1){ _paintRedraw(); return; }
+  let touchedAny = false;
+  _paint.shapes.forEach(s => {
+    const b = _paintShapeBounds(s);
+    const overlaps = b.x1 < rx1 && b.x2 > rx0 && b.y1 < ry1 && b.y2 > ry0;
+    if(overlaps) touchedAny = true;
+  });
+  const rBase = _paint.baseImage.getContext('2d').getImageData(Math.round(rx0), Math.round(ry0), Math.max(1,Math.round(rw)), Math.max(1,Math.round(rh)));
+  const baseHasPixels = rBase.data.some((v,i) => i % 4 === 3 && v > 0);
+  if(!touchedAny && !baseHasPixels){
+    showToast('Aucun élément dans cette zone');
+    _paintRedraw();
+    return;
+  }
+  _paintPushHistory();
+  if(touchedAny){
+    _paint.shapes = _paint.shapes.map(s => {
+      const b = _paintShapeBounds(s);
+      const overlaps = b.x1 < rx1 && b.x2 > rx0 && b.y1 < ry1 && b.y2 > ry0;
+      if(!overlaps) return s;
+      const holes = (s.holes || []).concat([{ points }]);
+      return Object.assign({}, s, { holes });
+    });
+  }
+  if(baseHasPixels){
+    const bctx = _paint.baseImage.getContext('2d');
+    bctx.save();
+    bctx.setTransform(1,0,0,1,0,0);
+    bctx.globalCompositeOperation = 'destination-out';
+    bctx.fillStyle = '#000';
+    bctx.beginPath();
+    points.forEach((p,i) => i===0 ? bctx.moveTo(p.x,p.y) : bctx.lineTo(p.x,p.y));
+    bctx.closePath();
+    bctx.fill();
+    bctx.restore();
+  }
+  _paint.selectedIdx = -1;
+  _paintUpdateDeleteBtn();
+  _paintRedraw();
+}
 /* v5.41.130 — remet le zoom/déplacement de la vue à l'état initial (utile
    après avoir zoomé/déplacé pour retravailler un détail) ; ne touche pas
    au contenu du croquis, seulement à la façon dont on le regarde.
@@ -53107,7 +53230,7 @@ function _paintResetBgTransform(){
 }
 
 function _paintShapeBounds(s){
-  if(s.type === 'pen'){
+  if(s.type === 'pen' || s.type === 'polygon'){
     const xs = s.points.map(p=>p.x), ys = s.points.map(p=>p.y);
     return { x1:Math.min(...xs), y1:Math.min(...ys), x2:Math.max(...xs), y2:Math.max(...ys) };
   }
@@ -53145,7 +53268,7 @@ function _paintHitTest(p){
   return -1;
 }
 function _paintTranslateShape(shape, orig, dx, dy){
-  if(shape.type === 'pen'){
+  if(shape.type === 'pen' || shape.type === 'polygon'){
     shape.points = orig.points.map(pt => ({ x: pt.x + dx, y: pt.y + dy }));
   } else if(shape.type === 'text'){
     shape.x = orig.x + dx; shape.y = orig.y + dy;
@@ -53156,21 +53279,28 @@ function _paintTranslateShape(shape, orig, dx, dy){
   }
   // v5.41.137 — les trous d'une découpe partielle (s.holes) suivent la
   // forme quand elle est déplacée, exactement comme son contour.
+  // v5.41.146 — un trou « Découpe libre » (h.points, polygone) suit de la
+  // même façon, en plus du trou rectangle classique (h.x1/y1/x2/y2).
   if(orig.holes && orig.holes.length){
-    shape.holes = orig.holes.map(h => ({ x1:h.x1+dx, y1:h.y1+dy, x2:h.x2+dx, y2:h.y2+dy }));
+    shape.holes = orig.holes.map(h => h.points
+      ? { points: h.points.map(pt => ({ x:pt.x+dx, y:pt.y+dy })) }
+      : { x1:h.x1+dx, y1:h.y1+dy, x2:h.x2+dx, y2:h.y2+dy });
   }
 }
 function _paintScaleShape(s, sx, sy){
   const c = JSON.parse(JSON.stringify(s));
   const avg = (sx+sy)/2;
-  if(c.type === 'pen') c.points = c.points.map(p => ({ x:p.x*sx, y:p.y*sy }));
+  if(c.type === 'pen' || c.type === 'polygon') c.points = c.points.map(p => ({ x:p.x*sx, y:p.y*sy }));
   else if(c.type === 'text'){ c.x*=sx; c.y*=sy; c.size = (c.size||20)*avg; if(c.boxW) c.boxW*=sx; }
   else { c.x1*=sx; c.y1*=sy; c.x2*=sx; c.y2*=sy; if(c.width) c.width*=avg; }
   // v5.41.137 — les trous suivent la mise à l'échelle de la forme (même
   // transformation, depuis l'origine — cohérent avec _paintResizeShape qui
   // ramène d'abord la forme au repère de l'ancre avant d'appeler ceci).
+  // v5.41.146 — idem pour un trou polygone (h.points).
   if(c.holes && c.holes.length){
-    c.holes = c.holes.map(h => ({ x1:h.x1*sx, y1:h.y1*sy, x2:h.x2*sx, y2:h.y2*sy }));
+    c.holes = c.holes.map(h => h.points
+      ? { points: h.points.map(p => ({ x:p.x*sx, y:p.y*sy })) }
+      : { x1:h.x1*sx, y1:h.y1*sy, x2:h.x2*sx, y2:h.y2*sy });
   }
   return c;
 }
@@ -53550,13 +53680,36 @@ function _paintDrawOneShape(ctx, s){
     const rx = Math.abs(s.x2-s.x1)/2, ry = Math.abs(s.y2-s.y1)/2;
     const cx = (s.x1+s.x2)/2, cy = (s.y1+s.y2)/2;
     ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
+    // v5.41.146 — motif matériau (bois/béton/…) sur un cercle : on clippe
+    // sur le contour exact de l'ellipse puis on dessine le motif dans son
+    // rectangle englobant (le clip() empêche tout débordement hors cercle).
     if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
+    else if(s.fill){ ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, cx-rx, cy-ry, rx*2, ry*2, _paint.dpr); ctx.restore(); }
     ctx.stroke();
   } else if(s.type === 'triangle'){
     const cx = (s.x1+s.x2)/2;
+    const tx0 = Math.min(s.x1,s.x2), ty0 = Math.min(s.y1,s.y2);
     ctx.beginPath(); ctx.moveTo(cx, s.y1); ctx.lineTo(s.x1, s.y2); ctx.lineTo(s.x2, s.y2); ctx.closePath();
     if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
+    else if(s.fill){ ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, tx0, ty0, Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1), _paint.dpr); ctx.restore(); }
     ctx.stroke();
+  } else if(s.type === 'polygon'){
+    // v5.41.146 — forme libre fermée : tracée point à point (outil « Forme
+    // libre »), remplissable comme rectangle/cercle/triangle (couleur pleine
+    // ou motif matériau), le clip() garantissant que le motif ne déborde
+    // jamais du contour réel (utile pour une forme non convexe).
+    if(s.points && s.points.length >= 2){
+      ctx.beginPath();
+      s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.closePath();
+      if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
+      else if(s.fill){
+        const xs = s.points.map(p=>p.x), ys = s.points.map(p=>p.y);
+        const px0 = Math.min(...xs), py0 = Math.min(...ys);
+        ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, px0, py0, Math.max(...xs)-px0, Math.max(...ys)-py0, _paint.dpr); ctx.restore();
+      }
+      ctx.stroke();
+    }
   } else if(s.type === 'text'){
     ctx.font = `700 ${s.size}px sans-serif`;
     ctx.fillText(s.text, s.x, s.y);
@@ -53564,6 +53717,19 @@ function _paintDrawOneShape(ctx, s){
     _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
   }
   if(hasRotation) ctx.restore();
+}
+// v5.41.146 — remplit (destination-out déjà activé par l'appelant) le
+// contour d'un trou : rectangle (h.x1/y1/x2/y2, Découpe classique) ou
+// polygone libre (h.points, Découpe libre — voir _paintCommitEraseLine).
+function _paintFillHolePath(lctx, h){
+  if(h.points && h.points.length >= 3){
+    lctx.beginPath();
+    h.points.forEach((p,i) => i===0 ? lctx.moveTo(p.x,p.y) : lctx.lineTo(p.x,p.y));
+    lctx.closePath();
+    lctx.fill();
+  } else {
+    lctx.fillRect(Math.min(h.x1,h.x2), Math.min(h.y1,h.y2), Math.abs(h.x2-h.x1), Math.abs(h.y2-h.y1));
+  }
 }
 // v5.41.137 — calque temporaire réutilisé pour isoler chaque forme trouée
 // (créé une fois, redimensionné si besoin) : éviter une allocation par forme/frame.
@@ -53594,9 +53760,10 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
       lctx.save();
       lctx.globalCompositeOperation = 'destination-out';
       lctx.fillStyle = '#000';
-      s.holes.forEach(h => {
-        lctx.fillRect(Math.min(h.x1,h.x2), Math.min(h.y1,h.y2), Math.abs(h.x2-h.x1), Math.abs(h.y2-h.y1));
-      });
+      // v5.41.146 — un trou peut être un rectangle (h.x1/y1/x2/y2, Découpe
+      // classique) OU un polygone libre (h.points, Découpe libre) : même
+      // mécanisme destination-out, juste un tracé différent.
+      s.holes.forEach(h => _paintFillHolePath(lctx, h));
       lctx.restore();
       // v5.41.137 — le calque (comme baseImage) est en coordonnées « monde »
       // (= pixels canvas bruts) : on le compose SOUS la transformation vue
@@ -53800,6 +53967,32 @@ function _paintRedraw(){
       ctx.fillRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1));
       ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1));
     }
+    ctx.restore();
+  }
+  // v5.41.146 — aperçu du tracé « Forme libre » / « Découpe libre » en
+  // cours : sommets déjà posés reliés par des segments pleins, plus un
+  // dernier segment pointillé jusqu'au curseur (élastique), et un petit
+  // cercle sur le premier point (cible à re-cliquer pour refermer la forme).
+  if((_paint.tool === 'polygon' || _paint.tool === 'eraseLine') && _paint.polyDraft && _paint.polyDraft.points.length){
+    const pts = _paint.polyDraft.points;
+    ctx.save();
+    ctx.strokeStyle = _paint.tool === 'eraseLine' ? '#E05555' : _paint.color;
+    ctx.lineWidth = _paint.lineWidth * _paint.dpr / v.scale;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+    ctx.stroke();
+    if(_paint.polyDraft.cursor){
+      ctx.setLineDash([6/v.scale,4/v.scale]);
+      ctx.beginPath(); ctx.moveTo(pts[pts.length-1].x, pts[pts.length-1].y);
+      ctx.lineTo(_paint.polyDraft.cursor.x, _paint.polyDraft.cursor.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const closeRadius = 12 * _paint.dpr;
+    ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, closeRadius, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(78,161,255,0.18)'; ctx.fill();
+    ctx.lineWidth = 1.5/v.scale; ctx.strokeStyle = 'rgba(78,161,255,0.9)'; ctx.stroke();
     ctx.restore();
   }
   ctx.setTransform(1,0,0,1,0,0);
