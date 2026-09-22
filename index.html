@@ -3399,6 +3399,7 @@
   body.pc-mode #view-contacts.active,
   body.pc-mode #view-magasin.active,
   body.pc-mode #view-galerie.active,
+  body.pc-mode #view-croquis.active,
   body.pc-mode #view-itineraires.active,
   body.pc-mode #view-couverture.active,
   body.pc-mode #view-suivi.active,
@@ -5489,6 +5490,22 @@
         <button id="galerieSelectBtn" class="btn btn-outline btn-sm" onclick="galerieToggleSelectMode()">Sélectionner</button>
       </div>
       <div id="galerieContent"><div class="hint" style="text-align:center;padding:30px 0;">Chargement…</div></div>
+    </section>
+
+    <!-- v5.41.170 — MODULE Croquis : onglet réservé PC (comme Croquis Paint
+         lui-même, voir _paintIsDesktop) sur demande de Rémi. Galerie
+         PERSONNELLE (data.croquisGallery, synchronisée entre SES appareils
+         comme le reste de `data` — voir syncPush/syncPull) de croquis
+         enregistrés : reprendre un croquis inachevé plus tard, le renommer,
+         le supprimer, ou l'ajouter aux photos d'un chantier (là, PARTAGÉ à
+         toute l'équipe via site.sharedMedia + pushSharedSite, même mécanisme
+         que "Envoyer un croquis" en Messagerie). -->
+    <section class="view" id="view-croquis">
+      <div class="page-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <span>📐 Croquis</span>
+        <button class="btn btn-primary btn-sm" onclick="_croquisGalleryNew()">+ Nouveau croquis</button>
+      </div>
+      <div id="croquisGalleryContent"><div class="hint" style="text-align:center;padding:30px 0;">Chargement…</div></div>
     </section>
 
     <!-- VUE ZINC -->
@@ -9160,7 +9177,8 @@ let data = {
   tiles: [], // {id, name, brand, ref, dimensions, photo, doc:{name,mimeType,data}}
   payslips: [], // {id, month: "YYYY-MM", name, mimeType, data, addedAt}
   trash: [], // {id, logEntry: {...}, deletedAt}
-  zincProfiles: [] // {id, siteId, name, sketch:true, sketchSegments:[{p1,p2,mm}], sketchCanvasWidth, sketchCanvasHeight, hasBoudin, createdAt, pliageType, pliageTemplateMarkHint:[segNum,…]|null}
+  zincProfiles: [], // {id, siteId, name, sketch:true, sketchSegments:[{p1,p2,mm}], sketchCanvasWidth, sketchCanvasHeight, hasBoudin, createdAt, pliageType, pliageTemplateMarkHint:[segNum,…]|null}
+  croquisGallery: [] // {id, name, url, thumbUrl, paintData, createdAt, updatedAt} — v5.41.170
 };
 
 async function loadData(){
@@ -9193,6 +9211,10 @@ async function loadData(){
     }
     localStorage.setItem('rwood-stock-alert-reset-done', '1');
   }
+
+  // v5.41.170 — nouvel onglet "Croquis" ajouté automatiquement à la sidebar
+  // PC des comptes existants (voir _croquisTileMigration ci-dessus).
+  if(typeof _croquisTileMigration === 'function') _croquisTileMigration();
 
   // ═══════════════════════════════════════════════════════════════════
   // MODULE — SyncSubscriptions (Livraison 1 : fondations + migration)
@@ -9810,6 +9832,9 @@ function seedData(){
   if(!data.payslips)      data.payslips = [];
   if(!data.trash)         data.trash = [];
   if(!data.trucks)        data.trucks = [];
+  // v5.41.170 — MODULE Croquis : galerie personnelle de croquis enregistrés
+  // {id, name, url, thumbUrl, paintData, createdAt, updatedAt}.
+  if(!data.croquisGallery) data.croquisGallery = [];
   // MODULE — Quincaillerie (Livraison 1 : schéma de données)
   if(!data.qcArticles)     data.qcArticles = [];      // {id, designation, uniteConditionnement, seuilAlerte, stockActuel, modeSuivi:'comptage_prise'|'signal_epuisement', fournisseurId, refFournisseur, prixUnitaire}
   if(!data.qcFournisseurs) data.qcFournisseurs = [];  // {id, nom, contact}
@@ -9897,11 +9922,16 @@ function goTo(viewName, siteId){
   // "detail"/"scanner"/pseudo-vues/modales ne sont pas concernés.
   {
     const _ouvrierRole = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    const _ouvrierGuardedViews = new Set(['chantiers','heures','stock','contacts','itineraires','zone-chantier','calcul','agenda','couverture','zinc','galerie','magasin','notes','notesdashboard','suivi','utilisateurs','dev','alertes-conducteur']);
+    const _ouvrierGuardedViews = new Set(['chantiers','heures','stock','contacts','itineraires','zone-chantier','calcul','agenda','couverture','zinc','galerie','croquis','magasin','notes','notesdashboard','suivi','utilisateurs','dev','alertes-conducteur']);
     if(_ouvrierRole === 'ouvrier' && _ouvrierGuardedViews.has(viewName)
        && !OUVRIER_ALLOWED_VIEWS.includes(viewName) && !window._devRoleUnlocked){
       goTo('chantiers'); return;
     }
+  }
+  // v5.41.170 — "Croquis" (galerie) réservé au PC comme Croquis Paint
+  // lui-même : bloque aussi un accès direct (deep-link) depuis mobile/tablette.
+  if(viewName === 'croquis' && !(typeof _paintIsDesktop === 'function' && _paintIsDesktop())){
+    goTo('chantiers'); return;
   }
   // Badge de notif (Chantier/Galerie) : marquer comme vu dès qu'on navigue dessus,
   // quel que soit le chemin emprunté (tuile, sidebar PC, nav classique).
@@ -9960,6 +9990,7 @@ function goTo(viewName, siteId){
     couverture:  ['Tuiles/Zinc', 'Catalogue de tuiles et documentation technique'],
     photos:      ['Photos', 'Galerie photo par chantier'],
     galerie:     ['Galerie', 'Photos partagées par chantier'],
+    croquis:     ['Croquis', 'Tes croquis enregistrés'],
     zinc:        ['Tuiles/Zinc', 'Zinc — pliages et profils par chantier'],
     'zone-chantier': ['Zone Chantier', 'Chantiers en cours — itinéraire depuis le dépôt'],
     'alertes-conducteur': ['Messagerie', 'Envoyer et consulter tes messages'],
@@ -10074,6 +10105,7 @@ function goTo(viewName, siteId){
     if(typeof _couvZinguerieSyncToggle === 'function') _couvZinguerieSyncToggle('toiture');
   }
   if(viewName === 'galerie') galerieRender(); // MODULE — Galerie
+  if(viewName === 'croquis') croquisGalleryRender(); // MODULE — Croquis
   else if(typeof _galerieSelectMode !== 'undefined' && (_galerieSelectMode || _galerieOpenSiteId)){
     // Quitter la galerie réinitialise le mode sélection ET la navigation dossier
     _galerieSelectMode = false; _galerieSelected.clear();
@@ -13912,7 +13944,7 @@ async function renderAlertesChatList(){
     if(count) count.textContent = _chatSelectedKeys.size + ' sélectionnée(s)';
   }
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷' };
   const myId = getDeviceSyncId();
   const rows = [];
   if(broadcast.length) rows.push({ type:'broadcast', key:'__broadcast__', authId:null, name:'Toute l\'équipe', alerts: broadcast });
@@ -13993,7 +14025,7 @@ async function _renderChatThreadModal(row){
   }
   ex.classList.add('open');
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷' };
   const myId = getDeviceSyncId();
   const bubblesHtml = row.alerts.length ? row.alerts.slice().reverse().map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
@@ -14001,8 +14033,11 @@ async function _renderChatThreadModal(row){
     // v5.41.141 — un message 'croquis' porte une image (croquisUrl) : elle
     // s'affiche directement DANS la bulle, cliquable pour l'ouvrir en plein
     // écran zoomable (réutilise le visionneuse photo de la Galerie).
-    const croquisImgHtml = (a.kind === 'croquis' && a.croquisUrl) ? `
-      <img src="${escapeHtml(a.croquisUrl)}" alt="Croquis" loading="lazy" onclick="event.stopPropagation(); _openCroquisLightbox('${a.id}')"
+    // v5.41.170 — même champ (croquisUrl) réutilisé pour 'photo' (pièce
+    // jointe depuis l'appareil, la galerie photo ou la galerie croquis) : ce
+    // n'est pas un nouveau format, juste un autre `kind` qui porte une image.
+    const croquisImgHtml = ((a.kind === 'croquis' || a.kind === 'photo') && a.croquisUrl) ? `
+      <img src="${escapeHtml(a.croquisUrl)}" alt="Photo" loading="lazy" onclick="event.stopPropagation(); _openCroquisLightbox('${a.id}')"
         style="display:block;max-width:100%;width:220px;border-radius:8px;margin-top:6px;cursor:zoom-in;border:1px solid rgba(0,0,0,0.1);">` : '';
     if(a.direction === 'in'){
       const isRead = a.readBy && a.readBy.includes(myId);
@@ -14069,8 +14104,14 @@ async function _renderChatThreadModal(row){
   // même gating que la zone de message (il faut connaître le destinataire,
   // et ce n'est pas la diffusion "Toute l'équipe").
   const canSendCroquis = resendAuthId && row.type !== 'broadcast';
+  // v5.41.170 — « Joindre une photo » (appareil / galerie photo de l'app /
+  // galerie croquis) à côté du bouton "Envoyer un croquis" existant : même
+  // gating, ouvre un petit menu à 3 choix (voir _openChatAttachMenu).
   const sketchBtnHtml = canSendCroquis ? `
-    <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_openSendCroquisFromChat('${resendAuthId}', ${nameJsonAttr})">📐 Envoyer un croquis</button>` : '';
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
+      <button type="button" class="btn btn-outline" style="flex:1;" onclick="_openSendCroquisFromChat('${resendAuthId}', ${nameJsonAttr})">📐 Croquis</button>
+      <button type="button" class="btn btn-outline" style="flex:1;" onclick="_openChatAttachMenu('${resendAuthId}', ${nameJsonAttr})">📎 Photo</button>
+    </div>` : '';
   const messageBoxHtml = canSendCroquis ? `
     <div style="display:flex; gap:6px;">
       <input type="text" id="chatThreadMsgInput" placeholder="Écris un message…" style="flex:1; padding:9px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:13.5px; font-family:inherit;"
@@ -32616,9 +32657,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.169';
+const APP_VERSION = '5.41.170';
 
 const CHANGELOG = [
+  {
+    version: '5.41.170',
+    date: '22/09/2026',
+    entries: [
+      { icon: '📐', text: "Nouvel onglet « Croquis » (PC uniquement) : une galerie personnelle pour enregistrer tes croquis Paint, reprendre plus tard ceux qui ne sont pas finis, et les ajouter aux photos d'un chantier pour que toute l'équipe les voie." },
+      { icon: '📎', text: "Messagerie : dans une conversation, le bouton « 📎 Photo » permet maintenant d'envoyer une photo depuis l'appareil, depuis la galerie photo de l'app (par chantier) ou depuis la galerie croquis." },
+    ],
+  },
   {
     version: '5.41.169',
     date: '22/09/2026',
@@ -46827,6 +46876,9 @@ const SIMPLE_ALL_TILES = [
   { view:'agenda', img:'icons/agenda.png', icon:'📅', label:'Agenda' },
   { view:'couverture', img:'icons/toiture.png', icon:'🏠', label:'Tuiles/Zinc' },
   { view:'galerie', img:'icons/galerie.png', icon:'📸', label:'Galerie' },
+  // v5.41.170 — Croquis : réservé PC (voir _simpleTileAllowedForRole), comme
+  // Croquis Paint lui-même — galerie personnelle de croquis enregistrés.
+  { view:'croquis', img:'icons/croquis.png', icon:'📐', label:'Croquis' },
   { view:'calcul', img:'icons/calcul.png', icon:'🧮', label:'Calcul' },
   { view:'suivi', img:'icons/suivi.png', icon:'📊', label:'Suivi' },
   // v5.41.150 — Zinc fusionné dans l'onglet "couverture" (Couverture
@@ -46993,6 +47045,24 @@ function _dashUnseenCount(viewId){
 }
 const DASH_BADGE_VIEWS = ['chantiers', 'galerie', 'alertes-conducteur'];
 const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
+// v5.41.170 — nouvel onglet "Croquis" : pour qu'il apparaisse tout de suite
+// dans la sidebar PC des comptes existants (qui ont déjà leur propre liste
+// personnalisée dans data.settings.simpleTiles, donc PAS le tableau
+// SIMPLE_DEFAULT_TILES ci-dessus) sans attendre qu'ils aillent l'ajouter
+// eux-mêmes dans Paramètres, une migration one-shot (flag localStorage,
+// même principe que les autres migrations one-shot de l'app) l'ajoute à la
+// liste personnalisée si elle ne l'a pas déjà — voir l'appel dans loadData().
+function _croquisTileMigration(){
+  if(localStorage.getItem('rwood-croquis-tile-migration-done')) return;
+  try{
+    if(!data.settings) data.settings = {};
+    if(Array.isArray(data.settings.simpleTiles) && !data.settings.simpleTiles.includes('croquis')){
+      data.settings.simpleTiles.push('croquis');
+      saveData();
+    }
+  }catch(e){ /* migration best-effort */ }
+  localStorage.setItem('rwood-croquis-tile-migration-done', '1');
+}
 
 function simpleModeIsActive(){
   // v5.41.20 — Sur PC (≥860px), le Mode Simple est OBLIGATOIRE et UNIQUE :
@@ -47031,6 +47101,11 @@ function _simpleTileAllowedForRole(viewId){
   // restriction) continuait à le voir dans la sidebar même si goTo('suivi')
   // le bloquait bien côté routeur — signalé par Rémi.
   if(viewId === 'suivi') return (role === 'conducteur' || role === 'patron' || !!window._devRoleUnlocked);
+  // v5.41.170 — "Croquis" (galerie de croquis enregistrés) réservé au PC,
+  // comme l'outil Croquis Paint lui-même (trop pensé souris/grand écran
+  // pour être utilisable au doigt sur téléphone) — jamais dans le dashboard
+  // tuiles tactile mobile, seulement dans la sidebar PC.
+  if(viewId === 'croquis') return typeof _paintIsDesktop === 'function' && _paintIsDesktop();
   return true;
 }
 function _simpleGetTiles(){
@@ -52948,6 +53023,163 @@ async function _confirmSendCroquis(){
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — Pièce jointe "Photo" en Messagerie (v5.41.170, demande de Rémi)
+   Bouton « 📎 Photo » à côté de « 📐 Envoyer un croquis » dans un fil de
+   conversation : ouvre un petit menu à 3 sources — l'appareil (fichier),
+   la galerie photo de l'app (site.sharedMedia par chantier, même données
+   que l'onglet Galerie) ou la galerie croquis (data.croquisGallery, voir
+   plus haut). Les 3 aboutissent au même envoi (kind:'photo', réutilise
+   croquisUrl comme champ image générique — voir sendAlert). ═══════════════════════════════════════════════════════════════════ */
+let _chatAttachTarget = null; // { recipientAuthId, recipientName }
+function _openChatAttachMenu(recipientAuthId, recipientName){
+  _chatAttachTarget = { recipientAuthId, recipientName };
+  const ex = document.getElementById('modal-chatAttachMenu');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-chatAttachMenu';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>📎 Joindre une photo</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-chatAttachMenu').remove()">✕</button>
+      </div>
+      <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_chatAttachFromDevice()">📷 Depuis l'appareil</button>
+      <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_chatAttachOpenPhotoGallery()">🖼 Galerie photo de l'app</button>
+      <button type="button" class="btn btn-outline btn-block" onclick="_chatAttachOpenCroquisGallery()">📐 Galerie croquis</button>
+    </div>`;
+  document.body.appendChild(div);
+}
+function _closeChatAttachMenu(){
+  const m = document.getElementById('modal-chatAttachMenu');
+  if(m) m.remove();
+}
+/* Envoi effectif — commun aux 3 sources une fois qu'on a une URL déjà
+   uploadée (galerie photo / galerie croquis) ou tout juste uploadée
+   (appareil). Même mécanisme que _confirmSendCroquis (sendAlert kind
+   dédié, croquisUrl comme champ image), sans le côté "ajouter au chantier"
+   (déjà fait pour une photo qui vient d'un chantier ; pour un croquis de
+   galerie, ce choix se fait depuis l'onglet Croquis lui-même). */
+async function _chatSendPhotoAlert(url, paintData, kind){
+  if(!_chatAttachTarget) return false;
+  const { recipientAuthId, recipientName } = _chatAttachTarget;
+  const p = data.settings && data.settings.myProfile;
+  const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'Un membre de l\'équipe';
+  const alertText = senderName + (kind === 'croquis' ? ' : 📐 t\'a envoyé un croquis' : ' : 📷 t\'a envoyé une photo');
+  const deviceId = await _resolveDeviceIdFromAuthId(recipientAuthId);
+  const ok = await sendAlert(
+    alertText, 'devices', null, recipientName, kind || 'photo', null, null,
+    deviceId ? [deviceId] : [], null, null, [recipientAuthId],
+    { url, paintData: paintData || null }
+  );
+  if(ok) notifyPush([recipientAuthId], 'RWOOD — Photo reçue', senderName + (kind === 'croquis' ? ' t\'a envoyé un croquis' : ' t\'a envoyé une photo'), kind || 'photo', 'alertes');
+  return ok;
+}
+function _chatAttachFromDevice(){
+  _closeChatAttachMenu();
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const file = input.files && input.files[0]; input.remove();
+    if(!file || !_chatAttachTarget) return;
+    showToast('⏳ Envoi en cours…');
+    try{
+      const jpeg = await _photoToJpegFile(file);
+      const up = jpeg || file;
+      const siteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
+      const url = await uploadFileToSupabase(up, siteId, { skipDropbox:true });
+      const ok = await _chatSendPhotoAlert(url, null, 'photo');
+      if(ok){ showToast('✅ Photo envoyée'); await _refreshOpenChatThread(); }
+      else showToast('❌ Échec de l\'envoi');
+    }catch(e){ showToast('❌ Échec de l\'envoi'); }
+  };
+  input.click();
+}
+/* Galerie photo de l'app : même source que l'onglet Galerie (site.sharedMedia),
+   niveau 1 = dossiers (chantiers ayant des photos), niveau 2 = grille de
+   photos — clic sur une photo = choix immédiat (déjà uploadée, pas de
+   re-upload, juste un envoi d'alerte avec la même url). */
+function _chatAttachOpenPhotoGallery(){
+  _closeChatAttachMenu();
+  const groups = (typeof _galerieCollect === 'function') ? _galerieCollect() : [];
+  _renderChatAttachPicker('🖼 Galerie photo', groups.length ? `
+    <div class="galerie-folders">
+      ${groups.map(g => `
+        <div class="galerie-folder" onclick="_chatAttachOpenPhotoFolder('${g.site.id}')">
+          <div class="galerie-folder-thumb">
+            <img src="${escapeHtml(g.photos[0].thumbUrl || g.photos[0].url)}" loading="lazy" alt="">
+            <span class="galerie-folder-count">${g.photos.length}</span>
+          </div>
+          <div class="galerie-folder-name">${escapeHtml(g.site.name)}</div>
+        </div>`).join('')}
+    </div>` : '<div class="hint" style="text-align:center;padding:20px 0;">Aucune photo partagée pour le moment.</div>');
+}
+function _chatAttachOpenPhotoFolder(siteId){
+  const groups = _galerieCollect();
+  const g = groups.find(x => x.site.id === siteId);
+  if(!g) return;
+  _renderChatAttachPicker('🖼 ' + g.site.name, `
+    <button class="btn btn-outline btn-sm" style="margin-bottom:10px;" onclick="_chatAttachOpenPhotoGallery()">← Tous les chantiers</button>
+    <div class="galerie-grid">
+      ${g.photos.map(p => `
+        <div class="galerie-cell" onclick="_chatAttachPickPhoto('${escapeHtml(p.url)}')">
+          <img src="${escapeHtml(p.thumbUrl || p.url)}" loading="lazy" alt="">
+        </div>`).join('')}
+    </div>`);
+}
+async function _chatAttachPickPhoto(url){
+  _closeChatAttachMenu();
+  if(!_chatAttachTarget) return;
+  showToast('⏳ Envoi en cours…');
+  const ok = await _chatSendPhotoAlert(url, null, 'photo');
+  if(ok){ showToast('✅ Photo envoyée'); await _refreshOpenChatThread(); }
+  else showToast('❌ Échec de l\'envoi');
+}
+/* Galerie croquis : data.croquisGallery (voir plus haut, module Croquis) —
+   clic sur un croquis = choix immédiat (déjà uploadé). */
+function _chatAttachOpenCroquisGallery(){
+  _closeChatAttachMenu();
+  const entries = (data.croquisGallery || []).slice()
+    .sort((a,b) => new Date(b.updatedAt||b.createdAt||0) - new Date(a.updatedAt||a.createdAt||0));
+  _renderChatAttachPicker('📐 Galerie croquis', entries.length ? `
+    <div class="galerie-grid">
+      ${entries.map(e => `
+        <div class="galerie-cell" onclick="_chatAttachPickCroquis('${e.id}')" title="${escapeHtml(e.name||'Croquis')}">
+          <img src="${escapeHtml(e.thumbUrl || e.url)}" loading="lazy" alt="">
+        </div>`).join('')}
+    </div>` : '<div class="hint" style="text-align:center;padding:20px 0;">Aucun croquis enregistré. Crée-en un depuis l\'onglet Croquis.</div>');
+}
+async function _chatAttachPickCroquis(id){
+  const entry = (data.croquisGallery || []).find(e => e.id === id);
+  _closeChatAttachMenu();
+  if(!entry || !_chatAttachTarget) return;
+  showToast('⏳ Envoi en cours…');
+  const ok = await _chatSendPhotoAlert(entry.url, entry.paintData || null, 'croquis');
+  if(ok){ showToast('✅ Croquis envoyé'); await _refreshOpenChatThread(); }
+  else showToast('❌ Échec de l\'envoi');
+}
+/* Petit modal générique réutilisé par les 3 pickers ci-dessus (galerie
+   photo niveau 1/2, galerie croquis) — juste un titre + un corps HTML. */
+function _renderChatAttachPicker(title, bodyHtml){
+  const ex = document.getElementById('modal-chatAttachMenu');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-chatAttachMenu';
+  div.innerHTML = `
+    <div class="modal" style="max-height:82vh;display:flex;flex-direction:column;">
+      <div class="modal-header">
+        <h2>${title}</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-chatAttachMenu').remove()">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;">${bodyHtml}</div>
+    </div>`;
+  document.body.appendChild(div);
+}
+
 function _rcMediaGrid(i, target){
   const arr = _rc.stops[i][target];
   if(!arr.length) return '';
@@ -55881,6 +56113,159 @@ function _paintFinish(){
     onSave(blob, paintData);
     _paintClose();
   }, 'image/png');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — Galerie Croquis (v5.41.170, demande de Rémi)
+   Onglet "Croquis" réservé PC (voir _simpleTileAllowedForRole) : une
+   galerie PERSONNELLE (data.croquisGallery, synchronisée entre les
+   appareils du même compte comme le reste de `data`) pour enregistrer un
+   croquis, le reprendre plus tard s'il n'est pas terminé, et l'ajouter aux
+   photos d'un chantier (là PARTAGÉ à toute l'équipe via site.sharedMedia +
+   pushSharedSite — même mécanisme déjà utilisé par "Envoyer un croquis"
+   en Messagerie, voir _confirmSendCroquis un peu plus haut).
+   Entrée : { id, name, url, thumbUrl:null, paintData, createdAt, updatedAt }
+   ═══════════════════════════════════════════════════════════════════ */
+function croquisGalleryRender(){
+  const root = document.getElementById('croquisGalleryContent');
+  if(!root) return;
+  const entries = (data.croquisGallery || []).slice()
+    .sort((a,b) => new Date(b.updatedAt||b.createdAt||0) - new Date(a.updatedAt||a.createdAt||0));
+  if(!entries.length){
+    root.innerHTML = '<div class="empty" style="padding:40px 20px;"><div class="icon" style="font-size:38px;">📐</div><h3>Aucun croquis enregistré</h3><p>Crée un croquis avec « + Nouveau croquis » ; tu pourras le reprendre plus tard ou l\'ajouter aux photos d\'un chantier.</p></div>';
+    return;
+  }
+  root.innerHTML = `<div class="galerie-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;">` +
+    entries.map(e => {
+      const dateLabel = new Date(e.updatedAt||e.createdAt||Date.now()).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+      return `
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="aspect-ratio:1;background:#fff;cursor:pointer;" onclick="_croquisGalleryEdit('${e.id}')">
+          <img src="${escapeHtml(e.thumbUrl || e.url)}" loading="lazy" alt="" style="width:100%;height:100%;object-fit:contain;">
+        </div>
+        <div style="padding:8px 10px;">
+          <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(e.name || 'Croquis')}</div>
+          <div style="font-size:10.5px;color:var(--ink-soft);margin-bottom:6px;">${dateLabel}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" style="flex:1;padding:5px 6px;font-size:11px;" onclick="_croquisGalleryEdit('${e.id}')">✏️ Reprendre</button>
+            <button type="button" class="btn btn-outline btn-sm" style="flex:1;padding:5px 6px;font-size:11px;" onclick="_croquisGalleryAddToSite('${e.id}')">🏗 Chantier</button>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+            <button type="button" class="btn btn-outline btn-sm" style="flex:1;padding:5px 6px;font-size:11px;" onclick="_croquisGalleryRename('${e.id}')">✎ Renommer</button>
+            <button type="button" class="btn btn-outline btn-sm" style="flex:1;padding:5px 6px;font-size:11px;color:var(--red);" onclick="_croquisGalleryDelete('${e.id}')">🗑 Supprimer</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('') + `</div>`;
+}
+/* Upload d'un blob de croquis vers Supabase — même repli 'depannage' que
+   _rcAddSketch/_confirmSendCroquis pour un croquis non lié à un chantier
+   précis (la galerie personnelle n'est pas rattachée à un chantier). */
+async function _croquisUploadBlob(blob){
+  const file = new File([blob], 'croquis-' + Date.now() + '.png', { type: 'image/png' });
+  const siteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
+  return await uploadFileToSupabase(file, siteId, { skipDropbox:true });
+}
+function _croquisGalleryNew(){
+  openPaintSketchTool(async (blob, paintData) => {
+    showToast('⏳ Enregistrement…');
+    try{
+      const url = await _croquisUploadBlob(blob);
+      const now = new Date().toISOString();
+      data.croquisGallery.push({ id: uid(), name: 'Croquis', url, thumbUrl: null, paintData, createdAt: now, updatedAt: now });
+      saveData();
+      showToast('✅ Croquis enregistré dans la galerie');
+      croquisGalleryRender();
+    }catch(e){ showToast('❌ Échec de l\'enregistrement'); }
+  });
+}
+function _croquisGalleryEdit(id){
+  const entry = (data.croquisGallery || []).find(e => e.id === id);
+  if(!entry) return;
+  openPaintSketchTool(async (blob, paintData) => {
+    showToast('⏳ Enregistrement…');
+    try{
+      const url = await _croquisUploadBlob(blob);
+      const e2 = (data.croquisGallery || []).find(x => x.id === id);
+      if(e2){
+        e2.url = url; e2.paintData = paintData; e2.updatedAt = new Date().toISOString();
+        saveData();
+      }
+      showToast('✅ Croquis mis à jour');
+      croquisGalleryRender();
+    }catch(err){ showToast('❌ Échec de l\'enregistrement'); }
+  }, entry.paintData);
+}
+function _croquisGalleryRename(id){
+  const entry = (data.croquisGallery || []).find(e => e.id === id);
+  if(!entry) return;
+  const v = prompt('Nom du croquis :', entry.name || 'Croquis');
+  if(v === null) return;
+  entry.name = (v || '').trim() || 'Croquis';
+  saveData();
+  croquisGalleryRender();
+}
+function _croquisGalleryDelete(id){
+  if(!confirm('Supprimer ce croquis de la galerie ? (Il restera sur les chantiers où tu l\'as déjà ajouté.)')) return;
+  data.croquisGallery = (data.croquisGallery || []).filter(e => e.id !== id);
+  saveData();
+  croquisGalleryRender();
+}
+/* "Ajouter aux photos d'un chantier" depuis un croquis DÉJÀ enregistré (donc
+   déjà uploadé — on ne refait pas l'upload) : même mécanisme que
+   _confirmSendCroquis (site.sharedMedia + pushSharedSite), pour que toute
+   l'équipe le voie dans Galerie / le Détail du chantier. */
+function _croquisGalleryAddToSite(id){
+  const entry = (data.croquisGallery || []).find(e => e.id === id);
+  if(!entry) return;
+  const ex = document.getElementById('modal-croquisGalleryAddSite');
+  if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open';
+  div.id = 'modal-croquisGalleryAddSite';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>🏗 Ajouter aux photos d'un chantier</h2>
+        <button class="modal-close" onclick="document.getElementById('modal-croquisGalleryAddSite').remove()">✕</button>
+      </div>
+      <img src="${escapeHtml(entry.url)}" alt="Croquis" style="width:100%;border-radius:10px;border:1.5px solid var(--line);margin-bottom:12px;">
+      <div class="field" style="margin-bottom:14px;">
+        <label>Chantier</label>
+        <select id="croquisGalleryAddSiteSelect" style="width:100%;padding:7px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:13px;box-sizing:border-box;">
+          <option value="">— Choisir un chantier —</option>
+          ${(data.sites||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-primary btn-block" id="croquisGalleryAddSiteBtn" onclick="_confirmCroquisGalleryAddToSite('${id}')">Ajouter</button>
+    </div>`;
+  document.body.appendChild(div);
+}
+async function _confirmCroquisGalleryAddToSite(id){
+  const entry = (data.croquisGallery || []).find(e => e.id === id);
+  const sel = document.getElementById('croquisGalleryAddSiteSelect');
+  const siteId = sel ? sel.value : '';
+  if(!entry || !siteId){ showToast('Choisis un chantier'); return; }
+  const site = (data.sites||[]).find(s => s.id === siteId);
+  if(!site) return;
+  const btn = document.getElementById('croquisGalleryAddSiteBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Ajout…'; }
+  const p = data.settings && data.settings.myProfile;
+  const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+    || (data.settings && data.settings.teamName) || 'Un membre de l\'équipe';
+  if(!site.sharedMedia) site.sharedMedia = [];
+  site.sharedMedia.push({
+    id: uid(), name: entry.name || 'Croquis', url: entry.url, thumbUrl: null, type: 'photo', mimeType: 'image/png',
+    uploadedBy: senderName, uploadedAt: new Date().toISOString(), siteId, paintData: entry.paintData || null,
+  });
+  saveData();
+  try{
+    if(site.syncLive) await pushSharedSite(site);
+    else if(typeof syncAllSitesPushAll === 'function') await syncAllSitesPushAll();
+  }catch(e){}
+  showToast('✅ Ajouté aux photos de ' + site.name);
+  const m = document.getElementById('modal-croquisGalleryAddSite');
+  if(m) m.remove();
 }
 </script>
 
