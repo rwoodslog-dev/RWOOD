@@ -4002,6 +4002,33 @@
     #modal-sketchTool #sketchActionsRow{ margin-top:6px !important; padding-top:6px !important; }
     #modal-sketchTool #sketchActionsRow .btn{ padding:9px 10px !important; font-size:12.5px !important; }
   }
+
+  /* v5.41.149 — « Croquis Paint » (formes/matières/quincaillerie) adapté au
+     mobile/tablette, sur demande de Rémi : jusqu'ici réservé au PC
+     (_paintIsDesktop()) car pensé pour une souris (colonne d'outils fixe à
+     gauche, clic droit pour déplacer la vue, molette pour zoomer). Sur un
+     écran étroit, une colonne de 150px fixe à côté du canevas ne laisserait
+     presque plus de place pour dessiner — on passe donc la barre d'outils
+     en bande DÉFILABLE HORIZONTALEMENT sous le canevas (au lieu d'à côté),
+     chaque groupe (Fond/Outils/Texte/Remplissage/Quincaillerie/Couleur/
+     Épaisseur/Actions) devenant une « carte » qu'on fait défiler au doigt,
+     et le canevas passe EN PREMIER (order) pour rester la zone principale.
+     Le JS gère en parallèle le tactile (voir openPaintSketchTool : pos(),
+     touchstart/move/end, pincer-zoomer/déplacer à deux doigts) — cette
+     partie CSS ne concerne que la mise en page. */
+  @media (max-width: 899px){
+    #modal-paintTool #paintMainRow{ flex-direction:column; }
+    #modal-paintTool #paintCanvasCol{ order:1; flex:1 1 auto; min-height:0; }
+    #modal-paintTool #paintSidebar{
+      order:2; width:100%; flex-direction:row; flex-shrink:0;
+      max-height:136px; overflow-x:auto; overflow-y:hidden;
+      -webkit-overflow-scrolling:touch; padding-bottom:4px;
+    }
+    #modal-paintTool .paint-sb-group{
+      flex-shrink:0; width:136px; max-height:100%; overflow-y:auto;
+      padding-right:4px;
+    }
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -32271,9 +32298,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.148';
+const APP_VERSION = '5.41.149';
 
 const CHANGELOG = [
+  {
+    version: '5.41.149',
+    date: '22/09/2026',
+    entries: [
+      { icon: '📱', text: "Croquis Paint (formes, matières, quincaillerie — vis, goujon, pointe, écrou...) est maintenant disponible sur mobile/tablette, pas seulement sur PC : dessin au doigt, sélection et redimensionnement tactile." },
+      { icon: '🤏', text: "Croquis Paint sur mobile : pincer à 2 doigts pour zoomer, glisser à 2 doigts pour déplacer la vue (remplace la molette et le clic droit maintenu du PC)." },
+      { icon: '📐', text: "Croquis Paint : la barre d'outils latérale (formes, matières, quincaillerie, couleurs...) devient un bandeau défilant horizontalement sur petit écran, pour laisser un maximum de place au dessin." },
+    ],
+  },
   {
     version: '5.41.148',
     date: '22/09/2026',
@@ -52032,32 +52068,27 @@ function _rcAddSketch(i){
       if(_rc) _rcRender();
     }catch(e){ showToast('❌ Échec de l\'envoi du croquis'); }
   };
-  // v5.41.123 — sur PC : nouvel outil « Croquis Paint » (formes, symboles,
-  // couleurs). Sur mobile/tablette (pas de souris) : on garde l'ancien
-  // outil de croquis à main levée, plus adapté au doigt.
-  if(_paintIsDesktop()){
-    openPaintSketchTool((blob, paintData) => uploadResult(blob, 'croquis-paint', paintData));
-  } else {
-    openSketchTool((blob) => uploadResult(blob, 'croquis'));
-  }
+  // v5.41.149 — « Croquis Paint » (formes/matières/quincaillerie) est
+  // maintenant utilisé PARTOUT, PC comme mobile/tablette (il gère désormais
+  // le tactile, voir openPaintSketchTool) — sur demande de Rémi, pour que
+  // tout le monde ait le même outil complet quel que soit l'appareil.
+  // L'ancien outil à main levée (openSketchTool) reste utilisé ailleurs
+  // (« Croquis avec côtes », pliage) mais plus ici.
+  openPaintSketchTool((blob, paintData) => uploadResult(blob, 'croquis-paint', paintData));
 }
 
 /* v5.41.141 — « Envoyer un croquis » depuis une conversation Alertes : on
-   dessine (Croquis Paint sur PC, croquis à main levée sur mobile — même
-   choix que _rcAddSketch ci-dessus), puis un petit panneau de confirmation
-   propose D'ENVOYER dans la conversation ET/OU d'ajouter la même image aux
-   photos d'un chantier choisi, avant l'envoi réel. */
+   dessine avec Croquis Paint (v5.41.149 — même outil qu'ailleurs, PC comme
+   mobile), puis un petit panneau de confirmation propose D'ENVOYER dans la
+   conversation ET/OU d'ajouter la même image aux photos d'un chantier
+   choisi, avant l'envoi réel. */
 let _croquisPendingSend = null; // { blob, paintData, recipientAuthId, recipientName }
 function _openSendCroquisFromChat(recipientAuthId, recipientName){
   const onDrawn = (blob, paintData) => {
     _croquisPendingSend = { blob, paintData, recipientAuthId, recipientName };
     _renderCroquisSendConfirm();
   };
-  if(_paintIsDesktop()){
-    openPaintSketchTool((blob, paintData) => onDrawn(blob, paintData));
-  } else {
-    openSketchTool((blob) => onDrawn(blob, null));
-  }
+  openPaintSketchTool((blob, paintData) => onDrawn(blob, paintData));
 }
 function _renderCroquisSendConfirm(){
   if(!_croquisPendingSend) return;
@@ -52366,12 +52397,13 @@ const PAINT_SYMBOLS = [
 let _paint = null;
 
 function openPaintSketchTool(onSave, existingPaint){
-  if(!_paintIsDesktop()){
-    // Sécurité : appelé par erreur depuis mobile/tablette — on ne construit
-    // jamais cet outil hors PC (souris nécessaire pour un usage confortable).
-    showToast('Le croquis Paint est disponible uniquement sur ordinateur.');
-    return;
-  }
+  // v5.41.149 — l'outil est désormais disponible partout (PC ET mobile/
+  // tablette), sur demande de Rémi : plus de garde-fou ici. La mise en page
+  // (barre d'outils en bande défilable sous le canevas au lieu d'à côté, cf.
+  // CSS #modal-paintTool @media max-width:899px) et l'interaction (souris ET
+  // tactile, voir paintDown/paintMove/_paintStartPinch plus bas) s'adaptent
+  // au device — _paintIsDesktop() ne sert plus qu'à choisir le texte d'aide
+  // affiché (paintHintBar) selon le mode d'interaction disponible.
   const ex = document.getElementById('modal-paintTool');
   if(ex) ex.remove();
   const div = document.createElement('div');
@@ -52384,20 +52416,20 @@ function openPaintSketchTool(onSave, existingPaint){
         <h2>🎨 Croquis Paint</h2>
         <button class="modal-close" onclick="_paintClose()">✕</button>
       </div>
-      <div style="display:flex; gap:12px; flex:1; min-height:0;">
-        <div style="width:150px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
-          <div>
+      <div id="paintMainRow" style="display:flex; gap:12px; flex:1; min-height:0;">
+        <div id="paintSidebar" style="width:150px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
+          <div class="paint-sb-group">
             <button type="button" class="btn btn-outline" onclick="document.getElementById('paintBgFileInput').click()" style="width:100%;">🖼️ Fond (plan/photo)</button>
             <input type="file" id="paintBgFileInput" accept="image/*,application/pdf" style="display:none;" onchange="_paintPickBackground(event)">
             <button type="button" id="paintBgPositionBtn" style="display:none;width:100%;margin-top:5px;padding:7px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer;" onclick="_paintToggleBgPositioning()">🎯 Positionner le fond</button>
             <button type="button" id="paintBgResetBtn" class="btn btn-outline" style="display:none;width:100%;margin-top:5px;" onclick="_paintResetBgTransform()">↺ Recentrer le fond</button>
             <button type="button" id="paintBgClearBtn" class="btn btn-outline" style="display:none;width:100%;margin-top:5px;" onclick="_paintClearBackground()">🗑️ Retirer le fond</button>
           </div>
-          <div>
+          <div class="paint-sb-group">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Outils</div>
             <div id="paintToolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
-          <div id="paintFontSizeRow" style="display:none;">
+          <div id="paintFontSizeRow" class="paint-sb-group" style="display:none;">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;display:flex;align-items:center;gap:5px;">
               Texte
               <button type="button" onclick="_paintShowTextModeInfo()" title="Comment ça marche"
@@ -52411,7 +52443,7 @@ function openPaintSketchTool(onSave, existingPaint){
               ${[12,14,16,18,22,28,36,48].map(n => `<option value="${n}" ${n===16?'selected':''}>${n} px</option>`).join('')}
             </select>
           </div>
-          <div id="paintFillRow" style="display:none;">
+          <div id="paintFillRow" class="paint-sb-group" style="display:none;">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Remplissage</div>
             <select id="paintFillSelect" style="width:100%;padding:6px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12.5px;">
               <option value="none">Aucun (contour seul)</option>
@@ -52426,27 +52458,29 @@ function openPaintSketchTool(onSave, existingPaint){
               <span style="font-size:11.5px;color:var(--ink-soft);">Couleur du remplissage</span>
             </div>
           </div>
-          <div>
+          <div class="paint-sb-group">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Quincaillerie</div>
             <div id="paintSymbolList" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
-          <div>
+          <div class="paint-sb-group">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Couleur</div>
             <div id="paintColorGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;"></div>
           </div>
-          <div>
+          <div class="paint-sb-group">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Épaisseur</div>
             <input type="range" id="paintWidthRange" min="1" max="10" step="1" value="3" style="width:100%;">
           </div>
-          <button type="button" class="btn btn-outline" id="paintDeleteBtn" style="display:none;" onclick="_paintDeleteSelected()">🗑️ Supprimer la forme</button>
-          <button type="button" class="btn btn-outline" onclick="_paintUndo()">↺ Annuler</button>
-          <button type="button" class="btn btn-outline" onclick="_paintClearAll()">🧹 Tout effacer</button>
-          <button type="button" class="btn btn-outline" onclick="_paintResetView()">🔍 Réinitialiser la vue</button>
+          <div class="paint-sb-group" style="display:flex;flex-direction:column;gap:6px;">
+            <button type="button" class="btn btn-outline" id="paintDeleteBtn" style="display:none;" onclick="_paintDeleteSelected()">🗑️ Supprimer la forme</button>
+            <button type="button" class="btn btn-outline" onclick="_paintUndo()">↺ Annuler</button>
+            <button type="button" class="btn btn-outline" onclick="_paintClearAll()">🧹 Tout effacer</button>
+            <button type="button" class="btn btn-outline" onclick="_paintResetView()">🔍 Réinitialiser la vue</button>
+          </div>
         </div>
-        <div style="display:flex; flex-direction:column; flex:1; min-width:0; min-height:0;">
-          <div id="paintCanvasWrap" style="position:relative; flex:1; min-height:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); cursor:crosshair;">
+        <div id="paintCanvasCol" style="display:flex; flex-direction:column; flex:1; min-width:0; min-height:0;">
+          <div id="paintCanvasWrap" style="position:relative; flex:1; min-height:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); cursor:crosshair; touch-action:none;">
             <canvas id="paintCanvas" style="width:100%; height:100%; display:block;"></canvas>
-            <div style="position:absolute; bottom:8px; right:10px; font-size:10.5px; font-weight:700; color:#666; background:rgba(255,255,255,0.85); padding:2px 7px; border-radius:6px; pointer-events:none;">
+            <div id="paintHintBar" style="position:absolute; bottom:8px; right:10px; font-size:10.5px; font-weight:700; color:#666; background:rgba(255,255,255,0.85); padding:2px 7px; border-radius:6px; pointer-events:none;">
               Molette : zoom · Clic droit maintenu : déplacer
             </div>
             <!-- v5.41.140 — bouton ⋮ flottant sur la forme sélectionnée (coin
@@ -52615,6 +52649,14 @@ function openPaintSketchTool(onSave, existingPaint){
   document.addEventListener('click', paintClickAwayHandler);
   _paint._clickAwayHandler = paintClickAwayHandler;
 
+  // v5.41.149 — texte d'aide adapté au mode d'interaction (souris sur PC,
+  // tactile sur mobile/tablette) : le geste pour zoomer/déplacer la vue
+  // n'est plus le même (molette+clic droit vs pincer+glisser à 2 doigts).
+  const hintBar = document.getElementById('paintHintBar');
+  if(hintBar) hintBar.textContent = _paintIsDesktop()
+    ? 'Molette : zoom · Clic droit maintenu : déplacer'
+    : 'Pincer à 2 doigts : zoom · Glisser à 2 doigts : déplacer';
+
   _paintRenderToolList();
   _paintRenderSymbolList();
   _paintRenderColorGrid();
@@ -52678,7 +52720,7 @@ function openPaintSketchTool(onSave, existingPaint){
     _paintRedraw();
   }, { passive:false });
 
-  canvas.onmousedown = e => {
+  const paintDown = e => {
     e.preventDefault();
     _paintCloseShapeMenu();
     if(e.button === 2){
@@ -52777,7 +52819,7 @@ function openPaintSketchTool(onSave, existingPaint){
       _paint.shapes.push({ type:'pen', points:[p], color:_paint.color, width:_paint.lineWidth*dpr });
     }
   };
-  canvas.onmousemove = e => {
+  const paintMove = e => {
     if(!_paint) return;
     if(_paint.panning){
       let dx = e.clientX - _paint.panStart.x, dy = e.clientY - _paint.panStart.y;
@@ -52903,8 +52945,78 @@ function openPaintSketchTool(onSave, existingPaint){
     _paint.current = null;
     _paintRedraw();
   };
+  canvas.onmousedown = paintDown;
+  canvas.onmousemove = paintMove;
   canvas.onmouseup = finishDraw;
   canvas.onmouseleave = finishDraw;
+
+  // v5.41.149 — support TACTILE (téléphone/tablette), sur demande de Rémi :
+  // jusqu'ici l'outil était réservé au PC (souris). Un seul doigt reproduit
+  // exactement le geste souris (dessiner/sélectionner/déplacer/redimensionner
+  // — paintDown/paintMove/finishDraw ne lisent que e.clientX/clientY/button,
+  // jamais rien de spécifique à la souris, donc un objet "façon souris"
+  // reconstruit à partir du doigt suffit, aucune duplication de logique).
+  // Deux doigts = zoomer/déplacer la vue (remplace le clic droit maintenu,
+  // qui n'existe pas au doigt) — voir _paintStartPinch/_paintPinchMove,
+  // même principe que le pincer-zoomer de « Croquis avec côtes »
+  // (_sketchStartPinch), adapté au repère qui peut être incliné (rotation).
+  const paintTouchLike = (t) => ({ clientX: t.clientX, clientY: t.clientY, button: 0, preventDefault(){} });
+  canvas.addEventListener('touchstart', e => {
+    if(e.touches.length >= 2){ e.preventDefault(); _paintStartPinch(e); return; }
+    if(e.touches.length === 1){ e.preventDefault(); paintDown(paintTouchLike(e.touches[0])); }
+  }, { passive:false });
+  canvas.addEventListener('touchmove', e => {
+    if(!_paint) return;
+    if(e.touches.length >= 2){ e.preventDefault(); if(_paint._pinching) _paintPinchMove(e); else _paintStartPinch(e); return; }
+    if(_paint._pinching) return; // un doigt relâché après un pinch : ignore jusqu'au prochain geste propre
+    if(e.touches.length === 1){ e.preventDefault(); paintMove(paintTouchLike(e.touches[0])); }
+  }, { passive:false });
+  const paintTouchEnd = e => {
+    if(!_paint) return;
+    if(e.touches && e.touches.length >= 1) return; // il reste un doigt posé (fin progressive d'un pinch) : rien à finaliser encore
+    _paint._pinching = false;
+    const t = (e.changedTouches && e.changedTouches[0]) || null;
+    finishDraw(t ? paintTouchLike(t) : { clientX:0, clientY:0, preventDefault(){} });
+  };
+  canvas.addEventListener('touchend', paintTouchEnd, { passive:false });
+  canvas.addEventListener('touchcancel', paintTouchEnd, { passive:false });
+}
+/* v5.41.149 — pincer-zoomer/déplacer à 2 doigts (équivalent tactile de la
+   molette + clic droit maintenu). Le point du monde sous le MILIEU des 2
+   doigts au moment où le pinch démarre reste sous ce même milieu à chaque
+   mouvement (zoom ET léger déplacement combinés en un seul geste naturel),
+   rotation de la vue comprise — même formule que le zoom à la molette
+   (_paintScreenToWorld/_paintUnrotateScreenPoint), mais réévaluée à CHAQUE
+   mouvement (pas juste au point de départ) pour que le pan suive le doigt. */
+function _paintStartPinch(e){
+  if(!_paint || !e.touches || e.touches.length < 2) return;
+  const canvas = _paint.canvas;
+  const r = canvas.getBoundingClientRect();
+  const t0 = e.touches[0], t1 = e.touches[1];
+  const midClientX = (t0.clientX + t1.clientX) / 2, midClientY = (t0.clientY + t1.clientY) / 2;
+  const cx = (midClientX - r.left) * (canvas.width/r.width), cy = (midClientY - r.top) * (canvas.height/r.height);
+  _paint._pinching = true;
+  _paint._pinchStartDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+  _paint._pinchStartScale = _paint.view.scale;
+  _paint._pinchWorldAnchor = _paintScreenToWorld(cx, cy); // point du monde à garder sous les doigts
+}
+function _paintPinchMove(e){
+  if(!_paint || !_paint._pinching || !e.touches || e.touches.length < 2) return;
+  const canvas = _paint.canvas;
+  const r = canvas.getBoundingClientRect();
+  const t0 = e.touches[0], t1 = e.touches[1];
+  const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+  const midClientX = (t0.clientX + t1.clientX) / 2, midClientY = (t0.clientY + t1.clientY) / 2;
+  const cx = (midClientX - r.left) * (canvas.width/r.width), cy = (midClientY - r.top) * (canvas.height/r.height);
+  const ratio = dist / _paint._pinchStartDist;
+  const v = _paint.view;
+  const newScale = Math.min(8, Math.max(0.25, _paint._pinchStartScale * ratio));
+  const u = _paintUnrotateScreenPoint(cx, cy);
+  const w = _paint._pinchWorldAnchor;
+  v.scale = newScale;
+  v.x = u.x - w.x * v.scale;
+  v.y = u.y - w.y * v.scale;
+  _paintRedraw();
 }
 
 function _paintRenderToolList(){
