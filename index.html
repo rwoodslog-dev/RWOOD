@@ -32244,9 +32244,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.146';
+const APP_VERSION = '5.41.147';
 
 const CHANGELOG = [
+  {
+    version: '5.41.147',
+    date: '22/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif — sur un cercle, un triangle ou une forme libre remplis d'un motif matériau (bois/béton/brique/isolant), un fragment de vague/motif restait visible collé au bord, donnant l'impression d'une ligne parasite qui déborde de la forme. Le contour est maintenant nettoyé automatiquement : bord net quelle que soit la forme (pointe fine, angle rentrant...)." },
+    ],
+  },
   {
     version: '5.41.146',
     date: '22/09/2026',
@@ -53435,6 +53442,42 @@ function _paintDrawFillPattern(ctx, material, x, y, w, h, dpr){
   ctx.restore();
 }
 
+/* v5.41.147 — CORRECTIF signalé par Rémi : sur un cercle/triangle/forme
+   libre (contour non rectangulaire), la dernière rangée du motif matériau
+   (ex. le veinage ondulé du bois) tombait pile sur le bord tracé en biais/
+   courbe — comme le motif est lui-même une ligne ondulée (pas un rectangle
+   plein), ce fragment de vague collé au contour donnait l'impression d'une
+   « vague » parasite qui déborde de la forme, même si le clip() empêchait
+   déjà tout débordement réel (vérifié). Le clip seul ne suffisait donc pas
+   à donner un bord visuellement PROPRE sur une forme non rectangulaire.
+   Solution : après avoir dessiné le motif (clippé à la forme), on repasse
+   une bande de nettoyage — le contour de la forme retracé en STROKE épais,
+   dans la couleur de FOND du matériau, elle-même clippée à l'intérieur de
+   la forme — qui efface tout fragment de motif touchant le bord, quelle
+   que soit sa géométrie (angle aigu, pointe fine, courbe). Fonctionne pour
+   n'importe quel motif (vagues, points, hachures verticales), et pour la
+   couleur pleine il n'y a de toute façon aucun motif à nettoyer, donc rien
+   à changer là. `pathFn` retrace le CONTOUR EXACT de la forme (appelé deux
+   fois : une pour le clip du motif, une pour le clip + stroke du nettoyage). */
+function _paintDrawFillPatternClean(ctx, material, x, y, w, h, dpr, pathFn){
+  const mat = PAINT_MATERIALS[material];
+  if(!mat) return;
+  ctx.save();
+  pathFn();
+  ctx.clip();
+  _paintDrawFillPattern(ctx, material, x, y, w, h, dpr);
+  // Bande de nettoyage : assez large pour couvrir la plus grande amplitude/
+  // rayon utilisés par un motif (le bois oscille de ±step*0.22, step=9*dpr),
+  // avec une marge confortable — jamais proportionnelle à w/h de la forme.
+  const bandWidth = 10 * (dpr||1);
+  pathFn();
+  ctx.strokeStyle = mat.base;
+  ctx.lineWidth = bandWidth;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
 /* v5.41.124 — dessinée le long d'un SEGMENT (x1,y1 → x2,y2), comme une
    ligne : la longueur et l'orientation du tracé deviennent celles de la
    quincaillerie. `dpr` sert à garder les hachures/traits secondaires à une
@@ -53683,30 +53726,35 @@ function _paintDrawOneShape(ctx, s){
     // v5.41.146 — motif matériau (bois/béton/…) sur un cercle : on clippe
     // sur le contour exact de l'ellipse puis on dessine le motif dans son
     // rectangle englobant (le clip() empêche tout débordement hors cercle).
+    // v5.41.147 — + bande de nettoyage le long du bord (voir
+    // _paintDrawFillPatternClean) pour un contour visuellement propre.
     if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
-    else if(s.fill){ ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, cx-rx, cy-ry, rx*2, ry*2, _paint.dpr); ctx.restore(); }
+    else if(s.fill){ _paintDrawFillPatternClean(ctx, s.fill, cx-rx, cy-ry, rx*2, ry*2, _paint.dpr, () => { ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); }); }
     ctx.stroke();
   } else if(s.type === 'triangle'){
     const cx = (s.x1+s.x2)/2;
     const tx0 = Math.min(s.x1,s.x2), ty0 = Math.min(s.y1,s.y2);
-    ctx.beginPath(); ctx.moveTo(cx, s.y1); ctx.lineTo(s.x1, s.y2); ctx.lineTo(s.x2, s.y2); ctx.closePath();
+    const traceTriangle = () => { ctx.beginPath(); ctx.moveTo(cx, s.y1); ctx.lineTo(s.x1, s.y2); ctx.lineTo(s.x2, s.y2); ctx.closePath(); };
+    traceTriangle();
     if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
-    else if(s.fill){ ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, tx0, ty0, Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1), _paint.dpr); ctx.restore(); }
+    else if(s.fill){ _paintDrawFillPatternClean(ctx, s.fill, tx0, ty0, Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1), _paint.dpr, traceTriangle); }
     ctx.stroke();
   } else if(s.type === 'polygon'){
     // v5.41.146 — forme libre fermée : tracée point à point (outil « Forme
     // libre »), remplissable comme rectangle/cercle/triangle (couleur pleine
     // ou motif matériau), le clip() garantissant que le motif ne déborde
     // jamais du contour réel (utile pour une forme non convexe).
+    // v5.41.147 — + bande de nettoyage le long du bord (voir
+    // _paintDrawFillPatternClean), utile surtout sur une forme non convexe
+    // (angles rentrants) où un fragment de motif collait visiblement au bord.
     if(s.points && s.points.length >= 2){
-      ctx.beginPath();
-      s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.closePath();
+      const tracePolygon = () => { ctx.beginPath(); s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y)); ctx.closePath(); };
+      tracePolygon();
       if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
       else if(s.fill){
         const xs = s.points.map(p=>p.x), ys = s.points.map(p=>p.y);
         const px0 = Math.min(...xs), py0 = Math.min(...ys);
-        ctx.save(); ctx.clip(); _paintDrawFillPattern(ctx, s.fill, px0, py0, Math.max(...xs)-px0, Math.max(...ys)-py0, _paint.dpr); ctx.restore();
+        _paintDrawFillPatternClean(ctx, s.fill, px0, py0, Math.max(...xs)-px0, Math.max(...ys)-py0, _paint.dpr, tracePolygon);
       }
       ctx.stroke();
     }
