@@ -32616,9 +32616,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.167';
+const APP_VERSION = '5.41.168';
 
 const CHANGELOG = [
+  {
+    version: '5.41.168',
+    date: '22/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif goujon/écrou/écrou borgne — le motif (alvéoles, filetage, dôme) était toujours dessiné dans le sens de la largeur, donc tracer la même pièce à la verticale (au lieu de l'horizontale) donnait un rendu différent. Le motif suit maintenant toujours le grand côté de la pièce tracée (sa longueur), quel que soit le sens dans lequel elle a été posée — même rendu à l'horizontale, à la verticale ou en biais." },
+    ],
+  },
   {
     version: '5.41.167',
     date: '22/09/2026',
@@ -54977,6 +54984,25 @@ const PAINT_METAL_FILL = '#B9BCC1';
 function _paintDrawSymbolRect(ctx, symbol, x1, y1, x2, y2, color, dpr){
   const bx = Math.min(x1,x2), by = Math.min(y1,y2), bw = Math.abs(x2-x1), bh = Math.abs(y2-y1);
   if(bw < 1 || bh < 1) return;
+  // v5.41.168 — CORRECTIF « rendu différent à l'horizontale/à la verticale »
+  // (signalé par Rémi, captures à l'appui) : avant, les alvéoles/hachures
+  // étaient toujours dessinées comme des lignes VERTICALES divisant la
+  // largeur (bw), et l'orientation des hachures du goujon dépendait aussi
+  // directement de bw/bh — donc tracer la même pièce en la faisant plus
+  // haute que large (glisser vers le bas) donnait un dessin complètement
+  // différent de la faire plus large que haute. Le motif est maintenant
+  // construit dans un repère local aligné sur le grand côté de la boîte
+  // (le long axe = la longueur de la pièce, le petit côté = son diamètre) :
+  // ux/uy pointe le long de la longueur, px/py perpendiculaire — les
+  // alvéoles/hachures sont toujours perpendiculaires à la longueur, qu'on
+  // ait tracé la boîte à l'horizontale, à la verticale ou en biais.
+  const horiz = bw >= bh;
+  const length = horiz ? bw : bh;   // grande dimension = longueur de la pièce
+  const diam = horiz ? bh : bw;     // petite dimension = diamètre/largeur
+  const ux = horiz ? 1 : 0, uy = horiz ? 0 : 1;       // le long de la longueur
+  const px = horiz ? 0 : 1, py = horiz ? 1 : 0;       // perpendiculaire (le long du diamètre)
+  const ox = bx, oy = by; // origine locale = coin haut-gauche de la boîte
+  const pt = (a,b) => ({ x: ox + a*ux + b*px, y: oy + a*uy + b*py }); // a = le long de la longueur, b = le long du diamètre
   // v5.41.133 — fond gris métallisé, dessiné AVANT le contour/motif.
   ctx.save();
   ctx.fillStyle = PAINT_METAL_FILL;
@@ -54984,48 +55010,58 @@ function _paintDrawSymbolRect(ctx, symbol, x1, y1, x2, y2, color, dpr){
   ctx.restore();
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(2, 2*(dpr||1));
-  const cellGap = 11 * (dpr||1); // espacement FIXE entre montants/alvéoles, jamais proportionnel à bw
+  const cellGap = 11 * (dpr||1); // espacement FIXE entre montants/alvéoles, jamais proportionnel à la taille
   if(symbol === 'gougon'){
     // v5.41.133 — striage façon FILETAGE (hachures obliques, comme la vis),
     // et non plus des montants verticaux droits, sur demande de Rémi.
     ctx.strokeRect(bx, by, bw, bh);
     ctx.save();
     ctx.beginPath(); ctx.rect(bx, by, bw, bh); ctx.clip();
-    const tickLen = Math.min(bw, bh) * 0.35; // longueur de chaque hachure, bornée par la petite dimension
-    for(let cy = by + cellGap*0.6; cy < by + bh + bw; cy += cellGap){
-      // Hachure oblique (45°) traversant la largeur, comme le filetage d'une vis.
+    const tickLen = diam * 0.7; // longueur de chaque hachure, bornée par le diamètre
+    for(let a = -diam; a < length + diam; a += cellGap){
+      // Hachure oblique (45°, dans le repère local) traversant le diamètre,
+      // comme le filetage d'une vis — toujours perpendiculaire à la longueur.
+      const p1 = pt(a, 0), p2 = pt(a + tickLen, diam);
       ctx.beginPath();
-      ctx.moveTo(bx, cy);
-      ctx.lineTo(bx + tickLen, cy - tickLen);
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
     ctx.restore();
   } else if(symbol === 'ecrou'){
-    // Écrou : contour rectangulaire divisé en 4 cellules verticales égales (comme le pictogramme).
+    // Écrou : contour rectangulaire divisé en 4 cellules égales le long de
+    // la longueur (comme le pictogramme), quelle que soit l'orientation.
     ctx.strokeRect(bx, by, bw, bh);
     const nCells = 4;
     for(let k=1;k<nCells;k++){
-      const cx = bx + (bw*k/nCells);
-      ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by+bh); ctx.stroke();
+      const p1 = pt(length*k/nCells, 0), p2 = pt(length*k/nCells, diam);
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     }
   } else if(symbol === 'ecrouB'){
-    // Écrou borgne : même corps que l'écrou (4 cellules verticales), surmonté
-    // d'un dôme (arc) qui ferme le haut — comme le pictogramme de référence.
+    // Écrou borgne : même corps que l'écrou (4 cellules), surmonté d'un dôme
+    // (arc) qui ferme l'extrémité « a=0 » — comme le pictogramme de référence.
     // Le dôme reçoit aussi le fond gris métallisé, pour rester une seule
     // pièce visuellement cohérente (pas de blanc entre corps et dôme).
+    // L'arc est dessiné dans le repère local (centre = pt(0, diam/2), rayon
+    // = diam/2), puis son plan de base tourné pour matcher ux/uy/px/py —
+    // ctx.arc ne connaît que des angles écran, donc on pivote le contexte.
     ctx.save();
+    const domeCenter = pt(0, diam/2);
+    const domeAngle = Math.atan2(py, px); // direction de l'axe perpendiculaire (b croissant) à l'écran
+    ctx.translate(domeCenter.x, domeCenter.y);
+    ctx.rotate(domeAngle - Math.PI/2); // aligne le "haut" du dôme (b=0, a<0) vers -a local
     ctx.fillStyle = PAINT_METAL_FILL;
-    ctx.beginPath(); ctx.arc(bx + bw/2, by, bw/2, Math.PI, 0, false); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, diam/2, Math.PI, 0, false); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.arc(0, 0, diam/2, Math.PI, 0, false); ctx.stroke();
     ctx.restore();
+    ctx.strokeStyle = color;
     ctx.strokeRect(bx, by, bw, bh);
     const nCells = 4;
     for(let k=1;k<nCells;k++){
-      const cx = bx + (bw*k/nCells);
-      ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by+bh); ctx.stroke();
+      const p1 = pt(length*k/nCells, 0), p2 = pt(length*k/nCells, diam);
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
     }
-    ctx.beginPath();
-    ctx.arc(bx + bw/2, by, bw/2, Math.PI, 0, false);
-    ctx.stroke();
   }
 }
 
