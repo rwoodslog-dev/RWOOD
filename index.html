@@ -32556,9 +32556,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.159';
+const APP_VERSION = '5.41.160';
 
 const CHANGELOG = [
+  {
+    version: '5.41.160',
+    date: '22/09/2026',
+    entries: [
+      { icon: '👥', text: "Feuille de route → « Dépannage fini » : la liste « Synchro ouvrier » propose maintenant TOUS les comptes ouvrier de l'équipe (comme dans Alertes conducteur), pas seulement le carnet local du chef — qui restait vide s'il n'y avait jamais ajouté d'ouvrier lui-même." },
+    ],
+  },
   {
     version: '5.41.159',
     date: '22/09/2026',
@@ -52056,25 +52063,28 @@ async function routeOnPopupOpen(){
 function _routeCurrentStop(r){ return (r.stops||[]).find(s => s.status !== 'done') || null; }
 function _routeJsArg(str){ return escapeHtml(JSON.stringify(String(str||''))); }
 
-/* v5.41.155 — candidats "ouvriers à synchroniser" pour un stop donné.
-   v5.41.154 ne proposait que route.recipients + site.assignedWorkers : vide
-   dès que le chef teste/exécute sa PROPRE feuille de route (il est le seul
-   destinataire, donc exclu de la liste) — aucune section ne s'affichait,
-   signalé par Rémi. Source principale désormais : le carnet d'ouvriers local
-   du chef (data.workers, le même que celui de la fiche d'heures / bouton
-   "Ajouter un ouvrier") — toujours peuplé, disponible hors-ligne, pas besoin
-   d'un authId réseau. route.recipients + site.assignedWorkers restent inclus
-   en complément (utile côté ouvrier qui suit la feuille d'un chef). */
-function _routeTeamCandidatesFor(route, stop){
+/* v5.41.160 — candidats "ouvriers à synchroniser" pour un stop donné.
+   v5.41.155 se basait sur le carnet LOCAL du chef (data.workers, le même
+   que la fiche d'heures) : marche seulement si CE chef a lui-même ajouté
+   des ouvriers dans son propre carnet — vide sinon (cas de Rémi), signalé
+   comme "toujours vide" malgré le message d'aide. Sur demande explicite :
+   la liste doit dérouler TOUS les comptes de l'app dont le rôle est
+   "ouvrier" (même registre que l'écran "Alertes conducteur" — voir
+   _fetchUsersRegistry), pas seulement ceux du carnet local. Async (appel
+   réseau) — voir l'unique appelant _routeOfferPointage qui l'attend avant
+   d'ouvrir la modale. route.recipients + site.assignedWorkers restent
+   inclus en complément (couvre un ouvrier sans rôle "ouvrier" bien réglé
+   dans le registre, ou un chantier avec des assignés directs). */
+async function _routeTeamCandidatesFor(route, stop){
   const realSiteObj = stop && stop.siteId && (data.sites||[]).find(s => s.id === stop.siteId);
-  const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
   const myAuthId = _routeMyAuthId();
-  const candMap = new Map(); // clé = authId si connu, sinon 'local:' + id local
+  const candMap = new Map(); // clé = authId si connu, sinon 'local:' + id local du carnet
   const addCand = (key, c) => { if(key && !candMap.has(key)) candMap.set(key, c); };
-  (data.workers || []).forEach(w => {
-    if(!w || w.id === myWorkerId) return;
-    if(w.active === false) return;
-    addCand(w.authId || ('local:' + w.id), { authId: w.authId || null, workerId: w.id, name: w.name });
+  const users = await _fetchUsersRegistry().catch(() => []);
+  (users || []).forEach(u => {
+    if(!u || u.role !== 'ouvrier') return;
+    if(!u.authId || u.authId === myAuthId) return;
+    addCand(u.authId, { authId: u.authId, name: u.name });
   });
   (route && route.recipients || []).forEach(r => {
     if(r && r.authId && r.authId !== myAuthId) addCand(r.authId, { authId: r.authId, name: r.name });
@@ -52220,13 +52230,14 @@ async function _routeOfferPointage(stop, route){
   const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
   if(!myWorkerId) return; // rôle sans fiche d'heures (ex: comptable) — rien à proposer
   if(!confirm(`Ajouter « ${stop.name} » au pointage du jour ?`)) return;
-  // v5.41.156 — sur demande de Rémi : la section "Synchro ouvrier" doit être
+  // v5.41.160 — sur demande de Rémi : la section "Synchro ouvrier" doit être
   // TOUJOURS visible dans cette modale (jamais masquée), avec la liste de
-  // TOUS les ouvriers du carnet (data.workers) — pas seulement ceux liés à
-  // la feuille de route ou au chantier. Coché ici → pointés automatiquement
-  // en même temps que moi (mêmes heures, même tâche), dans l'ordre où les
-  // chantiers de la feuille de route sont terminés.
-  const teamCandidates = _routeTeamCandidatesFor(route, stop);
+  // TOUS les comptes ouvrier de l'app (registre — voir
+  // _routeTeamCandidatesFor), pas seulement le carnet local du chef. Coché
+  // ici → pointés automatiquement en même temps que moi (mêmes heures, même
+  // tâche), dans l'ordre où les chantiers de la feuille de route sont
+  // terminés.
+  const teamCandidates = await _routeTeamCandidatesFor(route, stop);
   // v5.41.120 — au lieu d'un simple prompt() texte pour la durée, une vraie
   // petite modale reprenant EXACTEMENT les deux champs de la fiche de
   // pointage multi-chantier : heures + tâche (TRANCHES), pour que ce soit
@@ -52241,7 +52252,7 @@ async function _routeOfferPointage(stop, route){
     const teamHtml = `
         <div class="field" style="margin-bottom:14px;">
           <label>👥 Synchro ouvrier</label>
-          <div class="hint" style="margin-bottom:6px;">Coche qui était avec toi — même heures, même tâche, ajoutées et validées avec ta fiche.</div>
+          <div class="hint" style="margin-bottom:6px;">Coche qui était avec toi : liste des ouvriers</div>
           ${teamCandidates.length ? `
           <div id="rpTeamList" style="display:flex;flex-direction:column;gap:6px;max-height:32vh;overflow-y:auto;">
             ${teamCandidates.map((w,i) => `
@@ -52250,7 +52261,7 @@ async function _routeOfferPointage(stop, route){
                   onchange="document.getElementById('rpTeamRow_${i}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
                 <span style="font-weight:700;font-size:13px;">🔧 ${escapeHtml(w.name||'Ouvrier')}</span>
               </label>`).join('')}
-          </div>` : `<div class="hint" style="padding:8px 0;">Aucun ouvrier dans ton carnet — ajoutes-en dans Pointages → Ajouter un ouvrier.</div>`}
+          </div>` : `<div class="hint" style="padding:8px 0;">Aucun compte ouvrier trouvé dans l'équipe.</div>`}
         </div>`;
     div.innerHTML = `
       <div class="modal">
