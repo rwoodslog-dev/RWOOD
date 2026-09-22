@@ -32438,9 +32438,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.156';
+const APP_VERSION = '5.41.157';
 
 const CHANGELOG = [
+  {
+    version: '5.41.157',
+    date: '22/09/2026',
+    entries: [
+      { icon: '╌╌╌', text: "Croquis Paint : le bouton « Style du trait » (continu / pointillé continu / point-trait alterné) est maintenant visible dès que l'outil Ligne ou Distance est actif — avant, il n'apparaissait qu'après avoir déjà tracé et sélectionné une ligne, invisible pour créer une ligne pointillée directement." },
+      { icon: '✕', text: "Croquis Paint : la croix « Épaisseur » se colle maintenant directement sur la ligne choisie (elle en était décalée)." },
+      { icon: '˅', text: "Croquis Paint : le repère « Axe » est repensé en V façon tipi toujours pointé vers le haut à l'écran, et tous les symboles (Épaisseur/Axe/Rameneret) sont agrandis." },
+    ],
+  },
   {
     version: '5.41.156',
     date: '22/09/2026',
@@ -52880,10 +52889,11 @@ function openPaintSketchTool(onSave, existingPaint){
               <button type="button" id="paintMarkerBtn_rameneret" class="btn btn-outline" onclick="_paintArmMarker('rameneret')" style="width:100%;padding:7px 8px;font-size:12px;font-weight:700;">Z Rameneret</button>
             </div>
           </div>
-          <!-- v5.41.151 — style du trait (continu/tirets/pointillés), appliqué
-               à la forme sélectionnée (outils Ligne/Distance) — voir
-               _paintCycleSelectedDash(). Visible seulement quand la forme
-               sélectionnée est de type ligne/distance (_paintUpdateDashRow). -->
+          <!-- v5.41.157 — style du trait (continu/pointillé continu/point-trait
+               alterné) : visible dès que l'outil Ligne/Distance est actif (choix
+               AVANT de tracer, mémorisé et appliqué à la prochaine ligne), et
+               aussi quand une ligne/cote déjà tracée est sélectionnée (modifie
+               alors cette forme) — voir _paintCycleSelectedDash()/_paintUpdateDashRow(). -->
           <div id="paintDashRow" class="paint-sb-group" style="display:none;">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Style du trait</div>
             <button type="button" id="paintDashBtn" class="btn btn-outline" style="width:100%;" onclick="_paintCycleSelectedDash()">─── Continu</button>
@@ -53332,7 +53342,7 @@ function openPaintSketchTool(onSave, existingPaint){
         const txt = prompt('Texte à afficher sur la cote (ex. une longueur) :', '');
         if(txt !== null){
           _paintPushHistory();
-          _paint.shapes.push({ type:'distance', x1, y1, x2, y2, text:(txt||'').trim(), color:_paint.color, width:_paint.lineWidth*dpr, dash:null });
+          _paint.shapes.push({ type:'distance', x1, y1, x2, y2, text:(txt||'').trim(), color:_paint.color, width:_paint.lineWidth*dpr, dash: _paint.pendingDash || null });
         }
       }
     } else if(_paint.tool === 'erase' && _paint.current){
@@ -53343,9 +53353,11 @@ function openPaintSketchTool(onSave, existingPaint){
     } else if(isShapeTool && _paint.current){
       _paintPushHistory();
       const shape = { type:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color, width:_paint.lineWidth*dpr };
-      // v5.41.151 — style de trait (continu/tirets/pointillés), modifiable
-      // ensuite via le menu ⋮ de la forme sélectionnée — voir paintDashRow.
-      if(_paint.tool === 'line') shape.dash = null;
+      // v5.41.157 — style de trait choisi AVANT de tracer via le bouton
+      // "Style du trait" (visible dès que l'outil Ligne est actif — voir
+      // _paintUpdateDashRow/_paintCycleSelectedDash), modifiable ensuite
+      // aussi après coup sur la forme sélectionnée.
+      if(_paint.tool === 'line') shape.dash = _paint.pendingDash || null;
       // v5.41.127 — un rectangle peut porter un remplissage matériau
       // (bois/béton/brique creuse), dessiné en dessous de son contour.
       // v5.41.138 — « Couleur pleine » : disponible aussi pour cercle et
@@ -53539,6 +53551,7 @@ function _paintSetTool(id){
   _paintRenderSymbolList();
   _paintUpdateFontSizeRow();
   _paintUpdateFillRow();
+  _paintUpdateDashRow();
   const wrap = document.getElementById('paintCanvasWrap');
   if(wrap) wrap.style.cursor = id === 'select' ? 'default' : (id === 'text' ? 'text' : 'crosshair');
   _paintRedraw();
@@ -53608,30 +53621,47 @@ function _paintUpdateDeleteBtn(){
   _paintUpdateDashRow();
 }
 const PAINT_DASH_CYCLE = [null, 'dashed', 'dotted'];
-const PAINT_DASH_LABEL = { null: '─── Continu', dashed: '╌╌╌ Tirets', dotted: '-·-·- Trait-point' };
-/* v5.41.151 — affiche/masque le bouton de style de trait selon le type de
-   la forme sélectionnée (ligne/distance uniquement — même principe que le
-   bouton de style dans le menu de segment de "Croquis avec côtes"). */
+const PAINT_DASH_LABEL = { null: '─── Continu', dashed: '╌╌╌ Pointillé continu', dotted: '-·-·- Point-trait alterné' };
+/* v5.41.157 — le bouton de style de trait n'était visible qu'APRÈS avoir
+   dessiné une ligne ET l'avoir sélectionnée : invisible/introuvable au
+   moment de dessiner, signalé par Rémi ("je vois pas la possibilité de
+   créer des lignes pointillées"). Il est maintenant visible dès que l'outil
+   Ligne/Distance est actif (choix AVANT de tracer, mémorisé dans
+   _paint.pendingDash et appliqué à la prochaine ligne tracée), et reste
+   aussi disponible après coup sur une ligne déjà tracée et sélectionnée
+   (dans ce cas il modifie directement cette forme). */
 function _paintUpdateDashRow(){
   const row = document.getElementById('paintDashRow');
   if(!row) return;
   const s = (_paint && _paint.selectedIdx >= 0) ? _paint.shapes[_paint.selectedIdx] : null;
-  const applicable = s && (s.type === 'line' || s.type === 'distance');
+  const editingShape = s && (s.type === 'line' || s.type === 'distance');
+  const drawingTool = _paint && !editingShape && (_paint.tool === 'line' || _paint.tool === 'distance');
+  const applicable = editingShape || drawingTool;
   row.style.display = applicable ? 'block' : 'none';
   if(applicable){
     const btn = document.getElementById('paintDashBtn');
-    if(btn) btn.textContent = PAINT_DASH_LABEL[s.dash || null];
+    const current = editingShape ? (s.dash || null) : (_paint.pendingDash || null);
+    if(btn) btn.textContent = PAINT_DASH_LABEL[current];
   }
 }
 function _paintCycleSelectedDash(){
-  if(!_paint || _paint.selectedIdx < 0) return;
-  const s = _paint.shapes[_paint.selectedIdx];
-  if(!s || (s.type !== 'line' && s.type !== 'distance')) return;
-  _paintPushHistory();
-  const curIdx = PAINT_DASH_CYCLE.indexOf(s.dash || null);
-  s.dash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
-  _paintUpdateDashRow();
-  _paintRedraw();
+  if(!_paint) return;
+  const s = (_paint.selectedIdx >= 0) ? _paint.shapes[_paint.selectedIdx] : null;
+  if(s && (s.type === 'line' || s.type === 'distance')){
+    _paintPushHistory();
+    const curIdx = PAINT_DASH_CYCLE.indexOf(s.dash || null);
+    s.dash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
+    _paintUpdateDashRow();
+    _paintRedraw();
+    return;
+  }
+  // Pas de forme sélectionnée : on change le style qui sera appliqué à la
+  // PROCHAINE ligne/cote tracée (outil Ligne/Distance actif).
+  if(_paint.tool === 'line' || _paint.tool === 'distance'){
+    const curIdx = PAINT_DASH_CYCLE.indexOf(_paint.pendingDash || null);
+    _paint.pendingDash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
+    _paintUpdateDashRow();
+  }
 }
 function _paintDeleteSelected(){
   if(!_paint || _paint.selectedIdx < 0) return;
@@ -54181,8 +54211,11 @@ function _paintShapeBounds(s){
     // v5.41.151 — un repère s'étend perpendiculairement à s.x1/y1→s.x2/y2
     // (qui n'encode qu'une direction, pas une vraie ligne affichée) : cadre
     // englobant = un carré fixe autour de l'ancre (s.x1,s.y1), assez large
-    // pour couvrir le plus grand des 3 symboles (rameneret, ~17*dpr de rayon).
-    const r = 22 * (_paint ? _paint.dpr : 1);
+    // pour couvrir le plus grand des 3 symboles.
+    // v5.41.157 — symboles agrandis (sz 10→20) : axe en "V" fixe vers le haut
+    // s'étend maintenant à sz*2.4 (~48*dpr) au-dessus de l'ancre, le rayon
+    // englobant doit suivre pour rester cliquable/sélectionnable partout.
+    const r = 52 * (_paint ? _paint.dpr : 1);
     return { x1:s.x1-r, y1:s.y1-r, x2:s.x1+r, y2:s.y1+r };
   }
   // 'symbol' (vis/goujon/pointe) se place comme 'line'/'rect'/'circle'/'triangle' : x1/y1/x2/y2.
@@ -54788,15 +54821,19 @@ function _paintDrawMarkerShape(ctx, s, dpr){
   const ux = dx/len, uy = dy/len, nx = -uy, ny = ux;
   const ax = s.x1, ay = s.y1;
   const pt = (a,b) => ({ x: ax + a*ux + b*nx, y: ay + a*uy + b*ny });
-  const sz = 10 * dpr;
+  // v5.41.157 — symboles agrandis (trop petits sur demande de Rémi) : taille
+  // de base doublée (10 → 20).
+  const sz = 20 * dpr;
   const SQ = Math.SQRT1_2;
   ctx.save();
   ctx.strokeStyle = s.color || '#1a1206';
   ctx.lineWidth = s.width || (2.2*dpr);
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   if(s.markerType === 'epaisseur'){
-    const side = s.side || 1;
-    const off = pt(0, side * 16*dpr);
+    // v5.41.157 — la croix doit être COLLÉE sur la ligne choisie (l'ancrage
+    // ax,ay est déjà UN POINT DE LA LIGNE) : plus de décalage perpendiculaire
+    // (l'ancien `off` la détachait de 16px du trait, signalé par Rémi).
+    const off = pt(0, 0);
     const d1x = ux*SQ + nx*SQ, d1y = uy*SQ + ny*SQ;
     const d2x = ux*SQ - nx*SQ, d2y = uy*SQ - ny*SQ;
     ctx.beginPath();
@@ -54804,8 +54841,13 @@ function _paintDrawMarkerShape(ctx, s, dpr){
     ctx.moveTo(off.x - d2x*sz, off.y - d2y*sz); ctx.lineTo(off.x + d2x*sz, off.y + d2y*sz);
     ctx.stroke();
   } else if(s.markerType === 'axe'){
-    const backLen = sz * 1.3, armW = sz;
-    const tip1 = pt(-backLen, armW), tip2 = pt(-backLen, -armW);
+    // v5.41.157 — repensé en "V" façon tipi TOUJOURS pointé vers le HAUT à
+    // l'écran (indépendant de l'orientation de la ligne choisie — avant le
+    // V suivait l'axe de la ligne, ce n'était pas ce que Rémi voulait), la
+    // pointe posée sur le point d'ancrage, au moins 2× plus grand qu'avant.
+    const armLen = sz * 2.4, spread = sz * 1.3;
+    const tip1 = { x: ax - spread, y: ay - armLen };
+    const tip2 = { x: ax + spread, y: ay - armLen };
     ctx.beginPath();
     ctx.moveTo(tip1.x, tip1.y); ctx.lineTo(ax, ay); ctx.lineTo(tip2.x, tip2.y);
     ctx.stroke();
