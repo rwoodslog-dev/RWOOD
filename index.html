@@ -5780,7 +5780,20 @@
 
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <div class="section-title" style="margin-top:0;margin-bottom:0;">Conversations</div>
-          <button class="btn btn-outline btn-sm" id="alertesNewConvBtn" onclick="_openNewRecipientPicker()" title="Nouveau destinataire" style="display:none;flex-shrink:0;">+ Nouveau</button>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            <!-- v5.41.159 — permet de supprimer une ou plusieurs conversations
+                 d'un coup (demande de Rémi : "ça s'accumule") — voir
+                 _chatToggleSelectMode/_chatDeleteSelected. -->
+            <button class="btn btn-outline btn-sm" id="alertesSelectModeBtn" onclick="_chatToggleSelectMode()" title="Sélectionner des conversations à supprimer" style="display:none;">Sélectionner</button>
+            <button class="btn btn-outline btn-sm" id="alertesNewConvBtn" onclick="_openNewRecipientPicker()" title="Nouveau destinataire" style="display:none;">+ Nouveau</button>
+          </div>
+        </div>
+        <div id="alertesChatSelectBar" style="display:none;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding:8px 10px;background:var(--card);border:1.5px solid var(--line);border-radius:9px;">
+          <span id="alertesChatSelectCount" style="font-size:12.5px;font-weight:700;color:var(--ink-soft);">0 sélectionnée(s)</span>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="_chatToggleSelectMode()">Annuler</button>
+            <button type="button" class="btn btn-sm" id="alertesChatDeleteBtn" onclick="_chatDeleteSelected()" style="background:#c0392b;color:#fff;border:none;">🗑️ Supprimer</button>
+          </div>
         </div>
         <div id="alertesChatList" style="margin:12px 0 20px 0;"></div>
 
@@ -13801,17 +13814,63 @@ async function _myConversationsGroupedByPerson(){
   return { people, broadcast };
 }
 
+// v5.41.159 — mode "Sélectionner" pour supprimer une ou plusieurs
+// conversations d'un coup (demande de Rémi : la liste s'accumule). Suit les
+// CLÉS de conversation cochées (r.key), pas les index (qui changent à
+// chaque re-render). Réinitialisé à chaque ouverture/fermeture du mode.
+let _chatSelectMode = false;
+let _chatSelectedKeys = new Set();
+function _chatToggleSelectMode(){
+  _chatSelectMode = !_chatSelectMode;
+  _chatSelectedKeys = new Set();
+  renderAlertesChatList();
+}
+function _chatToggleRowSelected(key, checked){
+  if(checked) _chatSelectedKeys.add(key); else _chatSelectedKeys.delete(key);
+  const bar = document.getElementById('alertesChatSelectBar');
+  const count = document.getElementById('alertesChatSelectCount');
+  if(count) count.textContent = _chatSelectedKeys.size + ' sélectionnée(s)';
+  if(bar) bar.style.display = 'flex';
+}
+/* Supprime TOUTES les alertes des conversations cochées, de MA conversation
+   uniquement (même mécanique que "Supprimer" un message isolé dans un fil —
+   voir _deleteAlertFromMyConversation/convDeletedBy) : ça ne touche jamais
+   ce que l'autre personne voit de son côté, seulement ma propre liste. */
+async function _chatDeleteSelected(){
+  if(!_chatSelectedKeys.size){ showToast('Sélectionne au moins une conversation'); return; }
+  const n = _chatSelectedKeys.size;
+  if(!confirm(`Supprimer définitivement ${n} conversation${n>1?'s':''} ?\n\nElles ne réapparaîtront plus jamais ici, même après resynchronisation.`)) return;
+  const rows = (_alertesChatRowsCache || []).filter(r => _chatSelectedKeys.has(r.key));
+  const alertIds = [];
+  rows.forEach(r => (r.alerts||[]).forEach(a => alertIds.push(a.id)));
+  for(const id of alertIds){ await _deleteAlertFromMyConversation(id); }
+  _chatSelectMode = false;
+  _chatSelectedKeys = new Set();
+  showToast(`🗑️ ${n} conversation${n>1?'s':''} supprimée${n>1?'s':''}`);
+  await renderAlertesChatList();
+}
 async function renderAlertesChatList(){
   const el = document.getElementById('alertesChatList');
   if(!el) return;
   const { people, broadcast } = await _myConversationsGroupedByPerson();
+
+  const selModeBtn = document.getElementById('alertesSelectModeBtn');
+  const selBar = document.getElementById('alertesChatSelectBar');
 
   if(!people.length && !broadcast.length){
     const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
     const canStartNew = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable' || myRole === 'chef';
     el.innerHTML = '<div class="hint" style="text-align:center;padding:12px 0;">Aucune conversation pour le moment' + (canStartNew ? ' — choisis un destinataire ci-dessous pour commencer.' : '.') + '</div>';
     _alertesChatRowsCache = [];
+    if(selModeBtn) selModeBtn.style.display = 'none';
+    if(selBar) selBar.style.display = 'none';
     return;
+  }
+  if(selModeBtn) selModeBtn.style.display = '';
+  if(selBar) selBar.style.display = _chatSelectMode ? 'flex' : 'none';
+  if(_chatSelectMode){
+    const count = document.getElementById('alertesChatSelectCount');
+    if(count) count.textContent = _chatSelectedKeys.size + ' sélectionnée(s)';
   }
 
   const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐' };
@@ -13829,8 +13888,13 @@ async function renderAlertesChatList(){
     const avatar = r.type === 'broadcast'
       ? `<div style="width:38px;height:38px;border-radius:50%;background:var(--wood);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">🌍</div>`
       : `<div style="width:38px;height:38px;border-radius:50%;background:var(--bg-elev);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">👤</div>`;
+    const checked = _chatSelectedKeys.has(r.key);
+    const checkbox = _chatSelectMode ? `
+      <input type="checkbox" data-chat-select-key="${escapeHtml(r.key)}" ${checked?'checked':''}
+        style="width:20px;height:20px;accent-color:#c0392b;flex-shrink:0;" onclick="event.stopPropagation()">` : '';
     return `
-    <div class="card" data-chat-idx="${idx}" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;">
+    <div class="card" data-chat-idx="${idx}" style="padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;${checked?'border-color:#c0392b;':''}">
+      ${checkbox}
       ${avatar}
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
@@ -13844,8 +13908,24 @@ async function renderAlertesChatList(){
   }).join('');
 
   el.querySelectorAll('[data-chat-idx]').forEach(card => {
-    card.addEventListener('click', () => openAlertesChatThread(parseInt(card.dataset.chatIdx)));
+    const idx = parseInt(card.dataset.chatIdx);
+    if(_chatSelectMode){
+      card.addEventListener('click', () => {
+        const cb = card.querySelector('[data-chat-select-key]');
+        if(!cb) return;
+        cb.checked = !cb.checked;
+        _chatToggleRowSelected(cb.dataset.chatSelectKey, cb.checked);
+        renderAlertesChatList();
+      });
+    } else {
+      card.addEventListener('click', () => openAlertesChatThread(idx));
+    }
   });
+  if(_chatSelectMode){
+    el.querySelectorAll('[data-chat-select-key]').forEach(cb => {
+      cb.addEventListener('change', () => _chatToggleRowSelected(cb.dataset.chatSelectKey, cb.checked));
+    });
+  }
 }
 
 /* v5.41.55 — Ouvre le "fil" d'une conversation : TOUTES les alertes entre
@@ -27296,6 +27376,44 @@ async function installApp(){
   if(isStandalone) btn.classList.add('hidden');
 })();
 
+/* v5.41.159 — Plein écran forcé sur PC, quel que soit l'ordinateur/affichage
+   (signalé par Rémi : sur un autre PC, l'appli s'ouvrait dans une fenêtre
+   avec bordures/barre de titre, pas en plein écran). Le manifest demande
+   maintenant "display":"fullscreen" en priorité (repli automatique sur
+   "standalone" si le système ne le permet pas), mais ça ne couvre que le
+   lancement depuis l'icône installée — pas un onglet de navigateur classique
+   ni un raccourci existant créé avant ce changement. On complète donc avec
+   l'API Fullscreen du navigateur : les navigateurs bloquent tout appel
+   automatique SANS geste utilisateur, donc on tente d'abord silencieusement
+   (fonctionne dans certains contextes PWA déjà installés), puis on arme un
+   écouteur one-shot sur la toute première interaction (clic/touche/touche
+   clavier) qui redemande le plein écran — couvre le cas où l'appel immédiat
+   a été refusé. Ne s'applique qu'à un écran suffisamment large (PC/tablette
+   — ≥860px, même seuil que le passage en sidebar), jamais sur téléphone où
+   le plein écran navigateur n'apporte rien (la barre du bas natif gère déjà
+   ça) et peut gêner (clavier virtuel, retour système, etc.). */
+(function initForceFullscreen(){
+  const isDesktopLike = window.matchMedia('(min-width:860px)').matches;
+  if(!isDesktopLike) return;
+  const canFullscreen = document.documentElement.requestFullscreen
+    || document.documentElement.webkitRequestFullscreen
+    || document.documentElement.msRequestFullscreen;
+  if(!canFullscreen) return;
+  const isAlreadyFullscreen = () => !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+  const tryEnterFullscreen = () => {
+    if(isAlreadyFullscreen()) return;
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    try{ req.call(el).catch(() => {}); }catch(e){ /* refusé sans geste — retenté au premier clic ci-dessous */ }
+  };
+  tryEnterFullscreen();
+  const onFirstGesture = () => {
+    tryEnterFullscreen();
+    ['pointerdown','keydown'].forEach(ev => document.removeEventListener(ev, onFirstGesture, true));
+  };
+  ['pointerdown','keydown'].forEach(ev => document.addEventListener(ev, onFirstGesture, true));
+})();
+
 /* ============ PARAMÈTRES ============ */
 // [Rémi — 09/2026] Toutes les sections démarrent fermées par défaut,
 // y compris "Mode" (avant : "mode" était forcé ouvert au premier chargement,
@@ -32438,9 +32556,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.158';
+const APP_VERSION = '5.41.159';
 
 const CHANGELOG = [
+  {
+    version: '5.41.159',
+    date: '22/09/2026',
+    entries: [
+      { icon: '🗑️', text: "Messagerie : bouton « Sélectionner » au-dessus des Conversations, pour cocher et supprimer une ou plusieurs conversations d'un coup (elles ne réapparaissent plus, même après resynchro) — jusqu'ici il fallait supprimer message par message dans chaque fil." },
+      { icon: '🖥️', text: "Plein écran forcé sur PC/tablette, quel que soit l'ordinateur : l'appli demande automatiquement le plein écran du navigateur au démarrage (et au premier clic si le navigateur l'a d'abord refusé) au lieu de rester dans une fenêtre avec bordures." },
+    ],
+  },
   {
     version: '5.41.158',
     date: '22/09/2026',
@@ -44478,6 +44604,11 @@ function renderAlertesTuile(){
   // (ouvrier) ouvrent directement un fil vide avec juste la zone Message.
   const newConvBtn = document.getElementById('alertesNewConvBtn');
   if(newConvBtn) newConvBtn.style.display = '';
+  // v5.41.159 — "Sélectionner" (suppression de conversations) : visible pour
+  // tous les rôles au même titre que "+ Nouveau", masqué seulement quand la
+  // liste est vide (voir renderAlertesChatList).
+  const selModeBtn = document.getElementById('alertesSelectModeBtn');
+  if(selModeBtn) selModeBtn.style.display = '';
   renderAlertesConducteurList();
 
   const receivedSection = document.getElementById('alertesReceivedSection');
