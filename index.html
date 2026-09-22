@@ -32438,9 +32438,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.150';
+const APP_VERSION = '5.41.151';
 
 const CHANGELOG = [
+  {
+    version: '5.41.151',
+    date: '22/09/2026',
+    entries: [
+      { icon: '✕', text: "Croquis Paint : nouveaux repères posables sur n'importe quelle ligne — Épaisseur (croix), Axe (V) et Rameneret (Z), comme dans Croquis avec côtes. Touche le bouton correspondant dans la sidebar puis une ligne du croquis pour poser le repère (reste actif pour en poser plusieurs à la suite)." },
+      { icon: '╌', text: "Croquis Paint : les lignes peuvent maintenant être en pointillés ou trait-point — sélectionne une ligne, un bouton « Style du trait » apparaît dans la sidebar pour faire défiler les styles." },
+      { icon: '↔', text: "Croquis Paint : nouvel outil « Distance » — glisse du point de départ au point d'arrivée pour tracer une cote avec une flèche à chaque bout, puis indique le texte à afficher dessus (ex. une longueur)." },
+      { icon: '🔤', text: "Croquis Paint : le mode texte « S'adapte » ne demande plus la taille de police — elle est calculée automatiquement pour remplir la zone tracée, il ne reste plus qu'à saisir le texte." },
+    ],
+  },
   {
     version: '5.41.150',
     date: '22/09/2026',
@@ -52666,6 +52676,10 @@ const PAINT_TOOLS = [
   { id:'text',     label:'Texte',      icon:'A' },
   { id:'erase',    label:'Découpe',    icon:'✂️' },
   { id:'eraseLine',label:'Découpe libre', icon:'〰️✂️' },
+  // v5.41.151 — cote de distance : glisser du point de départ au point
+  // d'arrivée trace une ligne avec une flèche à chaque bout, puis demande
+  // le texte à afficher dessus (ex. une longueur). Voir finishDraw.
+  { id:'distance', label:'Distance',   icon:'↔' },
 ];
 /* Quincaillerie — dessinée en vecteur (canvas), pas des images. Deux modes
    de pose, selon `placement` :
@@ -52751,6 +52765,28 @@ function openPaintSketchTool(onSave, existingPaint){
               <input type="color" id="paintFillColorInput" value="#4EA1FF" style="width:36px;height:30px;border-radius:6px;border:1.5px solid var(--line);background:none;cursor:pointer;padding:0;">
               <span style="font-size:11.5px;color:var(--ink-soft);">Couleur du remplissage</span>
             </div>
+          </div>
+          <!-- v5.41.151 — Repères posables sur n'importe quelle ligne (continue
+               ou pointillée) du croquis : Épaisseur (croix), Axe (V), Rameneret
+               (Z) — même principe que "Croquis avec côtes" (voir
+               _paintArmMarker/_paintPlaceMarkerAt). Un bouton "armé" reste actif
+               tant qu'on ne le désarme pas (pose multiple), le prochain clic sur
+               une ligne pose le repère dessus. -->
+          <div class="paint-sb-group">
+            <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Repères (sur une ligne)</div>
+            <div style="display:flex;flex-direction:column;gap:4px;">
+              <button type="button" id="paintMarkerBtn_epaisseur" class="btn btn-outline" onclick="_paintArmMarker('epaisseur')" style="width:100%;padding:7px 8px;font-size:12px;font-weight:700;">✕ Épaisseur</button>
+              <button type="button" id="paintMarkerBtn_axe" class="btn btn-outline" onclick="_paintArmMarker('axe')" style="width:100%;padding:7px 8px;font-size:12px;font-weight:700;">˅ Axe</button>
+              <button type="button" id="paintMarkerBtn_rameneret" class="btn btn-outline" onclick="_paintArmMarker('rameneret')" style="width:100%;padding:7px 8px;font-size:12px;font-weight:700;">Z Rameneret</button>
+            </div>
+          </div>
+          <!-- v5.41.151 — style du trait (continu/tirets/pointillés), appliqué
+               à la forme sélectionnée (outils Ligne/Distance) — voir
+               _paintCycleSelectedDash(). Visible seulement quand la forme
+               sélectionnée est de type ligne/distance (_paintUpdateDashRow). -->
+          <div id="paintDashRow" class="paint-sb-group" style="display:none;">
+            <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Style du trait</div>
+            <button type="button" id="paintDashBtn" class="btn btn-outline" style="width:100%;" onclick="_paintCycleSelectedDash()">─── Continu</button>
           </div>
           <div class="paint-sb-group">
             <div style="font-size:11px;font-weight:800;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Quincaillerie</div>
@@ -52861,6 +52897,10 @@ function openPaintSketchTool(onSave, existingPaint){
     panning: false, panStart: null, panViewStart: null,
     // v5.41.130 — redimensionnement via poignées sur la forme sélectionnée.
     resizing: false, resizeHandle: null, resizeShapeStart: null, resizeBoundsStart: null,
+    // v5.41.151 — repère actuellement "armé" (épaisseur/axe/rameneret) : le
+    // prochain clic sur une ligne du croquis pose ce repère dessus, voir
+    // _paintArmMarker/_paintPlaceMarkerAt. null = aucun repère en cours de pose.
+    markerArm: null,
   };
 
   if(existingPaint && Array.isArray(existingPaint.shapes) && existingPaint.shapes.length){
@@ -53032,6 +53072,15 @@ function openPaintSketchTool(onSave, existingPaint){
       return;
     }
     const p = pos(e);
+    // v5.41.151 — un repère (épaisseur/axe/rameneret) "armé" intercepte le
+    // clic pour se poser sur la ligne la plus proche, quel que soit l'outil
+    // actuellement sélectionné (comme côté "Croquis avec côtes") — reste
+    // armé après la pose pour en poser plusieurs à la suite.
+    if(_paint.markerArm){
+      const placed = _paintPlaceMarkerAt(p);
+      if(!placed) showToast('Touche une ligne du croquis pour y poser le repère');
+      return;
+    }
     if(_paint.tool === 'select'){
       // v5.41.130 — si une forme est déjà sélectionnée, on teste d'abord les
       // poignées de redimensionnement (coins) avant de tester un déplacement.
@@ -53174,7 +53223,19 @@ function openPaintSketchTool(onSave, existingPaint){
     _paint.drawing = false;
     const isShapeTool = ['line','rect','circle','triangle'].includes(_paint.tool);
     const isSymbolTool = PAINT_SYMBOLS.some(s => s.id === _paint.tool);
-    if(_paint.tool === 'erase' && _paint.current){
+    if(_paint.tool === 'distance' && _paint.current){
+      // v5.41.151 — Distance : glisser du point de départ au point d'arrivée
+      // trace une ligne avec une flèche à chaque bout, puis demande le texte
+      // (ex. une longueur) à afficher sur la ligne — voir _paintDrawDistanceShape.
+      const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
+      if(Math.hypot(x2-x1, y2-y1) >= 8*dpr){
+        const txt = prompt('Texte à afficher sur la cote (ex. une longueur) :', '');
+        if(txt !== null){
+          _paintPushHistory();
+          _paint.shapes.push({ type:'distance', x1, y1, x2, y2, text:(txt||'').trim(), color:_paint.color, width:_paint.lineWidth*dpr, dash:null });
+        }
+      }
+    } else if(_paint.tool === 'erase' && _paint.current){
       // v5.41.132 — Découpe DESTRUCTIVE : supprime réellement tout ce qui se
       // trouve dans la zone (voir _paintCommitErase), plutôt que de poser un
       // rectangle blanc par-dessus.
@@ -53182,6 +53243,9 @@ function openPaintSketchTool(onSave, existingPaint){
     } else if(isShapeTool && _paint.current){
       _paintPushHistory();
       const shape = { type:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color, width:_paint.lineWidth*dpr };
+      // v5.41.151 — style de trait (continu/tirets/pointillés), modifiable
+      // ensuite via le menu ⋮ de la forme sélectionnée — voir paintDashRow.
+      if(_paint.tool === 'line') shape.dash = null;
       // v5.41.127 — un rectangle peut porter un remplissage matériau
       // (bois/béton/brique creuse), dessiné en dessous de son contour.
       // v5.41.138 — « Couleur pleine » : disponible aussi pour cercle et
@@ -53218,19 +53282,24 @@ function openPaintSketchTool(onSave, existingPaint){
     } else if(_paint.tool === 'text' && _paint.textMode !== 'fixed' && _paint.current){
       const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
       const boxW = Math.abs(x2 - x1);
-      // Mode « s'adapte à la sélection » : taille de police demandée APRÈS
-      // avoir tracé la zone, par défaut proportionnelle à sa hauteur.
-      const suggested = Math.max(10, Math.round(Math.abs(y2 - y1) / dpr * 0.7)) || 16;
-      const sizeStr = prompt('Taille de la police (en pixels) :', String(suggested));
-      if(sizeStr !== null){
-        const fontSize = parseInt(sizeStr, 10);
-        if(fontSize && fontSize > 0){
-          const txt = prompt('Texte à inscrire sur le croquis :', '');
-          if(txt && txt.trim()){
-            _paintPushHistory();
-            _paint.shapes.push({ type:'text', x:Math.min(x1,x2), y:Math.max(y1,y2), text:txt.trim(), color:_paint.color, size: fontSize * dpr, boxW: boxW || null });
-          }
+      const boxH = Math.abs(y2 - y1);
+      // v5.41.151 — sur demande de Rémi : la taille de police n'est plus
+      // demandée, elle est calculée automatiquement pour remplir la zone
+      // tracée (seul le texte est encore demandé). On part d'une hauteur
+      // proportionnelle à la zone, puis on RÉDUIT si besoin pour que le
+      // texte tienne en largeur dans boxW (mesure réelle via ctx.measureText,
+      // même police que le rendu — voir _paintDrawOneShape 'text').
+      const txt = prompt('Texte à inscrire sur le croquis :', '');
+      if(txt && txt.trim()){
+        const cleanTxt = txt.trim();
+        let fontSize = Math.max(10, Math.round(boxH * 0.7)) || 16;
+        if(boxW > 4){
+          ctx.font = `700 ${fontSize}px sans-serif`;
+          const w = ctx.measureText(cleanTxt).width;
+          if(w > boxW) fontSize = Math.max(8, Math.floor(fontSize * (boxW / w)));
         }
+        _paintPushHistory();
+        _paint.shapes.push({ type:'text', x:Math.min(x1,x2), y:Math.max(y1,y2), text:cleanTxt, color:_paint.color, size: fontSize, boxW: boxW || null });
       }
     }
     _paint.current = null;
@@ -53357,6 +53426,10 @@ function _paintSetTool(id){
   if(_paint.tool !== id && _paint.polyDraft) _paint.polyDraft = null;
   _paint.tool = id;
   _paint.selectedIdx = -1;
+  // v5.41.151 — choisir un outil de dessin désarme un repère en cours de
+  // pose (sinon le prochain clic continuerait à poser des repères au lieu
+  // d'utiliser l'outil qu'on vient de sélectionner).
+  if(_paint.markerArm){ _paint.markerArm = null; _paintUpdateMarkerToolbar(); }
   // v5.41.135 — choisir un outil de dessin sort automatiquement du mode
   // « Positionner le fond », pour éviter de continuer à déplacer le plan
   // par erreur pendant qu'on dessine.
@@ -53432,6 +53505,33 @@ function _paintSetColor(c){
 function _paintUpdateDeleteBtn(){
   const btn = document.getElementById('paintDeleteBtn');
   if(btn) btn.style.display = (_paint && _paint.selectedIdx >= 0) ? 'block' : 'none';
+  _paintUpdateDashRow();
+}
+const PAINT_DASH_CYCLE = [null, 'dashed', 'dotted'];
+const PAINT_DASH_LABEL = { null: '─── Continu', dashed: '╌╌╌ Tirets', dotted: '-·-·- Trait-point' };
+/* v5.41.151 — affiche/masque le bouton de style de trait selon le type de
+   la forme sélectionnée (ligne/distance uniquement — même principe que le
+   bouton de style dans le menu de segment de "Croquis avec côtes"). */
+function _paintUpdateDashRow(){
+  const row = document.getElementById('paintDashRow');
+  if(!row) return;
+  const s = (_paint && _paint.selectedIdx >= 0) ? _paint.shapes[_paint.selectedIdx] : null;
+  const applicable = s && (s.type === 'line' || s.type === 'distance');
+  row.style.display = applicable ? 'block' : 'none';
+  if(applicable){
+    const btn = document.getElementById('paintDashBtn');
+    if(btn) btn.textContent = PAINT_DASH_LABEL[s.dash || null];
+  }
+}
+function _paintCycleSelectedDash(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const s = _paint.shapes[_paint.selectedIdx];
+  if(!s || (s.type !== 'line' && s.type !== 'distance')) return;
+  _paintPushHistory();
+  const curIdx = PAINT_DASH_CYCLE.indexOf(s.dash || null);
+  s.dash = PAINT_DASH_CYCLE[(curIdx + 1) % PAINT_DASH_CYCLE.length];
+  _paintUpdateDashRow();
+  _paintRedraw();
 }
 function _paintDeleteSelected(){
   if(!_paint || _paint.selectedIdx < 0) return;
@@ -53687,6 +53787,90 @@ function _paintClosePolyDraft(){
     _paintCommitEraseLine(points);
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   v5.41.151 — Repères techniques (Épaisseur/Axe/Rameneret), portés du
+   même système déjà existant dans "Croquis avec côtes" (_sketchRenderMarkers
+   / _sketchPlaceMarkerAt / _sketchArmMarker), adapté au modèle de Croquis
+   Paint : ici un repère est une FORME à part entière dans _paint.shapes
+   (type:'marker'), pas une entrée dans un tableau séparé indexé sur un
+   segment — parce que dans Croquis Paint les formes peuvent être déplacées,
+   redimensionnées, dupliquées, réordonnées ou supprimées librement, et un
+   index de segment y deviendrait vite obsolète/faux. Un repère mémorise
+   donc sa PROPRE géométrie (x1,y1 = point d'ancrage sur la ligne visée au
+   moment de la pose, x2,y2 = un second point qui encode juste la direction
+   de cette ligne à cet instant) — il profite ainsi gratuitement de tout le
+   système existant (annuler, dupliquer, ⋮, glisser-déposer) comme n'importe
+   quelle autre forme, au prix de ne pas suivre automatiquement la ligne si
+   elle est ensuite déplacée/redimensionnée (à re-poser dans ce cas).
+   ═══════════════════════════════════════════════════════════════════ */
+function _paintArmMarker(type){
+  if(!_paint) return;
+  _paint.markerArm = (_paint.markerArm === type) ? null : type;
+  _paintUpdateMarkerToolbar();
+}
+function _paintUpdateMarkerToolbar(){
+  if(!_paint) return;
+  ['epaisseur','axe','rameneret'].forEach(t => {
+    const btn = document.getElementById('paintMarkerBtn_' + t);
+    if(!btn) return;
+    const on = _paint.markerArm === t;
+    btn.style.background = on ? 'var(--wood,#C8862B)' : '';
+    btn.style.color = on ? '#1a0d00' : '';
+    btn.style.borderColor = on ? 'var(--wood,#C8862B)' : '';
+  });
+}
+/* Cherche la ligne/distance la plus proche du point p (comme
+   _sketchNearestSegment côté "Croquis avec côtes"), tous types de formes
+   x1/y1/x2/y2 « ligne » confondus (line, distance). Retourne l'index dans
+   _paint.shapes ou -1. */
+function _paintNearestLineShape(p){
+  if(!_paint) return -1;
+  const threshold = 34 * _paint.dpr;
+  let best = -1, bestDist = Infinity;
+  _paint.shapes.forEach((s, i) => {
+    if(s.type !== 'line' && s.type !== 'distance') return;
+    const dx = s.x2-s.x1, dy = s.y2-s.y1;
+    const lenSq = dx*dx+dy*dy;
+    if(lenSq < 1) return;
+    let t = ((p.x-s.x1)*dx + (p.y-s.y1)*dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const cx = s.x1 + t*dx, cy = s.y1 + t*dy;
+    const d = Math.hypot(p.x-cx, p.y-cy);
+    if(d < bestDist){ bestDist = d; best = i; }
+  });
+  return bestDist <= threshold ? best : -1;
+}
+/* Pose le repère actuellement "armé" sur la ligne la plus proche du point
+   cliqué — le côté (épaisseur) suit directement le côté où le clic a eu
+   lieu par rapport à la ligne, comme côté "Croquis avec côtes". */
+function _paintPlaceMarkerAt(p){
+  if(!_paint || !_paint.markerArm) return false;
+  const idx = _paintNearestLineShape(p);
+  if(idx < 0) return false;
+  const line = _paint.shapes[idx];
+  const dx = line.x2-line.x1, dy = line.y2-line.y1;
+  const lenSq = dx*dx+dy*dy;
+  if(lenSq < 1) return false;
+  const len = Math.sqrt(lenSq);
+  let t = ((p.x-line.x1)*dx + (p.y-line.y1)*dy) / lenSq;
+  t = Math.max(0.06, Math.min(0.94, t));
+  const ux = dx/len, uy = dy/len, nx = -uy, ny = ux;
+  const ax = line.x1 + t*dx, ay = line.y1 + t*dy;
+  const side = ((p.x-ax)*nx + (p.y-ay)*ny) >= 0 ? 1 : -1;
+  _paintPushHistory();
+  // x1,y1 = ancre sur la ligne ; x2,y2 = second point à distance fixe le
+  // long de la même direction, pour retrouver ux/uy au rendu sans jamais
+  // dépendre de la forme d'origine (voir _paintDrawOneShape → 'marker').
+  const REF = 40 * _paint.dpr;
+  _paint.shapes.push({
+    type:'marker', markerType:_paint.markerArm, side,
+    x1: ax, y1: ay, x2: ax + ux*REF, y2: ay + uy*REF,
+    color:'#1a1206', width: 2.2*_paint.dpr,
+  });
+  _paintRedraw();
+  return true;
+}
 /* v5.41.146 — Découpe LIBRE : même principe destructif que _paintCommitErase
    (rectangle), mais la zone à supprimer est un polygone quelconque tracé
    point à point (voir _paintClosePolyDraft) — permet de découper en biais,
@@ -53893,6 +54077,14 @@ function _paintShapeBounds(s){
     const half = (s.size || 20);
     return { x1:s.x-half*0.3, y1:s.y-half*1.2, x2:s.x+(s.boxW||half*4)+half*0.3, y2:s.y+half*0.3 };
   }
+  if(s.type === 'marker'){
+    // v5.41.151 — un repère s'étend perpendiculairement à s.x1/y1→s.x2/y2
+    // (qui n'encode qu'une direction, pas une vraie ligne affichée) : cadre
+    // englobant = un carré fixe autour de l'ancre (s.x1,s.y1), assez large
+    // pour couvrir le plus grand des 3 symboles (rameneret, ~17*dpr de rayon).
+    const r = 22 * (_paint ? _paint.dpr : 1);
+    return { x1:s.x1-r, y1:s.y1-r, x2:s.x1+r, y2:s.y1+r };
+  }
   // 'symbol' (vis/goujon/pointe) se place comme 'line'/'rect'/'circle'/'triangle' : x1/y1/x2/y2.
   return { x1:Math.min(s.x1,s.x2), y1:Math.min(s.y1,s.y2), x2:Math.max(s.x1,s.x2), y2:Math.max(s.y1,s.y2) };
 }
@@ -53975,6 +54167,12 @@ function _paintHandlePositions(bounds){
 }
 function _paintHandleAt(p, shape){
   if(!shape) return null;
+  // v5.41.151 — pas de poignées de redimensionnement pour un repère
+  // (marker) : son cadre englobant est une case fixe autour de l'ancre, pas
+  // sa vraie géométrie (x2,y2 n'encode qu'une direction) — redimensionner
+  // via les poignées déformerait/décalerait le repère au lieu de le
+  // redimensionner utilement. Il reste déplaçable/supprimable normalement.
+  if(shape.type === 'marker') return null;
   const bounds = _paintShapeBounds(shape);
   const r = PAINT_HANDLE_SIZE * (_paint.dpr || 1);
   const handles = _paintHandlePositions(bounds);
@@ -54356,7 +54554,12 @@ function _paintDrawOneShape(ctx, s){
     s.points.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
     ctx.stroke();
   } else if(s.type === 'line'){
+    // v5.41.151 — style de trait (continu/tirets/pointillés), même
+    // convention de tailles fixes × dpr que "Croquis avec côtes".
+    if(s.dash === 'dashed') ctx.setLineDash([16*_paint.dpr, 9*_paint.dpr]);
+    else if(s.dash === 'dotted') ctx.setLineDash([16*_paint.dpr, 7*_paint.dpr, 1.5*_paint.dpr, 7*_paint.dpr]);
     ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
+    ctx.setLineDash([]);
   } else if(s.type === 'rect'){
     const rx0 = Math.min(s.x1,s.x2), ry0 = Math.min(s.y1,s.y2), rw = Math.abs(s.x2-s.x1), rh = Math.abs(s.y2-s.y1);
     // v5.41.127 — remplissage matériau dessiné D'ABORD (sous le contour),
@@ -54411,8 +54614,109 @@ function _paintDrawOneShape(ctx, s){
     ctx.fillText(s.text, s.x, s.y);
   } else if(s.type === 'symbol'){
     _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
+  } else if(s.type === 'distance'){
+    _paintDrawDistanceShape(ctx, s, _paint.dpr);
+  } else if(s.type === 'marker'){
+    _paintDrawMarkerShape(ctx, s, _paint.dpr);
   }
   if(hasRotation) ctx.restore();
+}
+/* v5.41.151 — cote de Distance : une ligne avec une flèche à chaque bout
+   (tête de flèche classique en V, géométrie locale u/n comme les repères
+   ci-dessous) et le texte demandé à la création, centré sur la ligne (fond
+   clair sous le texte pour rester lisible même sur un fond sombre/photo). */
+function _paintDrawDistanceShape(ctx, s, dpr){
+  const dx = s.x2-s.x1, dy = s.y2-s.y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const ux = dx/len, uy = dy/len, nx = -uy, ny = ux;
+  ctx.save();
+  ctx.strokeStyle = s.color || '#1a1206';
+  ctx.fillStyle = s.color || '#1a1206';
+  ctx.lineWidth = s.width || (3*dpr);
+  ctx.lineCap = 'butt'; ctx.lineJoin = 'round';
+  if(s.dash === 'dashed') ctx.setLineDash([16*dpr, 9*dpr]);
+  else if(s.dash === 'dotted') ctx.setLineDash([16*dpr, 7*dpr, 1.5*dpr, 7*dpr]);
+  else ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(s.x1, s.y1);
+  ctx.lineTo(s.x2, s.y2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Têtes de flèche aux deux extrémités, orientées le long de la ligne.
+  const headLen = 12 * dpr, headW = 5 * dpr;
+  const drawHead = (tipX, tipY, dirX, dirY) => {
+    const backX = tipX - dirX*headLen, backY = tipY - dirY*headLen;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(backX + nx*headW, backY + ny*headW);
+    ctx.lineTo(backX - nx*headW, backY - ny*headW);
+    ctx.closePath();
+    ctx.fill();
+  };
+  drawHead(s.x1, s.y1, -ux, -uy);
+  drawHead(s.x2, s.y2, ux, uy);
+  // Texte centré sur la ligne, tourné pour rester lisible dans son sens,
+  // avec un petit fond clair derrière pour ne pas se perdre dans le trait.
+  if(s.text){
+    const midX = (s.x1+s.x2)/2, midY = (s.y1+s.y2)/2;
+    let angle = Math.atan2(dy, dx);
+    if(angle > Math.PI/2 || angle < -Math.PI/2) angle += Math.PI; // jamais de texte à l'envers
+    const fontSize = Math.max(11*dpr, Math.min(16*dpr, len*0.16));
+    ctx.save();
+    ctx.translate(midX, midY);
+    ctx.rotate(angle);
+    ctx.font = `700 ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const padX = 5*dpr, padY = 2.5*dpr;
+    const tw = ctx.measureText(s.text).width;
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    ctx.fillRect(-tw/2-padX, -fontSize/2-padY, tw+padX*2, fontSize+padY*2);
+    ctx.fillStyle = s.color || '#1a1206';
+    ctx.fillText(s.text, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+/* v5.41.151 — repère technique (épaisseur/axe/rameneret), porté de
+   _sketchRenderMarkers (même géométrie locale u/n, mêmes tailles fixes ×
+   dpr) : s.x1/y1 = ancre sur la ligne visée au moment de la pose, s.x2/y2 =
+   second point à distance fixe le long de cette même direction (sert
+   uniquement à retrouver ux/uy ici, pas une vraie "ligne" affichée). */
+function _paintDrawMarkerShape(ctx, s, dpr){
+  const dx = s.x2-s.x1, dy = s.y2-s.y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const ux = dx/len, uy = dy/len, nx = -uy, ny = ux;
+  const ax = s.x1, ay = s.y1;
+  const pt = (a,b) => ({ x: ax + a*ux + b*nx, y: ay + a*uy + b*ny });
+  const sz = 10 * dpr;
+  const SQ = Math.SQRT1_2;
+  ctx.save();
+  ctx.strokeStyle = s.color || '#1a1206';
+  ctx.lineWidth = s.width || (2.2*dpr);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if(s.markerType === 'epaisseur'){
+    const side = s.side || 1;
+    const off = pt(0, side * 16*dpr);
+    const d1x = ux*SQ + nx*SQ, d1y = uy*SQ + ny*SQ;
+    const d2x = ux*SQ - nx*SQ, d2y = uy*SQ - ny*SQ;
+    ctx.beginPath();
+    ctx.moveTo(off.x - d1x*sz, off.y - d1y*sz); ctx.lineTo(off.x + d1x*sz, off.y + d1y*sz);
+    ctx.moveTo(off.x - d2x*sz, off.y - d2y*sz); ctx.lineTo(off.x + d2x*sz, off.y + d2y*sz);
+    ctx.stroke();
+  } else if(s.markerType === 'axe'){
+    const backLen = sz * 1.3, armW = sz;
+    const tip1 = pt(-backLen, armW), tip2 = pt(-backLen, -armW);
+    ctx.beginPath();
+    ctx.moveTo(tip1.x, tip1.y); ctx.lineTo(ax, ay); ctx.lineTo(tip2.x, tip2.y);
+    ctx.stroke();
+  } else if(s.markerType === 'rameneret'){
+    const halfW = sz * 0.85, halfH = sz;
+    const tl = pt(-halfW, -halfH), tr = pt(halfW, -halfH), bl = pt(-halfW, halfH), br = pt(halfW, halfH);
+    ctx.beginPath();
+    ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(bl.x, bl.y); ctx.lineTo(br.x, br.y);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 // v5.41.146 — remplit (destination-out déjà activé par l'appelant) le
 // contour d'un trou : rectangle (h.x1/y1/x2/y2, Découpe classique) ou
@@ -54614,7 +54918,7 @@ function _paintRedraw(){
   // v5.41.130 — poignées de redimensionnement sur la forme sélectionnée
   // (outil Sélection uniquement). Taille FIXE à l'écran : on les dessine
   // en divisant par le zoom de la vue pour qu'elles restent attrapables.
-  if(_paint.tool === 'select' && _paint.selectedIdx >= 0 && _paint.shapes[_paint.selectedIdx]){
+  if(_paint.tool === 'select' && _paint.selectedIdx >= 0 && _paint.shapes[_paint.selectedIdx] && _paint.shapes[_paint.selectedIdx].type !== 'marker'){
     const selShape = _paint.shapes[_paint.selectedIdx];
     const b = _paintShapeBounds(selShape);
     const handles = _paintHandlePositions(b);
@@ -54646,6 +54950,7 @@ function _paintRedraw(){
     ctx.strokeStyle = _paint.color; ctx.lineWidth = _paint.lineWidth * _paint.dpr / v.scale; ctx.setLineDash([6/v.scale,4/v.scale]);
     const s = { x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y };
     if(_paint.tool === 'line'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
+    else if(_paint.tool === 'distance'){ ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); }
     else if(_paint.tool === 'rect'){ ctx.strokeRect(Math.min(s.x1,s.x2), Math.min(s.y1,s.y2), Math.abs(s.x2-s.x1), Math.abs(s.y2-s.y1)); }
     else if(_paint.tool === 'circle'){ const rx=Math.abs(s.x2-s.x1)/2, ry=Math.abs(s.y2-s.y1)/2, cx=(s.x1+s.x2)/2, cy=(s.y1+s.y2)/2; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke(); }
     else if(_paint.tool === 'triangle'){ const cx=(s.x1+s.x2)/2; ctx.beginPath(); ctx.moveTo(cx,s.y1); ctx.lineTo(s.x1,s.y2); ctx.lineTo(s.x2,s.y2); ctx.closePath(); ctx.stroke(); }
