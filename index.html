@@ -32438,9 +32438,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.153';
+const APP_VERSION = '5.41.154';
 
 const CHANGELOG = [
+  {
+    version: '5.41.154',
+    date: '22/09/2026',
+    entries: [
+      { icon: '👥', text: "Feuille de route : une liste « Pointer aussi pour » apparaît maintenant directement sous les tâches de chaque chantier en cours — coche un ou plusieurs ouvriers, puis « Dépannage fini » pointe automatiquement leurs heures en même temps que les tiennes (plus besoin de passer par la modale pour les sélectionner)." },
+    ],
+  },
   {
     version: '5.41.153',
     date: '22/09/2026',
@@ -51887,6 +51894,34 @@ async function routeOnPopupOpen(){
 
 function _routeCurrentStop(r){ return (r.stops||[]).find(s => s.status !== 'done') || null; }
 function _routeJsArg(str){ return escapeHtml(JSON.stringify(String(str||''))); }
+
+/* v5.41.154 — candidats "ouvriers à synchroniser" pour un stop donné :
+   destinataires de la feuille de route (toujours peuplé) + ouvriers déjà
+   assignés au chantier réel s'il y en a, moi exclu. Fonction partagée entre
+   la carte (case à cocher visible en permanence sous les tâches) et la
+   modale de pointage (Dépannage fini). */
+function _routeTeamCandidatesFor(route, stop){
+  const realSiteObj = stop && stop.siteId && (data.sites||[]).find(s => s.id === stop.siteId);
+  const myAuthId = _routeMyAuthId();
+  const candMap = new Map();
+  (route && route.recipients || []).forEach(r => {
+    if(r && r.authId && r.authId !== myAuthId) candMap.set(r.authId, { authId: r.authId, name: r.name });
+  });
+  if(realSiteObj){
+    (realSiteObj.assignedWorkers || []).forEach(w => {
+      if(w && w.authId && w.authId !== myAuthId && !candMap.has(w.authId)) candMap.set(w.authId, w);
+    });
+  }
+  return [...candMap.values()];
+}
+/* Sélection courante par stop : { [stopId]: Set(authId) }. Cochée sur la
+   carte, relue au moment de "Dépannage fini" pour pré-cocher la même
+   sélection dans la modale de pointage (pas besoin de recocher). */
+window._routeTeamSelection = window._routeTeamSelection || {};
+function routeToggleTeamMember(stopId, authId, checked){
+  const sel = window._routeTeamSelection[stopId] || (window._routeTeamSelection[stopId] = new Set());
+  if(checked) sel.add(authId); else sel.delete(authId);
+}
 function renderRoutePane(){
   const pane = document.getElementById('routeTabPane');
   if(!pane) return;
@@ -51932,10 +51967,28 @@ function renderRoutePane(){
             onchange="routeToggleTask('${r._key}','${r.id}','${s.id}','${t.id}',this.checked)">
           <span style="${t.done?'text-decoration:line-through;color:var(--ink-soft);':''}">${escapeHtml(t.label)}</span>
         </label>`).join('')}</div>` : '';
+      // v5.41.154 — sous les tâches : qui pointe avec toi sur ce chantier.
+      // Coche un ou plusieurs ouvriers ici, puis "Dépannage fini" pointe
+      // automatiquement les heures pour toi ET pour chacun d'eux (même
+      // durée, même tâche, fiche validée pour tous en un seul geste).
+      const teamCands = isCur ? _routeTeamCandidatesFor(r, s) : [];
+      const selSet = window._routeTeamSelection[s.id] || (window._routeTeamSelection[s.id] = new Set());
+      const teamLine = teamCands.length ? `<div style="margin-top:10px;">
+        <div style="font-size:11.5px;font-weight:700;color:var(--ink-soft);margin-bottom:4px;">👥 Pointer aussi pour :</div>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          ${teamCands.map((w,ti) => `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg);border:1.5px solid var(--line);border-radius:8px;font-size:12.5px;cursor:pointer;" id="rtTeamRow_${s.id}_${ti}">
+              <input type="checkbox" ${selSet.has(w.authId)?'checked':''} style="width:16px;height:16px;accent-color:var(--wood);flex-shrink:0;"
+                onchange="routeToggleTeamMember('${s.id}','${w.authId}',this.checked);document.getElementById('rtTeamRow_${s.id}_${ti}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
+              <span style="font-weight:700;">🔧 ${escapeHtml(w.name||'Ouvrier')}</span>
+            </label>`).join('')}
+        </div>
+      </div>` : '';
       return `<div style="border:1.5px solid ${isCur?'var(--wood)':'var(--line)'};border-radius:10px;padding:8px 10px;margin-bottom:8px;background:${isCur?'var(--card)':'transparent'};">
         ${nameLine}
         ${notesLine}
         ${tasksLine}
+        ${teamLine}
         <div style="display:flex;gap:6px;margin-top:8px;">
           <button type="button" onclick="openRouteStopDetail('${r._key}','${r.id}','${s.id}')" style="flex:1;padding:8px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-weight:700;font-size:12.5px;cursor:pointer;">Détail</button>
           ${isCur ? `<button type="button" onclick="routeFinishStop('${r._key}','${r.id}','${s.id}')" style="flex:1.4;padding:8px;border:none;border-radius:8px;background:#4CAF79;color:#fff;font-weight:800;font-size:12.5px;cursor:pointer;">✅ Dépannage fini</button>` : ''}
@@ -52001,26 +52054,12 @@ async function _routeOfferPointage(stop, route){
   const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
   if(!myWorkerId) return; // rôle sans fiche d'heures (ex: comptable) — rien à proposer
   if(!confirm(`Ajouter « ${stop.name} » au pointage du jour ?`)) return;
-  // v5.41.153 — candidats à cocher : d'abord les destinataires de la feuille
-  // de route (route.recipients — toujours peuplé, un dépannage envoyé a
-  // forcément des destinataires), complétés par les ouvriers déjà assignés
-  // au chantier réel de ce stop (site.assignedWorkers) s'il y en a, moi
-  // exclu dans les deux cas. En v5.41.150 seul site.assignedWorkers était
-  // utilisé : quasiment toujours vide pour un dépannage ad-hoc (pas de
-  // chantier existant ou pas d'ouvriers assignés dessus), donc la section
-  // n'apparaissait jamais en pratique — signalé par Rémi.
-  const realSiteObj = stop.siteId && (data.sites||[]).find(s => s.id === stop.siteId);
-  const myAuthId = _routeMyAuthId();
-  const candMap = new Map();
-  (route && route.recipients || []).forEach(r => {
-    if(r && r.authId && r.authId !== myAuthId) candMap.set(r.authId, { authId: r.authId, name: r.name });
-  });
-  if(realSiteObj){
-    (realSiteObj.assignedWorkers || []).forEach(w => {
-      if(w && w.authId && w.authId !== myAuthId && !candMap.has(w.authId)) candMap.set(w.authId, w);
-    });
-  }
-  const teamCandidates = [...candMap.values()];
+  // v5.41.154 — candidats à cocher (mêmes règles que la case déjà visible
+  // sous les tâches sur la carte du chantier — voir _routeTeamCandidatesFor).
+  // Si l'utilisateur a déjà coché des ouvriers directement sur la carte
+  // (_routeTeamSelection), on les pré-coche ici pour ne pas avoir à recocher.
+  const teamCandidates = _routeTeamCandidatesFor(route, stop);
+  const preSel = window._routeTeamSelection[stop.id] || new Set();
   // v5.41.120 — au lieu d'un simple prompt() texte pour la durée, une vraie
   // petite modale reprenant EXACTEMENT les deux champs de la fiche de
   // pointage multi-chantier : heures + tâche (TRANCHES), pour que ce soit
@@ -52037,12 +52076,12 @@ async function _routeOfferPointage(stop, route){
           <label>Synchroniser aussi pour ces ouvriers</label>
           <div class="hint" style="margin-bottom:6px;">Coche qui était avec toi — même heures, même tâche, ajoutées et validées avec ta fiche.</div>
           <div id="rpTeamList" style="display:flex;flex-direction:column;gap:6px;max-height:32vh;overflow-y:auto;">
-            ${teamCandidates.map((w,i) => `
-              <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1.5px solid var(--line);border-radius:9px;cursor:pointer;" id="rpTeamRow_${i}">
-                <input type="checkbox" id="rpTeamCb_${i}" style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"
+            ${teamCandidates.map((w,i) => { const pre = preSel.has(w.authId); return `
+              <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1.5px solid ${pre?'var(--wood)':'var(--line)'};border-radius:9px;cursor:pointer;" id="rpTeamRow_${i}">
+                <input type="checkbox" id="rpTeamCb_${i}" ${pre?'checked':''} style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"
                   onchange="document.getElementById('rpTeamRow_${i}').style.borderColor=this.checked?'var(--wood)':'var(--line)'">
                 <span style="font-weight:700;font-size:13px;">🔧 ${escapeHtml(w.name||'Ouvrier')}</span>
-              </label>`).join('')}
+              </label>`; }).join('')}
           </div>
         </div>` : '';
     div.innerHTML = `
@@ -52149,6 +52188,7 @@ async function _routeOfferPointage(stop, route){
       const idx = entry.sites.length - 1;
       _pointageMultiCalcZone(dateKey, myWorkerId, idx);
     }
+    delete window._routeTeamSelection[stop.id];
   });
 }
 
