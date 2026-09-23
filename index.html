@@ -32923,9 +32923,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.187';
+const APP_VERSION = '5.41.188';
 
 const CHANGELOG = [
+  {
+    version: '5.41.188',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif définitif du bug « Aucun chef assigné » côté chef : la vraie cause était que chaque appareil repousse automatiquement sa propre copie des chantiers toutes les 30 secondes, et l'appareil du chef — pas encore au courant de sa propre assignation — écrasait la bonne info presque aussitôt après l'avoir reçue. La synchro compare désormais qui, du serveur ou de l'appareil, a la version la plus récente avant d'écraser quoi que ce soit (nom, statut, chef assigné...), au lieu d'écraser à l'aveugle." },
+    ],
+  },
   {
     version: '5.41.187',
     date: '23/09/2026',
@@ -43917,36 +43924,44 @@ async function pushSharedSite(site){
       // détenue par un autre appareil ou canal repasse par ici.
       return _filterDeletedMedia(out);
     };
+    // [v5.41.188] Même correctif que syncAllSitesPushAll : ne pas écraser en
+    // aveugle les champs d'identité (dont le chef assigné) si la version déjà
+    // partagée côté serveur est en réalité plus récente que notre copie
+    // locale (appareil resté en retard). Voir le commentaire détaillé dans
+    // syncAllSitesPushAll pour le symptôme exact que ça corrige.
+    const remoteIsNewer = existing && existing.updatedAt &&
+      (!site.updatedAt || new Date(existing.updatedAt) > new Date(site.updatedAt));
+    const idSrc = remoteIsNewer ? existing : site;
     const snapshot = {
       id:                  site.id,
-      name:                site.name,
-      address:             site.address,
-      status:              site.status,
-      progress:            site.progress,
-      color:               site.color,
-      trajetZone:          site.trajetZone,
-      keyboxCode:          site.keyboxCode        || '',
-      startDate:           site.startDate         || null,
-      dueDate:             site.dueDate           || null,
-      deliveryDates:       site.deliveryDates     || [],
-      customEvents:        site.customEvents      || [],
+      name:                idSrc.name,
+      address:             idSrc.address,
+      status:              idSrc.status,
+      progress:            idSrc.progress,
+      color:               idSrc.color,
+      trajetZone:          idSrc.trajetZone,
+      keyboxCode:          idSrc.keyboxCode        || '',
+      startDate:           idSrc.startDate         || null,
+      dueDate:             idSrc.dueDate           || null,
+      deliveryDates:       idSrc.deliveryDates     || [],
+      customEvents:        idSrc.customEvents      || [],
       ownerDeviceId:       site.ownerDeviceId     || getDeviceSyncId(),
       syncLive:            !!site.syncLive,
       lastSyncAt:          site.lastSyncAt        || new Date().toISOString(),
-      assignedTeamName:    site.assignedTeamName  || '',
-      assignedChefs:       Array.isArray(site.assignedChefs) ? site.assignedChefs : [],
-      assignedChefContactId: site.assignedChefContactId || null,
-      assignedChefPhone:   site.assignedChefPhone  || '',
-      assignedChefName:    site.assignedChefName   || '',
-      assignedChefAuthId:  site.assignedChefAuthId || '',
-      assignedAt:          site.assignedAt         || null,
-      teamName:            site.teamName           || '',
+      assignedTeamName:    idSrc.assignedTeamName  || '',
+      assignedChefs:       Array.isArray(idSrc.assignedChefs) ? idSrc.assignedChefs : [],
+      assignedChefContactId: idSrc.assignedChefContactId || null,
+      assignedChefPhone:   idSrc.assignedChefPhone  || '',
+      assignedChefName:    idSrc.assignedChefName   || '',
+      assignedChefAuthId:  idSrc.assignedChefAuthId || '',
+      assignedAt:          idSrc.assignedAt         || null,
+      teamName:            idSrc.teamName           || '',
       sharedMedia:         _mergeMediaLocal(site.sharedMedia, existing && existing.sharedMedia),
       documents:           _mergeMediaLocal(site.documents, existing && existing.documents),
       assignedWorkers:     Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
-      tileId:              site.tileId || null,
-      coverPhotoUrl:       site.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
-      updatedAt:           site.updatedAt || null, // indispensable à la fusion par date (voir syncAllSitesPull)
+      tileId:              idSrc.tileId || null,
+      coverPhotoUrl:       idSrc.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
+      updatedAt:           remoteIsNewer ? existing.updatedAt : (site.updatedAt || null), // indispensable à la fusion par date (voir syncAllSitesPull)
       noteCategories:      (typeof _mergeNoteCategoriesForPush === 'function')
         ? _mergeNoteCategoriesForPush(site.noteCategories, existing && existing.noteCategories)
         : (site.noteCategories || [])
@@ -44192,25 +44207,42 @@ async function syncAllSitesPushAll(){
       // pour ne JAMAIS faire disparaître un document ajouté par un autre appareil.
       const mergedMedia = _mergeMedia(site.sharedMedia, existing && existing.sharedMedia);
       const mergedDocs  = _mergeMedia(site.documents,   existing && existing.documents);
+
+      // [v5.41.188] CORRECTIF : ce push écrivait les champs d'identité (nom,
+      // statut, chef assigné...) EN AVEUGLE, sans jamais regarder si la
+      // version déjà partagée côté serveur était plus récente que la copie
+      // LOCALE de CET appareil précis. Un appareil resté en retard (ex : le
+      // chef qui n'a pas encore reçu une réassignation faite entre-temps par
+      // le conducteur) écrasait donc la mise à jour toute fraîche avec ses
+      // propres données obsolètes au cycle de synchro suivant — symptôme
+      // observé : « Aucun chef assigné » qui revient après avoir été
+      // correctement assigné. On applique ici la même règle "le plus récent
+      // gagne" que côté lecture (_applyRemoteSiteIfNewer), mais en sens
+      // inverse : si le serveur est plus récent que notre copie locale, on
+      // repart de SES champs d'identité au lieu des nôtres.
+      const remoteIsNewer = existing && existing.updatedAt &&
+        (!site.updatedAt || new Date(existing.updatedAt) > new Date(site.updatedAt));
+      const idSrc = remoteIsNewer ? existing : site;
+
       const snapshot = {
-        id: site.id, name: site.name, address: site.address, status: site.status,
-        progress: site.progress, color: site.color, trajetZone: site.trajetZone,
-        keyboxCode: site.keyboxCode || '', startDate: site.startDate || null,
-        dueDate: site.dueDate || null, deliveryDates: site.deliveryDates || [],
-        customEvents: site.customEvents || [], ownerDeviceId: site.ownerDeviceId || getDeviceSyncId(),
+        id: site.id, name: idSrc.name, address: idSrc.address, status: idSrc.status,
+        progress: idSrc.progress, color: idSrc.color, trajetZone: idSrc.trajetZone,
+        keyboxCode: idSrc.keyboxCode || '', startDate: idSrc.startDate || null,
+        dueDate: idSrc.dueDate || null, deliveryDates: idSrc.deliveryDates || [],
+        customEvents: idSrc.customEvents || [], ownerDeviceId: site.ownerDeviceId || getDeviceSyncId(),
         syncLive: true, // [syncall] tous les chantiers deviennent visibles/synchronisés
         lastSyncAt: new Date().toISOString(),
-        assignedTeamName: site.assignedTeamName || '',
-        assignedChefs: Array.isArray(site.assignedChefs) ? site.assignedChefs : [],
-        assignedChefContactId: site.assignedChefContactId || null,
-        assignedChefPhone: site.assignedChefPhone || '', assignedChefName: site.assignedChefName || '',
-        assignedChefAuthId: site.assignedChefAuthId || '', assignedAt: site.assignedAt || null,
-        teamName: site.teamName || '',
+        assignedTeamName: idSrc.assignedTeamName || '',
+        assignedChefs: Array.isArray(idSrc.assignedChefs) ? idSrc.assignedChefs : [],
+        assignedChefContactId: idSrc.assignedChefContactId || null,
+        assignedChefPhone: idSrc.assignedChefPhone || '', assignedChefName: idSrc.assignedChefName || '',
+        assignedChefAuthId: idSrc.assignedChefAuthId || '', assignedAt: idSrc.assignedAt || null,
+        teamName: idSrc.teamName || '',
         sharedMedia: mergedMedia,
         documents: mergedDocs,
         assignedWorkers: Array.isArray(site.assignedWorkers) ? site.assignedWorkers : [],
-        tileId: site.tileId || null, // fiche tuile assignée (voir dashOpenTuileFiche)
-        coverPhotoUrl: site.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
+        tileId: idSrc.tileId || null, // fiche tuile assignée (voir dashOpenTuileFiche)
+        coverPhotoUrl: idSrc.coverPhotoUrl || null, // [OBSOLÈTE, voir dashPickCoverPhoto] laissé pour compat descendante uniquement, plus lu à l'affichage
         // Catégories de notes du chantier : MANQUAIT ici, ce qui empêchait
         // toute note/catégorie d'être réellement transmise au serveur — elle
         // restait uniquement locale, quelle que soit la qualité de la fusion
@@ -44228,7 +44260,7 @@ async function syncAllSitesPushAll(){
         // toujours vide côté réception, et aucune mise à jour de ces champs
         // ne pouvait jamais être acceptée par un autre appareil (voir le fix
         // sur "iAmOwner" → remoteIsNewer dans syncAllSitesPull).
-        updatedAt: site.updatedAt || null
+        updatedAt: remoteIsNewer ? existing.updatedAt : (site.updatedAt || null)
       };
       // On écrit toujours la version fusionnée (identité à jour + union des médias).
       byId[site.id] = existing ? Object.assign({}, existing, snapshot) : snapshot;
