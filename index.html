@@ -14856,7 +14856,27 @@ async function addSiteDocument(input){
   const docId = uid();
 
   try{
-    const dataRef = await storeDocFromFile(file, 'sitedoc:' + docId, 'documents');
+    // v5.41.182 — CORRECTIF : un document de chantier stocké seulement en
+    // LOCAL (ancien comportement, storeDocFromFile → IndexedDB/dossier
+    // perso de l'appareil) n'était ouvrable QUE depuis l'appareil qui
+    // l'avait ajouté — un autre membre de l'équipe voyait bien l'entrée
+    // apparaître (le nom est synchronisé via `data`) mais tombait sur
+    // « Impossible d'ouvrir ce document » en cliquant, puisque les octets
+    // du fichier n'avaient jamais quitté l'appareil d'origine (signalé par
+    // Rémi : un PDF envoyé par un conducteur, illisible ailleurs). On
+    // uploade maintenant directement vers le stockage partagé (Supabase),
+    // exactement comme les photos (sharedMedia) et les croquis — le
+    // document est alors ouvrable par toute l'équipe, sur n'importe quel
+    // appareil. Repli local UNIQUEMENT si l'upload échoue (hors ligne) :
+    // le document reste ouvrable sur CET appareil en attendant, et sera
+    // migré vers le stockage partagé automatiquement dès sa prochaine
+    // ouverture avec une connexion — voir _siteDocMigrateToShared().
+    let dataRef;
+    try{
+      dataRef = await uploadFileToSupabase(file, site.id);
+    } catch(uploadErr){
+      dataRef = await storeDocFromFile(file, 'sitedoc:' + docId, 'documents');
+    }
     if(!site.documents) site.documents = [];
     site.documents.push({
       id: docId,
@@ -15020,13 +15040,19 @@ function openDataUrlInNewTab(dataUrl, mimeType){
   }
 }
 
-/* Ouvre un document quel que soit son mode de stockage : data: URL brute
-   (ancien format / pas encore migré) ou référence "rwood:..." pointant vers
-   IndexedDB ou un dossier personnalisé. */
+/* Ouvre un document quel que soit son mode de stockage : URL publique
+   partagée (Supabase, voir v5.41.182), data: URL brute (ancien format), ou
+   référence "rwood:..." pointant vers IndexedDB/un dossier personnalisé DE
+   CET APPAREIL (donc invisible/inouvrable depuis un autre appareil — voir
+   _siteDocMigrateToShared pour la migration automatique). */
 async function openBlobRefInNewTab(ref, mimeType){
   if(!ref) return false;
   try{
     if(isDataUrlRef(ref)) return openDataUrlInNewTab(ref, mimeType);
+    // v5.41.182 — URL publique (bucket Supabase partagé) : on l'ouvre
+    // directement, aucun fetch/blob local nécessaire (marche sur tout
+    // appareil, contrairement à une référence "rwood:" locale).
+    if(/^https?:\/\//.test(ref)){ window.open(ref, '_blank'); return true; }
     const blob = await loadBlobBytes(ref);
     if(!blob) return false;
     const url = URL.createObjectURL(blob);
@@ -15044,9 +15070,37 @@ async function openSiteDocument(siteId, docId){
   const doc = site.documents.find(d=>d.id===docId);
   if(!doc) return;
 
+  const wasLocalRef = isBlobRef(doc.data); // avant migration éventuelle ci-dessous
   if(!await openBlobRefInNewTab(doc.data, doc.mimeType)){
-    showToast("Impossible d'ouvrir ce document");
+    // v5.41.182 — message plus clair quand la cause probable est un document
+    // encore stocké uniquement sur l'appareil qui l'a ajouté (avant ce
+    // correctif) : dit à la personne quoi faire plutôt qu'un échec muet.
+    showToast(wasLocalRef
+      ? "Impossible d'ouvrir ce document — il n'a été enregistré que sur l'appareil qui l'a ajouté. Demande à cette personne de l'ouvrir une fois (il se partagera automatiquement) ou de le renvoyer."
+      : "Impossible d'ouvrir ce document");
+    return;
   }
+  // v5.41.182 — auto-migration : ce document vient de s'ouvrir avec succès
+  // depuis une référence LOCALE (ancien comportement, storeDocFromFile) —
+  // donc CET appareil a bien les octets. On les bascule silencieusement
+  // vers le stockage partagé (Supabase) pour que toute l'équipe puisse
+  // l'ouvrir ensuite depuis n'importe quel appareil, sans action manuelle.
+  if(wasLocalRef){
+    _siteDocMigrateToShared(site, doc).catch(()=>{});
+  }
+}
+/* Bascule un document de chantier encore stocké en LOCAL uniquement
+   (référence "rwood:...") vers le stockage partagé (Supabase), et met à
+   jour site.documents + synchronise — voir openSiteDocument() ci-dessus.
+   Fail-open : une erreur ici (hors ligne...) n'empêche rien, on retentera
+   simplement à la prochaine ouverture réussie. */
+async function _siteDocMigrateToShared(site, doc){
+  const blob = await loadBlobBytes(doc.data);
+  if(!blob) return;
+  const file = new File([blob], doc.name || 'document', { type: doc.mimeType || blob.type || 'application/octet-stream' });
+  const url = await uploadFileToSupabase(file, site.id);
+  doc.data = url;
+  saveData();
 }
 
 function deleteSiteDocument(siteId, docId){
@@ -32786,9 +32840,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.181';
+const APP_VERSION = '5.41.182';
 
 const CHANGELOG = [
+  {
+    version: '5.41.182',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : un document de chantier (PDF, devis...) envoyé par quelqu'un n'était ouvrable que depuis SON appareil — les autres membres de l'équipe tombaient sur « Impossible d'ouvrir ce document ». Les nouveaux documents sont maintenant partagés à toute l'équipe comme les photos, et un document déjà envoyé se répare automatiquement dès que la personne qui l'a ajouté l'ouvre une fois." },
+    ],
+  },
   {
     version: '5.41.181',
     date: '23/09/2026',
