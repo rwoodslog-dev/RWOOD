@@ -2095,6 +2095,7 @@
     pointer-events: none;
   }
   .tour-overlay.active{ display: block; }
+  .tour-overlay.tour-top{ z-index: 100001; } /* v5.41.210 — tuto Magasin : au-dessus des fenêtres ouvertes */
   .tour-overlay.locked{ pointer-events: auto; }
   .tour-overlay.locked .tour-tooltip{ pointer-events: auto; }
   .tour-highlight{
@@ -6154,6 +6155,12 @@
         <div style="font-weight:700; margin-bottom:6px;">🎤 Présentation guidée</div>
         <div class="hint" style="margin-bottom:10px;">Lance une visite commentée de l'app, écran par écran, pour la montrer à l'équipe (comptable, patron, conducteur, chef d'équipe…). Suivant/Précédent au clic, tu gardes la main sur le rythme.</div>
         <button class="btn btn-primary btn-block" onclick="startPresentationTour()"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5"/></svg> Lancer la présentation</button>
+      </div>
+
+      <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
+        <div style="font-weight:700; margin-bottom:6px;">🧰 Tutoriel Magasin</div>
+        <div class="hint" style="margin-bottom:10px;">Visite guidée de l'onglet Magasin (emprunter, rendre, SAV, boîte à outils), écran par écran — idéal à filmer en capture d'écran du téléphone pour sensibiliser l'équipe. Aucune donnée réelle n'est modifiée (machine de démonstration).</div>
+        <button class="btn btn-primary btn-block" onclick="startMagasinTour()">▶️ Lancer le tutoriel Magasin</button>
       </div>
 
       <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
@@ -32899,6 +32906,76 @@ const PRESENTATION_TOUR_STEPS = [
   }
 ];
 
+/* ═══ v5.41.210 — TUTORIEL MAGASIN (menu Dev) ═══════════════════════════
+   Même moteur que la visite d'accueil / la présentation. Pensé pour être
+   filmé (capture d'écran du téléphone) et envoyé à l'équipe.
+   Les fiches montrées utilisent une machine de DÉMONSTRATION injectée le
+   temps d'ouvrir la fenêtre puis aussitôt retirée : rien n'est enregistré
+   ni synchronisé, aucune machine réelle n'est empruntée / mise en SAV. */
+const MAG_DEMO_ID = '__demo_mag__';
+function _magDemoMachine(state){
+  const m = { id: MAG_DEMO_ID, name: 'Perforateur Hilti (démo)', ref: 'TE 30-A36', photo: null, addedAt: Date.now(), borrow: null, sav: null,
+    tools: [] };
+  if(state === 'pris') m.borrow = { borrowerId:'demo', borrowerName:'Julien', borrowedAt: Date.now() - 2*86400000, chefId:'demo', chefName:'Julien Magne' };
+  if(state === 'sav') m.sav = { byId:'demo', byName:'Baptiste', at: Date.now(), note:'Mandrin cassé, machine posée dans l\'escalier' };
+  if(state === 'caisse'){
+    m.name = 'Boîte à outils zinc n°1 (démo)'; m.ref = '';
+    m.tools = [ { id:'t1', name:'Pince plate', photo:null }, { id:'t2', name:'Cisaille droite', photo:null }, { id:'t3', name:'Cisaille gauche', photo:null }, { id:'t4', name:'Grande cisaille', photo:null } ];
+  }
+  return m;
+}
+function _magTutoCloseAll(){
+  ['magasinDetail','magasinBorrow','magasinSav','magasinAdd'].forEach(id => { try{ closeModal(id); }catch(e){} });
+}
+/* Ouvre une fenêtre du Magasin sur la machine de démo, sans jamais la garder. */
+function _magTutoWith(state, fn){
+  _magTutoCloseAll();
+  _magasinEnsure();
+  const demo = _magDemoMachine(state);
+  data.magasinMachines.push(demo);
+  try{ fn(demo); }finally{
+    data.magasinMachines = data.magasinMachines.filter(x => x.id !== MAG_DEMO_ID);
+  }
+}
+const MAGASIN_TOUR_STEPS = [
+  { before: _magTutoCloseAll, title: '🧰 Le Magasin, c\'est quoi ?',
+    text: "Fini les « t'as pas vu le perfo ? ». Toutes les machines du dépôt sont dans l'app : en 2 secondes tu sais si elle est dispo, ou dans quel camion elle est partie." },
+  { view: 'magasin', before: _magTutoCloseAll, selector: '#magasinList', title: '📋 La liste des machines',
+    text: "Chaque machine a son badge : 🟢 Dispo, 🟠 Emprunté, 🔴 SAV. En haut, le compteur te dit combien sont disponibles en ce moment." },
+  { view: 'magasin', before: () => _magTutoWith('dispo', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .magasin-status-box', title: '👆 La fiche d\'une machine',
+    text: "Touche une machine pour ouvrir sa fiche : photo, référence et surtout son statut. Ici elle est disponible au magasin." },
+  { view: 'magasin', before: () => _magTutoWith('dispo', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .btn-primary', title: '✋ Tu la prends ? « J\'emprunte »',
+    text: "Avant de partir avec une machine, appuie sur « J'emprunte ». C'est LE réflexe : 3 secondes, et tout le monde sait où elle est." },
+  { view: 'magasin', before: () => _magTutoWith('dispo', m => magasinPromptBorrow(m.id)), selector: '#magasinBorrowChef', title: '🚛 Dans quel camion ?',
+    text: "Choisis le camion (le chef d'équipe) où part la machine, puis « Valider l'emprunt ». Les chefs et le conducteur sont prévenus automatiquement." },
+  { view: 'magasin', before: () => _magTutoWith('pris', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .magasin-status-box', title: '📍 On sait où elle est',
+    text: "La fiche affiche qui l'a prise, quand, et dans quel camion elle se trouve. Plus besoin d'appeler tout le monde pour la retrouver." },
+  { view: 'magasin', before: () => _magTutoWith('pris', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .magasin-status-box + .btn', title: '↩️ Tu la reposes ? « Je rends »',
+    text: "De retour au dépôt, appuie sur « Je rends ». N'importe qui peut le faire, même si ce n'est pas lui qui l'avait prise." },
+  { view: 'magasin', before: () => _magTutoWith('dispo', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail button[onclick^="magasinPromptSav"]', title: '⚠️ Elle est cassée ? « SAV »',
+    text: "Une machine en panne ? Ne la remets pas en rayon comme si de rien n'était : appuie sur le bouton rouge SAV." },
+  { view: 'magasin', before: () => _magTutoWith('dispo', m => { magasinPromptSav(m.id); const n = document.getElementById('magasinSavNote'); if(n) n.value = "Mandrin cassé, machine posée dans l'escalier"; }), selector: '#magasinSavNote', title: '✍️ Dis ce qui ne va pas',
+    text: "Écris en deux mots le problème et où tu l'as posée. Chefs, conducteur et patron reçoivent une notif : la réparation peut être lancée tout de suite." },
+  { view: 'magasin', before: () => _magTutoWith('sav', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .magasin-status-box', title: '🔴 Machine en SAV',
+    text: "Elle passe en rouge et ne peut plus être empruntée : personne ne repart sur chantier avec une machine HS. Une fois réparée : « Réparée — sortir du SAV »." },
+  { view: 'magasin', before: () => _magTutoWith('caisse', m => magasinOpenDetail(m.id)), selector: '#modal-magasinDetail .magasin-tools', title: '🧰 Les boîtes à outils',
+    text: "Une caisse complète peut être une seule fiche, avec tous ses outils listés (et leur photo). On voit d'un coup d'œil ce qu'elle doit contenir au retour." },
+  { view: 'magasin', before: () => { _magTutoCloseAll(); magasinOpenAdd(); const nm = document.getElementById('magasinAddName'); if(nm) nm.value = 'Boîte à outils zinc n°2'; ['Pince plate','Cisaille droite'].forEach(n => { magasinAddToolRow({ name:n }); }); }, selector: '#magasinAddTools', title: '➕ Ajouter une machine',
+    text: "« Ajouter machine » : nom, référence, photo. Pour une caisse, ajoute ses outils un par un avec « + Ajouter un outil ». Et plus tard, « Modifier » pour compléter." },
+  { before: _magTutoCloseAll, title: '🏆 La règle d\'or',
+    text: "Je prends → « J'emprunte ». Je pose → « Je rends ». C'est cassé → « SAV ». Trois réflexes, et plus personne ne cherche une machine au dépôt. Merci à tous 👊" },
+];
+function startMagasinTour(){
+  _activeTourSteps = MAGASIN_TOUR_STEPS;
+  tourActive = true;
+  tourStepIndex = 0;
+  const ov = document.getElementById('tourOverlay');
+  ov.classList.remove('locked');
+  ov.classList.add('active', 'tour-top');
+  goTo('magasin');
+  showTourStep();
+}
+
 let tourStepIndex = 0;
 let tourActive = false;
 // Jeu d'étapes actuellement joué par le moteur de visite guidée : la visite
@@ -32967,6 +33044,11 @@ function endTour(){
   const wasPresentation = (_activeTourSteps === PRESENTATION_TOUR_STEPS);
   tourActive = false;
   document.getElementById('tourOverlay').classList.remove('active');
+  if(typeof MAGASIN_TOUR_STEPS !== 'undefined' && _activeTourSteps === MAGASIN_TOUR_STEPS){
+    document.getElementById('tourOverlay').classList.remove('tour-top');
+    _magTutoCloseAll();
+    const tl = document.getElementById('magasinAddTools'); if(tl) tl.innerHTML = '';
+  }
   // Ne marque la visite d'accueil comme "vue" que si c'est bien elle qui
   // vient de tourner — sinon lancer la présentation commerciale depuis le
   // mode Dev supprimerait à tort la visite d'accueil pour ce compte.
@@ -33025,6 +33107,12 @@ function showTourStep(){
 
   // Laisse le temps au DOM de se mettre à jour (changement de vue, accordéon...)
   setTimeout(()=>positionTourHighlight(step), 150);
+  // v5.41.210 — tuto Magasin : les fenêtres s'ouvrent en glissant, on
+  // repositionne une fois l'animation terminée pour entourer le bon élément.
+  if(document.getElementById('tourOverlay').classList.contains('tour-top')){
+    const idx = tourStepIndex;
+    [450, 800].forEach(ms => setTimeout(() => { if(tourActive && tourStepIndex === idx) positionTourHighlight(step); }, ms));
+  }
 }
 
 function positionTourHighlight(step){
@@ -34134,9 +34222,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.209';
+const APP_VERSION = '5.41.210';
 
 const CHANGELOG = [
+  {
+    version: '5.41.210',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🎬', text: "Menu Dev : nouveau « Tutoriel Magasin » — visite guidée en 13 étapes (liste, fiche, J'emprunte, choix du camion, Je rends, SAV, boîte à outils, ajout), à filmer en capture d'écran pour sensibiliser l'équipe. Utilise une machine de démonstration : aucune donnée réelle n'est modifiée." },
+    ],
+  },
   {
     version: '5.41.209',
     date: '23/09/2026',
