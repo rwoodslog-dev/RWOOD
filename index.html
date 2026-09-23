@@ -24063,7 +24063,8 @@ function _stockCondPaintChefList(container, chefs){
     container.innerHTML = `<div class="empty"><h3>Aucun chef d'équipe</h3><p>${navigator.onLine ? "Aucun chef d'équipe n'est enregistré pour l'entreprise." : "Pas de connexion internet — impossible de charger la liste."}</p></div>`;
     return;
   }
-  container.innerHTML = chefs.map((c, idx) => `
+  const genBtn = `<button class="btn btn-primary btn-block" style="margin-bottom:12px;justify-content:center;" onclick="_stockCondOpenGenerate()">📄 Générer la liste stock camion</button>`;
+  container.innerHTML = genBtn + chefs.map((c, idx) => `
     <div class="stock-row" style="cursor:pointer;" onclick="_stockCondOpenChef(${idx})">
       <div class="info">
         <h4>👷 ${escapeHtml(c.name)}</h4>
@@ -24087,6 +24088,7 @@ async function _stockCondRefresh(){
 async function _stockCondLoad(){
   const chef = _stockCondState.chef;
   const res = await _stockCondFetchChefStock(chef.authId);
+  if(res){ try{ res.stock = _truckOpsOverlay(res.stock, await _truckOpsFetch(chef.authId)); }catch(e){} }
   if(_stockCondState.chef !== chef) return; // retour à la liste entre-temps
   _stockCondState.loading = false;
   if(!res){ _stockCondState.error = true; }
@@ -24131,6 +24133,450 @@ async function _stockCondFetchChefStock(authId){
     return { stock: clean(d.stock), truckName: st.truckName || '', brandColors: st.toolBrandColors || {}, updatedAt: rows[0].updated_at };
   }catch(e){ return null; }
 }
+/* ═══ v5.41.202 — Conducteur : modifier le stock camion d'un chef ═══════
+   Le conducteur n'écrit JAMAIS directement dans la sauvegarde du chef (le
+   téléphone du chef la réécrit en entier à chaque synchro → la modif serait
+   perdue). Il dépose des « opérations » dans une clé dédiée par chef
+   ('truck_stock_ops_<authId>' : [{id, at, by, op:'upsert'|'delete', item}]).
+   Le téléphone du chef les applique à son data.stock dès qu'il est en ligne
+   (voir _truckOpsApplyForMe), puis les retire de la file. En attendant, le
+   conducteur voit déjà ses modifs (overlay, mention « ⏳ en attente »). */
+const TRUCK_OPS_PREFIX = 'truck_stock_ops_';
+async function _truckOpsFetch(authId){
+  try{
+    const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(TRUCK_OPS_PREFIX + authId) + '&select=data', { headers:{'Prefer':''} });
+    if(!r.ok) return [];
+    const rows = await r.json();
+    if(!rows || !rows.length) return [];
+    let d = rows[0].data; if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } }
+    return (d && Array.isArray(d.ops)) ? d.ops : [];
+  }catch(e){ return []; }
+}
+async function _truckOpsSave(authId, ops){
+  const r = await supaFetch('/rest/v1/rwood_sync', {
+    method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ user_id: TRUCK_OPS_PREFIX + authId, updated_at: new Date().toISOString(), data: JSON.stringify({ ops }) })
+  });
+  return r.ok;
+}
+function _truckOpsOverlay(stock, ops){
+  const out = (stock || []).map(it => Object.assign({}, it));
+  (ops || []).slice().sort((a,b) => (a.at||0) - (b.at||0)).forEach(o => {
+    if(!o || !o.item || !o.item.id) return;
+    const i = out.findIndex(x => x.id === o.item.id);
+    if(o.op === 'delete'){ if(i !== -1) out.splice(i, 1); return; }
+    if(i !== -1) out[i] = Object.assign({}, out[i], o.item, { _pendingOp: true });
+    else out.push(Object.assign({ qty:1, unit:'pièces', alert:0, category:'outillage' }, o.item, { _pendingOp: true }));
+  });
+  return out;
+}
+async function _truckOpsPush(authId, op){
+  const ops = await _truckOpsFetch(authId);
+  ops.push(op);
+  return _truckOpsSave(authId, ops);
+}
+/* Côté CHEF : applique les modifs déposées par le conducteur. */
+let _truckOpsBusy = false;
+async function _truckOpsApplyForMe(){
+  if(_truckOpsBusy) return;
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  const me = getSupaUserId();
+  if(role !== 'chef' || !me || !navigator.onLine) return;
+  _truckOpsBusy = true;
+  try{
+    const ops = await _truckOpsFetch(me);
+    if(!ops.length) return;
+    if(!Array.isArray(data.stock)) data.stock = [];
+    const applied = [];
+    ops.slice().sort((a,b) => (a.at||0) - (b.at||0)).forEach(o => {
+      if(!o || !o.item || !o.item.id){ applied.push(o && o.id); return; }
+      const i = data.stock.findIndex(x => x.id === o.item.id);
+      if(o.op === 'delete'){ if(i !== -1) data.stock.splice(i, 1); }
+      else if(i !== -1){ Object.assign(data.stock[i], o.item); }
+      else { data.stock.push(Object.assign({ qty:1, unit:'pièces', alert:0, category:'outillage' }, o.item)); }
+      applied.push(o.id);
+    });
+    await saveData();
+    // Retire de la file uniquement ce qui a été appliqué (une nouvelle modif
+    // arrivée entre-temps reste dans la file pour le prochain passage).
+    const latest = await _truckOpsFetch(me);
+    await _truckOpsSave(me, latest.filter(o => !applied.includes(o && o.id)));
+    if(document.getElementById('view-stock') && document.getElementById('view-stock').classList.contains('active')) renderStock();
+    showToast('🚚 Ton stock camion a été mis à jour par le conducteur (' + applied.length + ')');
+  }catch(e){ /* silencieux, on réessaiera */ }
+  finally{ _truckOpsBusy = false; }
+}
+(function _truckOpsInit(){
+  setTimeout(() => { _truckOpsApplyForMe(); }, 6000);
+  setInterval(() => { if(document.visibilityState === 'visible') _truckOpsApplyForMe(); }, 30000);
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') _truckOpsApplyForMe(); });
+})();
+
+/* Éditeur d'outil côté conducteur (ajout / modification). */
+let _stockCondEditId = null;
+function _stockCondOpenToolEditor(itemId){
+  const st = _stockCondState;
+  if(!st.chef) return;
+  const it = itemId ? (st.stock || []).find(x => x.id === itemId) : null;
+  _stockCondEditId = it ? it.id : null;
+  const kind = it ? (it.toolKind || 'standard') : 'standard';
+  const power = it ? (it.power || 'filaire') : 'filaire';
+  let ex = document.getElementById('modal-stockCondTool');
+  if(ex) ex.remove();
+  ex = document.createElement('div');
+  ex.className = 'modal-overlay open';
+  ex.id = 'modal-stockCondTool';
+  const v = (x) => escapeHtml(x == null ? '' : String(x));
+  ex.innerHTML = `
+    <div class="modal">
+      <div class="modal-header"><h2>${it ? '✏️ Modifier l\'outil' : '+ Ajouter un outil'}</h2><button class="modal-close" onclick="document.getElementById('modal-stockCondTool').remove()">×</button></div>
+      <div class="hint" style="margin-bottom:10px;">Camion de <strong>${escapeHtml(st.chef.name)}</strong> — la modif arrive sur son téléphone dès qu'il est en ligne.</div>
+      <div class="field"><label>Nom</label><input type="text" id="scName" value="${v(it && it.name)}" placeholder="Ex : Visseuse"></div>
+      <div class="field"><label>Marque</label><input type="text" id="scBrand" value="${v(it && it.brand)}" placeholder="Ex : Makita"></div>
+      <div class="field"><label>Référence</label><input type="text" id="scRef" value="${v(it && it.ref)}" placeholder="Ex : DHP484"></div>
+      <div class="field"><label>Type</label>
+        <select id="scKind" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-elev);color:var(--ink);border:1.5px solid var(--line);" onchange="_stockCondEditorKind()">
+          <option value="standard" ${kind==='standard'?'selected':''}>Outil</option>
+          <option value="circularsaw" ${kind==='circularsaw'?'selected':''}>Scie circulaire</option>
+          <option value="battery" ${kind==='battery'?'selected':''}>Batterie (accu)</option>
+        </select></div>
+      <div class="field" id="scPowerField"><label>Alimentation</label>
+        <select id="scPower" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-elev);color:var(--ink);border:1.5px solid var(--line);">
+          <option value="filaire" ${power==='filaire'?'selected':''}>Filaire</option>
+          <option value="batterie" ${power==='batterie'?'selected':''}>Sur batterie</option>
+        </select></div>
+      <div id="scBatFields" style="display:flex;gap:8px;">
+        <div class="field" style="flex:1;"><label>Tension (V)</label><input type="number" id="scVolt" value="${v(it && it.voltage)}"></div>
+        <div class="field" style="flex:1;"><label>Ampérage (Ah)</label><input type="number" id="scAmp" value="${v(it && it.amperage)}" step="0.1"></div>
+      </div>
+      <div class="field" id="scBladeField"><label>Lame (mm)</label><input type="number" id="scBlade" value="${v(it && it.bladeSize)}"></div>
+      <button class="btn btn-primary btn-block" id="scSaveBtn" onclick="_stockCondSaveTool()">Enregistrer</button>
+    </div>`;
+  document.body.appendChild(ex);
+  _stockCondEditorKind();
+}
+function _stockCondEditorKind(){
+  const k = (document.getElementById('scKind')||{}).value;
+  const show = (id, on) => { const e = document.getElementById(id); if(e) e.style.display = on ? '' : 'none'; };
+  show('scPowerField', k !== 'battery');
+  show('scBatFields', k === 'battery');
+  show('scBladeField', k === 'circularsaw');
+  const bf = document.getElementById('scBatFields'); if(bf && k === 'battery') bf.style.display = 'flex';
+}
+async function _stockCondSaveTool(){
+  const st = _stockCondState;
+  if(!st.chef) return;
+  const name = (document.getElementById('scName').value || '').trim();
+  if(!name){ showToast('Donne un nom à l\'outil'); return; }
+  const kind = document.getElementById('scKind').value;
+  const item = {
+    id: _stockCondEditId || uid(),
+    name, category: 'outillage',
+    brand: (document.getElementById('scBrand').value || '').trim(),
+    ref: (document.getElementById('scRef').value || '').trim(),
+    toolKind: kind,
+  };
+  if(!_stockCondEditId){ item.qty = 1; item.unit = 'pièces'; item.alert = 0; }
+  if(kind === 'battery'){
+    const vv = parseFloat(document.getElementById('scVolt').value), aa = parseFloat(document.getElementById('scAmp').value);
+    item.voltage = isNaN(vv) ? null : vv; item.amperage = isNaN(aa) ? null : aa; item.power = null; item.bladeSize = null;
+  } else {
+    item.power = document.getElementById('scPower').value;
+    item.voltage = null; item.amperage = null;
+    const bl = parseFloat(document.getElementById('scBlade').value);
+    item.bladeSize = (kind === 'circularsaw' && !isNaN(bl)) ? bl : null;
+  }
+  const btn = document.getElementById('scSaveBtn'); if(btn){ btn.disabled = true; btn.textContent = 'Envoi…'; }
+  const ok = await _truckOpsPush(st.chef.authId, { id: uid(), at: Date.now(), by: getSupaUserId() || '', op: 'upsert', item });
+  if(!ok){ if(btn){ btn.disabled = false; btn.textContent = 'Enregistrer'; } showToast('❌ Envoi impossible (connexion ?)'); return; }
+  st.stock = _truckOpsOverlay(st.stock, [{ op:'upsert', item, at: Date.now() }]);
+  const m = document.getElementById('modal-stockCondTool'); if(m) m.remove();
+  showToast('✓ ' + name + (_stockCondEditId ? ' modifié' : ' ajouté') + ' — envoyé au téléphone de ' + st.chef.name);
+  renderStock();
+}
+async function _stockCondDeleteTool(itemId){
+  const st = _stockCondState;
+  const it = (st.stock || []).find(x => x.id === itemId);
+  if(!st.chef || !it) return;
+  if(!confirm('Retirer « ' + (it.name || 'cet outil') + ' » du camion de ' + st.chef.name + ' ?')) return;
+  const ok = await _truckOpsPush(st.chef.authId, { id: uid(), at: Date.now(), by: getSupaUserId() || '', op: 'delete', item: { id: itemId } });
+  if(!ok){ showToast('❌ Envoi impossible (connexion ?)'); return; }
+  st.stock = (st.stock || []).filter(x => x.id !== itemId);
+  showToast('✓ Outil retiré — envoyé au téléphone de ' + st.chef.name);
+  renderStock();
+}
+
+/* ═══ v5.41.202 — « Générer la liste stock camion » (conducteur) ═══════
+   Choix d'un ou plusieurs chefs → PDF (une page par chef, outillage trié
+   par marque avec code couleur) ou Excel (trié chef → marque → Filaire /
+   Sur batterie, entièrement modifiable). */
+function _stockToolGroup(t){
+  if(t.toolKind === 'battery') return 'Sur batterie';
+  if(t.power === 'batterie') return 'Sur batterie';
+  if(t.power === 'filaire') return 'Filaire';
+  return 'Autre';
+}
+function _stockToolDetail(t){
+  const d = [];
+  if(t.toolKind === 'battery'){
+    d.push('Batterie (accu)');
+    if(t.voltage != null) d.push(t.voltage + 'V');
+    if(t.amperage != null) d.push(t.amperage + 'Ah');
+  } else {
+    d.push(t.power === 'batterie' ? 'Sur batterie' : (t.power === 'filaire' ? 'Filaire' : ''));
+    if(t.toolKind === 'circularsaw' && t.bladeSize != null) d.push('Lame ' + t.bladeSize + 'mm');
+  }
+  return d.filter(Boolean).join(' · ');
+}
+function _stockBrandHex(brand, colors){
+  if(colors && colors[brand]) return colors[brand];
+  const pal = { makita:'#1BA3A3', hilti:'#D2051E', dewalt:'#FEBD17', milwaukee:'#DB011C', bosch:'#1D5A96', festool:'#2F6E3A', metabo:'#0B6E4F', hikoki:'#12A150', ryobi:'#C8D400', stanley:'#F6C300', fein:'#E3612B' };
+  const k = String(brand||'').toLowerCase();
+  if(pal[k]) return pal[k];
+  return (typeof _chatUserColor === 'function') ? _chatUserColor(brand) : '#8D6E63';
+}
+function _stockHexRgb(hex){
+  if(/^#[0-9a-f]{6}$/i.test(hex||'')) return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+  const m = /hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/.exec(hex||'');
+  if(m){ // conversion hsl → rgb
+    const h = +m[1]/360, sl = +m[2]/100, l = +m[3]/100;
+    const q = l < .5 ? l*(1+sl) : l+sl-l*sl, pp = 2*l-q;
+    const f = t => { t<0&&(t+=1); t>1&&(t-=1); return t<1/6?pp+(q-pp)*6*t : t<1/2?q : t<2/3?pp+(q-pp)*(2/3-t)*6 : pp; };
+    return [Math.round(f(h+1/3)*255), Math.round(f(h)*255), Math.round(f(h-1/3)*255)];
+  }
+  return [90,80,70];
+}
+function _stockCondOpenGenerate(){
+  const chefs = _stockCondChefs || [];
+  if(!chefs.length){ showToast('Aucun chef d\'équipe'); return; }
+  let ex = document.getElementById('modal-stockCondGen');
+  if(ex) ex.remove();
+  ex = document.createElement('div');
+  ex.className = 'modal-overlay open';
+  ex.id = 'modal-stockCondGen';
+  ex.innerHTML = `
+    <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
+      <div class="modal-header"><h2>📄 Liste stock camion</h2><button class="modal-close" onclick="document.getElementById('modal-stockCondGen').remove()">×</button></div>
+      <div class="hint" style="margin-bottom:8px;">Choisis les chefs d'équipe à inclure :</div>
+      <label style="display:flex;align-items:center;gap:10px;padding:8px 4px;font-weight:700;border-bottom:1px solid var(--line);"><input type="checkbox" id="scgAll" style="width:20px;height:20px;accent-color:var(--wood);" onchange="document.querySelectorAll('.scgChef').forEach(c=>c.checked=this.checked)"> Tout sélectionner</label>
+      <div style="flex:1;overflow-y:auto;margin-bottom:12px;">
+        ${chefs.map((c, i) => `<label style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);"><input type="checkbox" class="scgChef" value="${i}" style="width:20px;height:20px;accent-color:var(--wood);"> 👷 ${escapeHtml(c.name)}</label>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary" style="flex:1;" id="scgPdf" onclick="_stockCondGenerate('pdf')">📄 PDF</button>
+        <button class="btn btn-outline" style="flex:1;" id="scgXls" onclick="_stockCondGenerate('excel')">📊 Excel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ex);
+}
+async function _stockCondGenerate(format){
+  const idxs = Array.from(document.querySelectorAll('.scgChef:checked')).map(c => +c.value);
+  if(!idxs.length){ showToast('Choisis au moins un chef d\'équipe'); return; }
+  const btns = ['scgPdf','scgXls'].map(id => document.getElementById(id));
+  btns.forEach(b => { if(b) b.disabled = true; });
+  showToast('⏳ Récupération des stocks…');
+  try{
+    const entries = [];
+    for(const i of idxs){
+      const chef = _stockCondChefs[i];
+      if(!chef) continue;
+      const res = await _stockCondFetchChefStock(chef.authId);
+      let stock = res ? res.stock : [];
+      try{ stock = _truckOpsOverlay(stock, await _truckOpsFetch(chef.authId)); }catch(e){}
+      const tools = (stock || []).filter(t => t.category === 'outillage');
+      entries.push({ chef, truckName: res ? res.truckName : '', brandColors: res ? (res.brandColors || {}) : {}, tools, updatedAt: res ? res.updatedAt : null, ok: !!res });
+    }
+    if(format === 'pdf') await _stockCondBuildPDF(entries);
+    else await _stockCondBuildExcel(entries);
+    const m = document.getElementById('modal-stockCondGen'); if(m) m.remove();
+  }catch(e){
+    console.error('[stock camion]', e);
+    showToast('❌ Génération impossible : ' + (e && e.message || e));
+  }finally{
+    btns.forEach(b => { if(b) b.disabled = false; });
+  }
+}
+function _stockGroupByBrand(tools){
+  const g = {};
+  tools.forEach(t => { const b = (t.brand||'').trim() || 'Sans marque'; (g[b] = g[b] || []).push(t); });
+  const brands = Object.keys(g).sort((a,b) => (a === 'Sans marque') - (b === 'Sans marque') || a.localeCompare(b, 'fr'));
+  const order = { 'Filaire':0, 'Sur batterie':1, 'Autre':2 };
+  brands.forEach(b => g[b].sort((x,y) => (order[_stockToolGroup(x)] - order[_stockToolGroup(y)]) || (x.name||'').localeCompare(y.name||'', 'fr')));
+  return { brands, g };
+}
+async function _stockCondBuildPDF(entries){
+  if(typeof window.jspdf === 'undefined' && typeof window.jsPDF === 'undefined'){
+    await new Promise((res, rej) => {
+      const sc = document.createElement('script');
+      sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      sc.onload = res; sc.onerror = () => rej(new Error('PDF indisponible hors-ligne'));
+      document.head.appendChild(sc);
+    });
+  }
+  const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  const doc = new J({ orientation:'portrait', unit:'mm', format:'a4' });
+  const W = 210, H = 297, M = 12, CW = W - M*2, rowH = 8;
+  const txtOn = ([r,g,b]) => (0.299*r + 0.587*g + 0.114*b) > 150 ? [30,20,10] : [255,255,255];
+  const today = new Date().toLocaleDateString('fr-FR');
+  entries.forEach((e, ei) => {
+    if(ei > 0) doc.addPage();
+    const header = (suite) => {
+      doc.setFillColor(20,14,8); doc.rect(0, 0, W, 16, 'F');
+      doc.setTextColor(232,172,61); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+      doc.text('Stock camion — ' + e.chef.name + (suite ? ' (suite)' : ''), M, 7.5);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(200,170,110);
+      doc.text((e.truckName ? e.truckName + '  ·  ' : '') + e.tools.length + ' outil(s)  ·  ' + today, M, 12.5);
+      doc.setTextColor(0,0,0);
+      return 22;
+    };
+    let y = header(false);
+    if(!e.tools.length){
+      doc.setFontSize(10); doc.setTextColor(120,110,100);
+      doc.text(e.ok ? 'Aucun outil enregistré dans ce camion.' : 'Stock indisponible (pas encore synchronisé).', M, y + 4);
+      return;
+    }
+    const { brands, g } = _stockGroupByBrand(e.tools);
+    brands.forEach(brand => {
+      const rgb = _stockHexRgb(_stockBrandHex(brand, e.brandColors));
+      const tc = txtOn(rgb);
+      const light = rgb.map(c => Math.round(255 - (255 - c) * 0.13));
+      if(y + 9 + 7 + rowH > H - M){ doc.addPage(); y = header(true); }
+      doc.setFillColor(...rgb); doc.rect(M, y, CW, 8, 'F');
+      doc.setTextColor(...tc); doc.setFont('helvetica','bold'); doc.setFontSize(10);
+      doc.text(brand.toUpperCase(), M + 3, y + 5.6);
+      doc.setFontSize(8); doc.text(g[brand].length + ' outil(s)', M + CW - 2, y + 5.6, { align:'right' });
+      y += 9;
+      // en-têtes de colonnes
+      doc.setTextColor(90,80,70); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text('Nom', M + 4, y + 4); doc.text('Référence', M + 78, y + 4); doc.text('Détail', M + 122, y + 4);
+      y += 6;
+      g[brand].forEach((t, i) => {
+        if(y + rowH > H - M){
+          doc.addPage(); y = header(true);
+          doc.setFillColor(...rgb); doc.rect(M, y, CW, 6, 'F');
+          doc.setTextColor(...tc); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+          doc.text(brand.toUpperCase() + ' (suite)', M + 3, y + 4.3); y += 7;
+        }
+        if(i % 2 === 0){ doc.setFillColor(...light); doc.rect(M, y, CW, rowH, 'F'); }
+        doc.setFillColor(...rgb); doc.rect(M, y, 1.8, rowH, 'F');
+        doc.setTextColor(20,14,8); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+        doc.text(doc.splitTextToSize(t.name || '', 70)[0] || '', M + 4, y + 5.3);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(60,50,40);
+        doc.text(doc.splitTextToSize(t.ref || '—', 42)[0] || '', M + 78, y + 5.3);
+        doc.text(doc.splitTextToSize(_stockToolDetail(t) || '—', 62)[0] || '', M + 122, y + 5.3);
+        y += rowH;
+      });
+      y += 4;
+    });
+  });
+  const total = doc.getNumberOfPages ? doc.getNumberOfPages() : 1;
+  for(let pnum = 1; pnum <= total; pnum++){
+    doc.setPage(pnum); doc.setFontSize(7); doc.setTextColor(150,140,130);
+    doc.text('Page ' + pnum + '/' + total + '  ·  RWOOD', W/2, H - 5, { align:'center' });
+  }
+  const fileName = 'rwood-stock-camions-' + new Date().toISOString().slice(0,10) + '.pdf';
+  await shareOrDownloadPDF(doc.output('blob'), fileName, 'Stock camions RWOOD');
+}
+async function _stockCondBuildExcel(entries){
+  if(typeof ExcelJS === 'undefined'){
+    const load = (src) => new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+    try{ await load('exceljs.min.js'); }catch(e1){ try{ await load('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'); }catch(e2){} }
+  }
+  if(typeof ExcelJS === 'undefined') throw new Error('moteur Excel introuvable');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'RWOOD';
+  const argb = (rgb) => 'FF' + rgb.map(c => c.toString(16).padStart(2,'0')).join('').toUpperCase();
+  const thin = { style:'thin', color:{ argb:'FFD0C8BE' } };
+  const border = { top:thin, left:thin, bottom:thin, right:thin };
+  const COLS = [
+    { header:'Chef d\'équipe', key:'chef', width:22 },
+    { header:'Marque', key:'brand', width:16 },
+    { header:'Alimentation', key:'group', width:14 },
+    { header:'Nom', key:'name', width:30 },
+    { header:'Référence', key:'ref', width:18 },
+    { header:'Type', key:'kind', width:16 },
+    { header:'Tension (V)', key:'volt', width:11 },
+    { header:'Ampérage (Ah)', key:'amp', width:13 },
+    { header:'Lame (mm)', key:'blade', width:10 },
+    { header:'Qté', key:'qty', width:7 },
+  ];
+  const kindLabel = t => t.toolKind === 'battery' ? 'Batterie (accu)' : (t.toolKind === 'circularsaw' ? 'Scie circulaire' : 'Outil');
+  const rowOf = (e, brand, t) => ({ chef: e.chef.name, brand, group: _stockToolGroup(t), name: t.name || '', ref: t.ref || '', kind: kindLabel(t),
+    volt: t.voltage != null ? t.voltage : null, amp: t.amperage != null ? t.amperage : null, blade: t.bladeSize != null ? t.bladeSize : null, qty: t.qty > 0 ? t.qty : 1 });
+
+  // Feuille 1 : tous les camions, un BLOC par chef (v5.41.203, demande de
+  // Rémi) — titre « CHEF D'ÉQUIPE : NOM » puis toutes ses machines triées
+  // par marque → alimentation, puis le chef suivant en dessous. Le nom du
+  // chef n'est plus répété sur chaque ligne.
+  const all = wb.addWorksheet('Tous les camions');
+  all.columns = COLS.filter(c => c.key !== 'chef').map(c => ({ key:c.key, width:c.width }));
+  const NC = all.columns.length;
+  entries.forEach((e, ei) => {
+    if(ei > 0){ all.addRow([]); all.addRow([]); }
+    const tr = all.addRow(["CHEF D'ÉQUIPE : " + String(e.chef.name || '').toUpperCase() + (e.truckName ? '   —   ' + e.truckName : '') + '   (' + e.tools.length + ' outil' + (e.tools.length > 1 ? 's' : '') + ')']);
+    all.mergeCells(tr.number, 1, tr.number, NC);
+    tr.height = 24;
+    tr.getCell(1).font = { bold:true, size:13, color:{ argb:'FFE8AC3D' } };
+    tr.getCell(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF2A2118' } };
+    tr.getCell(1).alignment = { vertical:'middle' };
+    const hr = all.addRow(COLS.filter(c => c.key !== 'chef').map(c => c.header));
+    hr.eachCell(c => { c.font = { bold:true, color:{ argb:'FF3A2E22' } }; c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFEDE6DC' } }; c.border = border; });
+    if(!e.tools.length){ all.addRow([e.ok ? 'Aucun outil enregistré.' : 'Stock indisponible (pas encore synchronisé).']).font = { italic:true, color:{ argb:'FF7A6E62' } }; return; }
+    const { brands, g } = _stockGroupByBrand(e.tools);
+    brands.forEach(brand => {
+      const rgb = _stockHexRgb(_stockBrandHex(brand, e.brandColors));
+      const light = rgb.map(c => Math.round(255 - (255 - c) * 0.18));
+      g[brand].forEach(t => {
+        const d = rowOf(e, brand, t); delete d.chef;
+        const r = all.addRow(d);
+        r.eachCell({ includeEmpty:true }, c => { c.border = border; });
+        r.getCell('brand').fill = { type:'pattern', pattern:'solid', fgColor:{ argb: argb(light) } };
+        r.getCell('brand').font = { bold:true, color:{ argb: argb(rgb.map(c => Math.round(c*0.6))) } };
+      });
+    });
+  });
+
+  // Une feuille par chef : blocs par marque, sous-blocs Filaire / Sur batterie
+  entries.forEach(e => {
+    const name = (e.chef.name || 'Chef').replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31);
+    let ws; try{ ws = wb.addWorksheet(name); }catch(err){ ws = wb.addWorksheet((name.slice(0, 26) + ' ' + uid().slice(-4)).slice(0, 31)); }
+    ws.columns = [ { width:30 }, { width:18 }, { width:16 }, { width:11 }, { width:13 }, { width:10 }, { width:7 } ];
+    const t1 = ws.addRow(['Stock camion — ' + e.chef.name + (e.truckName ? ' (' + e.truckName + ')' : '')]);
+    t1.font = { bold:true, size:14 }; ws.mergeCells(t1.number, 1, t1.number, 7);
+    ws.addRow([e.tools.length + ' outil(s) — généré le ' + new Date().toLocaleDateString('fr-FR')]).font = { italic:true, color:{ argb:'FF7A6E62' } };
+    ws.addRow([]);
+    if(!e.tools.length){ ws.addRow([e.ok ? 'Aucun outil enregistré.' : 'Stock indisponible (pas encore synchronisé).']); return; }
+    const { brands, g } = _stockGroupByBrand(e.tools);
+    brands.forEach(brand => {
+      const rgb = _stockHexRgb(_stockBrandHex(brand, e.brandColors));
+      const on = (0.299*rgb[0] + 0.587*rgb[1] + 0.114*rgb[2]) > 150 ? 'FF1E140A' : 'FFFFFFFF';
+      const light = rgb.map(c => Math.round(255 - (255 - c) * 0.15));
+      const hb = ws.addRow([brand.toUpperCase() + '  (' + g[brand].length + ')']);
+      ws.mergeCells(hb.number, 1, hb.number, 7);
+      hb.getCell(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb: argb(rgb) } };
+      hb.getCell(1).font = { bold:true, size:12, color:{ argb: on } };
+      ['Filaire', 'Sur batterie', 'Autre'].forEach(grp => {
+        const list = g[brand].filter(t => _stockToolGroup(t) === grp);
+        if(!list.length) return;
+        const sh = ws.addRow(['   ' + grp, 'Référence', 'Type', 'Tension (V)', 'Ampérage (Ah)', 'Lame (mm)', 'Qté']);
+        sh.eachCell(c => { c.font = { bold:true, color:{ argb:'FF3A2E22' } }; c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb: argb(light) } }; c.border = border; });
+        list.forEach(t => {
+          const r = ws.addRow([t.name || '', t.ref || '', kindLabel(t), t.voltage != null ? t.voltage : null, t.amperage != null ? t.amperage : null, t.bladeSize != null ? t.bladeSize : null, t.qty > 0 ? t.qty : 1]);
+          r.eachCell({ includeEmpty:true }, c => { c.border = border; });
+          r.getCell(1).border = Object.assign({}, border, { left:{ style:'thick', color:{ argb: argb(rgb) } } });
+        });
+      });
+      ws.addRow([]);
+    });
+  });
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const fileName = 'rwood-stock-camions-' + new Date().toISOString().slice(0,10) + '.xlsx';
+  if(typeof saveBlobToDevice === 'function') await saveBlobToDevice(blob, fileName, blob.type, ['.xlsx']);
+  else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName; document.body.appendChild(a); a.click(); a.remove(); }
+  showToast('📊 Excel généré : ' + fileName);
+}
+
 function _stockCondViewedTruck(){
   const st = _stockCondState;
   const chefName = st.chef ? st.chef.name : '';
@@ -24145,13 +24591,14 @@ function _stockCondViewedTruck(){
 function _stockCondHintHtml(){
   const st = _stockCondState;
   const back = `<button class="btn btn-outline btn-sm" style="margin-right:8px;" onclick="_stockCondReset(); renderStock();">‹ Chefs d'équipe</button>`;
-  const refresh = `<button class="btn btn-outline btn-sm" onclick="_stockCondRefresh()">⟳ Actualiser</button>`;
+  const refresh = `<button class="btn btn-outline btn-sm" onclick="_stockCondRefresh()">⟳ Actualiser</button>`
+    + ((!st.loading && !st.error) ? ` <button class="btn btn-outline btn-sm" onclick="_stockCondOpenToolEditor(null)">+ Ajouter un outil</button>` : '');
   let msg;
   if(st.loading) msg = `Chargement du stock de ${escapeHtml(st.chef.name)}…`;
   else if(st.error) msg = `⚠️ Impossible de charger le stock de ${escapeHtml(st.chef.name)} (connexion ?).`;
   else {
     const d = st.updatedAt ? new Date(st.updatedAt) : null;
-    msg = `👁 Stock camion de ${escapeHtml(st.chef.name)} — lecture seule` + (d && !isNaN(d) ? ` · synchronisé le ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}` : '') + '.';
+    msg = `👁 Stock camion de ${escapeHtml(st.chef.name)} — outillage modifiable (✏️ / ×)` + (d && !isNaN(d) ? ` · synchronisé le ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}` : '') + '.';
   }
   return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;">${back}${refresh}</div><div>${msg}</div>`;
 }
@@ -24290,6 +24737,9 @@ function renderStock(){
             <span class="qty-val">${item.qty}</span>
             ${readOnly ? '' : `<button class="qty-btn" onclick="changeStock('${item.id}', 1)">+</button>`}
           </div>` : ''}
+          ${(_condMode && isTool && !_stockCondState.loading) ? `<button class="remove-worker" style="position:absolute; top:6px; right:8px;" onclick="_stockCondDeleteTool('${item.id}')" title="Supprimer">×</button>
+          <button class="remove-worker" style="position:absolute; top:6px; right:34px;" onclick="_stockCondOpenToolEditor('${item.id}')" title="Modifier"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button>
+          ${item._pendingOp ? '<span style="position:absolute;bottom:6px;right:10px;font-size:10px;color:var(--ink-soft);">⏳ en attente du téléphone du chef</span>' : ''}` : ''}
           ${readOnly ? '' : `<button class="remove-worker" style="position:absolute; top:6px; right:8px;" onclick="deleteStockItem('${item.id}')" title="Supprimer">×</button>
           <button class="remove-worker" style="position:absolute; top:6px; right:34px;" onclick="openEditStockModal('${item.id}')" title="Modifier"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button>
           ${(item.category==='outillage'||item.category==='pret') ? `<button class="remove-worker" style="position:absolute; top:6px; right:62px;" onclick="shareViaQR('tool','${item.id}')" title="QR outil"><img src="icons/qr.png" alt="" style="width:11px;height:11px;object-fit:contain;"></button>` : ''}`}
@@ -33392,9 +33842,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.201';
+const APP_VERSION = '5.41.203';
 
 const CHANGELOG = [
+  {
+    version: '5.41.203',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📊', text: "Excel stock camions : la feuille « Tous les camions » est maintenant organisée en blocs — un titre « CHEF D'ÉQUIPE : NOM » puis toutes ses machines triées (marque → filaire / sur batterie), puis le chef suivant en dessous. Le nom du chef n'est plus répété sur chaque ligne." },
+    ],
+  },
+  {
+    version: '5.41.202',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📄', text: "Stock (conducteur) : nouveau bouton « Générer la liste stock camion » — tu coches un ou plusieurs chefs d'équipe puis PDF (une page par chef, outillage trié par marque avec couleur de marque : nom, référence, filaire / sur batterie, V/Ah, lame) ou Excel (feuille « Tous les camions » triée chef → marque → alimentation avec filtres, plus une feuille par chef avec blocs par marque et sous-blocs Filaire / Sur batterie, entièrement modifiable)." },
+      { icon: '✏️', text: "Stock (conducteur) : dans le camion d'un chef, tu peux maintenant ajouter (« + Ajouter un outil »), modifier (✏️) ou retirer (×) un outil. La modif arrive automatiquement sur le téléphone du chef dès qu'il est en ligne (en attendant : « ⏳ en attente du téléphone du chef »)." },
+    ],
+  },
   {
     version: '5.41.201',
     date: '23/09/2026',
