@@ -6158,6 +6158,13 @@
       </div>
 
       <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
+        <div style="font-weight:700; margin-bottom:6px;">🧊 Atelier 3D <span style="font-size:10px;font-weight:800;background:#E8AC3D;color:#1a0d00;border-radius:6px;padding:1px 6px;">BÊTA · PC</span></div>
+        <div class="hint" style="margin-bottom:10px;">Dessin 3D aux vraies cotes : pièces de bois (section × longueur), assemblage aimanté, vues face/dessus/côté, cotes, pergola paramétrique et liste de débit Excel/PDF.</div>
+        <button class="btn btn-primary btn-block" onclick="openAtelier3D()">🧊 Ouvrir l'Atelier 3D</button>
+        <div id="a3dDevList"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
         <div style="font-weight:700; margin-bottom:6px;">🧰 Tutoriel Magasin</div>
         <div class="hint" style="margin-bottom:10px;">Visite guidée de l'onglet Magasin (emprunter, rendre, SAV, boîte à outils), écran par écran — idéal à filmer en capture d'écran du téléphone pour sensibiliser l'équipe. Aucune donnée réelle n'est modifiée (machine de démonstration).</div>
         <button class="btn btn-primary btn-block" onclick="startMagasinTour()">▶️ Lancer le tutoriel Magasin</button>
@@ -10151,6 +10158,7 @@ function goTo(viewName, siteId){
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
   if(viewName === 'stock'){ if(typeof _stockCondReset === 'function') _stockCondReset(); renderStock(); }
+  if(viewName === 'dev' && typeof _a3dRenderDevList === 'function') setTimeout(_a3dRenderDevList, 50); // v5.41.212
   if(viewName === 'quincaillerie'){
     // Ouvrier / chef → scan direct ; conducteur / patron → gestion
     if(!qcCanManage()){
@@ -32747,6 +32755,717 @@ function importAgendaTasks(input){
   reader.readAsText(file);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — ATELIER 3D (v5.41.212, BÊTA — mode Dev, PC uniquement)
+   Demande de Rémi : dessiner en 3D meubles / petite charpente / pergolas
+   avec de VRAIES cotes. Étape 1 :
+     - pièces de bois aux vraies dimensions (section × longueur, en mm) ;
+     - assemblage : glisser sur le sol avec aimant bord à bord, rotation
+       90° / angle, inclinaison, empilage (« Poser dessus »), dupliquer,
+       répéter N fois avec un entraxe ;
+     - vue 3D orbitale + vues Face / Dessus / Côté (orthographiques) ;
+     - cotes : longueur de la pièce sélectionnée + outil Mesurer (clic sur
+       2 points, aimanté sur les coins des pièces) ;
+     - générateur paramétrique de PERGOLA ;
+     - liste de débit automatique (Excel / PDF) + export image ;
+     - projets enregistrés dans data.projets3d.
+   Unités de la scène : millimètres. Moteur : Three.js r128 (cdnjs),
+   chargé à la première ouverture seulement.
+   ═══════════════════════════════════════════════════════════════════ */
+const A3D_SECTIONS = [
+  ['Liteau 27×38', 38, 27], ['Tasseau 27×40', 40, 27], ['Planche 27×200', 200, 27], ['Chevron 63×75', 63, 75],
+  ['Chevron 75×100', 75, 100], ['Bastaing 63×175', 63, 175], ['Madrier 75×225', 75, 225], ['Poteau 100×100', 100, 100],
+  ['Poteau 120×120', 120, 120], ['Poteau 145×145', 145, 145], ['Poutre 100×200', 100, 200], ['Panneau 18 (×600)', 600, 18],
+];
+const A3D_WOOD = ['#C8A26A', '#B98A4E', '#D9B98A', '#9C6B3C', '#E3C79B', '#8A8F96'];
+let A3D = null; // état de l'atelier ouvert
+
+function _a3dIsPc(){
+  try{ if(typeof _paintIsDesktop === 'function') return _paintIsDesktop(); }catch(e){}
+  return window.innerWidth >= 900;
+}
+async function _a3dLoadThree(){
+  if(window.THREE) return true;
+  await new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+    sc.onload = res; sc.onerror = () => rej(new Error('three'));
+    document.head.appendChild(sc);
+  }).catch(() => {});
+  return !!window.THREE;
+}
+function _a3dProjects(){ if(!Array.isArray(data.projets3d)) data.projets3d = []; return data.projets3d; }
+
+async function openAtelier3D(projectId){
+  if(!_a3dIsPc()){ showToast('🧊 Atelier 3D : disponible sur PC uniquement (bêta)'); return; }
+  showToast('⏳ Chargement du moteur 3D…');
+  if(!(await _a3dLoadThree())){ showToast('❌ Moteur 3D indisponible (connexion ?)'); return; }
+  const projects = _a3dProjects();
+  let proj = projectId ? projects.find(p => p.id === projectId) : null;
+  if(!proj){
+    proj = { id: uid(), name: 'Projet 3D ' + (projects.length + 1), pieces: [], dims: [], createdAt: Date.now(), updatedAt: Date.now() };
+    projects.push(proj);
+  }
+  _a3dBuildUI(proj);
+}
+
+function _a3dBuildUI(proj){
+  const ex = document.getElementById('modal-atelier3d'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-atelier3d';
+  div.style.cssText = 'position:fixed;inset:0;z-index:99990;background:#15110c;display:flex;flex-direction:column;color:var(--ink,#f0e6d2);font-family:inherit;';
+  const btn = (id, label, title, extra) => `<button type="button" id="${id}" title="${title||''}" class="btn btn-outline btn-sm" style="padding:5px 9px;${extra||''}">${label}</button>`;
+  div.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.08);flex-wrap:wrap;">
+      <span style="font-weight:800;font-size:15px;">🧊 Atelier 3D</span><span style="font-size:10px;font-weight:800;background:#E8AC3D;color:#1a0d00;border-radius:6px;padding:2px 6px;">BÊTA</span>
+      <input id="a3dName" value="${escapeHtml(proj.name)}" style="margin-left:6px;padding:5px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);width:200px;">
+      <span style="width:10px;"></span>
+      ${btn('a3dV3d','🧊 3D','Vue 3D')}${btn('a3dVFace','Face','Vue de face')}${btn('a3dVTop','Dessus','Vue de dessus')}${btn('a3dVSide','Côté','Vue de côté')}${btn('a3dFit','⤢','Tout voir')}
+      <span style="width:10px;"></span>
+      ${btn('a3dMeasure','📏 Mesurer','Cliquer 2 points pour poser une cote')}${btn('a3dAllLen','🏷 Longueurs','Afficher la longueur de toutes les pièces')}
+      ${btn('a3dUndo','↶','Annuler (Ctrl+Z)')}
+      <span style="flex:1;"></span>
+      ${btn('a3dProjects','📂 Projets','Ouvrir / gérer les projets')}${btn('a3dPng','🖼 Image','Exporter une image')}
+      ${btn('a3dClose','✕ Fermer','Fermer (enregistré automatiquement)','color:#E07A63;')}
+    </div>
+    <div style="flex:1;display:flex;min-height:0;">
+      <div id="a3dSide" style="width:300px;flex-shrink:0;overflow-y:auto;padding:10px;border-right:1px solid rgba(255,255,255,.08);background:#1b1610;"></div>
+      <div id="a3dView" style="flex:1;position:relative;min-width:0;overflow:hidden;">
+        <div id="a3dLabels" style="position:absolute;inset:0;pointer-events:none;overflow:hidden;"></div>
+        <div id="a3dHelp" style="position:absolute;left:10px;bottom:8px;font-size:11px;color:rgba(40,30,20,.7);background:rgba(255,255,255,.7);padding:3px 8px;border-radius:6px;pointer-events:none;">Clic : sélectionner · Glisser une pièce : déplacer (aimantée) · Clic droit glissé : tourner la vue · Molette : zoom · Maj+glisser : décaler la vue · Suppr / Ctrl+D / R / ↑↓</div>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+
+  const T = window.THREE;
+  const view = document.getElementById('a3dView');
+  const renderer = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  view.insertBefore(renderer.domElement, view.firstChild);
+  renderer.domElement.style.display = 'block';
+  const scene = new T.Scene();
+  scene.background = new T.Color('#eef1f4');
+  scene.add(new T.HemisphereLight(0xffffff, 0x8a7a66, 0.85));
+  const sun = new T.DirectionalLight(0xffffff, 0.75); sun.position.set(4000, 9000, 6000); scene.add(sun);
+  const g1 = new T.GridHelper(20000, 200, 0xc9ced4, 0xdde1e5); scene.add(g1);
+  const g2 = new T.GridHelper(20000, 20, 0x9aa3ad, 0x9aa3ad); g2.position.y = 0.5; scene.add(g2);
+  const persp = new T.PerspectiveCamera(45, 1, 10, 200000);
+  const ortho = new T.OrthographicCamera(-1, 1, 1, -1, -100000, 100000);
+  const group = new T.Group(); scene.add(group);
+  const dimGroup = new T.Group(); scene.add(dimGroup);
+
+  A3D = { proj, T, renderer, scene, persp, ortho, cam: persp, group, dimGroup, meshes: new Map(), sel: null,
+          orbit: { theta: Math.PI/4, phi: 1.0, r: 9000, target: new T.Vector3(0, 800, 0) },
+          orthoView: null, orthoZoom: 6000, measure: null, showAll: false, history: [], tab: 'pieces', raf: 0 };
+
+  const resize = () => {
+    const w = view.clientWidth, h = view.clientHeight;
+    renderer.setSize(w, h);
+    persp.aspect = w / h; persp.updateProjectionMatrix();
+    _a3dUpdateOrtho();
+  };
+  A3D._resize = resize;
+  window.addEventListener('resize', resize);
+  resize();
+  _a3dRebuildAll();
+  _a3dSetView('3d');
+  if(proj.pieces.length) _a3dFit();
+  _a3dRenderSide();
+  _a3dBindEvents();
+  const loop = () => { if(!A3D) return; _a3dUpdateCamera(); renderer.render(scene, A3D.cam); _a3dUpdateLabels(); A3D.raf = requestAnimationFrame(loop); };
+  loop();
+
+  const $ = id => document.getElementById(id);
+  $('a3dV3d').onclick = () => _a3dSetView('3d');
+  $('a3dVFace').onclick = () => _a3dSetView('face');
+  $('a3dVTop').onclick = () => _a3dSetView('top');
+  $('a3dVSide').onclick = () => _a3dSetView('side');
+  $('a3dFit').onclick = () => _a3dFit();
+  $('a3dMeasure').onclick = () => { A3D.measure = A3D.measure ? null : { a: null }; _a3dToolbarState(); showToast(A3D.measure ? '📏 Clique le 1er point, puis le 2e' : 'Mesure terminée'); };
+  $('a3dAllLen').onclick = () => { A3D.showAll = !A3D.showAll; _a3dToolbarState(); };
+  $('a3dUndo').onclick = () => _a3dUndo();
+  $('a3dPng').onclick = () => _a3dExportPng();
+  $('a3dProjects').onclick = () => _a3dProjectsDialog();
+  $('a3dClose').onclick = () => _a3dClose();
+  $('a3dName').onchange = (e) => { proj.name = e.target.value.trim() || proj.name; _a3dSave(); };
+}
+function _a3dToolbarState(){
+  const on = (id, v) => { const b = document.getElementById(id); if(b){ b.style.background = v ? '#E8AC3D' : ''; b.style.color = v ? '#1a0d00' : ''; } };
+  on('a3dMeasure', !!(A3D && A3D.measure)); on('a3dAllLen', !!(A3D && A3D.showAll));
+  ['3d','face','top','side'].forEach(v => on({ '3d':'a3dV3d', face:'a3dVFace', top:'a3dVTop', side:'a3dVSide' }[v], A3D && ((v === '3d' && !A3D.orthoView) || A3D.orthoView === v)));
+}
+function _a3dClose(){
+  if(!A3D) return;
+  _a3dSave();
+  cancelAnimationFrame(A3D.raf);
+  window.removeEventListener('resize', A3D._resize);
+  if(A3D._keyH) document.removeEventListener('keydown', A3D._keyH, true);
+  try{ A3D.renderer.dispose(); }catch(e){}
+  A3D = null;
+  const m = document.getElementById('modal-atelier3d'); if(m) m.remove();
+  if(typeof _a3dRenderDevList === 'function') _a3dRenderDevList();
+}
+let _a3dSaveTimer = null;
+function _a3dSave(){
+  if(!A3D) return;
+  A3D.proj.updatedAt = Date.now();
+  clearTimeout(_a3dSaveTimer);
+  _a3dSaveTimer = setTimeout(() => { try{ saveData(); }catch(e){} }, 600);
+}
+function _a3dPushHistory(){
+  if(!A3D) return;
+  A3D.history.push(JSON.stringify({ pieces: A3D.proj.pieces, dims: A3D.proj.dims }));
+  if(A3D.history.length > 60) A3D.history.shift();
+}
+function _a3dUndo(){
+  if(!A3D || !A3D.history.length) return;
+  const st = JSON.parse(A3D.history.pop());
+  A3D.proj.pieces = st.pieces; A3D.proj.dims = st.dims;
+  A3D.sel = null; _a3dRebuildAll(); _a3dRenderSide(); _a3dSave();
+}
+
+/* ── Géométrie des pièces ─────────────────────────────────────────── */
+function _a3dSize(p){
+  // w = largeur de section, h = hauteur de section, L = longueur (mm)
+  if(p.axis === 'y') return [p.w, p.L, p.h];
+  if(p.axis === 'z') return [p.w, p.h, p.L];
+  return [p.L, p.h, p.w];
+}
+function _a3dMakeMesh(p){
+  const T = A3D.T;
+  const [sx, sy, sz] = _a3dSize(p);
+  const geo = new T.BoxGeometry(sx, sy, sz);
+  const mat = new T.MeshStandardMaterial({ color: p.color || A3D_WOOD[0], roughness: 0.85, metalness: 0 });
+  const mesh = new T.Mesh(geo, mat);
+  const edges = new T.LineSegments(new T.EdgesGeometry(geo), new T.LineBasicMaterial({ color: 0x3a2a14 }));
+  mesh.add(edges);
+  mesh.userData.id = p.id; mesh.userData.edges = edges;
+  _a3dPlaceMesh(mesh, p);
+  return mesh;
+}
+function _a3dPlaceMesh(mesh, p){
+  mesh.position.set(p.x || 0, p.y || 0, p.z || 0);
+  mesh.rotation.order = 'YZX';
+  mesh.rotation.set(0, (p.rotY || 0) * Math.PI / 180, 0);
+  const tilt = (p.tilt || 0) * Math.PI / 180;
+  if(p.axis === 'z') mesh.rotation.x = -tilt; else if(p.axis === 'x') mesh.rotation.z = tilt;
+  mesh.updateMatrixWorld(true);
+}
+function _a3dRebuildAll(){
+  const g = A3D.group;
+  while(g.children.length){ const c = g.children.pop(); c.geometry && c.geometry.dispose(); }
+  A3D.meshes.clear();
+  A3D.proj.pieces.forEach(p => { const m = _a3dMakeMesh(p); g.add(m); A3D.meshes.set(p.id, m); });
+  _a3dHighlight();
+  _a3dRebuildDims();
+}
+function _a3dRefreshPiece(p){
+  const old = A3D.meshes.get(p.id);
+  if(old){ A3D.group.remove(old); old.geometry.dispose(); }
+  const m = _a3dMakeMesh(p); A3D.group.add(m); A3D.meshes.set(p.id, m);
+  _a3dHighlight();
+}
+function _a3dHighlight(){
+  A3D.meshes.forEach((m, id) => {
+    const on = A3D.sel === id;
+    m.material.emissive = new A3D.T.Color(on ? 0x6b3d00 : 0x000000);
+    m.userData.edges.material.color = new A3D.T.Color(on ? 0xE8AC3D : 0x3a2a14);
+  });
+}
+function _a3dPiece(id){ return A3D.proj.pieces.find(p => p.id === id); }
+function _a3dBox(id){ const m = A3D.meshes.get(id); return m ? new A3D.T.Box3().setFromObject(m) : null; }
+function _a3dCorners(id){
+  const m = A3D.meshes.get(id); if(!m) return [];
+  const pos = m.geometry.attributes.position, out = [], seen = new Set();
+  for(let i = 0; i < pos.count; i++){
+    const v = new A3D.T.Vector3().fromBufferAttribute(pos, i); const k = v.x + ',' + v.y + ',' + v.z;
+    if(seen.has(k)) continue; seen.add(k); out.push(m.localToWorld(v.clone()));
+  }
+  // + milieux des arêtes de longueur (pratique pour coter)
+  return out;
+}
+
+/* ── Caméras ──────────────────────────────────────────────────────── */
+function _a3dSetView(v){
+  A3D.orthoView = v === '3d' ? null : v;
+  A3D.cam = A3D.orthoView ? A3D.ortho : A3D.persp;
+  _a3dUpdateOrtho();
+  _a3dToolbarState();
+}
+function _a3dUpdateOrtho(){
+  if(!A3D) return;
+  const view = document.getElementById('a3dView'); if(!view) return;
+  const asp = view.clientWidth / Math.max(1, view.clientHeight), z = A3D.orthoZoom;
+  Object.assign(A3D.ortho, { left: -z * asp / 2, right: z * asp / 2, top: z / 2, bottom: -z / 2 });
+  A3D.ortho.updateProjectionMatrix();
+}
+function _a3dUpdateCamera(){
+  const o = A3D.orbit, t = o.target;
+  if(!A3D.orthoView){
+    o.phi = Math.max(0.05, Math.min(Math.PI / 2 - 0.02, o.phi));
+    A3D.persp.position.set(t.x + o.r * Math.sin(o.phi) * Math.cos(o.theta), t.y + o.r * Math.cos(o.phi), t.z + o.r * Math.sin(o.phi) * Math.sin(o.theta));
+    A3D.persp.lookAt(t);
+  } else {
+    const c = A3D.ortho, D = 50000;
+    if(A3D.orthoView === 'face'){ c.position.set(t.x, t.y, t.z + D); c.up.set(0,1,0); }
+    else if(A3D.orthoView === 'side'){ c.position.set(t.x + D, t.y, t.z); c.up.set(0,1,0); }
+    else { c.position.set(t.x, t.y + D, t.z); c.up.set(0,0,-1); }
+    c.lookAt(t);
+  }
+}
+function _a3dFit(){
+  if(!A3D.proj.pieces.length){ A3D.orbit.target.set(0, 800, 0); A3D.orbit.r = 9000; A3D.orthoZoom = 6000; _a3dUpdateOrtho(); return; }
+  const b = new A3D.T.Box3(); A3D.meshes.forEach(m => b.expandByObject(m));
+  const c = b.getCenter(new A3D.T.Vector3()), s = b.getSize(new A3D.T.Vector3());
+  const R = Math.max(s.x, s.y, s.z, 800);
+  A3D.orbit.target.copy(c); A3D.orbit.r = R * 1.9; A3D.orthoZoom = R * 1.35; _a3dUpdateOrtho();
+}
+
+/* ── Souris / clavier ─────────────────────────────────────────────── */
+function _a3dRay(ev){
+  const el = A3D.renderer.domElement, r = el.getBoundingClientRect();
+  const v = new A3D.T.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  const rc = new A3D.T.Raycaster(); rc.setFromCamera(v, A3D.cam);
+  return rc;
+}
+function _a3dPickPiece(ev){
+  const hits = _a3dRay(ev).intersectObjects(A3D.group.children, false);
+  return hits.length ? { id: hits[0].object.userData.id, point: hits[0].point } : null;
+}
+function _a3dBindEvents(){
+  const el = A3D.renderer.domElement;
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  let drag = null;
+  el.addEventListener('mousedown', ev => {
+    if(ev.button === 2 || ev.button === 1 || ev.shiftKey){ drag = { mode: (ev.shiftKey || ev.button === 1) ? 'pan' : 'orbit', x: ev.clientX, y: ev.clientY }; return; }
+    if(A3D.measure){ _a3dMeasureClick(ev); return; }
+    const hit = _a3dPickPiece(ev);
+    if(hit){
+      if(A3D.sel !== hit.id){ A3D.sel = hit.id; _a3dHighlight(); _a3dRenderSide(); }
+      const p = _a3dPiece(hit.id);
+      const plane = new A3D.T.Plane(new A3D.T.Vector3(0, 1, 0), -hit.point.y);
+      if(A3D.orthoView === 'face') plane.set(new A3D.T.Vector3(0, 0, 1), -hit.point.z);
+      if(A3D.orthoView === 'side') plane.set(new A3D.T.Vector3(1, 0, 0), -hit.point.x);
+      const start = new A3D.T.Vector3(); _a3dRay(ev).ray.intersectPlane(plane, start);
+      drag = { mode: 'move', plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
+    } else {
+      if(A3D.sel){ A3D.sel = null; _a3dHighlight(); _a3dRenderSide(); }
+      drag = { mode: 'orbit', x: ev.clientX, y: ev.clientY };
+    }
+  });
+  window.addEventListener('mousemove', ev => {
+    if(!A3D || !drag) return;
+    if(drag.mode === 'orbit' || drag.mode === 'pan'){
+      const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y; drag.x = ev.clientX; drag.y = ev.clientY;
+      if(drag.mode === 'orbit' && !A3D.orthoView){ A3D.orbit.theta += dx * 0.008; A3D.orbit.phi -= dy * 0.008; }
+      else {
+        const k = A3D.orthoView ? A3D.orthoZoom / A3D.renderer.domElement.clientHeight : A3D.orbit.r / 900;
+        const cam = A3D.cam; const right = new A3D.T.Vector3(), up = new A3D.T.Vector3();
+        cam.updateMatrixWorld(); right.setFromMatrixColumn(cam.matrixWorld, 0); up.setFromMatrixColumn(cam.matrixWorld, 1);
+        A3D.orbit.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+      }
+      return;
+    }
+    if(drag.mode === 'move'){
+      const pt = new A3D.T.Vector3(); if(!_a3dRay(ev).ray.intersectPlane(drag.plane, pt)) return;
+      if(!drag.pushed){ _a3dPushHistory(); drag.pushed = true; }
+      const p = _a3dPiece(A3D.sel); if(!p) return;
+      const snap = v => Math.round(v / 10) * 10;
+      p.x = snap(drag.orig.x + pt.x - drag.start.x);
+      p.z = snap(drag.orig.z + pt.z - drag.start.z);
+      if(A3D.orthoView === 'face' || A3D.orthoView === 'side') p.y = snap(drag.orig.y + pt.y - drag.start.y);
+      _a3dPlaceMesh(A3D.meshes.get(p.id), p);
+      _a3dMagnet(p);
+      _a3dPlaceMesh(A3D.meshes.get(p.id), p);
+      _a3dRenderSelFields();
+    }
+  });
+  window.addEventListener('mouseup', () => { if(drag && drag.mode === 'move' && drag.pushed) _a3dSave(); drag = null; });
+  el.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const f = ev.deltaY > 0 ? 1.12 : 1 / 1.12;
+    if(A3D.orthoView){ A3D.orthoZoom = Math.max(200, Math.min(80000, A3D.orthoZoom * f)); _a3dUpdateOrtho(); }
+    else A3D.orbit.r = Math.max(300, Math.min(120000, A3D.orbit.r * f));
+  }, { passive: false });
+  A3D._keyH = (ev) => {
+    if(!A3D) return;
+    const tag = (ev.target && ev.target.tagName) || '';
+    if(tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const p = A3D.sel && _a3dPiece(A3D.sel);
+    if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z'){ ev.preventDefault(); _a3dUndo(); return; }
+    if(ev.key === 'Escape'){ if(A3D.measure){ A3D.measure = null; _a3dToolbarState(); } else if(A3D.sel){ A3D.sel = null; _a3dHighlight(); _a3dRenderSide(); } return; }
+    if(!p) return;
+    if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); _a3dDeleteSel(); }
+    else if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd'){ ev.preventDefault(); _a3dDuplicate(); }
+    else if(ev.key.toLowerCase() === 'r'){ ev.preventDefault(); _a3dUpdateSel({ rotY: ((p.rotY || 0) + 90) % 360 }); }
+    else if(ev.key === 'ArrowUp' || ev.key === 'ArrowDown'){ ev.preventDefault(); _a3dUpdateSel({ y: (p.y || 0) + (ev.key === 'ArrowUp' ? 1 : -1) * (ev.shiftKey ? 100 : 10) }); }
+  };
+  document.addEventListener('keydown', A3D._keyH, true);
+}
+/* Aimant : colle la pièce déplacée bord à bord (ou alignée) avec les
+   autres, sur X et Z (et Y en vue de face/côté), seuil 40 mm. */
+function _a3dMagnet(p){
+  const me = _a3dBox(p.id); if(!me) return;
+  const thr = 40;
+  let best = { x: null, y: null, z: null };
+  A3D.proj.pieces.forEach(o => {
+    if(o.id === p.id) return;
+    const b = _a3dBox(o.id); if(!b) return;
+    const ov = (a0, a1, b0, b1) => a0 < b1 + thr && a1 > b0 - thr;
+    [['x', ov(me.min.y, me.max.y, b.min.y, b.max.y) && ov(me.min.z, me.max.z, b.min.z, b.max.z)],
+     ['z', ov(me.min.y, me.max.y, b.min.y, b.max.y) && ov(me.min.x, me.max.x, b.min.x, b.max.x)],
+     ['y', ov(me.min.x, me.max.x, b.min.x, b.max.x) && ov(me.min.z, me.max.z, b.min.z, b.max.z)]].forEach(([ax, near]) => {
+      if(!near) return;
+      if(ax === 'y' && !(A3D.orthoView === 'face' || A3D.orthoView === 'side')) return;
+      [[me.min[ax], b.max[ax]], [me.max[ax], b.min[ax]], [me.min[ax], b.min[ax]], [me.max[ax], b.max[ax]]].forEach(([a, t]) => {
+        const d = t - a; if(Math.abs(d) <= thr && (best[ax] === null || Math.abs(d) < Math.abs(best[ax]))) best[ax] = d;
+      });
+    });
+  });
+  if(best.x !== null) p.x += best.x;
+  if(best.z !== null) p.z += best.z;
+  if(best.y !== null) p.y += best.y;
+  p.x = Math.round(p.x); p.y = Math.round(p.y); p.z = Math.round(p.z);
+}
+
+/* ── Cotes ────────────────────────────────────────────────────────── */
+function _a3dMeasureClick(ev){
+  const hit = _a3dPickPiece(ev);
+  let pt = null;
+  if(hit){
+    pt = hit.point.clone();
+    let bd = Infinity, bc = null;
+    _a3dCorners(hit.id).forEach(c => { const d = c.distanceTo(hit.point); if(d < bd){ bd = d; bc = c; } });
+    if(bc && bd < Math.max(60, A3D.orbit.r / 60)) pt = bc; // aimant sur le coin le plus proche
+  } else {
+    const g = new A3D.T.Vector3(); if(_a3dRay(ev).ray.intersectPlane(new A3D.T.Plane(new A3D.T.Vector3(0,1,0), 0), g)) pt = g;
+  }
+  if(!pt) return;
+  const r = v => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
+  if(!A3D.measure.a){ A3D.measure.a = r(pt); showToast('📏 1er point posé — clique le 2e'); return; }
+  _a3dPushHistory();
+  A3D.proj.dims.push({ id: uid(), a: A3D.measure.a, b: r(pt) });
+  A3D.measure = { a: null };
+  _a3dRebuildDims(); _a3dRenderSide(); _a3dSave();
+}
+function _a3dRebuildDims(){
+  const g = A3D.dimGroup, T = A3D.T;
+  while(g.children.length){ const c = g.children.pop(); c.geometry && c.geometry.dispose(); }
+  (A3D.proj.dims || []).forEach(d => {
+    const geo = new T.BufferGeometry().setFromPoints([new T.Vector3(d.a.x, d.a.y, d.a.z), new T.Vector3(d.b.x, d.b.y, d.b.z)]);
+    const line = new T.Line(geo, new T.LineBasicMaterial({ color: 0xd62d20, depthTest: false }));
+    line.renderOrder = 10; g.add(line);
+  });
+}
+function _a3dFmt(mm){ return Math.round(mm) + ' mm'; }
+function _a3dUpdateLabels(){
+  const host = document.getElementById('a3dLabels'); if(!host) return;
+  const el = A3D.renderer.domElement, W = el.clientWidth, H = el.clientHeight;
+  const proj = (v) => { const q = v.clone().project(A3D.cam); return (q.z > 1) ? null : { x: (q.x + 1) / 2 * W, y: (1 - q.y) / 2 * H }; };
+  const tags = [];
+  const tag = (v, txt, color) => { const s = proj(v); if(s) tags.push(`<div style="position:absolute;left:${s.x}px;top:${s.y}px;transform:translate(-50%,-50%);background:${color};color:#fff;font-size:11.5px;font-weight:800;padding:2px 6px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);">${txt}</div>`); };
+  (A3D.proj.dims || []).forEach(d => {
+    const a = new A3D.T.Vector3(d.a.x, d.a.y, d.a.z), b = new A3D.T.Vector3(d.b.x, d.b.y, d.b.z);
+    tag(a.clone().add(b).multiplyScalar(0.5), _a3dFmt(a.distanceTo(b)), '#d62d20');
+  });
+  A3D.proj.pieces.forEach(p => {
+    if(!(A3D.showAll || p.id === A3D.sel)) return;
+    const m = A3D.meshes.get(p.id); if(!m) return;
+    tag(m.position.clone(), (p.name ? escapeHtml(p.name) + ' · ' : '') + p.L + ' mm', p.id === A3D.sel ? '#b86e00' : 'rgba(58,42,20,.85)');
+  });
+  if(A3D.measure && A3D.measure.a) tag(new A3D.T.Vector3(A3D.measure.a.x, A3D.measure.a.y, A3D.measure.a.z), '●', '#d62d20');
+  host.innerHTML = tags.join('');
+}
+
+/* ── Actions sur les pièces ───────────────────────────────────────── */
+function _a3dAddPiece(p, silent){
+  if(!silent) _a3dPushHistory();
+  const piece = Object.assign({ id: uid(), name: 'Pièce', w: 63, h: 175, L: 2000, axis: 'x', x: 0, y: 0, z: 0, rotY: 0, tilt: 0, color: A3D_WOOD[0] }, p);
+  if(p.y == null){ const s = _a3dSize(piece); piece.y = Math.round(s[1] / 2); }
+  A3D.proj.pieces.push(piece);
+  const m = _a3dMakeMesh(piece); A3D.group.add(m); A3D.meshes.set(piece.id, m);
+  if(!silent){ A3D.sel = piece.id; _a3dHighlight(); _a3dRenderSide(); _a3dSave(); }
+  return piece;
+}
+function _a3dUpdateSel(patch){
+  const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
+  _a3dPushHistory();
+  Object.assign(p, patch);
+  _a3dRefreshPiece(p); _a3dRenderSelFields(); _a3dRenderSide(true); _a3dSave();
+}
+function _a3dDeleteSel(){
+  if(!A3D.sel) return;
+  _a3dPushHistory();
+  A3D.proj.pieces = A3D.proj.pieces.filter(p => p.id !== A3D.sel);
+  const m = A3D.meshes.get(A3D.sel); if(m){ A3D.group.remove(m); m.geometry.dispose(); }
+  A3D.meshes.delete(A3D.sel); A3D.sel = null; _a3dRenderSide(); _a3dSave();
+}
+function _a3dDuplicate(){
+  const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
+  const s = _a3dSize(p);
+  const c = _a3dAddPiece(Object.assign({}, p, { id: uid(), x: p.x + (p.axis === 'x' ? 0 : s[0] + 50), z: p.z + (p.axis === 'x' ? s[2] + 50 : 0) }));
+  showToast('⧉ Pièce dupliquée');
+  return c;
+}
+function _a3dRepeat(){
+  const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
+  const n = parseInt((document.getElementById('a3dRepN') || {}).value, 10) || 0;
+  const step = parseFloat((document.getElementById('a3dRepStep') || {}).value) || 0;
+  const ax = (document.getElementById('a3dRepAxis') || {}).value || 'x';
+  if(n < 1 || !step){ showToast('Indique le nombre de copies et l\'entraxe'); return; }
+  _a3dPushHistory();
+  for(let i = 1; i <= n; i++){ const q = Object.assign({}, p, { id: uid() }); q[ax] = p[ax] + step * i; _a3dAddPiece(q, true); }
+  _a3dRenderSide(); _a3dSave(); showToast('✓ ' + n + ' copie(s) ajoutée(s), entraxe ' + step + ' mm');
+}
+function _a3dDropOnTop(){
+  const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
+  const me = _a3dBox(p.id); let top = 0;
+  A3D.proj.pieces.forEach(o => {
+    if(o.id === p.id) return;
+    const b = _a3dBox(o.id);
+    if(b && me.min.x < b.max.x && me.max.x > b.min.x && me.min.z < b.max.z && me.max.z > b.min.z) top = Math.max(top, b.max.y);
+  });
+  const half = (me.max.y - me.min.y) / 2;
+  _a3dUpdateSel({ y: Math.round(top + half) });
+}
+
+/* ── Panneau latéral ──────────────────────────────────────────────── */
+function _a3dRenderSide(keepScroll){
+  const side = document.getElementById('a3dSide'); if(!side || !A3D) return;
+  const sc = side.scrollTop;
+  const tabs = [['pieces','➕ Pièces'],['sel','✏️ Sélection'],['debit','📋 Débit']];
+  if(A3D.sel && !keepScroll && A3D.tab === 'pieces') A3D.tab = 'sel';
+  if(!A3D.sel && A3D.tab === 'sel') A3D.tab = 'pieces';
+  let body = '';
+  const inp = (id, label, val, extra, lw) => `<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;flex:1;min-width:0;"><span style="width:${lw||92}px;flex-shrink:0;color:var(--ink-soft);">${label}</span><input id="${id}" value="${val}" ${extra||''} style="flex:1;min-width:0;padding:5px 7px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+  if(A3D.tab === 'pieces'){
+    body = `
+      <div class="section-title" style="margin-top:4px;">Nouvelle pièce</div>
+      ${inp('a3dNName','Nom','Chevron')}
+      <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;"><span style="width:92px;color:var(--ink-soft);">Section</span>
+        <select id="a3dNSec" style="flex:1;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${A3D_SECTIONS.map((s,i) => `<option value="${i}" ${i===3?'selected':''}>${s[0]}</option>`).join('')}<option value="perso">Autre (saisir)</option></select></label>
+      <div style="display:flex;gap:6px;">${inp('a3dNW','Larg.','63','type="number"',38)}${inp('a3dNH','Haut.','75','type="number"',38)}</div>
+      ${inp('a3dNL','Longueur (mm)','3200','type="number"')}
+      <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;"><span style="width:92px;color:var(--ink-soft);">Sens</span>
+        <select id="a3dNAxis" style="flex:1;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><option value="x">Couché ↔ (gauche-droite)</option><option value="z">Couché ↕ (avant-arrière)</option><option value="y">Debout (poteau)</option></select></label>
+      <button class="btn btn-primary btn-block" style="margin-top:6px;" id="a3dAddBtn">➕ Ajouter la pièce</button>
+      <div class="section-title">Modèles paramétriques</div>
+      <button class="btn btn-outline btn-block" id="a3dPergolaBtn">🏡 Générer une pergola…</button>
+      <div class="section-title">Pièces du projet (${A3D.proj.pieces.length})</div>
+      ${A3D.proj.pieces.map(p => `<div data-pick="${p.id}" style="display:flex;justify-content:space-between;gap:6px;padding:5px 8px;margin-bottom:3px;border-radius:7px;cursor:pointer;background:${p.id===A3D.sel?'rgba(232,172,61,.18)':'var(--card)'};font-size:12px;"><span>${escapeHtml(p.name||'Pièce')}</span><span style="color:var(--ink-soft);">${p.w}×${p.h} · ${p.L}</span></div>`).join('') || '<div class="hint" style="font-size:11.5px;">Aucune pièce : ajoute-en une ou génère une pergola.</div>'}
+      ${(A3D.proj.dims||[]).length ? `<div class="section-title">Cotes (${A3D.proj.dims.length})</div><button class="btn btn-outline btn-sm btn-block" id="a3dClearDims">Effacer les cotes</button>` : ''}`;
+  } else if(A3D.tab === 'sel'){
+    const p = _a3dPiece(A3D.sel);
+    body = `
+      <div class="section-title" style="margin-top:4px;">Pièce sélectionnée</div>
+      ${inp('a3dSName','Nom',escapeHtml(p.name||''))}
+      <div style="display:flex;gap:6px;">${inp('a3dSW','Larg.',p.w,'type="number"',38)}${inp('a3dSH','Haut.',p.h,'type="number"',38)}</div>
+      ${inp('a3dSL','Longueur',p.L,'type="number"')}
+      <label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:12px;"><span style="width:92px;color:var(--ink-soft);">Sens</span>
+        <select id="a3dSAxis" style="flex:1;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><option value="x" ${p.axis==='x'?'selected':''}>Couché ↔</option><option value="z" ${p.axis==='z'?'selected':''}>Couché ↕</option><option value="y" ${p.axis==='y'?'selected':''}>Debout</option></select></label>
+      <div class="section-title">Position (mm)</div>
+      <div id="a3dSelPos"></div>
+      <div class="section-title">Orientation</div>
+      <div style="display:flex;gap:6px;">${inp('a3dSRot','Rot. °',p.rotY||0,'type="number" step="15"',42)}${p.axis!=='y' ? inp('a3dSTilt','Pente °',p.tilt||0,'type="number" step="1"',46) : ''}</div>
+      <div style="display:flex;gap:6px;margin-top:4px;">
+        <button class="btn btn-outline btn-sm" style="flex:1;" id="a3dRot90">↻ 90°</button>
+        <button class="btn btn-outline btn-sm" style="flex:1;" id="a3dDrop">⬇ Poser dessus</button>
+      </div>
+      <div class="section-title">Couleur</div>
+      <div style="display:flex;gap:6px;">${A3D_WOOD.map(c => `<button type="button" data-col="${c}" style="width:28px;height:28px;border-radius:50%;border:2px solid ${p.color===c?'#E8AC3D':'rgba(255,255,255,.2)'};background:${c};cursor:pointer;"></button>`).join('')}</div>
+      <div class="section-title">Dupliquer / répéter</div>
+      <button class="btn btn-outline btn-sm btn-block" id="a3dDup">⧉ Dupliquer (Ctrl+D)</button>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px;">
+        <input id="a3dRepN" type="number" value="7" min="1" style="width:52px;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"> copies, entraxe
+        <input id="a3dRepStep" type="number" value="600" style="width:66px;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"> mm
+        <select id="a3dRepAxis" style="padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><option value="x">→ X</option><option value="z">↓ Z</option><option value="y">↑ Y</option></select>
+      </div>
+      <button class="btn btn-outline btn-sm btn-block" style="margin-top:6px;" id="a3dRep">🔁 Répéter</button>
+      <button class="btn btn-outline btn-sm btn-block" style="margin-top:12px;color:#E07A63;" id="a3dDel">🗑 Supprimer (Suppr)</button>`;
+  } else {
+    const rows = _a3dCutList();
+    const vol = rows.reduce((s, r) => s + r.vol, 0);
+    body = `
+      <div class="section-title" style="margin-top:4px;">Liste de débit</div>
+      ${rows.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <tr style="color:var(--ink-soft);text-align:left;"><th>Qté</th><th>Pièce</th><th>Section</th><th style="text-align:right;">Long.</th></tr>
+        ${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,.08);"><td style="font-weight:800;">${r.qty}</td><td>${escapeHtml(r.name)}</td><td>${r.w}×${r.h}</td><td style="text-align:right;">${r.L}</td></tr>`).join('')}
+      </table>
+      <div style="margin-top:8px;font-size:12.5px;">Total : <b>${rows.reduce((s,r)=>s+r.qty,0)}</b> pièces · <b>${(rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2).replace('.',',')}</b> m linéaires · <b>${vol.toFixed(3).replace('.',',')}</b> m³</div>
+      <div style="display:flex;gap:6px;margin-top:10px;"><button class="btn btn-primary btn-sm" style="flex:1;" id="a3dXls">📊 Excel</button><button class="btn btn-outline btn-sm" style="flex:1;" id="a3dPdf">📄 PDF</button></div>` : '<div class="hint">Aucune pièce.</div>'}`;
+  }
+  side.innerHTML = `<div style="display:flex;gap:4px;margin-bottom:6px;">${tabs.map(([k,l]) => `<button type="button" data-tab="${k}" class="chip${A3D.tab===k?' selected':''}" style="flex:1;justify-content:center;${k==='sel'&&!A3D.sel?'opacity:.4;pointer-events:none;':''}">${l}</button>`).join('')}</div>` + body;
+  side.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { A3D.tab = b.dataset.tab; _a3dRenderSide(); });
+  const $ = id => document.getElementById(id);
+  if(A3D.tab === 'pieces'){
+    const syncSec = () => { const v = $('a3dNSec').value; if(v !== 'perso'){ const s = A3D_SECTIONS[+v]; $('a3dNW').value = s[1]; $('a3dNH').value = s[2]; $('a3dNName').value = s[0].split(' ')[0]; } };
+    $('a3dNSec').onchange = syncSec;
+    $('a3dNAxis').onchange = () => { if($('a3dNAxis').value === 'y' && +$('a3dNL').value > 3500) $('a3dNL').value = 2400; };
+    $('a3dAddBtn').onclick = () => {
+      const w = +$('a3dNW').value, h = +$('a3dNH').value, L = +$('a3dNL').value;
+      if(!(w > 0 && h > 0 && L > 0)){ showToast('Dimensions invalides'); return; }
+      const t = A3D.orbit.target;
+      _a3dAddPiece({ name: $('a3dNName').value.trim() || 'Pièce', w, h, L, axis: $('a3dNAxis').value, x: Math.round(t.x / 10) * 10, z: Math.round(t.z / 10) * 10 });
+    };
+    $('a3dPergolaBtn').onclick = () => _a3dPergolaDialog();
+    side.querySelectorAll('[data-pick]').forEach(r => r.onclick = () => { A3D.sel = r.dataset.pick; _a3dHighlight(); _a3dRenderSide(); });
+    if($('a3dClearDims')) $('a3dClearDims').onclick = () => { _a3dPushHistory(); A3D.proj.dims = []; _a3dRebuildDims(); _a3dRenderSide(); _a3dSave(); };
+  } else if(A3D.tab === 'sel'){
+    const num = (id, key) => { const e = $(id); if(e) e.onchange = () => { const v = parseFloat(e.value); if(!isNaN(v) && (key === 'rotY' || key === 'tilt' || v > 0)) _a3dUpdateSel({ [key]: v }); }; };
+    num('a3dSW','w'); num('a3dSH','h'); num('a3dSL','L'); num('a3dSRot','rotY'); num('a3dSTilt','tilt');
+    $('a3dSName').onchange = () => _a3dUpdateSel({ name: $('a3dSName').value.trim() });
+    $('a3dSAxis').onchange = () => _a3dUpdateSel({ axis: $('a3dSAxis').value, tilt: 0 });
+    $('a3dRot90').onclick = () => { const p = _a3dPiece(A3D.sel); _a3dUpdateSel({ rotY: ((p.rotY || 0) + 90) % 360 }); };
+    $('a3dDrop').onclick = () => _a3dDropOnTop();
+    $('a3dDup').onclick = () => _a3dDuplicate();
+    $('a3dRep').onclick = () => _a3dRepeat();
+    $('a3dDel').onclick = () => _a3dDeleteSel();
+    side.querySelectorAll('[data-col]').forEach(b => b.onclick = () => _a3dUpdateSel({ color: b.dataset.col }));
+    _a3dRenderSelFields();
+  } else {
+    if($('a3dXls')) $('a3dXls').onclick = () => _a3dExportCutList('excel');
+    if($('a3dPdf')) $('a3dPdf').onclick = () => _a3dExportCutList('pdf');
+  }
+  if(keepScroll) side.scrollTop = sc;
+}
+function _a3dRenderSelFields(){
+  const host = document.getElementById('a3dSelPos'); const p = A3D && A3D.sel && _a3dPiece(A3D.sel);
+  if(!host || !p) return;
+  const f = (k, l) => `<label style="display:flex;align-items:center;gap:4px;font-size:12px;flex:1;"><span style="color:var(--ink-soft);">${l}</span><input data-pos="${k}" type="number" step="10" value="${Math.round(p[k]||0)}" style="width:100%;min-width:0;padding:5px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+  if(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.pos) return;
+  host.innerHTML = `<div style="display:flex;gap:6px;">${f('x','X')}${f('y','Y')}${f('z','Z')}</div><div class="hint" style="font-size:10.5px;margin-top:2px;">X gauche→droite · Y hauteur (centre de la pièce) · Z avant→arrière</div>`;
+  host.querySelectorAll('[data-pos]').forEach(e => e.onchange = () => { const v = parseFloat(e.value); if(!isNaN(v)) _a3dUpdateSel({ [e.dataset.pos]: v }); });
+}
+
+/* ── Liste de débit ───────────────────────────────────────────────── */
+function _a3dCutList(){
+  const map = new Map();
+  A3D.proj.pieces.forEach(p => {
+    const w = Math.min(p.w, p.h), h = Math.max(p.w, p.h);
+    const k = (p.name || 'Pièce') + '|' + w + '|' + h + '|' + Math.round(p.L);
+    const r = map.get(k) || { name: p.name || 'Pièce', w, h, L: Math.round(p.L), qty: 0, vol: 0 };
+    r.qty++; r.vol += (p.w * p.h * p.L) / 1e9; map.set(k, r);
+  });
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'fr') || (b.h - a.h) || (b.L - a.L));
+}
+async function _a3dExportCutList(fmt){
+  const rows = _a3dCutList(); if(!rows.length) return;
+  const name = A3D.proj.name || 'Projet 3D';
+  const slug = name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'projet';
+  const img = A3D.renderer.domElement.toDataURL('image/jpeg', 0.9);
+  if(fmt === 'excel'){
+    if(typeof ExcelJS === 'undefined'){
+      const load = src => new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+      try{ await load('exceljs.min.js'); }catch(e1){ try{ await load('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'); }catch(e2){} }
+    }
+    if(typeof ExcelJS === 'undefined'){ showToast('❌ Moteur Excel indisponible'); return; }
+    const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Débit');
+    ws.columns = [{ header:'Qté', key:'qty', width:7 }, { header:'Pièce', key:'name', width:22 }, { header:'Épaisseur (mm)', key:'w', width:15 }, { header:'Largeur (mm)', key:'h', width:14 }, { header:'Longueur (mm)', key:'L', width:15 }, { header:'Mètres linéaires', key:'ml', width:16 }, { header:'Volume (m³)', key:'vol', width:13 }];
+    ws.getRow(1).font = { bold:true, color:{ argb:'FFFFFFFF' } }; ws.getRow(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF2A2118' } };
+    rows.forEach(r => ws.addRow({ qty:r.qty, name:r.name, w:r.w, h:r.h, L:r.L, ml: +(r.qty*r.L/1000).toFixed(2), vol: +r.vol.toFixed(4) }));
+    const tr = ws.addRow({ name:'TOTAL', qty: rows.reduce((s,r)=>s+r.qty,0), ml: +(rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2), vol: +rows.reduce((s,r)=>s+r.vol,0).toFixed(4) }); tr.font = { bold:true };
+    try{ const id = wb.addImage({ base64: img, extension:'jpeg' }); ws.addImage(id, { tl:{ col:0, row: rows.length + 3 }, ext:{ width:640, height:400 } }); }catch(e){}
+    const buf = await wb.xlsx.writeBuffer();
+    const MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    await saveBlobToDevice(new Blob([buf], { type: MIME }), 'debit-' + slug + '.xlsx', MIME, ['.xlsx']);
+  } else {
+    if(typeof window.jspdf === 'undefined' && typeof window.jsPDF === 'undefined'){
+      await new Promise((res) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; sc.onload = res; sc.onerror = res; document.head.appendChild(sc); });
+    }
+    const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF; if(!J){ showToast('❌ PDF indisponible'); return; }
+    const doc = new J({ orientation:'portrait', unit:'mm', format:'a4' });
+    doc.setFillColor(20,14,8); doc.rect(0,0,210,16,'F'); doc.setTextColor(232,172,61); doc.setFont('helvetica','bold'); doc.setFontSize(13);
+    doc.text('Liste de débit — ' + name, 12, 10); doc.setTextColor(0,0,0);
+    try{ doc.addImage(img, 'JPEG', 12, 20, 186, 116); }catch(e){}
+    let y = 144; doc.setFontSize(9); doc.setFont('helvetica','bold');
+    ['Qté','Pièce','Section (mm)','Longueur (mm)','Volume (m³)'].forEach((t,i) => doc.text(t, [12,26,90,130,170][i], y)); y += 5;
+    doc.setFont('helvetica','normal');
+    rows.forEach((r, i) => {
+      if(y > 285){ doc.addPage(); y = 16; }
+      if(i % 2 === 0){ doc.setFillColor(245,240,232); doc.rect(10, y-4, 190, 6, 'F'); }
+      doc.text(String(r.qty), 12, y); doc.text(r.name, 26, y); doc.text(r.w + ' × ' + r.h, 90, y); doc.text(String(r.L), 130, y); doc.text(r.vol.toFixed(4).replace('.',','), 170, y); y += 6;
+    });
+    y += 3; doc.setFont('helvetica','bold');
+    doc.text('Total : ' + rows.reduce((s,r)=>s+r.qty,0) + ' pièces · ' + (rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2).replace('.',',') + ' ml · ' + rows.reduce((s,r)=>s+r.vol,0).toFixed(3).replace('.',',') + ' m³', 12, y);
+    await shareOrDownloadPDF(doc.output('blob'), 'debit-' + slug + '.pdf', 'Liste de débit ' + name);
+  }
+}
+function _a3dExportPng(){
+  A3D.renderer.render(A3D.scene, A3D.cam);
+  A3D.renderer.domElement.toBlob(b => { if(b) saveBlobToDevice(b, (A3D.proj.name || 'projet-3d').replace(/[^\w\-]+/g,'-') + '.png', 'image/png', ['.png']); }, 'image/png');
+}
+
+/* ── Générateur de pergola ────────────────────────────────────────── */
+function _a3dPergolaDialog(){
+  let ex = document.getElementById('a3dPergola'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'a3dPergola';
+  ex.style.cssText = 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;';
+  const f = (id, l, v) => `<label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><span style="flex:1;">${l}</span><input id="${id}" type="number" value="${v}" style="width:110px;padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+  ex.innerHTML = `<div style="background:var(--card,#211a12);border:1.5px solid var(--wood);border-radius:14px;padding:16px;width:380px;max-height:90vh;overflow-y:auto;">
+    <h3 style="margin:0 0 8px;">🏡 Pergola paramétrique</h3>
+    ${f('pgL','Longueur (mm)',4000)}${f('pgl','Profondeur (mm)',3000)}${f('pgH','Hauteur poteaux (mm)',2400)}
+    ${f('pgP','Section poteau (mm)',120)}
+    ${f('pgSw','Sablière — épaisseur',75)}${f('pgSh','Sablière — hauteur',225)}${f('pgSd','Débord sablières (mm)',300)}
+    ${f('pgCw','Chevron — épaisseur',63)}${f('pgCh','Chevron — hauteur',175)}${f('pgCe','Entraxe chevrons (mm)',600)}${f('pgCd','Débord chevrons (mm)',300)}
+    <label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><input id="pgJ" type="checkbox" checked> Jambes de force (45°)</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><input id="pgR" type="checkbox" checked> Remplacer le projet actuel</label>
+    <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('a3dPergola').remove()">Annuler</button><button class="btn btn-primary" style="flex:1;" id="pgGo">Générer</button></div>
+  </div>`;
+  document.body.appendChild(ex);
+  document.getElementById('pgGo').onclick = () => {
+    const v = id => +document.getElementById(id).value;
+    _a3dBuildPergola({ L:v('pgL'), l:v('pgl'), H:v('pgH'), P:v('pgP'), Sw:v('pgSw'), Sh:v('pgSh'), Sd:v('pgSd'), Cw:v('pgCw'), Ch:v('pgCh'), Ce:v('pgCe'), Cd:v('pgCd'), J: document.getElementById('pgJ').checked, replace: document.getElementById('pgR').checked });
+    ex.remove();
+  };
+}
+function _a3dBuildPergola(o){
+  _a3dPushHistory();
+  if(o.replace){ A3D.proj.pieces = []; A3D.proj.dims = []; }
+  const add = p => _a3dAddPiece(p, true);
+  const px = o.L / 2 - o.P / 2, pz = o.l / 2 - o.P / 2;
+  [[-px,-pz],[px,-pz],[-px,pz],[px,pz]].forEach(([x,z]) => add({ name:'Poteau', w:o.P, h:o.P, L:o.H, axis:'y', x, y:o.H/2, z, color:A3D_WOOD[1] }));
+  const sabL = o.L + 2 * o.Sd, ySab = o.H + o.Sh / 2;
+  [-pz, pz].forEach(z => add({ name:'Sablière', w:o.Sw, h:o.Sh, L:sabL, axis:'x', x:0, y:ySab, z, color:A3D_WOOD[0] }));
+  const chL = o.l + 2 * o.Cd, yCh = o.H + o.Sh + o.Ch / 2;
+  const span = sabL - o.Cw, n = Math.max(2, Math.ceil(span / o.Ce) + 1), step = span / (n - 1);
+  for(let i = 0; i < n; i++) add({ name:'Chevron', w:o.Cw, h:o.Ch, L:chL, axis:'z', x: Math.round(-sabL/2 + o.Cw/2 + i*step), y:yCh, z:0, color:A3D_WOOD[4] });
+  if(o.J){
+    const jl = 700, d = jl * Math.SQRT1_2 / 2;
+    [[-px,-pz,1],[px,-pz,-1],[-px,pz,1],[px,pz,-1]].forEach(([x,z,s]) => add({ name:'Jambe de force', w:o.P*0.6|0, h:o.P*0.6|0, L:jl, axis:'x', x: x + s*(o.P/2 + d), y: o.H - d - 20, z, tilt: s*45, color:A3D_WOOD[1] }));
+  }
+  A3D.sel = null; _a3dRebuildAll(); _a3dFit(); A3D.tab = 'debit'; _a3dRenderSide(); _a3dSave();
+  showToast('🏡 Pergola générée : ' + A3D.proj.pieces.length + ' pièces');
+}
+
+/* ── Projets ──────────────────────────────────────────────────────── */
+function _a3dProjectsDialog(){
+  let ex = document.getElementById('a3dProj'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'a3dProj';
+  ex.style.cssText = 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;';
+  const list = _a3dProjects().slice().sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+  ex.innerHTML = `<div style="background:var(--card,#211a12);border:1.5px solid var(--wood);border-radius:14px;padding:16px;width:420px;max-height:80vh;overflow-y:auto;">
+    <h3 style="margin:0 0 10px;">📂 Projets 3D</h3>
+    ${list.map(p => `<div style="display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:6px;border-radius:9px;background:${A3D&&A3D.proj.id===p.id?'rgba(232,172,61,.15)':'var(--bg-elev)'};">
+      <div style="flex:1;cursor:pointer;" data-open="${p.id}"><b>${escapeHtml(p.name)}</b><div style="font-size:11px;color:var(--ink-soft);">${(p.pieces||[]).length} pièce(s) · ${new Date(p.updatedAt||p.createdAt||Date.now()).toLocaleDateString('fr-FR')}</div></div>
+      <button class="btn btn-outline btn-sm" data-del="${p.id}" style="color:#E07A63;">🗑</button></div>`).join('')}
+    <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('a3dProj').remove()">Fermer</button><button class="btn btn-primary" style="flex:1;" id="a3dNewProj">➕ Nouveau projet</button></div></div>`;
+  document.body.appendChild(ex);
+  ex.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { ex.remove(); const id = b.dataset.open; _a3dClose(); openAtelier3D(id); });
+  ex.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const p = _a3dProjects().find(x => x.id === b.dataset.del);
+    if(!p || !confirm('Supprimer le projet « ' + p.name + ' » ?')) return;
+    data.projets3d = _a3dProjects().filter(x => x.id !== p.id); saveData();
+    if(A3D && A3D.proj.id === p.id){ ex.remove(); _a3dClose(); return; }
+    _a3dProjectsDialog();
+  });
+  document.getElementById('a3dNewProj').onclick = () => { ex.remove(); _a3dClose(); openAtelier3D(null); };
+}
+function _a3dRenderDevList(){
+  const host = document.getElementById('a3dDevList'); if(!host) return;
+  const list = _a3dProjects().slice().sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0)).slice(0, 5);
+  host.innerHTML = list.map(p => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-top:4px;border-radius:8px;background:var(--bg-elev);cursor:pointer;font-size:12.5px;" onclick="openAtelier3D('${p.id}')"><span>🧊 ${escapeHtml(p.name)}</span><span style="color:var(--ink-soft);font-size:11px;">${(p.pieces||[]).length} pièce(s)</span></div>`).join('');
+}
+
 /* ============ VISITE GUIDÉE ============ */
 const TOUR_STEPS = [
   {
@@ -34222,9 +34941,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.211';
+const APP_VERSION = '5.41.212';
 
 const CHANGELOG = [
+  {
+    version: '5.41.212',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🧊', text: "Nouveau (bêta, menu Dev, PC uniquement) : Atelier 3D — pièces de bois aux vraies dimensions (section × longueur), assemblage à la souris avec aimant bord à bord, rotation/pente, « Poser dessus », dupliquer et répéter avec un entraxe, vue 3D + vues Face/Dessus/Côté, cotes (outil Mesurer aimanté sur les coins), générateur de pergola paramétrique, liste de débit (Excel/PDF avec image) et export image. Projets enregistrés." },
+    ],
+  },
   {
     version: '5.41.211',
     date: '23/09/2026',
