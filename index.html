@@ -10632,7 +10632,11 @@ function _sitesFilterZones(sites){
 /* Chefs assignés réellement présents (nom). */
 function _sitesFilterChefs(sites){
   const set = new Set();
-  sites.forEach(s => { if(s.assignedChefName) set.add(s.assignedChefName); });
+  sites.forEach(s => {
+    // v5.41.192 — plusieurs chefs possibles par chantier
+    (typeof _siteChefsList === 'function' ? _siteChefsList(s) : []).forEach(c => { if(c.name) set.add(c.name); });
+    if(s.assignedChefName) set.add(s.assignedChefName);
+  });
   return Array.from(set).sort((a,b) => a.localeCompare(b));
 }
 
@@ -33143,9 +33147,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.191';
+const APP_VERSION = '5.41.192';
 
 const CHANGELOG = [
+  {
+    version: '5.41.192',
+    date: '23/09/2026',
+    entries: [
+      { icon: '👷', text: "Chantier : on peut maintenant assigner PLUSIEURS chefs d'équipe à un même chantier, depuis le cadre « Chefs assignés » au-dessus du Statut (bouton « + Ajouter un chef », ✕ pour en retirer un). Chaque chef assigné reçoit les notifications du chantier (événements, notes, documents, photos, zinc) et le rappel de réunion. Le bouton de l'onglet Synchro Équipe utilise la même liste." },
+    ],
+  },
   {
     version: '5.41.191',
     date: '23/09/2026',
@@ -42250,12 +42261,13 @@ async function sendConductorAlertToChef(chefAuthId, siteName, element, isNote){
 /* Récupère les authIds des chefs assignés à un chantier */
 function _getChefAuthIdsForSite(site){
   const ids = [];
-  if(Array.isArray(site.assignedChefs)){
-    site.assignedChefs.forEach(c => {
-      const id = _resolveChefAuthId(c);
-      if(id) ids.push(id);
-    });
-  }
+  // v5.41.192 — _siteChefsList couvre aussi les anciens chantiers qui
+  // n'ont que les champs plats (assignedChefAuthId) ; dédoublonné.
+  const list = (typeof _siteChefsList === 'function') ? _siteChefsList(site) : (site.assignedChefs || []);
+  list.forEach(c => {
+    const id = _resolveChefAuthId(c);
+    if(id && !ids.includes(id)) ids.push(id);
+  });
   return ids;
 }
 
@@ -43353,7 +43365,8 @@ async function _checkReunionChantierReminders(){
 
   const dueSites = data.sites.filter(site => {
     if(!site.reunionChantier || !site.reunionChantier.enabled) return false;
-    if(site.assignedChefAuthId !== myAuthId) return false;
+    // v5.41.192 — plusieurs chefs assignés possibles : chacun reçoit le rappel.
+    if(site.assignedChefAuthId !== myAuthId && !_getChefAuthIdsForSite(site).includes(myAuthId)) return false;
     const dateKey = _reunionChantierNextDateKey(site.reunionChantier.weekday, site.reunionChantier.time);
     if(dateKey !== tomorrowKey) return false;
     const key = site.id + '-' + dateKey;
@@ -44031,29 +44044,16 @@ function openAddChefToExistingSite(siteId){
 }
 
 async function addChefToExistingSite(siteId, idx){
+  // v5.41.192 — même logique que le widget « Chefs assignés » (fiche
+  // chantier) : ajout à la liste + updatedAt + notification du chef.
+  await doAssignChef(siteId, idx);
   const site = data.sites.find(s => s.id === siteId);
-  const c = _assignChefCandidates[idx];
-  if(!site || !c) return;
-  if(!site.assignedChefs) site.assignedChefs = [];
-  if(site.assignedChefs.some(x=>x.phone===c.phone)){ showToast('Déjà assigné'); return; }
-  site.assignedChefs.push({...c});
-  site.lastSyncAt = new Date().toISOString();
-  saveData();
-  renderSynchroEquipe(siteId);
-  if(site.syncLive){
-    await pushSharedSite(site);
-    showToast(c.name + ' ajouté et synchro mise à jour');
-  } else {
-    showToast(c.name + ' ajouté');
-  }
+  if(site && typeof renderSynchroEquipe === 'function') renderSynchroEquipe(siteId);
 }
 
 function removeChefFromSite(siteId, idx){
-  const site = data.sites.find(s => s.id === siteId);
-  if(!site || !site.assignedChefs) return;
-  site.assignedChefs.splice(idx, 1);
-  saveData();
-  renderSynchroEquipe(siteId);
+  // v5.41.192 — délègue au widget « Chefs assignés » (updatedAt + notif).
+  unassignChefFromSite(siteId, idx);
 }
 
 
@@ -44799,23 +44799,56 @@ async function devSiteAlertsRenderInto(container){
 }
 /* ═══ MODULE — DevSiteAlerts  ·  fin ═══ */
 
+/* [v5.41.192] PLUSIEURS chefs assignés par chantier (demande de Rémi) —
+   le widget « Chefs assignés » (au-dessus du Statut) reste le seul point
+   d'entrée, il gère maintenant une LISTE : site.assignedChefs[] est la
+   source de vérité. Les champs plats assignedChefName/Phone/AuthId sont
+   conservés = le 1er chef de la liste, pour les anciennes versions de
+   l'app et les chemins de synchro qui les lisent encore.
+   Toutes les notifications (événements, notes, documents, photos, zinc)
+   passent déjà par _getChefAuthIdsForSite(site), qui lit le tableau :
+   chaque chef assigné est donc notifié. */
+function _siteChefsList(site){
+  if(!site) return [];
+  if(Array.isArray(site.assignedChefs) && site.assignedChefs.length) return site.assignedChefs;
+  // Ancien chantier avec seulement les champs plats → liste d'un élément
+  if(site.assignedChefName || site.assignedChefAuthId){
+    return [{ name: site.assignedChefName || '', phone: site.assignedChefPhone || '', authId: site.assignedChefAuthId || '' }];
+  }
+  return [];
+}
+function _syncFlatChefFields(site){
+  const first = (site.assignedChefs || [])[0];
+  site.assignedChefName   = first ? (first.name || '') : '';
+  site.assignedChefPhone  = first ? (first.phone || '') : '';
+  site.assignedChefAuthId = first ? (_resolveChefAuthId(first) || '') : '';
+}
+function _sameChef(a, b){
+  const ida = _resolveChefAuthId(a), idb = _resolveChefAuthId(b);
+  if(ida && idb) return ida === idb;
+  if(a.phone && b.phone) return normalizePhone(a.phone) === normalizePhone(b.phone);
+  return (a.name||'').trim().toLowerCase() === (b.name||'').trim().toLowerCase();
+}
+
 async function assignChefToSite(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
 
   // UNIQUEMENT les chefs avec compte actif dans le registre Supabase
   const registryChefs = await fetchChefsForMyCompany();
+  const already = _siteChefsList(site);
   const candidates = registryChefs
     .filter(u => u.authId && u.name)
-    .map(u => ({ name: u.name, authId: u.authId, phone: normalizePhone(u.phone||''), teamName: u.teamName||'' }));
+    .map(u => ({ name: u.name, authId: u.authId, phone: normalizePhone(u.phone||''), teamName: u.teamName||'' }))
+    .filter(c => !already.some(a => _sameChef(a, c)));
 
   if(!candidates.length){
-    showToast('Aucun chef d\'équipe enregistré');
+    showToast(already.length ? 'Tous les chefs sont déjà assignés' : 'Aucun chef d\'équipe enregistré');
     return;
   }
 
   _assignChefCandidates = candidates;
-  document.getElementById('contactActionsTitle').textContent = 'Assigner un chef d\'équipe';
+  document.getElementById('contactActionsTitle').textContent = 'Ajouter un chef d\'équipe';
   const list = document.getElementById('contactActionsList');
   list.innerHTML = candidates.map((c, idx) => `
     <button class="action-sheet-item" onclick="closeModal('contactActions'); doAssignChef('${site.id}', ${idx})">
@@ -44830,59 +44863,74 @@ async function doAssignChef(siteId, candidateIdx){
   const site = data.sites.find(s => s.id === siteId);
   const candidate = _assignChefCandidates[candidateIdx];
   if(!site || !candidate) return;
-  const previousAuthId = site.assignedChefAuthId || '';
-  site.assignedChefPhone  = candidate.phone;
-  site.assignedChefName   = candidate.name;
-  site.assignedChefAuthId = candidate.authId || '';
+  const chefs = _siteChefsList(site).map(c => ({...c}));
+  if(chefs.some(c => _sameChef(c, candidate))){ showToast('Déjà assigné'); return; }
+  chefs.push({ name: candidate.name, phone: candidate.phone, authId: candidate.authId||'' });
+  site.assignedChefs = chefs;
+  _syncFlatChefFields(site);
   site.assignedAt = new Date().toISOString();
-  // [v5.41.187] BUG CORRIGÉ : sans site.updatedAt à jour, le chef ne
-  // recevait jamais l'assignation — _applyRemoteSiteIfNewer (utilisé par
-  // syncAllSitesPull/pullSharedSites pour tous les champs identityFields,
-  // dont assignedChefName/AuthId) n'applique les champs distants QUE si
-  // remote.updatedAt est plus récent que le local ; sans cette ligne,
-  // remote.updatedAt restait null et la mise à jour était systématiquement
-  // ignorée côté chef (« Aucun chef assigné » malgré une assignation faite
-  // par le conducteur).
+  // [v5.41.187/188] updatedAt OBLIGATOIRE — sinon la fusion « le plus
+  // récent gagne » (_applyRemoteSiteIfNewer + garde côté PUSH) ignore
+  // l'assignation et le chef ne la reçoit jamais.
   site.updatedAt = new Date().toISOString();
-  // [v5.41.186] Un seul chef assigné par chantier : on REMPLACE le tableau
-  // assignedChefs[] (au lieu d'y ajouter) pour que toutes les notifications
-  // qui en dépendent (_getChefAuthIdsForSite : événements, documents,
-  // photos, changements de champ...) ne partent que vers ce chef-là.
-  site.assignedChefs = [{ name: candidate.name, phone: candidate.phone, authId: candidate.authId||'' }];
+  site.lastSyncAt = new Date().toISOString();
   if(site.status === 'brouillon') site.status = 'a-faire';
   site.ownerDeviceId = site.ownerDeviceId || getDeviceSyncId();
   saveData();
   renderSites();
-  if(typeof _renderChefAssignedZone === 'function') _renderChefAssignedZone(site);
-  showToast('Chantier assigné à ' + candidate.name);
+  _renderChefAssignedZone(site);
+  showToast(candidate.name + ' assigné au chantier');
   await pushSharedSite(site);
-  // Notifier le nouveau chef immédiatement
   if(candidate.authId){
     sendConductorAlertToChef(candidate.authId, site.name, 'le chantier vous a été assigné', true);
   }
-  // Prévenir l'ancien chef qu'il n'est plus assigné (s'il y en avait un
-  // et qu'il a changé) — évite qu'il continue de croire le chantier sien.
-  if(previousAuthId && previousAuthId !== candidate.authId){
-    sendConductorAlertToChef(previousAuthId, site.name, 'vous n\'êtes plus le chef assigné à ce chantier', true);
+}
+
+async function unassignChefFromSite(siteId, idx){
+  const site = data.sites.find(s => s.id === siteId);
+  if(!site) return;
+  const chefs = _siteChefsList(site).map(c => ({...c}));
+  const removed = chefs[idx];
+  if(!removed) return;
+  if(!confirm('Retirer ' + (removed.name || 'ce chef') + ' du chantier « ' + site.name + ' » ?')) return;
+  chefs.splice(idx, 1);
+  site.assignedChefs = chefs;
+  _syncFlatChefFields(site);
+  site.updatedAt = new Date().toISOString();
+  site.lastSyncAt = new Date().toISOString();
+  saveData();
+  renderSites();
+  _renderChefAssignedZone(site);
+  if(typeof renderSynchroEquipe === 'function' && (document.getElementById('synchroEquipeContent')||{}).offsetParent) renderSynchroEquipe(siteId);
+  showToast((removed.name || 'Chef') + ' retiré du chantier');
+  await pushSharedSite(site);
+  const rid = _resolveChefAuthId(removed);
+  if(rid){
+    sendConductorAlertToChef(rid, site.name, 'vous n\'êtes plus assigné à ce chantier', true);
   }
 }
 
-/* [v5.41.186] Bandeau "Chef assigné" — juste au-dessus du Statut sur la
-   fiche chantier. Visible de tous les rôles ; seul le conducteur de
-   travaux peut assigner/changer le chef (demande explicite de Rémi). */
+/* [v5.41.186 → v5.41.192] Bandeau « Chefs assignés » — juste au-dessus du
+   Statut sur la fiche chantier. Visible de tous les rôles ; seul le
+   conducteur de travaux peut ajouter/retirer des chefs. */
 function _renderChefAssignedZone(site){
   const el = document.getElementById('detailChefAssignedZone');
   if(!el || !site) return;
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
   const canEdit = role === 'conducteur';
-  const chefName = site.assignedChefName || '';
+  const chefs = _siteChefsList(site);
+  const rows = chefs.map((c, i) => `
+      <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+        <span style="flex:1; font-size:15px; font-weight:700;">👷 ${escapeHtml(c.name || c.authId || 'Chef')}</span>
+        ${canEdit ? `<button class="btn btn-outline btn-sm" style="color:var(--red); border-color:var(--red); padding:3px 8px;" title="Retirer" onclick="unassignChefFromSite('${site.id}', ${i})">✕</button>` : ''}
+      </div>`).join('');
   el.innerHTML = `
-    <div class="card" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-      <div>
-        <div style="font-size:11px; color:var(--ink-soft); font-weight:600; text-transform:uppercase; letter-spacing:.03em;">Chef assigné</div>
-        <div style="font-size:15px; font-weight:700; margin-top:2px;">${chefName ? '👷 ' + escapeHtml(chefName) : 'Aucun chef assigné'}</div>
+    <div class="card" style="margin-bottom:12px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <div style="font-size:11px; color:var(--ink-soft); font-weight:600; text-transform:uppercase; letter-spacing:.03em;">${chefs.length > 1 ? 'Chefs assignés' : 'Chef assigné'}</div>
+        ${canEdit ? `<button class="btn btn-outline btn-sm" onclick="assignChefToSite('${site.id}')">+ Ajouter un chef</button>` : ''}
       </div>
-      ${canEdit ? `<button class="btn btn-outline btn-sm" onclick="assignChefToSite('${site.id}')">${chefName ? 'Changer' : '+ Assigner'}</button>` : ''}
+      ${chefs.length ? rows : '<div style="font-size:15px; font-weight:700; margin-top:6px;">Aucun chef assigné</div>'}
     </div>
   `;
 }
