@@ -4281,6 +4281,7 @@
                  background:var(--bg); color:var(--ink); font-size:14px; font-family:inherit; margin-bottom:8px;">
           <option value="">-- Choisir un chantier --</option>
         </select>
+        <div id="weatherFavZone"></div>
         <div id="weatherDetail" style="font-size:12px; color:var(--ink-soft); text-align:center; min-height:20px;"></div>
         <div id="weatherForecast7" style="display:none; margin-top:10px;"></div>
         <div id="weatherVigilance" style="display:none; margin-top:10px;"></div>
@@ -34133,9 +34134,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.208';
+const APP_VERSION = '5.41.209';
 
 const CHANGELOG = [
+  {
+    version: '5.41.209',
+    date: '23/09/2026',
+    entries: [
+      { icon: '⭐', text: "Météo : quand tu choisis un chantier, tu peux le mettre en favori (☆). Tes favoris apparaissent en raccourci en haut de la météo." },
+      { icon: '🔔', text: "Météo du matin : active « Notif météo du matin », choisis l'heure et les jours — chaque matin tu reçois, même app fermée, une notif par chantier favori, du style « 🌦️ Météo — Guanxi : Pluie de 7h30 à 10h, puis ensoleillé · 12° → 21°C ». Bouton « Tester maintenant » pour l'essayer tout de suite." },
+    ],
+  },
   {
     version: '5.41.208',
     date: '23/09/2026',
@@ -36433,6 +36442,7 @@ function toggleWeatherDropdown(){
   dd.style.display = _weatherDropdownOpen ? 'block' : 'none';
   if(_weatherDropdownOpen){
     populateWeatherSiteSelect();
+    _meteoRenderFavZone(); // v5.41.209 — favoris + notif du matin
     // Restaurer les 7 jours depuis le cache si disponibles
     const cached = localStorage.getItem('rwood-weather-cache');
     if(cached){
@@ -36490,6 +36500,9 @@ document.addEventListener('click', (e) => {
   if(!_weatherDropdownOpen) return;
   const dd  = document.getElementById('weatherDropdown');
   const btn = document.getElementById('weatherWidget');
+  // v5.41.209 — un bouton re-rendu pendant le clic (favori, jours…) n'est
+  // plus dans la page au moment de ce test : ne pas fermer pour autant.
+  if(e.target && !document.contains(e.target)) return;
   if(dd && btn && !dd.contains(e.target) && !btn.contains(e.target)){
     _weatherDropdownOpen = false;
     dd.style.display = 'none';
@@ -36507,9 +36520,10 @@ function populateWeatherSiteSelect(){
 let _lastWeatherSiteId = localStorage.getItem('rwood-weather-site') || '';
 
 async function loadWeatherForSite(siteId){
-  if(!siteId){ return; }
+  if(!siteId){ _meteoRenderFavZone(); return; }
   _lastWeatherSiteId = siteId;
   localStorage.setItem('rwood-weather-site', siteId);
+  _meteoRenderFavZone();
 
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site || !site.address){
@@ -36591,6 +36605,234 @@ async function loadWeatherForSite(siteId){
     if(detailEl) detailEl.textContent = e.message;
   }
 }
+
+/* ═══ v5.41.209 — MÉTÉO DU MATIN (demande de Rémi) ════════════════════
+   Chantiers FAVORIS (⭐) + notification chaque matin à l'heure choisie,
+   même app fermée : « 🌦️ Météo — Guanxi : Pluie de 7h30 à 10h, puis
+   ensoleillé · 12° → 21°C ».
+   - Réglages locaux : data.settings.meteoNotif = { enabled, time:'06:30',
+     days:[1..7] (1=lundi), favs:[siteId] }.
+   - Publiés pour le serveur dans rwood_sync 'meteo_notif_<authId>'
+     (coordonnées GPS des chantiers favoris incluses, pour que le serveur
+     n'ait rien à géocoder).
+   - L'envoi à l'heure dite est fait CÔTÉ SERVEUR par l'Edge Function
+     Supabase « meteo-matin » (lancée toutes les 5 min par pg_cron, voir
+     supabase/functions/meteo-matin + supabase/meteo-matin-cron.sql) : une
+     app fermée ne peut pas se réveiller seule à heure fixe.
+   - rwoodMeteoSummary() = même générateur de phrase que le serveur. */
+/* RWOOD — résumé météo de la journée pour la notif du matin.
+   Même code dans l'app (index.html) et dans l'Edge Function meteo-matin.
+   Entrée : réponse Open-Meteo avec
+     hourly=weather_code,temperature_2m,wind_speed_10m,precipitation
+     minutely_15=precipitation   (timezone=Europe/Paris, forecast_days=1)
+   Sortie : { title, body } */
+function rwoodMeteoSummary(json, siteName){
+  const H = (json && json.hourly) || {};
+  const times = H.time || [];
+  const day = (times[0] || '').slice(0, 10);
+  const hourOf = t => parseInt(String(t).slice(11, 13), 10);
+  const minOf = t => parseInt(String(t).slice(14, 16), 10) || 0;
+  const fmt = (h, m) => h + 'h' + (m ? String(m).padStart(2, '0') : '');
+  const W0 = 6, W1 = 20; // journée de chantier 6h → 20h
+
+  // Ciel dominant (hors pluie) le matin / l'après-midi
+  const skyOf = c => (c <= 1 ? 'soleil' : c === 2 ? 'eclaircies' : c === 3 ? 'nuageux' : (c === 45 || c === 48) ? 'brouillard' : null);
+  const SKY = { soleil:['☀️','ensoleillé'], eclaircies:['⛅','éclaircies'], nuageux:['☁️','nuageux'], brouillard:['🌫️','brouillard'] };
+  const dominant = (h0, h1) => {
+    const cnt = {};
+    times.forEach((t, i) => {
+      if(!t.startsWith(day)) return;
+      const h = hourOf(t); if(h < h0 || h >= h1) return;
+      const k = skyOf(H.weather_code[i]); if(k) cnt[k] = (cnt[k] || 0) + 1;
+    });
+    const k = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    return k || null;
+  };
+  const am = dominant(W0, 13), pm = dominant(13, W1);
+
+  // Périodes de pluie (précision 15 min si dispo, sinon à l'heure)
+  const periods = [];
+  const M = json && json.minutely_15;
+  const pushSlot = (startMin, endMin, kind) => {
+    const last = periods[periods.length - 1];
+    if(last && last.kind === kind && startMin - last.end <= 30){ last.end = endMin; return; }
+    periods.push({ start: startMin, end: endMin, kind });
+  };
+  const kindAt = (hourIdx) => {
+    const c = H.weather_code ? H.weather_code[hourIdx] : null;
+    if(c >= 95) return 'orage';
+    if((c >= 71 && c <= 77) || c === 85 || c === 86) return 'neige';
+    if(c >= 80 && c <= 82) return 'averses';
+    return 'pluie';
+  };
+  const hourIdxOf = (h) => times.findIndex(t => t.startsWith(day) && hourOf(t) === h);
+  if(M && M.time && M.precipitation){
+    M.time.forEach((t, i) => {
+      if(!t.startsWith(day)) return;
+      const h = hourOf(t), m = minOf(t);
+      if(h < W0 || h >= W1) return;
+      if((M.precipitation[i] || 0) >= 0.1){
+        const s = h * 60 + m;
+        pushSlot(s, s + 15, kindAt(hourIdxOf(h)));
+      }
+    });
+  } else {
+    times.forEach((t, i) => {
+      if(!t.startsWith(day)) return;
+      const h = hourOf(t); if(h < W0 || h >= W1) return;
+      const c = H.weather_code[i];
+      if((H.precipitation && (H.precipitation[i] || 0) >= 0.2) || c >= 51){
+        pushSlot(h * 60, h * 60 + 60, kindAt(i));
+      }
+    });
+  }
+  const P = periods.filter(p => p.end - p.start >= 15);
+  const pTxt = p => ({ pluie:'pluie', averses:'averses', orage:'⚠️ orages', neige:'neige' }[p.kind]) + ' de ' + fmt(Math.floor(p.start/60), p.start%60) + ' à ' + fmt(Math.floor(p.end/60), p.end%60);
+
+  // Températures / vent sur la journée
+  const tt = [], ww = [];
+  times.forEach((t, i) => {
+    if(!t.startsWith(day)) return;
+    const h = hourOf(t); if(h < W0 || h >= W1) return;
+    if(H.temperature_2m && H.temperature_2m[i] != null) tt.push(H.temperature_2m[i]);
+    if(H.wind_speed_10m && H.wind_speed_10m[i] != null) ww.push(H.wind_speed_10m[i]);
+  });
+  const tmin = tt.length ? Math.round(Math.min(...tt)) : null;
+  const tmax = tt.length ? Math.round(Math.max(...tt)) : null;
+  const wmax = ww.length ? Math.round(Math.max(...ww)) : 0;
+
+  // Phrase : « Pluie de 7h30 à 10h, puis ensoleillé » / « Nuageux le matin, ensoleillé l'après-midi, pas de pluie prévue »
+  let sky;
+  if(!P.length){
+    if(am && pm && am !== pm) sky = SKY[am][1] + ' le matin, ' + SKY[pm][1] + " l'après-midi";
+    else if(am || pm) sky = SKY[am || pm][1];
+    else sky = 'temps variable';
+    sky += ', pas de pluie prévue';
+  } else {
+    const first = P[0].start, last = P[P.length - 1].end;
+    const before = first >= (W0 + 2) * 60 ? dominant(W0, Math.floor(first / 60)) : null;
+    const after = last <= (W1 - 2) * 60 ? dominant(Math.ceil(last / 60), W1) : null;
+    sky = (before ? SKY[before][1] + ' puis ' : '') + P.slice(0, 3).map(pTxt).join(', ') + (after ? ', puis ' + SKY[after][1] : '');
+  }
+  const rain = '';
+  let icon = '🌤️';
+  if(P.some(p => p.kind === 'orage')) icon = '⛈️';
+  else if(P.some(p => p.kind === 'neige')) icon = '🌨️';
+  else if(P.length) icon = (pm === 'soleil' || pm === 'eclaircies') ? '🌦️' : '🌧️';
+  else if(am || pm) icon = SKY[pm || am][0];
+
+  const temp = (tmin != null) ? (' · ' + tmin + '° → ' + tmax + '°C') : '';
+  const wind = wmax >= 40 ? ' · 💨 vent fort ' + wmax + ' km/h' : (wmax >= 25 ? ' · 💨 ' + wmax + ' km/h' : '');
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  return {
+    title: icon + ' Météo — ' + siteName,
+    body: cap(sky) + temp + wind + '.',
+    line: icon + ' ' + siteName + ' : ' + sky + temp + wind + '.',
+  };
+}
+
+function _meteoPrefs(){
+  if(!data.settings) data.settings = {};
+  const m = data.settings.meteoNotif || {};
+  if(!Array.isArray(m.favs)) m.favs = [];
+  if(!Array.isArray(m.days)) m.days = [1,2,3,4,5];
+  if(!m.time) m.time = '06:30';
+  if(typeof m.enabled !== 'boolean') m.enabled = false;
+  data.settings.meteoNotif = m;
+  return m;
+}
+function _meteoRenderFavZone(){
+  const el = document.getElementById('weatherFavZone');
+  if(!el) return;
+  const m = _meteoPrefs();
+  const sel = _lastWeatherSiteId && (data.sites||[]).find(x => x.id === _lastWeatherSiteId);
+  const isFav = sel && m.favs.includes(sel.id);
+  const favSites = m.favs.map(id => (data.sites||[]).find(x => x.id === id)).filter(Boolean);
+  const DAYS = [['L',1],['M',2],['M',3],['J',4],['V',5],['S',6],['D',7]];
+  el.innerHTML = `
+    ${sel ? `<button class="btn btn-outline btn-sm btn-block" style="margin-bottom:8px;${isFav?'border-color:#E8AC3D;color:#E8AC3D;':''}" onclick="_meteoToggleFav('${sel.id}')">${isFav ? '★ Chantier favori (retirer)' : '☆ Mettre ce chantier en favori'}</button>` : ''}
+    ${favSites.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${favSites.map(f => `
+      <span class="chip" style="cursor:pointer;${f.id===_lastWeatherSiteId?'border-color:#E8AC3D;':''}" onclick="document.getElementById('weatherSiteSelect').value='${f.id}';loadWeatherForSite('${f.id}')">⭐ ${escapeHtml(f.name)}</span>`).join('')}</div>` : ''}
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;text-align:left;">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;cursor:pointer;">
+        <input type="checkbox" ${m.enabled?'checked':''} style="width:18px;height:18px;accent-color:#E8AC3D;" onchange="_meteoSetPref('enabled', this.checked)">
+        🔔 Notif météo du matin (chantiers favoris)
+      </label>
+      ${m.enabled ? `
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;">
+        <span>À</span>
+        <input type="time" value="${m.time}" onchange="_meteoSetPref('time', this.value)" style="padding:6px 8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-family:inherit;">
+        <span style="display:flex;gap:3px;">${DAYS.map(([l,d]) => `<button type="button" onclick="_meteoToggleDay(${d})" style="width:24px;height:24px;border-radius:50%;border:1.5px solid ${m.days.includes(d)?'#E8AC3D':'var(--line)'};background:${m.days.includes(d)?'#E8AC3D':'transparent'};color:${m.days.includes(d)?'#1a0d00':'var(--ink-soft)'};font-size:11px;font-weight:800;cursor:pointer;padding:0;">${l}</button>`).join('')}</span>
+      </div>
+      <div class="hint" style="margin-top:6px;font-size:11px;">${favSites.length ? 'Une notif par chantier favori, même app fermée.' : '⚠️ Mets au moins un chantier en favori (⭐).'}</div>
+      <button class="btn btn-outline btn-sm btn-block" style="margin-top:6px;" onclick="_meteoTestNow()">📲 Tester maintenant</button>` : ''}
+    </div>`;
+}
+function _meteoToggleFav(siteId){
+  const m = _meteoPrefs();
+  m.favs = m.favs.includes(siteId) ? m.favs.filter(x => x !== siteId) : m.favs.concat([siteId]);
+  saveData(); _meteoRenderFavZone(); _meteoPublishSoon();
+}
+function _meteoSetPref(k, v){ const m = _meteoPrefs(); m[k] = v; saveData(); _meteoRenderFavZone(); _meteoPublishSoon(); }
+function _meteoToggleDay(d){
+  const m = _meteoPrefs();
+  m.days = m.days.includes(d) ? m.days.filter(x => x !== d) : m.days.concat([d]).sort();
+  saveData(); _meteoRenderFavZone(); _meteoPublishSoon();
+}
+let _meteoPubTimer = null;
+function _meteoPublishSoon(){ clearTimeout(_meteoPubTimer); _meteoPubTimer = setTimeout(_meteoPublish, 1200); }
+async function _meteoFavCoords(){
+  const m = _meteoPrefs();
+  if(!data.settings.meteoGeoCache) data.settings.meteoGeoCache = {};
+  const cache = data.settings.meteoGeoCache;
+  const out = [];
+  for(const id of m.favs){
+    const site = (data.sites||[]).find(x => x.id === id);
+    if(!site || !site.address) continue;
+    let g = cache[id];
+    if(!g || g.addr !== site.address){
+      try{ const r = await geocodeAddress(site.address); if(r) g = cache[id] = { lat:r.lat, lng:r.lng, addr:site.address }; }catch(e){}
+    }
+    if(g) out.push({ id, name: site.name, lat: g.lat, lng: g.lng });
+  }
+  return out;
+}
+async function _meteoPublish(){
+  const authId = getSupaUserId();
+  if(!authId || !navigator.onLine) return;
+  const m = _meteoPrefs();
+  const sites = await _meteoFavCoords();
+  try{
+    await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: 'meteo_notif_' + authId, updated_at: new Date().toISOString(),
+        data: JSON.stringify({ authId, enabled: !!m.enabled && sites.length > 0, time: m.time, days: m.days, tz: 'Europe/Paris', sites }) }) });
+    saveData(true);
+  }catch(e){}
+}
+async function _meteoFetchDay(lat, lng){
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lng
+    + '&hourly=weather_code,temperature_2m,wind_speed_10m,precipitation&minutely_15=precipitation'
+    + '&timezone=Europe%2FParis&forecast_days=1';
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('météo indisponible');
+  return r.json();
+}
+async function _meteoTestNow(){
+  const authId = getSupaUserId();
+  const sites = await _meteoFavCoords();
+  if(!sites.length){ showToast('⭐ Mets d\'abord un chantier en favori'); return; }
+  showToast('⏳ Calcul de la météo…');
+  for(const st of sites.slice(0, 5)){
+    try{
+      const json = await _meteoFetchDay(st.lat, st.lng);
+      const sm = rwoodMeteoSummary(json, st.name);
+      if(authId) notifyPush([authId], sm.title, sm.body, 'meteo-' + st.id, 'site:' + st.id);
+      showToast(sm.line);
+    }catch(e){ showToast('❌ Météo indisponible pour ' + st.name); }
+  }
+  _meteoPublishSoon();
+}
+setTimeout(() => { try{ if(_meteoPrefs().enabled) _meteoPublish(); }catch(e){} }, 8000); // republie au démarrage (adresses modifiées…)
 
 function setWeatherDisplay(emoji, temp, loc, desc){
   const eEl = document.getElementById('weatherEmoji');
