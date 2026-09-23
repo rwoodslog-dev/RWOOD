@@ -10419,6 +10419,23 @@ function sendDetailNote(){
   textEl.value = '';
   renderDetailNoteList(siteId);
   renderDetail(siteId); // garde #detailLog (holder legacy) à jour pour les autres consommateurs
+
+  // [v5.41.189] Notifier le chef assigné (un seul, voir doAssignChef) —
+  // sauf si c'est lui-même qui vient d'écrire la note.
+  try{
+    const site = data.sites.find(s => s.id === siteId);
+    const myAuthId = getSupaUserId();
+    const chefIds = site ? _getChefAuthIdsForSite(site).filter(id => id !== myAuthId) : [];
+    if(chefIds.length){
+      const authorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+                          ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+      const alertText = (authorName.trim() || 'Quelqu\'un') + ' a ajouté une note sur le chantier ' + site.name + ' : "' + text + '"';
+      chefIds.forEach(chefAuthId => {
+        sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+        notifyPush([chefAuthId], 'RWOOD — Nouvelle note', text + ' — ' + site.name, 'note-' + siteId + '-' + Date.now());
+      });
+    }
+  } catch(e){ /* silencieux */ }
 }
 
 function setDetailTab(tab){
@@ -15838,9 +15855,10 @@ async function addSharedMediaToSite(siteId, file, opts){
     const uploader = ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim()
                   || data.settings.teamName || 'Conducteur';
 
+    const mediaId = uid();
     if(!site.sharedMedia) site.sharedMedia = [];
     site.sharedMedia.push({
-      id:          uid(),
+      id:          mediaId,
       name:        file.name,
       url,
       thumbUrl:    thumbUrl || null, // miniature légère pour la galerie ; null = repli sur l'original
@@ -15857,6 +15875,24 @@ async function addSharedMediaToSite(siteId, file, opts){
     // Pousser immédiatement si synchro active (toujours, même en silencieux)
     if(site.syncLive) await pushSharedSite(site);
     else if(typeof syncAllSitesCycle === 'function') { try{ await syncAllSitesPushAll(); }catch(e){} }
+
+    // [v5.41.189] Notifier le chef assigné (un seul, voir doAssignChef) —
+    // sauf si c'est lui-même qui vient d'ajouter le média. Remplace
+    // l'ancienne alerte (désactivée ci-dessous) qui visait le conducteur ;
+    // celle-ci vise l'autre sens : le chef, quand quelqu'un d'autre ajoute.
+    try{
+      const myAuthId = getSupaUserId();
+      const chefIds = _getChefAuthIdsForSite(site).filter(id => id !== myAuthId);
+      if(chefIds.length){
+        const authorName = ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim();
+        const kindLabel = isPdf ? 'un document' : isImage ? 'une photo' : 'un fichier';
+        const alertText = (authorName || 'Quelqu\'un') + ' a ajouté ' + kindLabel + ' sur le chantier ' + site.name + ' : "' + file.name + '"';
+        chefIds.forEach(chefAuthId => {
+          sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+          notifyPush([chefAuthId], 'RWOOD — Nouveau média', file.name + ' — ' + site.name, 'media-' + mediaId);
+        });
+      }
+    } catch(e){ /* silencieux */ }
 
     // [DÉSACTIVÉ] Alerte auto au conducteur/patron à l'ajout d'une photo dans
     // la galerie — retirée intégralement sur demande (plus aucun déclenchement,
@@ -18817,6 +18853,24 @@ async function syncZincToSite(profile){
     }
     // Push temps réel vers le conducteur (même canal que photos/docs)
     await pushSharedSite(site);
+
+    // [v5.41.189] Notifier le chef assigné (un seul, voir doAssignChef) —
+    // sauf si c'est lui-même qui vient d'enregistrer ce pliage. Uniquement
+    // sur un NOUVEAU pliage (idx === -1) : pas de spam à chaque petite
+    // retouche d'un pliage déjà synchronisé.
+    if(idx === -1){
+      try{
+        const myAuthId = getSupaUserId();
+        const chefIds = _getChefAuthIdsForSite(site).filter(id => id !== myAuthId);
+        if(chefIds.length){
+          const alertText = (uploader || 'Quelqu\'un') + ' a ajouté un pliage sur le chantier ' + site.name + ' : "' + (profile.name || 'Pliage') + '"';
+          chefIds.forEach(chefAuthId => {
+            sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+            notifyPush([chefAuthId], 'RWOOD — Nouveau pliage', (profile.name || 'Pliage') + ' — ' + site.name, 'zinc-' + profile.id);
+          });
+        }
+      } catch(e){ /* silencieux */ }
+    }
   } catch(e){ /* non bloquant */ }
   finally{ _zincSyncInFlight.delete(key); }
 }
@@ -32923,9 +32977,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.188';
+const APP_VERSION = '5.41.189';
 
 const CHANGELOG = [
+  {
+    version: '5.41.189',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🔔', text: "Photos, pliages et notes de chantier notifient maintenant aussi le chef assigné, au même titre que les documents et les événements (sauf si c'est lui-même qui vient de les ajouter) — il ne manque plus rien de ce qui se passe sur son chantier." },
+    ],
+  },
   {
     version: '5.41.188',
     date: '23/09/2026',
