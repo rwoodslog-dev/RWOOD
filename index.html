@@ -14045,7 +14045,7 @@ async function renderAlertesChatList(){
     if(count) count.textContent = _chatSelectedKeys.size + ' sélectionnée(s)';
   }
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷', fichier:'📄' };
   const myId = getDeviceSyncId();
   const rows = [];
   if(broadcast.length) rows.push({ type:'broadcast', key:'__broadcast__', authId:null, name:'Toute l\'équipe', alerts: broadcast });
@@ -14130,9 +14130,10 @@ async function _renderChatThreadModal(row){
 
   const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷' };
   const myId = getDeviceSyncId();
+  kindIcon.fichier = '📄';
   const bubblesHtml = row.alerts.length ? row.alerts.slice().reverse().map(a => {
     const dateLabel = new Date(a.createdAt).toLocaleDateString('fr-FR',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
-    const txt = (a.text||'').replace(/^.*? : /,'');
+    const txt = a.kind === 'fichier' ? 'Document' : (a.text||'').replace(/^.*? : /,'');
     // v5.41.141 — un message 'croquis' porte une image (croquisUrl) : elle
     // s'affiche directement DANS la bulle, cliquable pour l'ouvrir en plein
     // écran zoomable (réutilise le visionneuse photo de la Galerie).
@@ -14141,7 +14142,15 @@ async function _renderChatThreadModal(row){
     // n'est pas un nouveau format, juste un autre `kind` qui porte une image.
     const croquisImgHtml = ((a.kind === 'croquis' || a.kind === 'photo') && a.croquisUrl) ? `
       <img src="${escapeHtml(a.croquisUrl)}" alt="Photo" loading="lazy" onclick="event.stopPropagation(); _openCroquisLightbox('${a.id}')"
-        style="display:block;max-width:100%;width:220px;border-radius:8px;margin-top:6px;cursor:zoom-in;border:1px solid rgba(0,0,0,0.1);">` : '';
+        style="display:block;max-width:100%;width:220px;border-radius:8px;margin-top:6px;cursor:zoom-in;border:1px solid rgba(0,0,0,0.1);">` : ((a.kind === 'fichier' && a.croquisUrl) ? `
+      <a href="${escapeHtml(a.croquisUrl)}" target="_blank" rel="noopener" download="${escapeHtml(a.fileName || '')}" onclick="event.stopPropagation()"
+        style="display:flex;align-items:center;gap:10px;margin-top:6px;padding:9px 11px;border-radius:10px;background:rgba(0,0,0,0.18);color:inherit;text-decoration:none;max-width:260px;">
+        <span style="font-size:26px;line-height:1;">${_fileIconFor(a.fileName)}</span>
+        <span style="min-width:0;">
+          <span style="display:block;font-weight:800;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(a.fileName || 'Document')}</span>
+          <span style="display:block;font-size:11px;opacity:.8;">${_fmtFileSize(a.fileSize)}${a.fileSize ? ' · ' : ''}Ouvrir / télécharger</span>
+        </span>
+      </a>` : '');
     if(a.direction === 'in'){
       const isRead = a.readBy && a.readBy.includes(myId);
       const actionHtml = row.type === 'broadcast' ? '' : _alertReceivedActionsHtml(a, isRead, myId, renderAlertesChatList, 'conv');
@@ -14213,7 +14222,7 @@ async function _renderChatThreadModal(row){
   const sketchBtnHtml = canSendCroquis ? `
     <div style="display:flex;gap:6px;margin-bottom:8px;">
       <button type="button" class="btn btn-outline" style="flex:1;" onclick="_openSendCroquisFromChat('${resendAuthId}', ${nameJsonAttr})">📐 Croquis</button>
-      <button type="button" class="btn btn-outline" style="flex:1;" onclick="_openChatAttachMenu('${resendAuthId}', ${nameJsonAttr})">📎 Photo</button>
+      <button type="button" class="btn btn-outline" style="flex:1;" onclick="_openChatAttachMenu('${resendAuthId}', ${nameJsonAttr})">📎 Photo / Doc</button>
     </div>` : '';
   const messageBoxHtml = canSendCroquis ? `
     <div style="display:flex; gap:6px;">
@@ -24748,9 +24757,10 @@ async function _stockCondBuildExcel(entries){
     });
   });
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const blob = new Blob([buf], { type: XLSX_MIME });
   const fileName = 'rwood-stock-camions-' + new Date().toISOString().slice(0,10) + '.xlsx';
-  if(typeof saveBlobToDevice === 'function') await saveBlobToDevice(blob, fileName, blob.type, ['.xlsx']);
+  if(typeof saveBlobToDevice === 'function') await saveBlobToDevice(blob, fileName, XLSX_MIME, ['.xlsx']);
   else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName; document.body.appendChild(a); a.click(); a.remove(); }
   showToast('📊 Excel généré : ' + fileName);
 }
@@ -30876,12 +30886,33 @@ function updatePayInfoSetting(){
 /* ============ EXPORT / IMPORT ============ */
 /* ============ TÉLÉCHARGEMENT AVEC CHOIX D'EMPLACEMENT ============ */
 async function saveBlobToDevice(blob, suggestedName, mimeType, extensions){
+  // v5.41.207 — CORRECTIF « l'Excel s'enregistre en fichier Bloc-notes »
+  // (Rémi, PC Windows) : le sélecteur « Enregistrer sous » recevait comme
+  // type un libellé MIME brut et pouvait enregistrer sans la bonne extension
+  // → Windows l'ouvrait avec le Bloc-notes. Désormais :
+  //  - le nom proposé se termine TOUJOURS par la bonne extension ;
+  //  - les classeurs Excel (.xlsx) sont téléchargés directement (dossier
+  //    Téléchargements), toujours avec l'extension .xlsx et le bon type ;
+  //  - le sélecteur reçoit un vrai libellé (« Classeur Excel », « PDF »…).
+  const ext0 = (extensions && extensions[0]) || '';
+  if(ext0 && !String(suggestedName||'').toLowerCase().endsWith(ext0.toLowerCase())) suggestedName = (suggestedName || 'fichier') + ext0;
+  if(ext0 === '.xlsx' || ext0 === '.xls'){
+    const xblob = (blob.type === mimeType) ? blob : new Blob([blob], { type: mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const xurl = URL.createObjectURL(xblob);
+    const xa = document.createElement('a');
+    xa.href = xurl; xa.download = suggestedName;
+    document.body.appendChild(xa); xa.click(); document.body.removeChild(xa);
+    setTimeout(() => URL.revokeObjectURL(xurl), 5000);
+    showToast('Téléchargé dans "Téléchargements" : ' + suggestedName);
+    return true;
+  }
+  const DESC = { '.pdf':'Document PDF', '.json':'Fichier RWOOD (JSON)', '.vcf':'Contact (vCard)', '.jpg':'Image JPEG', '.png':'Image PNG' };
   // Tente d'utiliser le sélecteur natif "Enregistrer sous" (Android Chrome/Edge récents)
   if(window.showSaveFilePicker){
     try{
       const handle = await window.showSaveFilePicker({
         suggestedName,
-        types: [{ description: mimeType, accept: { [mimeType]: extensions } }]
+        types: [{ description: DESC[ext0] || ('Fichier ' + ext0), accept: { [mimeType]: extensions } }]
       });
       const writable = await handle.createWritable();
       await writable.write(blob);
@@ -30902,7 +30933,7 @@ async function saveBlobToDevice(blob, suggestedName, mimeType, extensions){
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
   showToast('Téléchargé dans "Téléchargements"');
   return true;
 }
@@ -34026,9 +34057,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.205';
+const APP_VERSION = '5.41.207';
 
 const CHANGELOG = [
+  {
+    version: '5.41.207',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : les fichiers Excel générés par l'app (stock camions, tableau salaire) s'enregistraient parfois sans la bonne extension et s'ouvraient dans le Bloc-notes. Ils sont maintenant toujours enregistrés en .xlsx (dossier Téléchargements) et s'ouvrent directement dans Excel." },
+    ],
+  },
+  {
+    version: '5.41.206',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📄', text: "Messagerie : on peut maintenant s'envoyer des documents (PDF, Excel, Word, texte, PowerPoint, zip, plans DWG…) dans une conversation — bouton « 📎 Photo / Doc » → « 📄 Document ». Le destinataire voit une carte avec l'icône du fichier, son nom et sa taille, et l'ouvre / le télécharge d'un clic. Jusqu'à 25 Mo par fichier." },
+    ],
+  },
   {
     version: '5.41.205',
     date: '23/09/2026',
@@ -43087,6 +43132,10 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       // Paint/à main levée directement dans une conversation Alertes).
       croquisUrl: (croquisData && croquisData.url) || null,
       croquisPaintData: (croquisData && croquisData.paintData) || null, // pour le lexique quincaillerie (voir _paintLegendHtml)
+      // v5.41.206 — pièce jointe « document » (PDF, Excel, Word…) en Messagerie
+      fileName: (croquisData && croquisData.fileName) || null,
+      fileSize: (croquisData && croquisData.fileSize) || null,
+      fileType: (croquisData && croquisData.fileType) || null,
       senderName: _senderName,
       createdAt: new Date().toISOString(),
       readBy: []
@@ -54989,12 +55038,13 @@ function _openChatAttachMenu(recipientAuthId, recipientName){
   div.innerHTML = `
     <div class="modal">
       <div class="modal-header">
-        <h2>📎 Joindre une photo</h2>
+        <h2>📎 Joindre</h2>
         <button class="modal-close" onclick="document.getElementById('modal-chatAttachMenu').remove()">✕</button>
       </div>
       <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_chatAttachFromDevice()">📷 Depuis l'appareil</button>
       <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_chatAttachOpenPhotoGallery()">🖼 Galerie photo de l'app</button>
-      <button type="button" class="btn btn-outline btn-block" onclick="_chatAttachOpenCroquisGallery()">📐 Galerie croquis</button>
+      <button type="button" class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_chatAttachOpenCroquisGallery()">📐 Galerie croquis</button>
+      <button type="button" class="btn btn-outline btn-block" onclick="_chatAttachDocument()">📄 Document (PDF, Excel, Word…)</button>
     </div>`;
   document.body.appendChild(div);
 }
@@ -55023,6 +55073,62 @@ async function _chatSendPhotoAlert(url, paintData, kind){
   );
   if(ok) notifyPush([recipientAuthId], 'RWOOD — Photo reçue', senderName + (kind === 'croquis' ? ' t\'a envoyé un croquis' : ' t\'a envoyé une photo'), kind || 'photo', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
   return ok;
+}
+/* v5.41.206 — envoi d'un DOCUMENT quelconque (PDF, Excel, Word, texte…)
+   dans une conversation : upload tel quel dans le stockage partagé, puis
+   message kind:'fichier' qui porte l'URL + nom/taille/type du fichier. */
+const CHAT_DOC_MAX_MB = 25;
+function _fmtFileSize(n){
+  if(!n && n !== 0) return '';
+  if(n < 1024) return n + ' o';
+  if(n < 1024*1024) return Math.round(n/1024) + ' Ko';
+  return (n/1024/1024).toFixed(1).replace('.', ',') + ' Mo';
+}
+function _fileIconFor(name){
+  const e = String(name||'').split('.').pop().toLowerCase();
+  if(e === 'pdf') return '📕';
+  if(['xls','xlsx','xlsm','csv','ods'].includes(e)) return '📊';
+  if(['doc','docx','odt','rtf','txt'].includes(e)) return '📝';
+  if(['ppt','pptx','odp'].includes(e)) return '📽️';
+  if(['zip','rar','7z'].includes(e)) return '🗜️';
+  if(['dwg','dxf'].includes(e)) return '📐';
+  if(['jpg','jpeg','png','webp','heic','gif'].includes(e)) return '🖼️';
+  return '📄';
+}
+function _chatAttachDocument(){
+  _closeChatAttachMenu();
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.pdf,.xls,.xlsx,.xlsm,.csv,.ods,.doc,.docx,.odt,.rtf,.txt,.ppt,.pptx,.zip,.dwg,.dxf,application/pdf,image/*';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const file = input.files && input.files[0]; input.remove();
+    if(!file || !_chatAttachTarget) return;
+    if(file.size > CHAT_DOC_MAX_MB * 1024 * 1024){ showToast('⚠️ Fichier trop lourd (max ' + CHAT_DOC_MAX_MB + ' Mo)'); return; }
+    showToast('⏳ Envoi de « ' + file.name + ' »…');
+    try{
+      const url = await uploadFileToSupabase(file, 'messagerie', { skipDropbox:true });
+      if(!url) throw new Error('upload');
+      const { recipientAuthId, recipientName } = _chatAttachTarget;
+      const p = data.settings && data.settings.myProfile;
+      const senderName = (((p&&p.firstName)||'') + ' ' + ((p&&p.lastName)||'')).trim()
+        || (data.settings && data.settings.teamName) || 'Un membre de l\'équipe';
+      const alertText = senderName + ' : 📄 ' + file.name;
+      const deviceId = await _resolveDeviceIdFromAuthId(recipientAuthId);
+      const ok = await sendAlert(
+        alertText, 'devices', null, recipientName, 'fichier', null, null,
+        deviceId ? [deviceId] : [], null, null, [recipientAuthId],
+        { url, fileName: file.name, fileSize: file.size, fileType: file.type || '' }
+      );
+      if(ok){
+        notifyPush([recipientAuthId], 'RWOOD — Document reçu', senderName + ' t\'a envoyé « ' + file.name + ' »', 'fichier', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
+        showToast('✅ Document envoyé');
+        await _refreshOpenChatThread();
+      } else showToast('❌ Échec de l\'envoi');
+    }catch(e){ showToast('❌ Envoi du document impossible (connexion ?)'); }
+  };
+  input.click();
 }
 function _chatAttachFromDevice(){
   _closeChatAttachMenu();
