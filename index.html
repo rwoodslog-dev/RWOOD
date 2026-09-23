@@ -14228,6 +14228,7 @@ async function _renderChatThreadModal(row){
     <div style="display:flex; gap:6px;">
       <input type="text" id="chatThreadMsgInput" placeholder="Écris un message…" style="flex:1; padding:9px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:13.5px; font-family:inherit;"
         onkeydown="if(event.key==='Enter'){event.preventDefault();sendQuickMessageInThread('${resendAuthId}', ${nameJsonAttr});}">
+      ${_chatEmojiBtnHtml()}
       <button class="btn btn-primary" style="flex-shrink:0;padding:9px 16px;" onclick="sendQuickMessageInThread('${resendAuthId}', ${nameJsonAttr})">Envoyer</button>
     </div>` : '';
 
@@ -14420,6 +14421,81 @@ async function _presenceRefreshDots(){
   document.addEventListener('visibilitychange', () => { _presencePush(document.visibilityState === 'visible'); });
   window.addEventListener('pagehide', () => _presencePush(false));
 })();
+
+/* ═══ v5.41.208 — Sélecteur d'emojis (PC uniquement : sur téléphone, le
+   clavier natif les propose déjà). Bouton 😊 à côté de « Envoyer » ;
+   l'emoji est inséré à la position du curseur, la fenêtre reste ouverte
+   pour en mettre plusieurs (Échap / clic ailleurs pour fermer). Les 16
+   derniers utilisés sont proposés en premier (mémorisés sur ce PC). ═══ */
+const CHAT_EMOJIS = {
+  'Récents': [],
+  'Smileys': '😀 😃 😄 😁 😆 😅 😂 🤣 🙂 😉 😊 😇 🥰 😍 😘 😋 😜 🤪 😎 🤩 🥳 🤔 🤨 😐 😑 😶 🙄 😏 😬 😮‍💨 😌 😴 🤤 😷 🤒 🤕 🥵 🥶 😵 🤯 😱 😨 😰 😢 😭 😤 😠 😡 🤬 🥺 😳 🤗 🤫 🤭 🫡'.split(' '),
+  'Gestes': '👍 👎 👌 ✌️ 🤞 🤟 🤘 👊 ✊ 🤛 🤜 👏 🙌 👐 🤝 🙏 💪 👋 🤙 👉 👈 👆 👇 ☝️ ✋ 🫶 ❤️ 🧡 💛 💚 💙 💜 🖤 💯 🔥 ✨ ⭐ 🎉 🍾'.split(' '),
+  'Chantier': '👷 🏗️ 🏠 🏡 🏚️ 🧱 🪵 🪚 🔨 🪛 🔧 🔩 ⚙️ 🧰 📏 📐 🪜 🚧 ⚠️ 🦺 ⛑️ 🚚 🚛 🛻 🚜 ⛽ 🔌 💡 🔦 🧯 🧹 🗑️ 📦 📋 📝 ✅ ❌ ❓ ❗ ⏰ ⏳ 📅 📍 📞 📷 💶 🧾'.split(' '),
+  'Météo & repas': '☀️ 🌤️ ⛅ 🌥️ ☁️ 🌦️ 🌧️ ⛈️ 🌩️ ❄️ 🌨️ 💨 🌬️ 🌡️ 🌈 ☔ ☕ 🍺 🍻 🥖 🥪 🍕 🍔 🍟 🌭 🥗 🍝 🍽️'.split(' '),
+};
+function _chatIsPc(){
+  try{ if(typeof _paintIsDesktop === 'function') return _paintIsDesktop(); }catch(e){}
+  return window.matchMedia && window.matchMedia('(pointer:fine)').matches && window.innerWidth >= 860;
+}
+function _chatEmojiBtnHtml(){
+  if(!_chatIsPc()) return '';
+  return `<button type="button" id="chatEmojiBtn" class="btn btn-outline" title="Emojis" style="flex-shrink:0;padding:6px 10px;font-size:18px;line-height:1;" onclick="event.stopPropagation(); _chatToggleEmojiPicker()">😊</button>`;
+}
+function _chatEmojiRecents(){ try{ return JSON.parse(localStorage.getItem('rwood-emoji-recents') || '[]'); }catch(e){ return []; } }
+function _chatToggleEmojiPicker(){
+  const ex = document.getElementById('chatEmojiPicker');
+  if(ex){ ex.remove(); return; }
+  const btn = document.getElementById('chatEmojiBtn');
+  if(!btn) return;
+  const pop = document.createElement('div');
+  pop.id = 'chatEmojiPicker';
+  const r = btn.getBoundingClientRect();
+  pop.style.cssText = 'position:fixed;z-index:100000;width:320px;max-height:300px;overflow-y:auto;background:var(--card,#211a12);border:1.5px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.45);padding:8px;';
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - 328, r.right - 320)) + 'px';
+  pop.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  const cats = Object.assign({}, CHAT_EMOJIS, { 'Récents': _chatEmojiRecents() });
+  pop.innerHTML = Object.keys(cats).filter(k => cats[k].length).map(k => `
+    <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);margin:4px 2px;">${escapeHtml(k)}</div>
+    <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:2px;margin-bottom:6px;">
+      ${cats[k].map(e => `<button type="button" data-emo="${e}" style="font-size:21px;line-height:1;padding:5px 0;border:none;background:none;border-radius:6px;cursor:pointer;">${e}</button>`).join('')}
+    </div>`).join('');
+  pop.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const b = ev.target.closest('[data-emo]');
+    if(!b) return;
+    _chatInsertEmoji(b.dataset.emo);
+  });
+  pop.addEventListener('mouseover', ev => { const b = ev.target.closest('[data-emo]'); if(b) b.style.background = 'rgba(255,255,255,.08)'; });
+  pop.addEventListener('mouseout', ev => { const b = ev.target.closest('[data-emo]'); if(b) b.style.background = 'none'; });
+  document.body.appendChild(pop);
+  const close = (ev) => {
+    if(ev.type === 'keydown' && ev.key !== 'Escape') return;
+    if(ev.type === 'mousedown' && (pop.contains(ev.target) || ev.target.id === 'chatEmojiBtn')) return;
+    pop.remove();
+    document.removeEventListener('mousedown', close, true);
+    document.removeEventListener('keydown', close, true);
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', close, true);
+    document.addEventListener('keydown', close, true);
+  }, 0);
+}
+function _chatInsertEmoji(emo){
+  const inp = document.getElementById('chatThreadMsgInput');
+  if(!inp) return;
+  const start = inp.selectionStart != null ? inp.selectionStart : inp.value.length;
+  const end = inp.selectionEnd != null ? inp.selectionEnd : inp.value.length;
+  inp.value = inp.value.slice(0, start) + emo + inp.value.slice(end);
+  const pos = start + emo.length;
+  inp.focus();
+  try{ inp.setSelectionRange(pos, pos); }catch(e){}
+  try{
+    const rec = _chatEmojiRecents().filter(x => x !== emo);
+    rec.unshift(emo);
+    localStorage.setItem('rwood-emoji-recents', JSON.stringify(rec.slice(0, 16)));
+  }catch(e){}
+}
 
 /* v5.41.17, réutilisé pour le fil unifié — appelé après suppression d'une
    alerte DEPUIS le fil ouvert (envoyée ou reçue) : reconstruit le fil de
@@ -34057,9 +34133,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.207';
+const APP_VERSION = '5.41.208';
 
 const CHANGELOG = [
+  {
+    version: '5.41.208',
+    date: '23/09/2026',
+    entries: [
+      { icon: '😊', text: "Messagerie sur PC : nouveau bouton 😊 à côté de « Envoyer » pour ajouter des emojis (smileys, gestes, chantier, météo & repas + tes récents). L'emoji s'insère là où est le curseur ; la fenêtre reste ouverte pour en mettre plusieurs. Sur téléphone, rien ne change (clavier du téléphone)." },
+    ],
+  },
   {
     version: '5.41.207',
     date: '23/09/2026',
