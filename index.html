@@ -34222,9 +34222,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.210';
+const APP_VERSION = '5.41.211';
 
 const CHANGELOG = [
+  {
+    version: '5.41.211',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🪚', text: "Croquis Paint : nouveau « 🪚 Moulure… » dans le menu ⋮ d'un rectangle. Une fenêtre s'ouvre pour usiner la pièce : profils d'arête (chanfrein, congé, quart de rond, quart de rond avec plat, feuillure, doucine, talon/corbeau, profil libre à dessiner point par point) et rainures sur une face (rainure, rainure en V, gouge, queue d'aronde), avec taille et position réglables, aperçu en direct et clic sur l'aperçu pour choisir le coin ou la face." },
+      { icon: '🧩', text: "Moulures : on peut combiner autant d'usinages que l'on veut sur une même pièce, partir d'un modèle tout fait (bout arrondi, about de chevron / corbeau, doucine + chanfrein, 4 chanfreins, main courante, feuillure + chanfrein, lambris) ou enregistrer ses propres modèles ⭐. La moulure suit la pièce quand on la redimensionne, la tourne ou la découpe." },
+    ],
+  },
   {
     version: '5.41.210',
     date: '23/09/2026',
@@ -56054,6 +56062,7 @@ function openPaintSketchTool(onSave, existingPaint){
             <button type="button" onclick="_paintLayerDown()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⬇️ Descendre le calque</button>
             <button type="button" onclick="_paintDuplicateSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⧉ Dupliquer</button>
             <button type="button" onclick="_paintRotateSelected(-15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↺ Rotation gauche (15°)</button>
+            <button type="button" id="paintMoulureMenuBtn" onclick="_paintCloseShapeMenu(); _paintOpenMoulureEditor()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">🪚 Moulure…</button>
             <button type="button" id="paintMagnetMenuBtn" onclick="_paintToggleMagnetSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">🧲 Désaimanter</button>
             <button type="button" onclick="_paintRotateSelected(15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↻ Rotation droite (15°)</button>
           </div>
@@ -57001,6 +57010,276 @@ function _paintToggleMagnetSelected(){
   _paintRedraw();
 }
 
+/* ═══ v5.41.211 — MOULURES sur rectangle (demande de Rémi) ═══════════════
+   Un rectangle peut recevoir une liste d'usinages s.moulures = [op] :
+     op = { where:'TL'|'TR'|'BR'|'BL' (coin / arête)  ou 'T'|'R'|'B'|'L' (face),
+            profile, a, b, o, pts }
+   Tailles en FRACTIONS du rectangle (a = largeur, b = hauteur/profondeur,
+   o = position du centre sur la face) → la moulure suit tout seul les
+   redimensionnements. Le contour est recalculé en un polygone unique
+   (_paintMoulurePolygon), donc remplissage matériau / trou de découpe /
+   rotation / aimant continuent de marcher comme pour un rectangle normal. */
+const PAINT_MOULURE_CORNER = {
+  chanfrein: { label:'Chanfrein',        pts: () => [[0,1],[1,0]] },
+  conge:     { label:'Congé',            pts: () => _mArc(t => [Math.sin(t), Math.cos(t)]) },
+  quartrond: { label:'Quart de rond',    pts: () => _mArc(t => [1-Math.cos(t), 1-Math.sin(t)]) },
+  quartplat: { label:'Quart de rond avec plat', pts: () => { const f = 0.22; return [[0,1],[f,1]].concat(_mArc(t => [1-(1-f)*Math.cos(t), 1-(1-f)*Math.sin(t)]).slice(1), [[1,f],[1,0]]); } },
+  feuillure: { label:'Feuillure',        pts: () => [[0,1],[1,1],[1,0]] },
+  doucine:   { label:'Doucine (moulure)', pts: () => _mS(u => [u, 1-(1-Math.cos(Math.PI*u))/2]) },
+  talon:     { label:'Talon / corbeau',  pts: () => _mS(u => [(1-Math.cos(Math.PI*u))/2, 1-u]) },
+  perso:     { label:'Profil libre',     pts: (op) => [[0,1]].concat((op && op.pts) || [], [[1,0]]) },
+};
+const PAINT_MOULURE_FACE = {
+  rainure:  { label:'Rainure',          pts: () => [[0,0],[0,1],[1,1],[1,0]] },
+  rainureV: { label:'Rainure en V',     pts: () => [[0,0],[0.5,1],[1,0]] },
+  gouge:    { label:'Gouge',            pts: () => { const r = []; for(let i=0;i<=16;i++){ const t = Math.PI*i/16; r.push([(1-Math.cos(t))/2, Math.sin(t)]); } return r; } },
+  queue:    { label:"Queue d'aronde",   pts: () => [[0.22,0],[0,1],[1,1],[0.78,0]] },
+};
+function _mArc(f){ const r = []; for(let i=0;i<=14;i++) r.push(f(Math.PI/2*i/14)); return r; }
+function _mS(f){ const r = []; for(let i=0;i<=20;i++) r.push(f(i/20)); return r; }
+function _paintMoulurePolygon(x0, y0, W, H, ops){
+  const x1 = x0 + W, y1 = y0 + H;
+  const corner = {}; const faces = { T:[], R:[], B:[], L:[] };
+  (ops || []).forEach(op => { if(PAINT_MOULURE_CORNER[op.profile] && ['TL','TR','BR','BL'].includes(op.where)) corner[op.where] = op; else if(PAINT_MOULURE_FACE[op.profile] && faces[op.where]) faces[op.where].push(op); });
+  const cornerPts = (key) => {
+    const C = { TL:[x0,y0,1,1,false], TR:[x1,y0,-1,1,true], BR:[x1,y1,-1,-1,false], BL:[x0,y1,1,-1,true] }[key];
+    const op = corner[key];
+    if(!op) return [{ x:C[0], y:C[1] }];
+    const w = Math.max(0, Math.min(1, op.a || 0.2)) * W, h = Math.max(0, Math.min(1, op.b || 0.2)) * H;
+    let u = PAINT_MOULURE_CORNER[op.profile].pts(op).map(([p,q]) => ({ x: C[0] + C[2]*p*w, y: C[1] + C[3]*q*h }));
+    if(C[4]) u = u.reverse();
+    return u;
+  };
+  const facePts = (key) => {
+    const L = (key === 'T' || key === 'B') ? W : H, D = (key === 'T' || key === 'B') ? H : W;
+    const list = faces[key].slice().sort((a,b) => (a.o||0.5) - (b.o||0.5));
+    let out = [];
+    list.forEach(op => {
+      const ww = Math.max(0.01, Math.min(1, op.a || 0.2)) * L, dd = Math.max(0.01, Math.min(1, op.b || 0.2)) * D;
+      const start = (op.o != null ? op.o : 0.5) * L - ww/2;
+      const pts = PAINT_MOULURE_FACE[op.profile].pts(op).map(([u,v]) => {
+        const along = start + u*ww, inw = v*dd;
+        if(key === 'T') return { x: x0 + along, y: y0 + inw };
+        if(key === 'B') return { x: x0 + along, y: y1 - inw };
+        if(key === 'R') return { x: x1 - inw, y: y0 + along };
+        return { x: x0 + inw, y: y0 + along };
+      });
+      out = out.concat(pts);
+    });
+    if(key === 'B' || key === 'L') out = out.reverse();
+    return out;
+  };
+  return [].concat(cornerPts('TL'), facePts('T'), cornerPts('TR'), facePts('R'), cornerPts('BR'), facePts('B'), cornerPts('BL'), facePts('L'));
+}
+
+/* ── Éditeur « Créer une moulure » ─────────────────────────────────── */
+let _moulEd = null; // { idx, ops:[...], profile, where, a, b, o, pts:[] }
+const MOULURE_PRESETS = [
+  { name:'Bout arrondi (demi-rond)', ops:[ { where:'TR', profile:'quartrond', a:0.12, b:0.5 }, { where:'BR', profile:'quartrond', a:0.12, b:0.5 } ] },
+  { name:'About de chevron (corbeau)', ops:[ { where:'BR', profile:'talon', a:0.35, b:0.75 } ] },
+  { name:'About doucine + chanfrein', ops:[ { where:'BR', profile:'doucine', a:0.3, b:0.6 }, { where:'TR', profile:'chanfrein', a:0.04, b:0.12 } ] },
+  { name:'4 chanfreins', ops:['TL','TR','BR','BL'].map(w => ({ where:w, profile:'chanfrein', a:0.06, b:0.12 })) },
+  { name:'Main courante (4 quarts de rond)', ops:['TL','TR','BR','BL'].map(w => ({ where:w, profile:'quartrond', a:0.12, b:0.25 })) },
+  { name:'Feuillure + chanfrein', ops:[ { where:'TL', profile:'feuillure', a:0.2, b:0.35 }, { where:'TR', profile:'chanfrein', a:0.08, b:0.15 } ] },
+  { name:'Lambris (rainure + languette)', ops:[ { where:'L', profile:'rainure', a:0.3, b:0.1, o:0.5 }, { where:'TR', profile:'feuillure', a:0.1, b:0.35 }, { where:'BR', profile:'feuillure', a:0.1, b:0.35 } ] },
+];
+function _moulModels(){ try{ return (data.settings && data.settings.paintMoulureModels) || []; }catch(e){ return []; } }
+function _paintOpenMoulureEditor(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const sh = _paint.shapes[_paint.selectedIdx];
+  if(!sh || sh.type !== 'rect'){ showToast('Sélectionne un rectangle'); return; }
+  _moulEd = { idx: _paint.selectedIdx, ops: JSON.parse(JSON.stringify(sh.moulures || [])), profile:'chanfrein', where:'TR', a:0.15, b:0.25, o:0.5, pts:[], sel:-1 };
+  let ex = document.getElementById('modal-paintMoulure'); if(ex) ex.remove();
+  ex = document.createElement('div');
+  ex.id = 'modal-paintMoulure';
+  ex.className = 'modal-overlay open';
+  ex.style.zIndex = '100000';
+  ex.innerHTML = `<div class="modal" style="max-width:760px;width:96vw;max-height:94vh;overflow-y:auto;">
+    <div class="modal-header"><h2>🪚 Créer une moulure</h2><button class="modal-close" onclick="_moulClose()">×</button></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1 1 320px;min-width:280px;">
+        <canvas id="moulPreview" width="640" height="400" style="width:100%;background:#fff;border-radius:10px;border:1.5px solid var(--line);cursor:pointer;"></canvas>
+        <div class="hint" style="margin-top:4px;font-size:11px;">Clique près d'un coin ou d'une face de l'aperçu pour choisir où appliquer.</div>
+        <div id="moulOpsList" style="margin-top:8px;"></div>
+      </div>
+      <div style="flex:1 1 300px;min-width:260px;">
+        <div class="section-title" style="margin-top:0;">1 · Profil</div>
+        <div style="font-size:11px;font-weight:800;color:var(--ink-soft);margin:4px 0;">ARÊTES / COINS</div>
+        <div id="moulProfCorner" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;"></div>
+        <div style="font-size:11px;font-weight:800;color:var(--ink-soft);margin:8px 0 4px;">RAINURES (SUR UNE FACE)</div>
+        <div id="moulProfFace" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;"></div>
+        <div id="moulPersoZone" style="display:none;margin-top:8px;">
+          <div class="hint" style="font-size:11px;margin-bottom:4px;">Profil libre : clique les points du profil (du bord vertical vers le bord horizontal).</div>
+          <canvas id="moulPersoPad" width="300" height="300" style="width:150px;height:150px;background:#fff;border-radius:8px;border:1.5px solid var(--line);cursor:crosshair;"></canvas>
+          <button type="button" class="btn btn-outline btn-sm" style="margin-left:6px;vertical-align:top;" onclick="_moulEd.pts=[];_moulRender()">Effacer</button>
+        </div>
+        <div class="section-title">2 · Où</div>
+        <div id="moulWhere" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+        <div class="section-title">3 · Taille</div>
+        <div id="moulSliders"></div>
+        <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_moulAddOp()">➕ Ajouter cet usinage</button>
+        <div class="section-title">Modèles tout faits</div>
+        <div id="moulPresets" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
+      <button class="btn btn-outline" onclick="_moulSaveModel()">💾 Enregistrer comme modèle</button>
+      <button class="btn btn-outline" style="color:#E07A63;" onclick="_moulEd.ops=[];_moulRender()">Tout retirer</button>
+      <span style="flex:1;"></span>
+      <button class="btn btn-outline" onclick="_moulClose()">Annuler</button>
+      <button class="btn btn-primary" onclick="_moulApply()">✓ Appliquer à la pièce</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ex);
+  document.getElementById('moulPreview').addEventListener('click', _moulPreviewClick);
+  document.getElementById('moulPersoPad').addEventListener('click', (e) => {
+    const c = e.currentTarget, r = c.getBoundingClientRect();
+    let u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
+    const fl = _moulPadFlip(); if(fl.x) u = 1 - u; if(fl.y) v = 1 - v;
+    _moulEd.pts.push([Math.max(0, Math.min(1, u)), Math.max(0, Math.min(1, v))]);
+    _moulRender();
+  });
+  _moulRender();
+}
+function _moulClose(){ const m = document.getElementById('modal-paintMoulure'); if(m) m.remove(); _moulEd = null; }
+function _moulIsCornerProf(p){ return !!PAINT_MOULURE_CORNER[p]; }
+function _moulIconSvg(kind, key){
+  const pts = kind === 'c' ? _paintMoulurePolygon(4, 4, 32, 32, [{ where:'TR', profile:key, a:0.55, b:0.55, pts: key === 'perso' ? [[0.25,0.75],[0.6,0.6],[0.7,0.2]] : null }])
+                           : _paintMoulurePolygon(4, 4, 32, 32, [{ where:'T', profile:key, a:0.5, b:0.45, o:0.5 }]);
+  return `<svg viewBox="0 0 40 40" width="34" height="34"><polygon points="${pts.map(p => p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ')}" fill="#C8A26A" stroke="#3a2a14" stroke-width="1.2"/></svg>`;
+}
+function _moulRender(){
+  const e = _moulEd; if(!e) return;
+  const btn = (kind, key, def) => `<button type="button" title="${escapeHtml(def.label)}" onclick="_moulPickProfile('${key}')" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:5px 2px;border-radius:9px;border:2px solid ${e.profile===key?'#E8AC3D':'var(--line)'};background:${e.profile===key?'rgba(232,172,61,.12)':'var(--bg-elev)'};color:var(--ink);cursor:pointer;font-size:9.5px;font-weight:700;line-height:1.1;">${_moulIconSvg(kind, key)}<span>${escapeHtml(def.label)}</span></button>`;
+  document.getElementById('moulProfCorner').innerHTML = Object.keys(PAINT_MOULURE_CORNER).map(k => btn('c', k, PAINT_MOULURE_CORNER[k])).join('');
+  document.getElementById('moulProfFace').innerHTML = Object.keys(PAINT_MOULURE_FACE).map(k => btn('f', k, PAINT_MOULURE_FACE[k])).join('');
+  const isC = _moulIsCornerProf(e.profile);
+  if(isC && !['TL','TR','BR','BL','TR+BR','TL+BL','4'].includes(e.where)) e.where = 'TR';
+  if(!isC && !['T','R','B','L'].includes(e.where)) e.where = 'T';
+  const W = isC ? [['TL','↖ Haut gauche'],['TR','↗ Haut droit'],['BL','↙ Bas gauche'],['BR','↘ Bas droit'],['TR+BR','⇥ Bout droit'],['TL+BL','⇤ Bout gauche'],['4','⬚ 4 arêtes']]
+                : [['T','⬆ Face haut'],['B','⬇ Face bas'],['L','⬅ Face gauche'],['R','➡ Face droite']];
+  document.getElementById('moulWhere').innerHTML = W.map(([k,l]) => `<button type="button" class="chip${e.where===k?' selected':''}" onclick="_moulEd.where='${k}';_moulRender()">${l}</button>`).join('');
+  const sl = (id, label, val) => `<div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;"><span style="width:110px;">${label}</span><input type="range" min="2" max="100" value="${Math.round(val*100)}" style="flex:1;" oninput="_moulEd.${id}=this.value/100;this.nextElementSibling.textContent=this.value+' %';_moulDrawPreview()"><span style="width:40px;text-align:right;">${Math.round(val*100)} %</span></div>`;
+  document.getElementById('moulSliders').innerHTML = isC
+    ? sl('a', 'Largeur (horiz.)', e.a) + sl('b', 'Hauteur (vert.)', e.b)
+    : sl('a', 'Largeur', e.a) + sl('b', 'Profondeur', e.b) + sl('o', 'Position', e.o);
+  document.getElementById('moulPersoZone').style.display = e.profile === 'perso' ? '' : 'none';
+  const models = _moulModels().map((m, i) => ({ name:'⭐ ' + m.name, ops:m.ops, mi:i }));
+  document.getElementById('moulPresets').innerHTML = MOULURE_PRESETS.concat(models).map((p, i) => `<button type="button" class="chip" onclick="_moulUsePreset(${i})">${escapeHtml(p.name)}</button>`).join('');
+  const all = (_moulEd.ops || []);
+  const whereLbl = { TL:'coin haut gauche', TR:'coin haut droit', BR:'coin bas droit', BL:'coin bas gauche', T:'face haut', B:'face bas', L:'face gauche', R:'face droite' };
+  document.getElementById('moulOpsList').innerHTML = all.length
+    ? '<div style="font-size:11px;font-weight:800;color:var(--ink-soft);margin-bottom:4px;">USINAGES DE LA PIÈCE</div>' + all.map((op, i) => {
+        const def = PAINT_MOULURE_CORNER[op.profile] || PAINT_MOULURE_FACE[op.profile] || { label: op.profile };
+        return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;margin-bottom:4px;border-radius:8px;background:var(--card);border:1px solid var(--line);font-size:12.5px;"><span style="flex:1;">${escapeHtml(def.label)} — ${whereLbl[op.where] || op.where}</span><button type="button" class="btn btn-outline btn-sm" style="padding:2px 8px;color:#E07A63;" onclick="_moulEd.ops.splice(${i},1);_moulRender()">✕</button></div>`;
+      }).join('')
+    : '<div class="hint" style="font-size:11.5px;">Aucun usinage pour l\'instant : choisis un profil, où l\'appliquer, puis « Ajouter ».</div>';
+  _moulDrawPreview();
+  const pad = document.getElementById('moulPersoPad');
+  if(pad && e.profile === 'perso'){
+    const c = pad.getContext('2d'); c.clearRect(0,0,300,300);
+    c.strokeStyle = '#ddd'; for(let i=1;i<6;i++){ c.beginPath(); c.moveTo(i*50,0); c.lineTo(i*50,300); c.moveTo(0,i*50); c.lineTo(300,i*50); c.stroke(); }
+    // v5.41.211 — la zone est orientée comme le coin choisi (le coin retiré
+    // est affiché du bon côté), pour dessiner le profil « dans le vrai sens ».
+    const fl = _moulPadFlip();
+    const X = u => (fl.x ? 1 - u : u) * 300, Y = v => (fl.y ? 1 - v : v) * 300;
+    const P = [[0,1]].concat(e.pts, [[1,0]]);
+    c.fillStyle = 'rgba(200,162,106,.5)'; c.beginPath(); c.moveTo(X(1), Y(1)); P.forEach(([u,v]) => c.lineTo(X(u), Y(v))); c.closePath(); c.fill();
+    c.strokeStyle = '#3a2a14'; c.lineWidth = 3; c.beginPath(); P.forEach(([u,v],i) => i ? c.lineTo(X(u),Y(v)) : c.moveTo(X(u),Y(v))); c.stroke();
+    c.fillStyle = '#E8AC3D'; P.slice(1,-1).forEach(([u,v]) => { c.beginPath(); c.arc(X(u), Y(v), 7, 0, Math.PI*2); c.fill(); });
+  }
+}
+function _moulPadFlip(){
+  const w = (_moulEd && _moulEd.where) || 'TL';
+  const first = w === '4' ? 'TL' : w === 'TR+BR' ? 'TR' : w === 'TL+BL' ? 'TL' : w;
+  return { x: first === 'TR' || first === 'BR', y: first === 'BL' || first === 'BR' };
+}
+function _moulPickProfile(k){ _moulEd.profile = k; if(!_moulIsCornerProf(k)){ if(_moulEd.b > 0.5) _moulEd.b = 0.2; } _moulRender(); }
+function _moulPendingOps(){
+  const e = _moulEd; const base = { profile:e.profile, a:e.a, b:e.b };
+  if(e.profile === 'perso') base.pts = e.pts.slice();
+  if(!_moulIsCornerProf(e.profile)) return [Object.assign({ where:e.where, o:e.o }, base)];
+  const ws = e.where === 'TR+BR' ? ['TR','BR'] : e.where === 'TL+BL' ? ['TL','BL'] : e.where === '4' ? ['TL','TR','BR','BL'] : [e.where];
+  return ws.map(w => Object.assign({ where:w }, base));
+}
+function _moulAddOp(){
+  const e = _moulEd;
+  const add = _moulPendingOps();
+  add.forEach(op => {
+    if(['TL','TR','BR','BL'].includes(op.where)) e.ops = e.ops.filter(x => x.where !== op.where); // un seul profil par coin
+    e.ops.push(op);
+  });
+  _moulRender();
+}
+function _moulUsePreset(i){
+  const models = _moulModels();
+  const p = i < MOULURE_PRESETS.length ? MOULURE_PRESETS[i] : models[i - MOULURE_PRESETS.length];
+  if(!p) return;
+  _moulEd.ops = JSON.parse(JSON.stringify(p.ops));
+  _moulRender();
+}
+function _moulDrawPreview(){
+  const cv = document.getElementById('moulPreview'); if(!cv || !_moulEd) return;
+  const sh = _paint.shapes[_moulEd.idx]; if(!sh) return;
+  const c = cv.getContext('2d');
+  c.clearRect(0, 0, cv.width, cv.height);
+  const rw = Math.abs(sh.x2 - sh.x1), rh = Math.abs(sh.y2 - sh.y1);
+  const k = Math.min((cv.width - 60) / rw, (cv.height - 60) / rh);
+  const W = rw * k, H = rh * k, x0 = (cv.width - W) / 2, y0 = (cv.height - H) / 2;
+  _moulEd._geo = { x0, y0, W, H };
+  const draw = (ops, fill, stroke, dash) => {
+    const pts = _paintMoulurePolygon(x0, y0, W, H, ops);
+    c.beginPath(); pts.forEach((p,i) => i ? c.lineTo(p.x,p.y) : c.moveTo(p.x,p.y)); c.closePath();
+    if(fill){ c.fillStyle = fill; c.fill(); }
+    c.setLineDash(dash || []); c.strokeStyle = stroke; c.lineWidth = 3; c.stroke(); c.setLineDash([]);
+  };
+  c.strokeStyle = '#ccc'; c.setLineDash([6,5]); c.lineWidth = 1.5; c.strokeRect(x0, y0, W, H); c.setLineDash([]);
+  draw(_moulEd.ops, '#E9D2A6', '#3a2a14');
+  // aperçu de l'usinage en cours de réglage (orange pointillé)
+  const pend = _moulPendingOps();
+  const merged = _moulEd.ops.filter(x => !pend.some(p => ['TL','TR','BR','BL'].includes(p.where) && p.where === x.where)).concat(pend);
+  draw(merged, null, '#E8AC3D', [8,5]);
+}
+function _moulPreviewClick(ev){
+  const e = _moulEd; if(!e || !e._geo) return;
+  const cv = ev.currentTarget, r = cv.getBoundingClientRect();
+  const x = (ev.clientX - r.left) * cv.width / r.width, y = (ev.clientY - r.top) * cv.height / r.height;
+  const { x0, y0, W, H } = e._geo;
+  const u = (x - x0) / W, v = (y - y0) / H;
+  const nearL = u < 0.25, nearR = u > 0.75, nearT = v < 0.25, nearB = v > 0.75;
+  if(_moulIsCornerProf(e.profile)){
+    e.where = (nearT ? 'T' : nearB ? 'B' : (v < 0.5 ? 'T' : 'B')) + (nearL ? 'L' : nearR ? 'R' : (u < 0.5 ? 'L' : 'R'));
+  } else {
+    const dT = Math.abs(v), dB = Math.abs(1-v), dL = Math.abs(u), dR = Math.abs(1-u);
+    const m = Math.min(dT, dB, dL, dR);
+    e.where = m === dT ? 'T' : m === dB ? 'B' : m === dL ? 'L' : 'R';
+    e.o = Math.max(0.05, Math.min(0.95, (e.where === 'T' || e.where === 'B') ? u : v));
+  }
+  _moulRender();
+}
+function _moulSaveModel(){
+  if(!_moulEd || !_moulEd.ops.length){ showToast('Ajoute d\'abord au moins un usinage'); return; }
+  const name = prompt('Nom du modèle de moulure :', 'Ma moulure');
+  if(!name || !name.trim()) return;
+  if(!data.settings) data.settings = {};
+  if(!Array.isArray(data.settings.paintMoulureModels)) data.settings.paintMoulureModels = [];
+  data.settings.paintMoulureModels.push({ name: name.trim(), ops: JSON.parse(JSON.stringify(_moulEd.ops)) });
+  saveData();
+  _moulRender();
+  showToast('⭐ Modèle « ' + name.trim() + ' » enregistré');
+}
+function _moulApply(){
+  const e = _moulEd; if(!e) return;
+  const sh = _paint.shapes[e.idx];
+  if(sh){
+    _paintPushHistory();
+    if(e.ops.length) sh.moulures = JSON.parse(JSON.stringify(e.ops)); else delete sh.moulures;
+    _paintRedraw();
+  }
+  _moulClose();
+  showToast(e.ops.length ? '🪚 Moulure appliquée' : 'Moulures retirées');
+}
+
 function _paintRotateSelected(deltaDeg){
   if(!_paint || _paint.selectedIdx < 0) return;
   _paintPushHistory();
@@ -57071,6 +57350,9 @@ function _paintRenderShapeMenu(){
   const btn = document.getElementById('paintShapeMenuBtn');
   if(!pop || !btn) return;
   if(!_paintShapeMenuOpen){ pop.style.display = 'none'; return; }
+  // v5.41.211 — « Moulure… » : rectangles uniquement
+  const mob = document.getElementById('paintMoulureMenuBtn');
+  if(mob){ const sl = _paint && _paint.shapes[_paint.selectedIdx]; mob.style.display = (sl && sl.type === 'rect') ? '' : 'none'; }
   // v5.41.201 — bouton aimant : visible seulement pour les formes aimantables
   const mb = document.getElementById('paintMagnetMenuBtn');
   if(mb){
@@ -58213,9 +58495,20 @@ function _paintDrawOneShape(ctx, s){
     // quelle que soit la taille du rectangle.
     // v5.41.138 — « pleine » = aplat uni d'une couleur au choix (ex. une
     // cheville/crampon colorée), au lieu d'un motif matériau.
+    if(Array.isArray(s.moulures) && s.moulures.length){
+      // v5.41.211 — rectangle MOULURÉ : contour recalculé (chanfreins,
+      // congés, rainures…), rempli/tracé comme une forme libre.
+      const pts = _paintMoulurePolygon(rx0, ry0, rw, rh, s.moulures);
+      const trace = () => { ctx.beginPath(); pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y)); ctx.closePath(); };
+      trace();
+      if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fill(); ctx.fillStyle = s.color; }
+      else if(s.fill){ _paintDrawFillPatternClean(ctx, s.fill, rx0, ry0, rw, rh, _paint.dpr, trace); trace(); }
+      ctx.stroke();
+    } else {
     if(s.fill === 'pleine'){ ctx.fillStyle = s.fillColor || s.color; ctx.fillRect(rx0, ry0, rw, rh); ctx.fillStyle = s.color; }
     else if(s.fill) _paintDrawFillPattern(ctx, s.fill, rx0, ry0, rw, rh, _paint.dpr);
     ctx.strokeRect(rx0, ry0, rw, rh);
+    }
   } else if(s.type === 'circle'){
     const rx = Math.abs(s.x2-s.x1)/2, ry = Math.abs(s.y2-s.y1)/2;
     const cx = (s.x1+s.x2)/2, cy = (s.y1+s.y2)/2;
