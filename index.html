@@ -13048,7 +13048,7 @@ async function renderAlertesConducteurList(){
       <div style="width:22px;height:22px;border-radius:6px;border:1.5px solid ${checked?'var(--wood)':'var(--line)'};background:${checked?'var(--wood)':'transparent'};flex-shrink:0;display:flex;align-items:center;justify-content:center;">
         ${checked ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#1a140d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>' : ''}
       </div>
-      <div style="width:38px;height:38px;border-radius:50%;background:${roleColor[u.role]||'var(--line)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;">${roleImg[u.role] ? `<img src="${roleImg[u.role]}" alt="" style="width:100%;height:100%;object-fit:cover;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${roleEmoji[u.role]||'👤'}',style:'font-size:18px'}))">` : (roleEmoji[u.role]||'👤')}</div>
+      ${_chatAvatarHtml({ authId: u.authId, name: u.name, role: u.role }, 38)}
       <div style="flex:1;min-width:0;">
         <div style="font-weight:700;font-size:14px;">${escapeHtml(u.name)}</div>
         <div style="font-size:11px;color:${roleColor[u.role]||'var(--ink-soft)'};font-weight:600;">${roleLabel[u.role]||u.role||''}</div>
@@ -13056,6 +13056,7 @@ async function renderAlertesConducteurList(){
     </div>`;
   }).join('');
 
+  _presenceRefreshDots(); // v5.41.196
   // Sélection multiple : cocher/décocher au clic
   el.querySelectorAll('[data-alerte-idx]').forEach(card => {
     card.addEventListener('click', () => {
@@ -13928,7 +13929,8 @@ async function _myConversationsGroupedByPerson(){
 
   const users = await _fetchUsersRegistry();
   const nameByAuthId = {};
-  users.forEach(u => { if(u.authId) nameByAuthId[u.authId] = u.name; });
+  const roleByAuthId = {};
+  users.forEach(u => { if(u.authId){ nameByAuthId[u.authId] = u.name; roleByAuthId[u.authId] = u.role; } });
 
   const byPerson = {};
   const broadcast = [];
@@ -13949,9 +13951,11 @@ async function _myConversationsGroupedByPerson(){
       // Anciennes alertes (avant v5.41.7) ou envoi direct sans authId connu
       // (dépannage assigné à un chef, demande de signature...) : on
       // regroupe par nom affiché, à défaut de mieux.
-      const label = a.recipientName || 'Destinataire inconnu';
+      // v5.41.196 — « Destinataire inconnu » renommé « Rappel » (demande de
+      // Rémi) et toujours rangé en bas de la liste (voir tri plus bas).
+      const label = a.recipientName || 'Rappel';
       const key = 'name:' + label;
-      if(!byPerson[key]) byPerson[key] = { key, authId: null, name: label, alerts: [] };
+      if(!byPerson[key]) byPerson[key] = { key, authId: null, name: label, alerts: [], isRappel: !a.recipientName };
       byPerson[key].alerts.push(a);
     }
   });
@@ -13970,8 +13974,12 @@ async function _myConversationsGroupedByPerson(){
 
   const people = Object.values(byPerson).map(p => {
     p.alerts.sort((x,y) => new Date(y.createdAt) - new Date(x.createdAt));
+    if(p.authId && roleByAuthId[p.authId]) p.role = roleByAuthId[p.authId];
     return p;
-  }).sort((a,b) => new Date(b.alerts[0].createdAt) - new Date(a.alerts[0].createdAt));
+  }).sort((a,b) => {
+    if(!!a.isRappel !== !!b.isRappel) return a.isRappel ? 1 : -1; // « Rappel » toujours en bas
+    return new Date(b.alerts[0].createdAt) - new Date(a.alerts[0].createdAt);
+  });
 
   broadcast.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
 
@@ -14051,7 +14059,8 @@ async function renderAlertesChatList(){
     const unreadCount = r.alerts.filter(a => a.direction === 'in' && !(a.readBy||[]).includes(myId)).length;
     const avatar = r.type === 'broadcast'
       ? `<div style="width:38px;height:38px;border-radius:50%;background:var(--wood);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">🌍</div>`
-      : `<div style="width:38px;height:38px;border-radius:50%;background:var(--bg-elev);border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;">👤</div>`;
+      : _chatAvatarHtml(r, 38);
+    const isUnread = unreadCount > 0; // v5.41.196 — conversation non lue = en gras
     const checked = _chatSelectedKeys.has(r.key);
     const checkbox = _chatSelectMode ? `
       <input type="checkbox" data-chat-select-key="${escapeHtml(r.key)}" ${checked?'checked':''}
@@ -14062,10 +14071,10 @@ async function renderAlertesChatList(){
       ${avatar}
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
-          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.name)}</div>
-          <div class="meta" style="flex-shrink:0;">${dateLabel}</div>
+          <div style="font-weight:${isUnread?900:600};font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.name)}</div>
+          <div class="meta" style="flex-shrink:0;${isUnread?'font-weight:800;color:var(--ink);':''}">${dateLabel}</div>
         </div>
-        <div style="font-size:12.5px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${last.direction==='out' ? '↑ ' : ''}${kindIcon[last.kind]||'💬'} ${escapeHtml(preview.substring(0,60))}</div>
+        <div style="font-size:12.5px;${isUnread?'font-weight:800;color:var(--ink);':'color:var(--ink-soft);'}white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">${last.direction==='out' ? '↑ ' : ''}${kindIcon[last.kind]||'💬'} ${escapeHtml(preview.substring(0,60))}</div>
       </div>
       ${unreadCount>0 ? `<span style="background:#E05555;color:#fff;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:700;flex-shrink:0;">${unreadCount}</span>` : ''}
     </div>`;
@@ -14085,6 +14094,7 @@ async function renderAlertesChatList(){
       card.addEventListener('click', () => openAlertesChatThread(idx));
     }
   });
+  _presenceRefreshDots(); // v5.41.196 — points en ligne / hors ligne
   if(_chatSelectMode){
     el.querySelectorAll('[data-chat-select-key]').forEach(cb => {
       cb.addEventListener('change', () => _chatToggleRowSelected(cb.dataset.chatSelectKey, cb.checked));
@@ -14152,7 +14162,7 @@ async function _renderChatThreadModal(row){
         <div style="max-width:85%;background:var(--wood);color:#fff;border-radius:14px 14px 3px 14px;padding:10px 13px;">
           <div style="font-size:13.5px;line-height:1.45;">${kindIcon[a.kind]||'💬'} ${escapeHtml(txt)}</div>
           ${croquisImgHtml}
-          <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:right;">${dateLabel}</div>
+          <div style="font-size:10.5px;opacity:.75;margin-top:4px;text-align:right;">${dateLabel}${row.type === 'broadcast' ? '' : ` · <span data-rcpt-id="${a.id}">${_chatReceiptHtml(a, myId)}</span>`}</div>
           ${deleteHtml}
         </div>
       </div>`;
@@ -14178,7 +14188,7 @@ async function _renderChatThreadModal(row){
   const canSendOtherKinds = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable' || myRole === 'chef';
   const otherKindsBtn = (canSendOtherKinds && row.type !== 'broadcast')
     ? (resendAuthId
-        ? `<button class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_resendAlertToChatPerson('${resendAuthId}')">🔔 Autre alerte (signature, heures, événement, dépannage…)</button>`
+        ? `<button class="btn btn-outline btn-block" style="margin-bottom:8px;" onclick="_resendAlertToChatPerson('${resendAuthId}')">${myRole === 'chef' ? '🛠️ Envoyer un dépannage' : '🔔 Autre alerte (signature, heures, événement, dépannage…)'}</button>`
         : `<div class="hint" style="text-align:center;margin-bottom:8px;">Pour envoyer une autre alerte à cette personne, choisis-la dans « Nouveau destinataire » ci-dessous.</div>`)
     : '';
 
@@ -14215,7 +14225,7 @@ async function _renderChatThreadModal(row){
   ex.innerHTML = `
     <div class="modal" style="max-height:88vh;display:flex;flex-direction:column;">
       <div class="modal-header">
-        <h2>${row.type==='broadcast' ? '🌍' : '👤'} ${escapeHtml(row.name)}</h2>
+        <h2 style="display:flex;align-items:center;gap:10px;">${row.type==='broadcast' ? '🌍' : _chatAvatarHtml(row, 34)} <span>${escapeHtml(row.name)}${row.authId ? `<span data-presence-label="${escapeHtml(row.authId)}" style="display:block;font-size:11px;font-weight:600;color:var(--ink-soft);"></span>` : ''}</span></h2>
         <button class="modal-close" onclick="_currentChatThreadPerson=null; closeModal('alertesChatThread')">×</button>
       </div>
       <div style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
@@ -14238,6 +14248,8 @@ async function _renderChatThreadModal(row){
         if(real){
           if(!real.readBy) real.readBy = [];
           if(!real.readBy.includes(myId)){ real.readBy.push(myId); changed = true; }
+          // v5.41.196 — heure de lecture, pour l'accusé « Lu » côté expéditeur
+          if(!real.readAt) real.readAt = new Date().toISOString();
         }
       });
       if(changed){
@@ -14247,7 +14259,137 @@ async function _renderChatThreadModal(row){
     }
   }catch(e){ /* silencieux */ }
   renderAlertesChatList();
+  _chatStartReceiptPolling();
+  _presenceRefreshDots();
 }
+
+/* ═══ v5.41.196 — Avatars de rôle colorés, accusés de lecture, présence ═══
+   - Avatar : icône du rôle (icons/role-*.png) dans un rond d'une couleur
+     propre à chaque utilisateur (calculée à partir de son authId/nom, donc
+     identique sur tous les appareils, sans rien stocker).
+   - Lu / Envoyé : un message que J'AI envoyé est « Lu » dès qu'un autre
+     appareil que le mien l'a ajouté à readBy (ouverture de la conversation
+     ou lecture depuis la bulle) ; readAt = heure de lecture si connue.
+   - Présence : chaque appareil écrit sa propre ligne rwood_sync
+     'rwood_presence_<authId>' ({at, visible}) toutes les 45 s tant que
+     l'app est ouverte au premier plan, et visible:false quand elle passe
+     en arrière-plan. En ligne = visible et vu il y a moins de 2 min.
+     Une ligne par personne → aucune écriture concurrente sur une même clé. */
+const _ROLE_IMG = { chef:'icons/role-chef.png', ouvrier:'icons/role-ouvrier.png', conducteur:'icons/role-conducteur.png', comptable:'icons/role-compta.png', patron:'icons/role-patron.png' };
+function _chatUserColor(seed){
+  const str = String(seed || '?');
+  let h = 2166136261; // FNV-1a : bien réparti, même pour des noms proches
+  for(let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  const PALETTE = ['#2F80ED','#27AE60','#EB5757','#9B51E0','#F2994A','#00A3A3','#D6336C','#6FA37E','#C17A3D','#5C6BC0','#8D6E63','#B7950B'];
+  return PALETTE[h % PALETTE.length];
+}
+function _chatRoleOf(row){
+  if(row.role) return row.role;
+  const reg = window._usersRegistryCache || [];
+  const u = row.authId ? reg.find(x => x.authId === row.authId) : null;
+  return u ? u.role : '';
+}
+function _chatAvatarHtml(row, size){
+  size = size || 38;
+  const role = _chatRoleOf(row);
+  const img = _ROLE_IMG[role];
+  const bg = row.isRappel ? '#5a4d38' : _chatUserColor(row.authId || row.name);
+  const inner = row.isRappel
+    ? '<span style="font-size:' + Math.round(size*0.45) + 'px;">⏰</span>'
+    : (img ? '<img src="' + img + '" alt="" style="width:72%;height:72%;object-fit:contain;">' : '<span style="font-size:' + Math.round(size*0.45) + 'px;">👤</span>');
+  const dot = row.authId
+    ? '<span data-presence-auth="' + escapeHtml(row.authId) + '" style="position:absolute;right:-1px;bottom:-1px;width:' + Math.round(size*0.3) + 'px;height:' + Math.round(size*0.3) + 'px;border-radius:50%;background:#E5484D;border:2px solid var(--card,#211a12);"></span>'
+    : '';
+  return '<div style="position:relative;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + bg + ';display:flex;align-items:center;justify-content:center;flex-shrink:0;">' + inner + dot + '</div>';
+}
+function _chatReceiptHtml(a, myId){
+  const readers = (a.readBy || []).filter(id => id && id !== myId);
+  if(readers.length){
+    const t = a.readAt ? new Date(a.readAt) : null;
+    const tLabel = (t && !isNaN(t)) ? ' ' + t.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) : '';
+    return '<span style="font-weight:900;color:#fff;opacity:1;">✓✓ Lu' + tLabel + '</span>';
+  }
+  return '<span>✓ Envoyé</span>';
+}
+let _chatReceiptTimer = null;
+function _chatStartReceiptPolling(){
+  if(_chatReceiptTimer) return;
+  _chatReceiptTimer = setInterval(async () => {
+    const modal = document.getElementById('modal-alertesChatThread');
+    if(!modal || !modal.classList.contains('open') || document.visibilityState !== 'visible'){
+      if(!modal || !modal.classList.contains('open')){ clearInterval(_chatReceiptTimer); _chatReceiptTimer = null; }
+      return;
+    }
+    const spans = modal.querySelectorAll('[data-rcpt-id]');
+    if(spans.length){
+      try{
+        const all = await _fetchAlerts();
+        const myId = getDeviceSyncId();
+        spans.forEach(sp => {
+          const a = all.find(x => x.id === sp.dataset.rcptId);
+          if(a) sp.innerHTML = _chatReceiptHtml(a, myId);
+        });
+      }catch(e){}
+    }
+    _presenceRefreshDots();
+  }, 10000);
+}
+
+const PRESENCE_PREFIX = 'rwood_presence_';
+const PRESENCE_ONLINE_MS = 120000;
+let _presenceCache = { at: 0, map: {} };
+async function _presencePush(visible){
+  const authId = getSupaUserId();
+  if(!authId || !navigator.onLine) return;
+  try{
+    await supaFetch('/rest/v1/rwood_sync', {
+      method: 'POST',
+      keepalive: !visible,
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: PRESENCE_PREFIX + authId, updated_at: new Date().toISOString(), data: JSON.stringify({ at: Date.now(), visible: !!visible }) })
+    });
+  }catch(e){}
+}
+async function _presenceFetch(force){
+  if(!force && Date.now() - _presenceCache.at < 15000) return _presenceCache.map;
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=like.' + encodeURIComponent(PRESENCE_PREFIX + '%') + '&select=user_id,data', { headers:{'Prefer':''} });
+    if(!res.ok) return _presenceCache.map;
+    const rows = await res.json();
+    const map = {};
+    (rows || []).forEach(r => {
+      let d = r.data; if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } }
+      if(d) map[String(r.user_id).slice(PRESENCE_PREFIX.length)] = d;
+    });
+    _presenceCache = { at: Date.now(), map };
+  }catch(e){}
+  return _presenceCache.map;
+}
+function _presenceIsOnline(authId){
+  const d = _presenceCache.map[authId];
+  return !!(d && d.visible && (Date.now() - (d.at||0)) < PRESENCE_ONLINE_MS);
+}
+async function _presenceRefreshDots(){
+  if(!document.querySelector('[data-presence-auth],[data-presence-label]')) return;
+  await _presenceFetch(false);
+  document.querySelectorAll('[data-presence-auth]').forEach(el => {
+    const on = _presenceIsOnline(el.dataset.presenceAuth);
+    el.style.background = on ? '#3FB950' : '#E5484D';
+    el.title = on ? 'En ligne' : 'Hors ligne';
+  });
+  document.querySelectorAll('[data-presence-label]').forEach(el => {
+    const on = _presenceIsOnline(el.dataset.presenceLabel);
+    el.textContent = on ? '🟢 En ligne' : '🔴 Hors ligne';
+  });
+}
+(function _presenceInit(){
+  const beat = () => { if(document.visibilityState === 'visible') _presencePush(true); };
+  setTimeout(beat, 4000);
+  setInterval(beat, 45000);
+  setInterval(() => { if(document.visibilityState === 'visible') _presenceRefreshDots(); }, 30000);
+  document.addEventListener('visibilitychange', () => { _presencePush(document.visibilityState === 'visible'); });
+  window.addEventListener('pagehide', () => _presencePush(false));
+})();
 
 /* v5.41.17, réutilisé pour le fil unifié — appelé après suppression d'une
    alerte DEPUIS le fil ouvert (envoyée ou reçue) : reconstruit le fil de
@@ -14383,13 +14525,16 @@ async function _pickRecipientFromNewRecipientPicker(authId, name){
   }
 
   const myRole = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
-  const canSendOtherKinds = myRole === 'conducteur' || myRole === 'patron' || myRole === 'comptable' || myRole === 'chef';
-  if(canSendOtherKinds){
-    _alerteSelectedAuthIds = new Set([authId]);
-    openAlerteComposeGroup();
-    return;
-  }
-
+  // v5.41.196 — le chef n'avait accès qu'au compositeur Dépannage pour un
+  // nouveau destinataire : il ne pouvait donc jamais écrire en premier au
+  // conducteur (message, photo, croquis). Il ouvre maintenant un fil vide
+  // (zone Message + 📐 Croquis + 📎 Photo), le Dépannage restant accessible
+  // via le bouton « Autre alerte » du fil.
+  // v5.41.197 — MESSAGERIE OUVERTE (demande de Rémi) : quel que soit le
+  // rôle, choisir quelqu'un dans « + Nouveau » ouvre directement la
+  // conversation avec lui (zone Message + 📐 Croquis + 📎 Photo). Les
+  // alertes spéciales (signature, heures, événement, dépannage) restent
+  // accessibles depuis le bouton « Autre alerte » en bas du fil.
   _currentChatThreadPerson = { authId, name };
   await _renderChatThreadModal({ type: 'person', authId, name, alerts: [] });
 }
@@ -29884,7 +30029,7 @@ function applyComptableNavRestrictions(){
       // Patron : tout visible sauf alertes-conducteur (déjà géré par renderSites)
       btn.style.display = '';
     } else if(isComptable){
-      btn.style.display = (view === 'heures' || view === 'calcul' || view === 'contacts' || view === 'itineraires') ? '' : 'none';
+      btn.style.display = (view === 'heures' || view === 'calcul' || view === 'contacts' || view === 'itineraires' || view === 'alertes-conducteur') ? '' : 'none';
     } else if(isOuvrier){
       btn.style.display = OUVRIER_ALLOWED_VIEWS.includes(view) ? '' : 'none';
     } else {
@@ -29898,7 +30043,7 @@ function applyComptableNavRestrictions(){
     // "notesdashboard" ajouté aux vues autorisées pour la comptable — sinon
     // le code juste en dessous la redirigerait de force vers "heures" à
     // chaque fois qu'elle arriverait sur son propre tableau de bord "Notes".
-    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires', 'notesdashboard'];
+    const allowedViews = ['heures', 'calcul', 'contacts', 'itineraires', 'notesdashboard', 'alertes-conducteur'];
     if(activeBtn && !allowedViews.includes(activeBtn.dataset.view)) goTo('heures');
   }
 
@@ -33000,7 +33145,7 @@ function applyNavHidden(){
   ensureNavHidden();
   const hidden = data.settings.navHidden;
   const isComptable = !!(data.settings.myProfile && data.settings.myProfile.role === 'comptable');
-  const comptableOnly = new Set(['contacts','heures','zone-chantier','calcul']);
+  const comptableOnly = new Set(['contacts','heures','zone-chantier','calcul','alertes-conducteur']); // v5.41.197 — + Messagerie ouverte à tous
   // v5.41.150 — Ouvrier : navigation restreinte à 8 onglets précis (sur
   // demande de Rémi). Même traitement prioritaire que comptableOnly
   // ci-dessus, sinon cette boucle générique (basée sur navHidden, qui ne
@@ -33165,9 +33310,29 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.195';
+const APP_VERSION = '5.41.197';
 
 const CHANGELOG = [
+  {
+    version: '5.41.197',
+    date: '23/09/2026',
+    entries: [
+      { icon: '💬', text: "Messagerie ouverte à tout le monde : n'importe quel utilisateur (ouvrier, chef, conducteur, patron, comptable) peut écrire à n'importe qui. « + Nouveau » ouvre directement la conversation, avec message, 📎 photo et 📐 croquis. Les alertes spéciales (signature, heures, événement, dépannage) restent dispo via le bouton en bas de la conversation." },
+      { icon: '🧾', text: "Le rôle Comptable a maintenant accès à l'onglet Messagerie." },
+    ],
+  },
+  {
+    version: '5.41.196',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🎨', text: "Messagerie : chaque personne a maintenant l'icône de son rôle dans un rond d'une couleur qui lui est propre (même couleur sur tous les téléphones)." },
+      { icon: '🟢', text: "Messagerie : point vert = la personne a l'app ouverte en ce moment, point rouge = hors ligne. Aussi affiché « En ligne / Hors ligne » en haut de la conversation." },
+      { icon: '✓', text: "Messagerie : accusé de lecture sur tes messages envoyés — « ✓ Envoyé » puis « ✓✓ Lu » (avec l'heure) dès que le destinataire l'a lu. Mis à jour tout seul pendant que la conversation est ouverte." },
+      { icon: '🔤', text: "Messagerie : une conversation avec un message non lu apparaît en gras jusqu'à ce que tu l'ouvres." },
+      { icon: '⏰', text: "Messagerie : la conversation « Destinataire inconnu » s'appelle maintenant « Rappel » et reste toujours en bas de la liste." },
+      { icon: '👷', text: "Messagerie : les chefs d'équipe peuvent maintenant démarrer une conversation avec n'importe qui (dont le conducteur) et envoyer messages, photos et croquis — avant, « + Nouveau » ne leur proposait que le dépannage (toujours dispo via le bouton « 🛠️ Envoyer un dépannage » dans la conversation)." },
+    ],
+  },
   {
     version: '5.41.195',
     date: '23/09/2026',
