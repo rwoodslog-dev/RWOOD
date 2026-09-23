@@ -4612,12 +4612,11 @@
           <div class="field"><label>Nouvel événement</label>
             <input type="text" id="detailNewEventInput" placeholder="Ex : Livraison bois, Inspection…">
           </div>
-          <div class="field" style="margin-bottom:0;"><label>Date (optionnel)</label>
-            <div style="display:flex; gap:8px;">
-              <input type="date" id="detailNewEventDate" style="flex:1;">
-              <button class="btn btn-primary" onclick="addDetailEvent()">+ Ajouter</button>
-            </div>
+          <div class="field"><label>Date (optionnel)</label>
+            <input type="date" id="detailNewEventDate">
           </div>
+          <div id="detailEventChefBox"></div>
+          <button class="btn btn-primary btn-block" style="margin-bottom:0;" onclick="addDetailEvent()">+ Ajouter</button>
         </div>
 
         <div class="section-title" style="margin-top:0;display:flex;align-items:center;gap:6px;">
@@ -10305,6 +10304,12 @@ async function addDetailEvent(){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
   if(!site.customEvents) site.customEvents = [];
+
+  // [v5.41.184] Chefs cochés (opt-in), capturés AVANT renderCloudEvents
+  // ci-dessous qui reconstruit ces cases.
+  const chefBox = document.getElementById('detailEventChefBox');
+  const selectedChefIds = chefBox ? Array.from(chefBox.querySelectorAll('.evChefChk:checked')).map(cb => cb.value) : [];
+
   const ev = {
     id: uid(),
     label: input.value.trim(),
@@ -10318,11 +10323,10 @@ async function addDetailEvent(){
   renderCloudEvents(siteId);
   showToast('Événement ajouté');
 
-  if(site.syncLive){
+  if(site.syncLive && selectedChefIds.length){
     await pushSharedSite(site);
 
-    // Notifier les chefs assignés + payload événement pour injection dans leur agenda
-    const chefIds = _getChefAuthIdsForSite(site);
+    // Notifier les chefs cochés + payload événement pour injection dans leur agenda
     const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
                           ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
     const dateLabel = ev.date ? new Date(ev.date+'T00:00:00').toLocaleDateString('fr-FR') : '';
@@ -10330,7 +10334,7 @@ async function addDetailEvent(){
       ' a ajouté' + (dateLabel ? ' la date ' + dateLabel : ' un événement') +
       ' pour le chantier ' + site.name + ' : "' + ev.label + '"';
 
-    chefIds.forEach(chefAuthId => {
+    selectedChefIds.forEach(chefAuthId => {
       sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
       _pushAgendaEventToChef(chefAuthId, {
         id: ev.id,
@@ -10343,6 +10347,8 @@ async function addDetailEvent(){
       // 3. Notification système immédiate (push natif) — voir rwood-push/.
       notifyPush([chefAuthId], 'RWOOD — Nouvel événement', ev.label + ' — ' + site.name, 'agenda-' + ev.id, 'agenda');
     });
+  } else if(site.syncLive){
+    await pushSharedSite(site);
   }
 }
 
@@ -20955,6 +20961,12 @@ function renderCloudEvents(siteId){
   const listEl  = document.getElementById('cloudEventsList');
   const countEl = document.getElementById('cloudEventsCount');
   const section = document.getElementById('cloudEventsSection');
+
+  // [v5.41.184] Cases à cocher "chef(s) à notifier" de la modale Événement
+  // (fiche chantier) — reconstruites à chaque ouverture/rafraîchissement.
+  const chefBox = document.getElementById('detailEventChefBox');
+  if(chefBox) chefBox.innerHTML = site ? _renderEventChefCheckboxes(site) : '';
+
   if(!listEl) return;
 
   const events = site ? _mevCollect(site) : [];
@@ -21020,7 +21032,7 @@ function addEventToAgenda(siteId, ev){
   if(exists){ showToast('Déjà dans l\'agenda'); return; }
 
   const taskId = uid();
-  data.tasks.push({ id: taskId, date: ev.date, siteId: siteId, text: title, time: ev.time || '', createdAt: new Date().toISOString() });
+  data.tasks.push({ id: taskId, date: ev.date, siteId: siteId, text: title, time: ev.time || '', createdAt: new Date().toISOString(), fromSiteEvent: true });
 
   if(!data.logs) data.logs = [];
   const d = new Date(ev.date + 'T00:00:00');
@@ -32894,9 +32906,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.183';
+const APP_VERSION = '5.41.184';
 
 const CHANGELOG = [
+  {
+    version: '5.41.184',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📅', text: "Événements de chantier : l'ajout automatique dans l'agenda d'un chef (avec notif) est maintenant au choix — quand tu ajoutes un événement (Synchro Équipe ou fiche chantier → Événements), coche le ou les chefs concernés. L'événement reste dans tous les cas visible par tout le monde dans la liste des événements du chantier. Un chef non coché peut toujours l'ajouter lui-même à son agenda depuis Événements." },
+      { icon: '🔔', text: "Nouveau : un rappel automatique est envoyé la veille à 12h pour tout événement de chantier présent dans l'agenda (« Demain événement : … »), que l'ajout ait été automatique (chef coché) ou fait à la main via le bouton « Agenda »." },
+    ],
+  },
   {
     version: '5.41.183',
     date: '23/09/2026',
@@ -41944,16 +41964,48 @@ function _getChefAuthIdsForSite(site){
   const ids = [];
   if(Array.isArray(site.assignedChefs)){
     site.assignedChefs.forEach(c => {
-      if(c.authId) ids.push(c.authId);
-      else if(c.phone){
-        // Retrouver l'authId via le registre en cache (synchrone — best effort)
-        const reg = window._usersRegistryCache || [];
-        const found = reg.find(u => u.phone === c.phone || u.phone === normalizePhone(c.phone));
-        if(found && found.authId) ids.push(found.authId);
-      }
+      const id = _resolveChefAuthId(c);
+      if(id) ids.push(id);
     });
   }
   return ids;
+}
+
+/* Retrouve l'authId d'un chef assigné (direct, ou via le registre en cache
+   à partir de son téléphone — best effort, synchrone). */
+function _resolveChefAuthId(c){
+  if(!c) return '';
+  if(c.authId) return c.authId;
+  if(c.phone){
+    const reg = window._usersRegistryCache || [];
+    const found = reg.find(u => u.phone === c.phone || u.phone === normalizePhone(c.phone));
+    if(found && found.authId) return found.authId;
+  }
+  return '';
+}
+
+/* [v5.41.184] Cases à cocher "quel(s) chef(s) notifier + injecter l'event
+   dans leur agenda" à l'ajout d'un événement de chantier — désormais
+   opt-in (demande explicite de Rémi) : décochées par défaut, le conducteur
+   choisit qui doit recevoir l'ajout automatique. L'événement, lui, reste
+   TOUJOURS ajouté à site.customEvents (visible de tous sur le chantier)
+   quel que soit l'état des cases. */
+function _renderEventChefCheckboxes(site){
+  const chefs = (site && site.assignedChefs) || [];
+  const rows = chefs.map(c => {
+    const authId = _resolveChefAuthId(c);
+    if(!authId) return '';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;font-weight:400;">
+      <input type="checkbox" class="evChefChk" value="${escapeHtml(authId)}">
+      ${userLabelHtml(c, 'chef')}
+    </label>`;
+  }).filter(Boolean).join('');
+  if(!rows) return '';
+  return `<div class="field" style="margin-bottom:8px;">
+    <label>Ajouter à l'agenda + notifier</label>
+    <div class="hint" style="margin-bottom:4px;">Coche le ou les chefs qui doivent recevoir l'ajout automatique dans leur agenda (avec rappel la veille à 12h). Les autres pourront toujours l'ajouter eux-mêmes depuis « Événements ».</div>
+    ${rows}
+  </div>`;
 }
 
 /* Vérifier les alertes conducteur à l'ouverture (côté chef) */
@@ -43088,6 +43140,50 @@ async function _checkReunionChantierReminders(){
   }
 }
 
+/* [v5.41.184] Rappel J-1 à 12h pour les événements de chantier présents
+   dans l'agenda (data.tasks) — qu'ils y aient été injectés automatiquement
+   par un conducteur (chef coché à la création, fromConducteur=true, voir
+   _pushAgendaEventToChef/pullAgendaEventsFromConducteur) ou ajoutés
+   manuellement par le titulaire de l'agenda lui-même via le bouton
+   « 📅 Agenda » de la fiche chantier (fromSiteEvent=true, voir
+   addEventToAgenda). Même principe anti-doublon que
+   _checkReunionChantierReminders (clé stable id+date, journalisée avant
+   l'envoi). */
+async function _checkSiteEventReminders(){
+  if(!data.tasks || !data.tasks.length) return;
+  const now = new Date();
+  if(now.getHours() < 12) return; // rappel envoyé "la veille à 12h" seulement à partir de 12h
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowKey = tomorrow.getFullYear()+'-'+String(tomorrow.getMonth()+1).padStart(2,'0')+'-'+String(tomorrow.getDate()).padStart(2,'0');
+
+  if(!data.settings) data.settings = {};
+  if(!data.settings.siteEventReminderLog) data.settings.siteEventReminderLog = {};
+
+  const dueTomorrow = data.tasks.filter(t => {
+    if(t.date !== tomorrowKey) return false;
+    if(!t.fromConducteur && !t.fromSiteEvent) return false;
+    const key = t.id + '-' + t.date;
+    return data.settings.siteEventReminderLog[key] !== true;
+  });
+  if(!dueTomorrow.length) return;
+
+  const myId = getDeviceSyncId();
+  for(const t of dueTomorrow){
+    const key = t.id + '-' + t.date;
+    // Marquer AVANT d'envoyer (voir _checkHoursReminders pour l'explication
+    // de la ré-entrance de sendAlert() → checkForNewAlerts()).
+    data.settings.siteEventReminderLog[key] = true;
+    saveData();
+    const site = t.siteId ? (data.sites||[]).find(s=>s.id===t.siteId) : null;
+    const siteName = site ? site.name : '';
+    const msg = '📅 Demain événement : ' + t.text + (siteName ? ' — ' + siteName : '');
+    await sendAlert(msg, 'device', myId, null, 'rappel');
+
+    const myAuthId = getSupaUserId();
+    if(myAuthId) notifyPush([myAuthId], 'RWOOD — Événement demain', msg, 'site-event-' + t.id);
+  }
+}
+
 /* Conducteur, patron ET chef peuvent créer/modifier/supprimer la réunion
    récurrente d'un chantier (v5.41.24 — demande explicite : les chefs
    d'équipe doivent pouvoir changer la récurrence eux aussi). Seul l'ouvrier
@@ -43298,12 +43394,11 @@ function renderSynchroEquipe(siteId){
         <div class="field"><label>Nouvel événement</label>
           <input type="text" id="newEventInput_${siteId}" placeholder="Ex : Livraison bois, Inspection…">
         </div>
-        <div class="field" style="margin-bottom:0;"><label>Date (optionnel)</label>
-          <div style="display:flex; gap:8px;">
-            <input type="date" id="newEventDate_${siteId}" style="flex:1;">
-            <button class="btn btn-primary" onclick="addCustomEvent('${siteId}')">+ Ajouter</button>
-          </div>
+        <div class="field"><label>Date (optionnel)</label>
+          <input type="date" id="newEventDate_${siteId}">
         </div>
+        <div id="eventChefBox_${siteId}">${_renderEventChefCheckboxes(site)}</div>
+        <button class="btn btn-primary btn-block" style="margin-bottom:0;" onclick="addCustomEvent('${siteId}')">+ Ajouter</button>
       </div>
 
       <button class="btn btn-primary btn-block" style="margin-top:18px; background:var(--green); border-color:var(--green);" onclick="lancerSynchroEquipe('${siteId}')">
@@ -43346,12 +43441,11 @@ function renderSynchroEquipe(siteId){
         <div class="field"><label>Nouvel événement</label>
           <input type="text" id="newEventInput_${siteId}" placeholder="Ex : Livraison bois, Inspection…">
         </div>
-        <div class="field" style="margin-bottom:0;"><label>Date (optionnel)</label>
-          <div style="display:flex; gap:8px;">
-            <input type="date" id="newEventDate_${siteId}" style="flex:1;">
-            <button class="btn btn-primary" onclick="addCustomEvent('${siteId}')">+ Ajouter</button>
-          </div>
+        <div class="field"><label>Date (optionnel)</label>
+          <input type="date" id="newEventDate_${siteId}">
         </div>
+        <div id="eventChefBox_${siteId}">${_renderEventChefCheckboxes(site)}</div>
+        <button class="btn btn-primary btn-block" style="margin-bottom:0;" onclick="addCustomEvent('${siteId}')">+ Ajouter</button>
       </div>
 
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openSendNoteToChef('${siteId}')">
@@ -43425,6 +43519,13 @@ async function addCustomEvent(siteId){
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
   if(!site.customEvents) site.customEvents = [];
+
+  // [v5.41.184] Chefs cochés (opt-in) à notifier + injecter dans l'agenda —
+  // capturé AVANT le re-rendu du panneau (renderSynchroEquipe ci-dessous
+  // reconstruit ces cases, il faut donc lire leur état juste avant).
+  const chefBox = document.getElementById('eventChefBox_' + siteId);
+  const selectedChefIds = chefBox ? Array.from(chefBox.querySelectorAll('.evChefChk:checked')).map(cb => cb.value) : [];
+
   const ev = {
     id: uid(),
     label: input.value.trim(),
@@ -43439,32 +43540,35 @@ async function addCustomEvent(siteId){
 
   if(site.syncLive){
     await pushSharedSite(site);
-    showToast('Événement ajouté et synchro mise à jour');
+    showToast(selectedChefIds.length ? 'Événement ajouté et synchro mise à jour' : 'Événement ajouté (visible sur le chantier)');
 
-    // Notifier les chefs assignés + payload événement pour injection dans leur agenda
-    const chefIds = _getChefAuthIdsForSite(site);
-    const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
-                          ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
-    const dateLabel = ev.date ? new Date(ev.date+'T00:00:00').toLocaleDateString('fr-FR') : '';
-    const alertText = 'Le conducteur ' + conductorName.trim() +
-      ' a ajouté' + (dateLabel ? ' la date ' + dateLabel : ' un événement') +
-      ' pour le chantier ' + site.name + ' : "' + ev.label + '"';
+    if(selectedChefIds.length){
+      // Notifier les chefs cochés + payload événement pour injection dans leur agenda
+      const conductorName = ((data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' +
+                            ((data.settings.myProfile && data.settings.myProfile.lastName)||'');
+      const dateLabel = ev.date ? new Date(ev.date+'T00:00:00').toLocaleDateString('fr-FR') : '';
+      const alertText = 'Le conducteur ' + conductorName.trim() +
+        ' a ajouté' + (dateLabel ? ' la date ' + dateLabel : ' un événement') +
+        ' pour le chantier ' + site.name + ' : "' + ev.label + '"';
 
-    chefIds.forEach(chefAuthId => {
-      // 1. Alerte popup persistante
-      sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-      // 2. Injection directe dans l'agenda du chef via une clé dédiée
-      _pushAgendaEventToChef(chefAuthId, {
-        id: ev.id,
-        date: ev.date,
-        siteId: site.id,
-        siteName: site.name,
-        siteColor: site.color || '',
-        text: ev.label
+      selectedChefIds.forEach(chefAuthId => {
+        // 1. Alerte popup persistante
+        sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
+        // 2. Injection directe dans l'agenda du chef via une clé dédiée
+        _pushAgendaEventToChef(chefAuthId, {
+          id: ev.id,
+          date: ev.date,
+          siteId: site.id,
+          siteName: site.name,
+          siteColor: site.color || '',
+          text: ev.label
+        });
+        // 3. Notification système immédiate (push natif) — voir rwood-push/.
+        notifyPush([chefAuthId], 'RWOOD — Nouvel événement', ev.label + ' — ' + site.name, 'agenda-' + ev.id, 'agenda');
       });
-      // 3. Notification système immédiate (push natif) — voir rwood-push/.
-      notifyPush([chefAuthId], 'RWOOD — Nouvel événement', ev.label + ' — ' + site.name, 'agenda-' + ev.id, 'agenda');
-    });
+    }
+  } else {
+    showToast('Événement ajouté');
   }
 }
 
@@ -44789,6 +44893,12 @@ async function _checkForNewAlertsInner(){
   // contre la ré-entrance (marquage AVANT l'envoi, voir son propre commentaire).
   if(typeof _checkReunionChantierReminders === 'function'){
     try{ await _checkReunionChantierReminders(); }catch(e){ /* silencieux */ }
+  }
+
+  // v5.41.184 — Événements de chantier ajoutés à l'agenda (auto via chef
+  // coché, ou manuel via le bouton "Agenda") : rappel J-1 à 12h.
+  if(typeof _checkSiteEventReminders === 'function'){
+    try{ await _checkSiteEventReminders(); }catch(e){ /* silencieux */ }
   }
 
   try{
