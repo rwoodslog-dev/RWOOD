@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v841';
+const CACHE_NAME = 'rwood-cache-v842';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -179,6 +179,6 @@ self.addEventListener('notificationclick', (event) => {
         return;
       }
     }
-    if(clients.openWindow) return clients.openWindow(view ? './index.html#' + view : './index.html');
+    if(clients.openWindow) return clients.openWindow(view ? './index.html#' + encodeURIComponent(view) : './index.html');
   }));
 });

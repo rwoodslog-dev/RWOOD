@@ -10450,7 +10450,7 @@ function sendDetailNote(){
       const alertText = (authorName.trim() || 'Quelqu\'un') + ' a ajouté une note sur le chantier ' + site.name + ' : "' + text + '"';
       chefIds.forEach(chefAuthId => {
         sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-        notifyPush([chefAuthId], 'RWOOD — Nouvelle note', text + ' — ' + site.name, 'note-' + siteId + '-' + Date.now());
+        notifyPush([chefAuthId], 'RWOOD — Nouvelle note', text + ' — ' + site.name, 'note-' + siteId + '-' + Date.now(), 'site:' + site.id);
       });
     }
   } catch(e){ /* silencieux */ }
@@ -13852,7 +13852,7 @@ async function sendAlerteToMembers(authIds, names){
     const pushTitle = type === 'depannage' ? 'RWOOD — Dépannage'
       : type === 'evenement' ? 'RWOOD — Nouvel événement'
       : 'RWOOD — Alerte';
-    notifyPush(authIds, pushTitle, text, type, type === 'depannage' ? 'depannages' : (type === 'evenement' ? 'agenda' : 'alertes'));
+    notifyPush(authIds, pushTitle, text, type, 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || '')); // v5.41.200 — ouvre la conversation avec l'expéditeur
   }
 
   const modal = document.getElementById('modal-alerteCompose');
@@ -14228,11 +14228,28 @@ async function _renderChatThreadModal(row){
         <h2 style="display:flex;align-items:center;gap:10px;">${row.type==='broadcast' ? '🌍' : _chatAvatarHtml(row, 34)} <span>${escapeHtml(row.name)}${row.authId ? `<span data-presence-label="${escapeHtml(row.authId)}" style="display:block;font-size:11px;font-weight:600;color:var(--ink-soft);"></span>` : ''}</span></h2>
         <button class="modal-close" onclick="_currentChatThreadPerson=null; closeModal('alertesChatThread')">×</button>
       </div>
-      <div style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
+      <div id="chatThreadScroll" style="flex:1;overflow-y:auto;margin-bottom:12px;">${bubblesHtml}</div>
       ${otherKindsBtn}
       ${sketchBtnHtml}
       ${messageBoxHtml}
     </div>`;
+
+  // v5.41.200 — toujours ouvrir sur le DERNIER message (bas du fil), y
+  // compris une fois les photos/croquis chargés (ils agrandissent le fil).
+  const _sc = document.getElementById('chatThreadScroll');
+  if(_sc){
+    const toBottom = () => { _sc.scrollTop = _sc.scrollHeight; };
+    toBottom();
+    requestAnimationFrame(toBottom);
+    setTimeout(toBottom, 150);
+    let userScrolled = false;
+    _sc.addEventListener('touchstart', () => { userScrolled = true; }, { passive:true, once:true });
+    _sc.addEventListener('wheel', () => { userScrolled = true; }, { passive:true, once:true });
+    _sc.querySelectorAll('img').forEach(img => {
+      img.setAttribute('loading', 'eager');
+      if(!img.complete) img.addEventListener('load', () => { if(!userScrolled) toBottom(); }, { once:true });
+    });
+  }
 
   // Marquer comme lues toutes les alertes REÇUES affichées dans ce fil
   // (comme le faisait l'ancien fil "reçu"), puis rafraîchir la liste
@@ -14443,7 +14460,7 @@ async function sendQuickMessageInThread(recipientAuthId, recipientName){
     deviceId ? [deviceId] : [], null, null, [recipientAuthId]
   );
   if(ok){
-    notifyPush([recipientAuthId], 'RWOOD — Message', senderName + ' : ' + text, 'info', 'alertes');
+    notifyPush([recipientAuthId], 'RWOOD — Message', senderName + ' : ' + text, 'info', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
   }
   if(input) input.disabled = false;
   if(!ok){ showToast('❌ Échec de l\'envoi'); return; }
@@ -15102,7 +15119,7 @@ async function addSiteDocument(input){
         ' a ajouté un document sur le chantier ' + site.name + ' : "' + docName + '"';
       chefIds.forEach(chefAuthId => {
         sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-        notifyPush([chefAuthId], 'RWOOD — Nouveau document', docName + ' — ' + site.name, 'doc-' + docId, 'document');
+        notifyPush([chefAuthId], 'RWOOD — Nouveau document', docName + ' — ' + site.name, 'doc-' + docId, 'site:' + site.id);
       });
     }
 
@@ -16060,7 +16077,7 @@ async function addSharedMediaToSite(siteId, file, opts){
         const alertText = (authorName || 'Quelqu\'un') + ' a ajouté ' + kindLabel + ' sur le chantier ' + site.name + ' : "' + file.name + '"';
         chefIds.forEach(chefAuthId => {
           sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-          notifyPush([chefAuthId], 'RWOOD — Nouveau média', file.name + ' — ' + site.name, 'media-' + mediaId);
+          notifyPush([chefAuthId], 'RWOOD — Nouveau média', file.name + ' — ' + site.name, 'media-' + mediaId, 'site:' + site.id);
         });
       }
     } catch(e){ /* silencieux */ }
@@ -19037,7 +19054,7 @@ async function syncZincToSite(profile){
           const alertText = (uploader || 'Quelqu\'un') + ' a ajouté un pliage sur le chantier ' + site.name + ' : "' + (profile.name || 'Pliage') + '"';
           chefIds.forEach(chefAuthId => {
             sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-            notifyPush([chefAuthId], 'RWOOD — Nouveau pliage', (profile.name || 'Pliage') + ' — ' + site.name, 'zinc-' + profile.id);
+            notifyPush([chefAuthId], 'RWOOD — Nouveau pliage', (profile.name || 'Pliage') + ' — ' + site.name, 'zinc-' + profile.id, 'site:' + site.id);
           });
         }
       } catch(e){ /* silencieux */ }
@@ -28925,10 +28942,71 @@ async function subscribeToPush(reg){
 if('serviceWorker' in navigator){
   navigator.serviceWorker.addEventListener('message', (event)=>{
     if(event.data && event.data.type === 'navigate' && event.data.view){
-      goTo(event.data.view);
+      _handleNotifTarget(event.data.view);
     }
   });
 }
+
+/* v5.41.200 — Clic sur une notification : ouvre DIRECTEMENT le bon
+   endroit, quel que soit le type (demande de Rémi).
+   Cibles (champ `url` de notifyPush, relayé par le SW) :
+     'conv:<authId>' → Messagerie + conversation avec cette personne
+     'site:<siteId>' → fiche du chantier
+     'alertes' / 'depannages' / 'fiches' (anciennes notifs) → Messagerie
+     'document' / '/' → Chantiers
+     sinon, nom de vue existant (heures, agenda, magasin…) → goTo(vue).
+   Démarrage à froid (app fermée) : le SW ouvre index.html#<cible> — lu
+   une fois l'app prête (compte chargé), puis le #hash est effacé. */
+async function _handleNotifTarget(target){
+  if(!target) return;
+  target = decodeURIComponent(String(target)).replace(/^#/, '');
+  try{
+    if(target.startsWith('conv:')){
+      const authId = target.slice(5);
+      if(authId) await _openChatWithAuthId(authId);
+      else goTo('alertes-conducteur');
+      return;
+    }
+    if(target.startsWith('site:')){
+      const siteId = target.slice(5);
+      if((data.sites||[]).some(x => x.id === siteId)) goTo('detail', siteId);
+      else goTo('chantiers');
+      return;
+    }
+    if(target === 'alertes' || target === 'depannages' || target === 'fiches'){ goTo('alertes-conducteur'); return; }
+    if(target === 'document' || target === '/' || target === ''){ goTo('chantiers'); return; }
+    if(document.getElementById('view-' + target)) goTo(target);
+    else goTo('chantiers');
+  }catch(e){ console.error('_handleNotifTarget', e); }
+}
+
+async function _openChatWithAuthId(authId){
+  goTo('alertes-conducteur');
+  try{ if(typeof checkForNewAlerts === 'function') await checkForNewAlerts(); }catch(e){}
+  try{ await renderAlertesChatList(); }catch(e){}
+  const idx = (_alertesChatRowsCache||[]).findIndex(r => r.type === 'person' && r.authId === authId);
+  if(idx !== -1){ await openAlertesChatThread(idx); return; }
+  // Pas encore de conversation connue (message pas encore synchronisé) :
+  // on ouvre quand même le fil avec cette personne.
+  let name = authId;
+  try{ const reg = await _fetchUsersRegistry(); const u = reg.find(x => x.authId === authId); if(u && u.name) name = u.name; }catch(e){}
+  _currentChatThreadPerson = { authId, name };
+  await _renderChatThreadModal({ type:'person', authId, name, alerts: [] });
+}
+
+(function _notifColdStartInit(){
+  const h = (location.hash || '').replace(/^#/, '');
+  if(!h) return;
+  let tries = 0;
+  const attempt = () => {
+    tries++;
+    const ready = !!(data && data.settings && data.settings.auth && data.settings.auth.authId) && typeof goTo === 'function';
+    if(!ready && tries < 20){ setTimeout(attempt, 500); return; }
+    try{ history.replaceState(history.state, '', location.pathname + location.search); }catch(e){}
+    if(ready) _handleNotifTarget(h);
+  };
+  setTimeout(attempt, 1200);
+})();
 
 /* Notification locale (quand l'app est ouverte en premier plan) */
 function sendNotification(title, body, tag){
@@ -33314,9 +33392,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.199';
+const APP_VERSION = '5.41.200';
 
 const CHANGELOG = [
+  {
+    version: '5.41.200',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🔔', text: "Notifications : toucher une notification ouvre maintenant directement le bon endroit — la conversation avec la personne pour un message, une photo, un croquis ou une alerte (signature, dépannage, événement…), la fiche du chantier pour une note, un document, une photo de chantier ou un pliage. Marche aussi quand l'app était fermée." },
+      { icon: '⬇️', text: "Messagerie : une conversation s'ouvre toujours sur le dernier message (en bas du fil), même quand il y a des photos." },
+    ],
+  },
   {
     version: '5.41.199',
     date: '23/09/2026',
@@ -42362,7 +42448,7 @@ async function comptaRequestSignature(deviceId, workerName, ownerAuthId){
   // voir pullAllPointagesForComptable) permet de cibler le bon destinataire
   // pour notifyPush, comme pour les autres alertes.
   if(ok && ownerAuthId){
-    notifyPush([ownerAuthId], 'RWOOD — Signature demandée', 'La comptabilité te demande de signer ta fiche d\'heures.', 'signature', 'fiches');
+    notifyPush([ownerAuthId], 'RWOOD — Signature demandée', 'La comptabilité te demande de signer ta fiche d\'heures.', 'signature', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
   }
   showToast(ok ? '📣 Demande de signature envoyée à ' + workerName : 'Échec de l\'envoi');
 }
@@ -43607,7 +43693,7 @@ async function _checkReunionChantierReminders(){
     saveData();
     const msg = '⏰ Demain réunion chantier à ' + (site.reunionChantier.time||'') + ' — chantier ' + site.name;
     await sendAlert(msg, 'device', myId, null, 'rappel');
-    notifyPush([myAuthId], 'RWOOD — Réunion de chantier', msg, 'reunion-' + site.id);
+    notifyPush([myAuthId], 'RWOOD — Réunion de chantier', msg, 'reunion-' + site.id, 'site:' + site.id);
   }
 }
 
@@ -54182,7 +54268,7 @@ async function _confirmSendCroquis(){
       deviceId ? [deviceId] : [], null, null, [recipientAuthId],
       { url, paintData: paintData || null }
     );
-    if(ok) notifyPush([recipientAuthId], 'RWOOD — Croquis reçu', senderName + ' t\'a envoyé un croquis', 'croquis', 'alertes');
+    if(ok) notifyPush([recipientAuthId], 'RWOOD — Croquis reçu', senderName + ' t\'a envoyé un croquis', 'croquis', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
 
     // Ajout optionnel aux photos du chantier choisi — même fonction que
     // partout ailleurs dans l'app (upload déjà fait, on ne le refait pas :
@@ -54262,7 +54348,7 @@ async function _chatSendPhotoAlert(url, paintData, kind){
     deviceId ? [deviceId] : [], null, null, [recipientAuthId],
     { url, paintData: paintData || null }
   );
-  if(ok) notifyPush([recipientAuthId], 'RWOOD — Photo reçue', senderName + (kind === 'croquis' ? ' t\'a envoyé un croquis' : ' t\'a envoyé une photo'), kind || 'photo', 'alertes');
+  if(ok) notifyPush([recipientAuthId], 'RWOOD — Photo reçue', senderName + (kind === 'croquis' ? ' t\'a envoyé un croquis' : ' t\'a envoyé une photo'), kind || 'photo', 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || ''));
   return ok;
 }
 function _chatAttachFromDevice(){
