@@ -15103,12 +15103,66 @@ async function _siteDocMigrateToShared(site, doc){
   saveData();
 }
 
-function deleteSiteDocument(siteId, docId){
-  if(!confirm('Supprimer ce document ?')) return;
+/* v5.41.183 — CORRECTIF « le document supprimé réapparaît direct » (signalé
+   par Rémi) : un simple filter() + saveData() ne suffit pas pour une
+   suppression DÉFINITIVE, parce que TOUTES les fonctions de fusion
+   (pushSharedSite, syncAllSitesPull...) font une UNION des documents entre
+   la version locale et celle encore détenue par un autre canal/appareil —
+   comportement voulu pour ne jamais perdre un ajout, mais qui annule
+   silencieusement une suppression volontaire dès la resynchronisation
+   suivante. C'est exactement le même bug déjà corrigé pour les photos (voir
+   _devPhotosDeleteSelected/DELETED_MEDIA_KEY), jusqu'ici réparable
+   seulement depuis le mode développeur — le voici appliqué directement au
+   bouton "Supprimer" normal de la fiche chantier, sans avoir besoin du mode
+   développeur : 1) tombstone AVANT toute écriture (empêche toute résurrection
+   future), 2) écriture BRUTE (sans fusion) sur chaque canal partagé connu,
+   3) retrait local. */
+async function deleteSiteDocument(siteId, docId){
+  if(!confirm('Supprimer ce document ? (définitif, ne réapparaîtra plus)')) return;
   const site = data.sites.find(s=>s.id===siteId);
   if(!site || !site.documents) return;
   const doc = site.documents.find(d=>d.id===docId);
-  if(doc && doc.data) deletePhotoRef(doc.data);
+  if(!doc) return;
+  if(doc.data) deletePhotoRef(doc.data);
+
+  await _addDeletedMediaIds([docId]);
+
+  // Canal partagé général (SHARED_SITES_KEY) : écriture brute, sans fusion.
+  try{
+    const shared = await _fetchSharedSites();
+    const s = shared.find(x => x.id === siteId);
+    if(s && Array.isArray(s.documents)){
+      const before = s.documents.length;
+      s.documents = s.documents.filter(d => d.id !== docId);
+      if(s.documents.length !== before) await _saveSharedSites(shared);
+    }
+  } catch(e){}
+
+  // Canal chef (CHEF_PUSH_KEY) : même nettoyage direct, sans fusion.
+  try{
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CHEF_PUSH_KEY) + '&select=data', { headers:{'Prefer':''} });
+    if(res.ok){
+      const rows = await res.json();
+      if(rows && rows.length){
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        const chefSites = (d && d.sites) || [];
+        const s = chefSites.find(x => x.id === siteId);
+        if(s && Array.isArray(s.documents)){
+          const before = s.documents.length;
+          s.documents = s.documents.filter(d2 => d2.id !== docId);
+          if(s.documents.length !== before){
+            await supaFetch('/rest/v1/rwood_sync', {
+              method: 'POST',
+              headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+              body: JSON.stringify({ user_id: CHEF_PUSH_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ sites: chefSites }) })
+            });
+          }
+        }
+      }
+    }
+  } catch(e){}
+
+  // Retrait local pour un retour visuel immédiat.
   site.documents = site.documents.filter(d=>d.id!==docId);
   saveData();
   renderSiteDocuments(siteId);
@@ -32840,9 +32894,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.182';
+const APP_VERSION = '5.41.183';
 
 const CHANGELOG = [
+  {
+    version: '5.41.183',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif : supprimer un document de chantier depuis sa fiche le faisait réapparaître aussitôt (la synchro le remettait automatiquement). La suppression est maintenant vraiment définitive, comme pour les photos — plus besoin du mode développeur." },
+    ],
+  },
   {
     version: '5.41.182',
     date: '23/09/2026',
@@ -44019,13 +44080,19 @@ async function syncAllSitesPushAll(){
 
     let touched = false;
     // Union médias/docs entre notre version et celle déjà partagée.
+    // v5.41.183 — CORRECTIF : contrairement à _mergeMediaLocal (pushSharedSite)
+    // et _mergeSiteMediaUnion, cette union locale n'appliquait PAS
+    // _filterDeletedMedia — une suppression définitive (tombstone posée par
+    // deleteSiteDocument/_devPhotosDeleteSelected) pouvait donc quand même
+    // être ressuscitée ici au prochain passage de syncAllSitesPushAll. Ajout
+    // du filtre pour que ce chemin de fusion respecte lui aussi la tombstone.
     const _mergeMedia = (a, b) => {
       const out = [], seen = new Set();
       const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
       [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
         const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
       });
-      return out;
+      return _filterDeletedMedia(out);
     };
     data.sites.forEach(site => {
       if(!site || !site.id) return;
