@@ -9962,7 +9962,7 @@ function goTo(viewName, siteId){
   // pour tout autre rôle (ouvrier déjà bloqué ci-dessus).
   if(viewName === 'stock'){
     const _stockRole = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-    if(_stockRole !== 'chef' && !window._devRoleUnlocked){
+    if(_stockRole !== 'chef' && _stockRole !== 'conducteur' && !window._devRoleUnlocked){
       goTo('chantiers'); return;
     }
   }
@@ -10124,7 +10124,7 @@ function goTo(viewName, siteId){
 
   if(viewName === 'chantiers') renderSites();
   if(viewName === 'heures') renderHeures();
-  if(viewName === 'stock') renderStock();
+  if(viewName === 'stock'){ if(typeof _stockCondReset === 'function') _stockCondReset(); renderStock(); }
   if(viewName === 'quincaillerie'){
     // Ouvrier / chef → scan direct ; conducteur / patron → gestion
     if(!qcCanManage()){
@@ -23825,6 +23825,149 @@ function applyFavorite(favId){
   document.querySelectorAll('#newStockCatChips .chip').forEach(c=>c.classList.toggle('selected', c.dataset.cat===(fav.category||'quincaillerie')));
 }
 
+/* ═══ MODULE — StockConducteur (v5.41.191) ═══════════════════════════
+   Sur demande de Rémi : le conducteur a accès à l'onglet Stock, mais sous
+   une autre forme — il voit d'abord la liste des chefs d'équipe de
+   l'entreprise (registre, fetchChefsForMyCompany) ; un clic sur un chef
+   ouvre SON stock camion, en lecture seule, avec les mêmes catégories et
+   le même rendu que le chef.
+   Source des données : la ligne rwood_sync perso du chef (user_id =
+   authId), déjà poussée automatiquement par syncPush à chaque saveData —
+   donc toujours à jour, rien à faire côté chef. Lecture ciblée
+   (data->stock) pour ne pas télécharger toute la sauvegarde du chef,
+   avec repli sur la ligne complète si la lecture ciblée échoue.
+   Les photos d'articles stockées uniquement sur le téléphone du chef ne
+   sont pas visibles (seules les photos déjà en ligne, URL http). */
+let _stockCondState = { chef:null, stock:null, truckName:'', brandColors:{}, updatedAt:null, loading:false, error:false };
+let _stockCondChefs = [];
+function _stockIsConducteurMode(){
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return role === 'conducteur';
+}
+function _stockCondReset(){
+  _stockCondState = { chef:null, stock:null, truckName:'', brandColors:{}, updatedAt:null, loading:false, error:false };
+}
+function _stockCondHideActions(){
+  ['truckExportImportActions','missingStockAction','stockAddArticleAction','toolExportActions','consommablesLoadAction','toolBrandTabs','stockCatTabs'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.style.display = 'none';
+  });
+}
+async function _stockCondRenderChefList(container){
+  _stockCondHideActions();
+  const hint = document.getElementById('truckReadOnlyHint');
+  if(hint){ hint.style.display = 'block'; hint.textContent = "👷 Choisis un chef d'équipe pour consulter le stock de son camion."; }
+  const nameTag = document.getElementById('truckNameTag');
+  if(nameTag) nameTag.textContent = "— chefs d'équipe";
+  // Liste déjà connue → affichage immédiat, puis rafraîchie en arrière-plan.
+  if(_stockCondChefs.length) _stockCondPaintChefList(container, _stockCondChefs);
+  else container.innerHTML = '<div class="empty"><p>Chargement des chefs d\'équipe…</p></div>';
+  let chefs = null;
+  try{ chefs = (await fetchChefsForMyCompany()).filter(u => u.authId && u.name); }catch(e){ chefs = null; }
+  // L'utilisateur a pu ouvrir un chef entre-temps : ne pas écraser sa vue.
+  if(_stockCondState.chef) return;
+  if(chefs === null) chefs = _stockCondChefs;
+  chefs.sort((a,b) => (a.teamName||a.name).localeCompare(b.teamName||b.name, 'fr'));
+  _stockCondChefs = chefs;
+  _stockCondPaintChefList(container, chefs);
+}
+function _stockCondPaintChefList(container, chefs){
+  if(!chefs.length){
+    container.innerHTML = `<div class="empty"><h3>Aucun chef d'équipe</h3><p>${navigator.onLine ? "Aucun chef d'équipe n'est enregistré pour l'entreprise." : "Pas de connexion internet — impossible de charger la liste."}</p></div>`;
+    return;
+  }
+  container.innerHTML = chefs.map((c, idx) => `
+    <div class="stock-row" style="cursor:pointer;" onclick="_stockCondOpenChef(${idx})">
+      <div class="info">
+        <h4>👷 ${escapeHtml(c.name)}</h4>
+        <div class="unit">${c.teamName && c.teamName !== c.name ? escapeHtml(c.teamName) + ' · ' : ''}Voir le stock camion ›</div>
+      </div>
+    </div>`).join('');
+}
+async function _stockCondOpenChef(idx){
+  const chef = _stockCondChefs[idx];
+  if(!chef) return;
+  _stockCondState = { chef, stock:[], truckName:'', brandColors:{}, updatedAt:null, loading:true, error:false };
+  renderStock();
+  await _stockCondLoad();
+}
+async function _stockCondRefresh(){
+  if(!_stockCondState.chef) return;
+  _stockCondState.loading = true; _stockCondState.error = false;
+  renderStock();
+  await _stockCondLoad();
+}
+async function _stockCondLoad(){
+  const chef = _stockCondState.chef;
+  const res = await _stockCondFetchChefStock(chef.authId);
+  if(_stockCondState.chef !== chef) return; // retour à la liste entre-temps
+  _stockCondState.loading = false;
+  if(!res){ _stockCondState.error = true; }
+  else {
+    _stockCondState.stock = res.stock;
+    _stockCondState.truckName = res.truckName || '';
+    _stockCondState.brandColors = res.brandColors || {};
+    _stockCondState.updatedAt = res.updatedAt || null;
+  }
+  if(document.getElementById('view-stock').classList.contains('active')) renderStock();
+}
+async function _stockCondFetchChefStock(authId){
+  const clean = (stock) => (Array.isArray(stock) ? stock : []).map(it => {
+    const c = Object.assign({}, it);
+    if(c.photo && !/^https?:\/\//i.test(c.photo)) delete c.photo; // photo locale au téléphone du chef
+    if(typeof c.qty !== 'number') c.qty = Number(c.qty) || 0;
+    if(typeof c.alert !== 'number') c.alert = Number(c.alert) || 0;
+    return c;
+  });
+  const base = '/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(authId);
+  // 1) Lecture ciblée (évite de télécharger toute la sauvegarde du chef)
+  try{
+    const r = await supaFetch(base + '&select=stock:data->stock,truckName:data->settings->truckName,brandColors:data->settings->toolBrandColors,updated_at', { headers:{'Prefer':''} });
+    if(r.ok){
+      const rows = await r.json();
+      if(rows && rows.length && Array.isArray(rows[0].stock)){
+        return { stock: clean(rows[0].stock), truckName: typeof rows[0].truckName === 'string' ? rows[0].truckName : '', brandColors: rows[0].brandColors || {}, updatedAt: rows[0].updated_at };
+      }
+      if(rows && !rows.length) return { stock: [], truckName:'', brandColors:{}, updatedAt:null };
+    }
+  }catch(e){}
+  // 2) Repli : ligne complète
+  try{
+    const r = await supaFetch(base + '&select=data,updated_at', { headers:{'Prefer':''} });
+    if(!r.ok) return null;
+    const rows = await r.json();
+    if(!rows || !rows.length) return { stock: [], truckName:'', brandColors:{}, updatedAt:null };
+    let d = rows[0].data;
+    if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } }
+    if(!d) return { stock: [], truckName:'', brandColors:{}, updatedAt: rows[0].updated_at };
+    const st = d.settings || {};
+    return { stock: clean(d.stock), truckName: st.truckName || '', brandColors: st.toolBrandColors || {}, updatedAt: rows[0].updated_at };
+  }catch(e){ return null; }
+}
+function _stockCondViewedTruck(){
+  const st = _stockCondState;
+  const chefName = st.chef ? st.chef.name : '';
+  return {
+    id: '__cond__',
+    name: st.truckName ? `${st.truckName} — ${chefName}` : `Camion de ${chefName}`,
+    importedAt: st.updatedAt,
+    stock: st.stock || [],
+    toolBrandColors: st.brandColors || {}
+  };
+}
+function _stockCondHintHtml(){
+  const st = _stockCondState;
+  const back = `<button class="btn btn-outline btn-sm" style="margin-right:8px;" onclick="_stockCondReset(); renderStock();">‹ Chefs d'équipe</button>`;
+  const refresh = `<button class="btn btn-outline btn-sm" onclick="_stockCondRefresh()">⟳ Actualiser</button>`;
+  let msg;
+  if(st.loading) msg = `Chargement du stock de ${escapeHtml(st.chef.name)}…`;
+  else if(st.error) msg = `⚠️ Impossible de charger le stock de ${escapeHtml(st.chef.name)} (connexion ?).`;
+  else {
+    const d = st.updatedAt ? new Date(st.updatedAt) : null;
+    msg = `👁 Stock camion de ${escapeHtml(st.chef.name)} — lecture seule` + (d && !isNaN(d) ? ` · synchronisé le ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}` : '') + '.';
+  }
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;">${back}${refresh}</div><div>${msg}</div>`;
+}
+
 function renderStock(){
   const container = document.getElementById('stockList');
   if(!container) return;
@@ -23832,14 +23975,35 @@ function renderStock(){
   renderTruckNameTag();
   renderTruckTabs();
 
-  const readOnly = (currentTruckView !== null);
-  const viewedTruck = readOnly ? data.trucks.find(t=>t.id===currentTruckView) : null;
-  if(readOnly && !viewedTruck){ currentTruckView = null; }
+  // v5.41.191 — Conducteur : l'onglet affiche d'abord la liste des chefs
+  // d'équipe ; un clic ouvre le stock camion du chef choisi (lecture seule).
+  const _condMode = _stockIsConducteurMode();
+  const _catTabsEl = document.getElementById('stockCatTabs');
+  const _nameTagEl = document.getElementById('truckNameTag');
+  if(_nameTagEl) _nameTagEl.setAttribute('contenteditable', _condMode ? 'false' : 'true');
+  if(_catTabsEl) _catTabsEl.style.display = '';
+  if(_condMode){
+    document.getElementById('truckTabs').style.display = 'none';
+    if(!_stockCondState.chef){ _stockCondRenderChefList(container); return; }
+  }
+
+  const readOnly = _condMode || (currentTruckView !== null);
+  const viewedTruck = _condMode ? _stockCondViewedTruck() : (readOnly ? data.trucks.find(t=>t.id===currentTruckView) : null);
+  if(!_condMode && readOnly && !viewedTruck){ currentTruckView = null; }
+  if(_condMode && _nameTagEl) _nameTagEl.textContent = viewedTruck.name;
   const sourceStock = (readOnly && viewedTruck) ? viewedTruck.stock : data.stock;
   const sourceBrandColors = (readOnly && viewedTruck) ? (viewedTruck.toolBrandColors || {}) : (data.settings.toolBrandColors || {});
 
   const hint = document.getElementById('truckReadOnlyHint');
-  if(readOnly && viewedTruck){
+  if(_condMode){
+    hint.style.display = 'block';
+    hint.innerHTML = _stockCondHintHtml();
+    if(_stockCondState.loading || _stockCondState.error){
+      _stockCondHideActions();
+      container.innerHTML = _stockCondState.loading ? '<div class="empty"><p>Chargement…</p></div>' : '';
+      return;
+    }
+  } else if(readOnly && viewedTruck){
     const d = new Date(viewedTruck.importedAt);
     hint.style.display = 'block';
     hint.textContent = `👁 Aperçu du stock de "${viewedTruck.name}" — importé le ${d.toLocaleDateString('fr-FR')}. Lecture seule (modifie-le sur son propre téléphone, puis réimporte pour rafraîchir).`;
@@ -32867,7 +33031,9 @@ function applyNavHidden(){
    l'ordre d'appel (voir leurs commentaires respectifs). */
 function _stockNavApplyVisibility(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const allowed = role === 'chef' || !!window._devRoleUnlocked;
+  // v5.41.191 — ouvert aussi au conducteur (vue « liste des chefs » →
+  // stock camion de chaque chef en lecture seule, voir _stockCond*).
+  const allowed = role === 'chef' || role === 'conducteur' || !!window._devRoleUnlocked;
   document.querySelectorAll('nav.bottom .nav-btn[data-view="stock"]').forEach(btn => {
     btn.style.display = allowed ? '' : 'none';
   });
@@ -32977,9 +33143,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.190';
+const APP_VERSION = '5.41.191';
 
 const CHANGELOG = [
+  {
+    version: '5.41.191',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📦', text: "Stock : les conducteurs de travaux ont maintenant accès à l'onglet Stock. Ils y voient la liste des chefs d'équipe ; un clic sur un chef ouvre le stock de son camion (outillage, prêt…), en lecture seule et toujours à jour, avec un bouton Actualiser et un retour à la liste." },
+    ],
+  },
   {
     version: '5.41.190',
     date: '23/09/2026',
@@ -47678,7 +47851,7 @@ function _simpleTileAllowedForRole(viewId){
   // 09/2026, voir FORCE_HIDDEN_TABS/_stockNavApplyVisibility) : même règle
   // ici pour la tuile dashboard tactile ET la sidebar PC (toutes deux
   // construites à partir de _simpleGetTiles, qui filtre par cette fonction).
-  if(viewId === 'stock') return role === 'chef' || !!window._devRoleUnlocked;
+  if(viewId === 'stock') return role === 'chef' || role === 'conducteur' || !!window._devRoleUnlocked; // v5.41.191 — + conducteur
   return true;
 }
 function _simpleGetTiles(){
