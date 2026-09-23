@@ -23712,11 +23712,132 @@ function ensureToolBrandColors(){
   if(!data.settings.toolBrandColors) data.settings.toolBrandColors = {};
 }
 
+/* ═══ v5.41.204 — RÉFÉRENTIEL OUTILLAGE commun (demande de Rémi) ═══════
+   Marques + couleurs de marque + noms de machines servant de modèle à
+   TOUS les chefs : clé partagée 'company_tool_catalog_v1'
+   = { brands:{ Marque:'#couleur' }, tools:[{name,brand,ref,toolKind,power,voltage,amperage,bladeSize}] }.
+   - Amorcé au départ avec le stock camion de remi.piechaczek (seul chef
+     qui a déjà tout saisi) ;
+   - ensuite enrichi automatiquement par chaque chef (nouvelles marques /
+     nouvelles machines ajoutées, jamais d'écrasement d'une couleur déjà
+     définie).
+   Utilisation : couleur de marque par défaut (quand un chef n'en a pas
+   choisi), suggestions de marques et de noms de machines à la saisie, et
+   pré-remplissage (marque, réf, filaire/batterie…) quand on choisit une
+   machine connue. */
+const TOOL_CATALOG_KEY = 'company_tool_catalog_v1';
+const TOOL_CATALOG_SEED_AUTH = 'remi.piechaczek';
+let _toolCatalog = (function(){ try{ return JSON.parse(localStorage.getItem('rwood-tool-catalog') || 'null') || { brands:{}, tools:[] }; }catch(e){ return { brands:{}, tools:[] }; } })();
+let _toolCatalogLoadedAt = 0;
+function _toolCatalogKey(t){ return ((t.brand||'').trim().toLowerCase() + '|' + (t.name||'').trim().toLowerCase()); }
+function _toolCatalogFromStock(stock, colors){
+  const cat = { brands:{}, tools:[] };
+  const seen = new Set();
+  (stock || []).filter(t => t && t.category === 'outillage' && (t.name||'').trim()).forEach(t => {
+    const b = (t.brand||'').trim();
+    if(b && !(b in cat.brands)) cat.brands[b] = (colors && colors[b]) || null;
+    const k = _toolCatalogKey(t);
+    if(seen.has(k)) return; seen.add(k);
+    cat.tools.push({ name:t.name.trim(), brand:b, ref:t.ref||'', toolKind:t.toolKind||'standard', power:t.power||null, voltage:t.voltage!=null?t.voltage:null, amperage:t.amperage!=null?t.amperage:null, bladeSize:t.bladeSize!=null?t.bladeSize:null });
+  });
+  return cat;
+}
+function _toolCatalogMerge(base, add){
+  const out = { brands: Object.assign({}, base.brands || {}), tools: (base.tools || []).slice() };
+  let changed = false;
+  Object.keys(add.brands || {}).forEach(b => {
+    if(!(b in out.brands)){ out.brands[b] = add.brands[b] || null; changed = true; }
+    else if(!out.brands[b] && add.brands[b]){ out.brands[b] = add.brands[b]; changed = true; }
+  });
+  const keys = new Set(out.tools.map(_toolCatalogKey));
+  (add.tools || []).forEach(t => { const k = _toolCatalogKey(t); if(!keys.has(k)){ keys.add(k); out.tools.push(t); changed = true; } });
+  return { cat: out, changed };
+}
+async function _toolCatalogSave(cat){
+  try{
+    await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: TOOL_CATALOG_KEY, updated_at: new Date().toISOString(), data: JSON.stringify(cat) }) });
+  }catch(e){}
+}
+async function _toolCatalogLoad(force){
+  if(!force && Date.now() - _toolCatalogLoadedAt < 5*60*1000) return _toolCatalog;
+  if(!navigator.onLine) return _toolCatalog;
+  try{
+    const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(TOOL_CATALOG_KEY) + '&select=data', { headers:{'Prefer':''} });
+    let cat = null;
+    if(r.ok){
+      const rows = await r.json();
+      if(rows && rows.length){ let d = rows[0].data; if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } } cat = d; }
+    }
+    if(!cat || !cat.tools || !cat.tools.length){
+      // Amorçage avec le camion de référence (remi.piechaczek)
+      let seed = null;
+      try{ seed = await _stockCondFetchChefStock(TOOL_CATALOG_SEED_AUTH); }catch(e){}
+      const seedCat = seed ? _toolCatalogFromStock(seed.stock, seed.brandColors) : { brands:{}, tools:[] };
+      cat = _toolCatalogMerge(cat || { brands:{}, tools:[] }, seedCat).cat;
+      if(cat.tools.length) await _toolCatalogSave(cat);
+    }
+    _toolCatalog = { brands: cat.brands || {}, tools: cat.tools || [] };
+    _toolCatalogLoadedAt = Date.now();
+    try{ localStorage.setItem('rwood-tool-catalog', JSON.stringify(_toolCatalog)); }catch(e){}
+  }catch(e){}
+  return _toolCatalog;
+}
+/* Chef : ajoute au référentiel ses marques/machines pas encore connues. */
+let _toolCatalogContribTimer = null;
+function _toolCatalogContributeSoon(){
+  clearTimeout(_toolCatalogContribTimer);
+  _toolCatalogContribTimer = setTimeout(async () => {
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    if(role !== 'chef' || !navigator.onLine) return;
+    await _toolCatalogLoad(true);
+    const mine = _toolCatalogFromStock(data.stock, (data.settings && data.settings.toolBrandColors) || {});
+    const { cat, changed } = _toolCatalogMerge(_toolCatalog, mine);
+    if(changed){
+      _toolCatalog = cat;
+      try{ localStorage.setItem('rwood-tool-catalog', JSON.stringify(cat)); }catch(e){}
+      await _toolCatalogSave(cat);
+    }
+  }, 3000);
+}
+function _toolCatalogColor(brand){
+  const b = (brand||'').trim();
+  if(!b) return null;
+  if(_toolCatalog.brands[b]) return _toolCatalog.brands[b];
+  const k = Object.keys(_toolCatalog.brands).find(x => x.toLowerCase() === b.toLowerCase());
+  return k ? _toolCatalog.brands[k] : null;
+}
+function _toolCatalogColorsMerged(local){
+  const out = {};
+  Object.keys(_toolCatalog.brands || {}).forEach(b => { if(_toolCatalog.brands[b]) out[b] = _toolCatalog.brands[b]; });
+  return Object.assign(out, local || {});
+}
+function _toolCatalogFind(name){
+  const n = (name||'').trim().toLowerCase();
+  if(!n) return null;
+  return (_toolCatalog.tools || []).find(t => (t.name||'').trim().toLowerCase() === n) || null;
+}
+function _toolCatalogNameOptions(){
+  const seen = new Set();
+  return (_toolCatalog.tools || []).filter(t => { const k = (t.name||'').toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr'))
+    .map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml([t.brand, t.ref].filter(Boolean).join(' · '))}</option>`).join('');
+}
+function _toolCatalogBrandOptions(extra){
+  const set = new Set(Object.keys(_toolCatalog.brands || {}));
+  (extra || []).forEach(b => b && set.add(b));
+  return Array.from(set).sort((a,b) => a.localeCompare(b, 'fr')).map(b => `<option value="${escapeHtml(b)}"></option>`).join('');
+}
+(function _toolCatalogInit(){
+  setTimeout(async () => { await _toolCatalogLoad(true); _toolCatalogContributeSoon(); }, 5000);
+})();
+
 function getToolBrands(){
   const brands = new Set();
   data.stock.forEach(i=>{
     if(i.category === 'outillage' && i.brand) brands.add(i.brand);
   });
+  Object.keys(_toolCatalog.brands || {}).forEach(b => brands.add(b)); // v5.41.204 — + référentiel
   return Array.from(brands).sort((a,b)=>a.localeCompare(b, 'fr'));
 }
 
@@ -23942,10 +24063,41 @@ function openAddStockModal(){
   if(isConsoCat2) setConsoKind('standard');
   if(isQuincCat2) setQuincKind('standard');
   renderToolBrandDatalist();
+  _toolCatalogAttachToAddModal(isToolCat2);
   document.getElementById('newStockPhotoPreview').innerHTML = '';
   newStockPhotoData = null;
   renderFavoritesChips();
   openModal('addStock');
+}
+/* v5.41.204 — suggestions de noms de machines (référentiel) dans la modale
+   d'ajout d'outil du chef + pré-remplissage marque/réf/type à la sélection. */
+function _toolCatalogAttachToAddModal(isTool){
+  const nameInp = document.getElementById('newStockName');
+  if(!nameInp) return;
+  let dl = document.getElementById('toolNameDatalist');
+  if(!dl){ dl = document.createElement('datalist'); dl.id = 'toolNameDatalist'; nameInp.parentNode.appendChild(dl); }
+  if(!isTool){ nameInp.removeAttribute('list'); return; }
+  nameInp.setAttribute('list', 'toolNameDatalist');
+  dl.innerHTML = _toolCatalogNameOptions();
+  _toolCatalogLoad(false).then(() => { dl.innerHTML = _toolCatalogNameOptions(); renderToolBrandDatalist(); });
+  nameInp.onchange = () => {
+    const t = _toolCatalogFind(nameInp.value);
+    if(!t) return;
+    const br = document.getElementById('newStockBrand'), rf = document.getElementById('newStockRef');
+    if(br && !br.value.trim()) br.value = t.brand || '';
+    if(rf && !rf.value.trim()) rf.value = t.ref || '';
+    try{
+      setToolKind(t.toolKind || 'standard');
+      if(t.toolKind === 'battery'){
+        if(t.voltage != null) document.getElementById('newStockVoltage').value = t.voltage;
+        if(t.amperage != null) document.getElementById('newStockAmperage').value = t.amperage;
+      } else {
+        if(t.power) setToolPower(t.power);
+        if(t.toolKind === 'circularsaw' && t.bladeSize != null) document.getElementById('newStockBladeSize').value = t.bladeSize;
+      }
+    }catch(e){}
+    showToast('✓ Machine connue — infos pré-remplies');
+  };
 }
 
 function openEditStockModal(itemId){
@@ -24231,8 +24383,8 @@ function _stockCondOpenToolEditor(itemId){
     <div class="modal">
       <div class="modal-header"><h2>${it ? '✏️ Modifier l\'outil' : '+ Ajouter un outil'}</h2><button class="modal-close" onclick="document.getElementById('modal-stockCondTool').remove()">×</button></div>
       <div class="hint" style="margin-bottom:10px;">Camion de <strong>${escapeHtml(st.chef.name)}</strong> — la modif arrive sur son téléphone dès qu'il est en ligne.</div>
-      <div class="field"><label>Nom</label><input type="text" id="scName" value="${v(it && it.name)}" placeholder="Ex : Visseuse"></div>
-      <div class="field"><label>Marque</label><input type="text" id="scBrand" value="${v(it && it.brand)}" placeholder="Ex : Makita"></div>
+      <div class="field"><label>Nom</label><input type="text" id="scName" list="scNameDl" autocomplete="off" value="${v(it && it.name)}" placeholder="Ex : Visseuse"><datalist id="scNameDl">${_toolCatalogNameOptions()}</datalist></div>
+      <div class="field"><label>Marque</label><input type="text" id="scBrand" list="scBrandDl" autocomplete="off" value="${v(it && it.brand)}" placeholder="Ex : Makita"><datalist id="scBrandDl">${_toolCatalogBrandOptions((st.stock||[]).map(x => x.brand))}</datalist></div>
       <div class="field"><label>Référence</label><input type="text" id="scRef" value="${v(it && it.ref)}" placeholder="Ex : DHP484"></div>
       <div class="field"><label>Type</label>
         <select id="scKind" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-elev);color:var(--ink);border:1.5px solid var(--line);" onchange="_stockCondEditorKind()">
@@ -24254,6 +24406,21 @@ function _stockCondOpenToolEditor(itemId){
     </div>`;
   document.body.appendChild(ex);
   _stockCondEditorKind();
+  // v5.41.204 — machine connue du référentiel → pré-remplissage
+  const nm = document.getElementById('scName');
+  if(nm) nm.onchange = () => {
+    const t = _toolCatalogFind(nm.value); if(!t) return;
+    const set = (id, val) => { const e = document.getElementById(id); if(e && !String(e.value).trim() && val != null) e.value = val; };
+    set('scBrand', t.brand); set('scRef', t.ref);
+    const kd = document.getElementById('scKind'); if(kd && t.toolKind) kd.value = t.toolKind;
+    const pw = document.getElementById('scPower'); if(pw && t.power) pw.value = t.power;
+    set('scVolt', t.voltage); set('scAmp', t.amperage); set('scBlade', t.bladeSize);
+    _stockCondEditorKind();
+  };
+  _toolCatalogLoad(false).then(() => {
+    const a = document.getElementById('scNameDl'); if(a) a.innerHTML = _toolCatalogNameOptions();
+    const b = document.getElementById('scBrandDl'); if(b) b.innerHTML = _toolCatalogBrandOptions((st.stock||[]).map(x => x.brand));
+  });
 }
 function _stockCondEditorKind(){
   const k = (document.getElementById('scKind')||{}).value;
@@ -24330,6 +24497,7 @@ function _stockToolDetail(t){
 }
 function _stockBrandHex(brand, colors){
   if(colors && colors[brand]) return colors[brand];
+  const refC = _toolCatalogColor(brand); if(refC) return refC; // v5.41.204 — référentiel commun
   const pal = { makita:'#1BA3A3', hilti:'#D2051E', dewalt:'#FEBD17', milwaukee:'#DB011C', bosch:'#1D5A96', festool:'#2F6E3A', metabo:'#0B6E4F', hikoki:'#12A150', ryobi:'#C8D400', stanley:'#F6C300', fein:'#E3612B' };
   const k = String(brand||'').toLowerCase();
   if(pal[k]) return pal[k];
@@ -24370,6 +24538,7 @@ function _stockCondOpenGenerate(){
   document.body.appendChild(ex);
 }
 async function _stockCondGenerate(format){
+  try{ await _toolCatalogLoad(false); }catch(e){}
   const idxs = Array.from(document.querySelectorAll('.scgChef:checked')).map(c => +c.value);
   if(!idxs.length){ showToast('Choisis au moins un chef d\'équipe'); return; }
   const btns = ['scgPdf','scgXls'].map(id => document.getElementById(id));
@@ -24627,7 +24796,8 @@ function renderStock(){
   if(!_condMode && readOnly && !viewedTruck){ currentTruckView = null; }
   if(_condMode && _nameTagEl) _nameTagEl.textContent = viewedTruck.name;
   const sourceStock = (readOnly && viewedTruck) ? viewedTruck.stock : data.stock;
-  const sourceBrandColors = (readOnly && viewedTruck) ? (viewedTruck.toolBrandColors || {}) : (data.settings.toolBrandColors || {});
+  // v5.41.204 — couleurs du référentiel commun en secours (marque sans couleur choisie)
+  const sourceBrandColors = _toolCatalogColorsMerged((readOnly && viewedTruck) ? (viewedTruck.toolBrandColors || {}) : (data.settings.toolBrandColors || {}));
 
   const hint = document.getElementById('truckReadOnlyHint');
   if(_condMode){
@@ -24904,7 +25074,7 @@ async function exportToolListPDF(){
   const tools = data.stock.filter(i => i.category === 'outillage');
   if(tools.length === 0){ showToast('Aucun outil à exporter'); return; }
 
-  const brandColors = (data.settings && data.settings.toolBrandColors) || {};
+  const brandColors = _toolCatalogColorsMerged((data.settings && data.settings.toolBrandColors) || {}); // v5.41.204 — + référentiel
 
   // Convertir hex → RGB (robuste)
   function hexToRgb(hex){
@@ -25701,6 +25871,7 @@ function applyToolFieldsToItem(item){
 }
 
 async function createStock(){
+  if(typeof _toolCatalogContributeSoon === 'function') _toolCatalogContributeSoon(); // v5.41.204
   const name = document.getElementById('newStockName').value.trim();
   const qty = Math.max(0, parseInt(document.getElementById('newStockQty').value) || 0);
   const unit = document.getElementById('newStockUnit').value.trim() || 'pièces';
@@ -33842,9 +34013,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.203';
+const APP_VERSION = '5.41.204';
 
 const CHANGELOG = [
+  {
+    version: '5.41.204',
+    date: '23/09/2026',
+    entries: [
+      { icon: '📚', text: "Stock : nouveau référentiel outillage commun, basé sur le camion de Rémi Piechaczek — ses marques, leurs couleurs et les noms de ses machines servent de modèle à tous les chefs. En ajoutant un outil, le nom et la marque sont proposés en suggestion ; choisir une machine connue pré-remplit la marque, la référence et le type (filaire / batterie, V/Ah, lame). Les couleurs de marque du référentiel s'appliquent partout (stock, PDF, Excel) tant qu'un chef n'a pas choisi la sienne." },
+      { icon: '🔄', text: "Le référentiel s'enrichit tout seul : une nouvelle marque ou machine ajoutée par n'importe quel chef devient proposée aux autres (sans jamais écraser une couleur déjà définie)." },
+    ],
+  },
   {
     version: '5.41.203',
     date: '23/09/2026',
