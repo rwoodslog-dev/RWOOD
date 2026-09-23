@@ -32923,9 +32923,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.186';
+const APP_VERSION = '5.41.187';
 
 const CHANGELOG = [
+  {
+    version: '5.41.187',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Correctif important : quand le conducteur assignait un chef à un chantier, le chef ne le voyait jamais de son côté (« Aucun chef assigné » malgré l'assignation) — un champ de synchronisation manquant empêchait la mise à jour de lui parvenir. C'est corrigé." },
+      { icon: '🗓️', text: "Réunion de chantier : ne s'ajoute plus du tout à l'agenda de personne — c'est juste une info affichée sur la fiche chantier (jour/heure), avec un rappel automatique la veille à 18h envoyé uniquement au chef assigné du chantier." },
+    ],
+  },
   {
     version: '5.41.186',
     date: '23/09/2026',
@@ -43021,67 +43029,37 @@ function _reunionChantierTaskId(siteId, dateKey){
    jour/heure remplace bien toutes les occurrences à venir, sans dupliquer.
    L'arrêt se fait par reunionChantierToggle(false) (bouton "Désactiver") ou
    automatiquement quand le chantier passe "Terminé" (voir setSiteStatus). */
+/* [v5.41.187] MODIFIÉ sur demande de Rémi : la réunion de chantier ne
+   s'ajoute PLUS à l'agenda de personne — c'est une info affichée sur la
+   fiche chantier (voir _renderReunionChantierCard), à titre indicatif,
+   avec un rappel automatique la veille envoyé UNIQUEMENT au chef assigné
+   (voir _checkReunionChantierReminders, qui ne dépend plus de data.tasks).
+   Cette fonction ne sert donc plus qu'à NETTOYER les occurrences que les
+   versions précédentes avaient injectées dans data.tasks (migration —
+   sinon elles restaient coincées dans l'agenda de tout le monde). */
 function _reunionChantierSync(site){
-  if(!site || !site.reunionChantier || !site.reunionChantier.enabled) return;
-  if(!data.tasks) data.tasks = [];
-  const { weekday, time } = site.reunionChantier;
-  const text = 'Réunion ' + site.name.toUpperCase() + ' à ' + (time||'15:00');
-
-  const todayKey = (() => { const n = new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); })();
-  const firstDateKey = _reunionChantierNextDateKey(weekday, time);
-  const firstDate = new Date(firstDateKey + 'T00:00:00');
-  const expectedDateKeys = new Set();
-  for(let i = 0; i < REUNION_HORIZON_WEEKS; i++){
-    const d = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() + i * 7);
-    expectedDateKeys.add(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'));
+  if(!site || !data.tasks || !data.tasks.length) return;
+  const before = data.tasks.length;
+  data.tasks = data.tasks.filter(t => t.reunionSiteId !== site.id);
+  if(data.tasks.length !== before){
+    saveData();
+    if(typeof renderAgenda === 'function') renderAgenda();
   }
-  // Retire les occurrences futures obsolètes (date hors horizon, ou heure
-  // qui a changé) ET toute copie EN DOUBLE d'une date par ailleurs valide
-  // (ancien id aléatoire d'une version pré-v5.41.50, ou copie créée par un
-  // autre appareil) : on ne garde que celle portant exactement l'id
-  // déterministe attendu pour sa date — ce nettoyage tourne à CHAQUE appel,
-  // donc les doublons déjà synchronisés (comme ceux vus dans l'agenda) sont
-  // automatiquement absorbés dès la prochaine ouverture de l'app.
-  data.tasks = data.tasks.filter(t => {
-    if(t.reunionSiteId !== site.id || t.date < todayKey) return true; // hors périmètre : on garde tel quel
-    if(!expectedDateKeys.has(t.date) || t.time !== time) return false; // obsolète : retiré
-    return t.id === _reunionChantierTaskId(site.id, t.date); // doublon (id non-canonique) : retiré
-  });
-  const existingDateKeys = new Set(
-    data.tasks.filter(t => t.reunionSiteId === site.id && t.date >= todayKey).map(t => t.date)
-  );
-  expectedDateKeys.forEach(dateKey => {
-    if(existingDateKeys.has(dateKey)) return; // occurrence déjà présente et valide : ne pas toucher
-    data.tasks.push({
-      id: _reunionChantierTaskId(site.id, dateKey),
-      date: dateKey,
-      time: time,
-      siteId: site.id,
-      text: text,
-      reunionSiteId: site.id, // marqueur dédié (distinct de fromAlertId) pour le rappel J-1
-    });
-  });
-  saveData();
-  if(typeof renderAgenda === 'function') renderAgenda();
 }
 
-/* Repasse sur tous les chantiers ayant une réunion activée, pour que
-   l'occurrence de la semaine soit toujours à jour même si le conducteur n'a
-   pas rouvert la fiche chantier depuis longtemps (ex: occurrence de la
-   semaine dernière passée → calcule et ajoute celle de cette semaine). Appelé
-   une fois au démarrage de l'app. */
+/* [v5.41.187] Repasse sur TOUS les chantiers (plus seulement ceux avec
+   réunion activée) pour purger toute occurrence encore présente dans
+   data.tasks depuis les versions précédentes (migration — voir
+   _reunionChantierSync). Appelé une fois au démarrage de l'app. */
 function _reunionChantierSyncAll(){
   if(!data.sites || !data.sites.length) return;
   data.sites.forEach(site => {
-    if(!site.reunionChantier || !site.reunionChantier.enabled) return;
     // Garde-fou (v5.41.24) : un chantier passé "Terminé" sur UN appareil peut
     // arriver ici avec reunionChantier encore actif sur un AUTRE appareil pas
     // encore resynchronisé — on coupe la récurrence au lieu de continuer à
     // générer des occurrences pour un chantier fini.
-    if(site.status === 'termine'){
+    if(site.reunionChantier && site.reunionChantier.enabled && site.status === 'termine'){
       site.reunionChantier.enabled = false;
-      if(typeof _reunionChantierRemoveUpcoming === 'function') _reunionChantierRemoveUpcoming(site);
-      return;
     }
     _reunionChantierSync(site);
   });
@@ -43098,53 +43076,54 @@ function _reunionChantierRemoveUpcoming(site){
   if(typeof renderAgenda === 'function') renderAgenda();
 }
 
-/* Rappel J-1 dédié aux réunions de chantier (veille à 18h) — même principe
-   que _checkAgendaReminders (désactivé), mais indépendant : ne dépend pas de
-   fromAlertId.
-   Anti-doublon (v5.41.42) : clé STABLE basée sur site.id + date de
-   l'occurrence (comme _checkHoursReminders), et non plus sur t.id — car
-   t.id peut être régénéré par _reunionChantierSync. On garde en plus
-   reunionRemindersSent (liste d'ids) pour compat ascendante avec les
-   données déjà stockées, mais reunionReminderLog (clé date) est désormais
-   la source de vérité pour éviter toute notification répétée. */
+/* [v5.41.187] Rappel J-1 dédié aux réunions de chantier (veille à 18h) —
+   RÉÉCRIT sur demande de Rémi : ne touche plus du tout à l'agenda
+   (data.tasks). La date/heure de la prochaine occurrence est calculée à la
+   volée depuis site.reunionChantier (_reunionChantierNextDateKey), et le
+   rappel est envoyé UNIQUEMENT au chef assigné du chantier (comparaison
+   avec site.assignedChefAuthId) — ni au conducteur, ni à personne d'autre.
+   Comme il s'agit d'un rappel purement local (pas de cron serveur), il ne
+   se déclenche que sur l'appareil du chef assigné, quand il a l'app ouverte
+   après 18h — même principe que les autres rappels locaux de RWOOD
+   (_checkHoursReminders, etc.).
+   Anti-doublon : clé stable site.id + date de l'occurrence. */
 async function _checkReunionChantierReminders(){
-  if(!data.tasks || !data.tasks.length) return;
+  if(!data.sites || !data.sites.length) return;
   const now = new Date();
   if(now.getHours() < 18) return; // rappel envoyé "la veille à 18h" seulement à partir de 18h
+
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(role !== 'chef') return; // seul le chef assigné reçoit ce rappel
+  const myAuthId = getSupaUserId();
+  if(!myAuthId) return;
+
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   const tomorrowKey = tomorrow.getFullYear()+'-'+String(tomorrow.getMonth()+1).padStart(2,'0')+'-'+String(tomorrow.getDate()).padStart(2,'0');
 
   if(!data.settings) data.settings = {};
-  if(!data.settings.reunionRemindersSent) data.settings.reunionRemindersSent = [];
   if(!data.settings.reunionReminderLog) data.settings.reunionReminderLog = {};
 
-  const dueTomorrow = data.tasks.filter(t => {
-    if(t.date !== tomorrowKey || !t.reunionSiteId) return false;
-    const key = t.reunionSiteId + '-' + t.date; // clé stable : chantier + date de l'occurrence
+  const dueSites = data.sites.filter(site => {
+    if(!site.reunionChantier || !site.reunionChantier.enabled) return false;
+    if(site.assignedChefAuthId !== myAuthId) return false;
+    const dateKey = _reunionChantierNextDateKey(site.reunionChantier.weekday, site.reunionChantier.time);
+    if(dateKey !== tomorrowKey) return false;
+    const key = site.id + '-' + dateKey;
     return data.settings.reunionReminderLog[key] !== true;
   });
-  if(!dueTomorrow.length) return;
+  if(!dueSites.length) return;
 
   const myId = getDeviceSyncId();
-  for(const t of dueTomorrow){
-    const key = t.reunionSiteId + '-' + t.date;
+  for(const site of dueSites){
+    const dateKey = _reunionChantierNextDateKey(site.reunionChantier.weekday, site.reunionChantier.time);
+    const key = site.id + '-' + dateKey;
     // Marquer AVANT d'envoyer (voir _checkHoursReminders pour l'explication
     // de la ré-entrance de sendAlert() → checkForNewAlerts()).
     data.settings.reunionReminderLog[key] = true;
-    data.settings.reunionRemindersSent.push(t.id);
     saveData();
-    const site = t.siteId ? (data.sites||[]).find(s=>s.id===t.siteId) : null;
-    const siteName = site ? site.name : '';
-    const msg = '⏰ Demain réunion chantier à ' + (t.time||'') + (siteName ? ' — chantier ' + siteName : '');
+    const msg = '⏰ Demain réunion chantier à ' + (site.reunionChantier.time||'') + ' — chantier ' + site.name;
     await sendAlert(msg, 'device', myId, null, 'rappel');
-
-    // Notification système immédiate (push natif) — en plus de l'alerte
-    // in-app ci-dessus (v5.41.43). Cette tâche est purement locale (jamais
-    // synchronisée sur Supabase — voir _reunionChantierSync), donc le rappel
-    // ne peut être poussé que vers l'utilisateur courant, pas via une Edge
-    // Function côté serveur (aucune donnée à y consulter pour ce chantier).
-    const myAuthId = getSupaUserId();
-    if(myAuthId) notifyPush([myAuthId], 'RWOOD — Réunion de chantier', msg, 'reunion');
+    notifyPush([myAuthId], 'RWOOD — Réunion de chantier', msg, 'reunion-' + site.id);
   }
 }
 
@@ -44583,6 +44562,15 @@ async function doAssignChef(siteId, candidateIdx){
   site.assignedChefName   = candidate.name;
   site.assignedChefAuthId = candidate.authId || '';
   site.assignedAt = new Date().toISOString();
+  // [v5.41.187] BUG CORRIGÉ : sans site.updatedAt à jour, le chef ne
+  // recevait jamais l'assignation — _applyRemoteSiteIfNewer (utilisé par
+  // syncAllSitesPull/pullSharedSites pour tous les champs identityFields,
+  // dont assignedChefName/AuthId) n'applique les champs distants QUE si
+  // remote.updatedAt est plus récent que le local ; sans cette ligne,
+  // remote.updatedAt restait null et la mise à jour était systématiquement
+  // ignorée côté chef (« Aucun chef assigné » malgré une assignation faite
+  // par le conducteur).
+  site.updatedAt = new Date().toISOString();
   // [v5.41.186] Un seul chef assigné par chantier : on REMPLACE le tableau
   // assignedChefs[] (au lieu d'y ajouter) pour que toutes les notifications
   // qui en dépendent (_getChefAuthIdsForSite : événements, documents,
