@@ -33392,9 +33392,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.200';
+const APP_VERSION = '5.41.201';
 
 const CHANGELOG = [
+  {
+    version: '5.41.201',
+    date: '23/09/2026',
+    entries: [
+      { icon: '🐛', text: "Croquis Paint : correctif Découpe — elle ne gomme plus toute la forme. Le bug arrivait sur les formes dessinées après avoir dézoomé ou déplacé la vue : la forme était rognée, voire effacée entièrement, au lieu de ne perdre que la zone sélectionnée. Maintenant la Découpe (et la Découpe libre) agit comme une gomme, uniquement sur la partie sélectionnée, quelle que soit la taille ou la position de la forme." },
+      { icon: '🧲', text: "Croquis Paint : les côtés des rectangles (et des pièces tige filetée / goujon / écrou) sont aimantés — en approchant une forme d'une autre, elle vient se coller bord à bord ou s'aligner sur le même bord. Menu ⋮ → « 🧲 Désaimanter » pour qu'une forme ne se colle plus (et « 🧲 Aimanter » pour la réactiver)." },
+    ],
+  },
   {
     version: '5.41.200',
     date: '23/09/2026',
@@ -54855,6 +54863,7 @@ function openPaintSketchTool(onSave, existingPaint){
             <button type="button" onclick="_paintLayerDown()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⬇️ Descendre le calque</button>
             <button type="button" onclick="_paintDuplicateSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⧉ Dupliquer</button>
             <button type="button" onclick="_paintRotateSelected(-15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↺ Rotation gauche (15°)</button>
+            <button type="button" id="paintMagnetMenuBtn" onclick="_paintToggleMagnetSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">🧲 Désaimanter</button>
             <button type="button" onclick="_paintRotateSelected(15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↻ Rotation droite (15°)</button>
           </div>
         </div>
@@ -55280,7 +55289,11 @@ function openPaintSketchTool(onSave, existingPaint){
       return;
     }
     if(_paint.dragging && _paint.selectedIdx >= 0){
-      const dx = p.x - _paint.dragStart.x, dy = p.y - _paint.dragStart.y;
+      let dx = p.x - _paint.dragStart.x, dy = p.y - _paint.dragStart.y;
+      // v5.41.201 — côtés aimantés : un rectangle se colle tout seul au côté
+      // d'un autre rectangle quand on l'en approche (voir _paintMagnetSnap).
+      const snap = _paintMagnetSnap(_paint.selectedIdx, _paint.dragShapeStart, dx, dy);
+      dx = snap.dx; dy = snap.dy;
       _paintTranslateShape(_paint.shapes[_paint.selectedIdx], _paint.dragShapeStart, dx, dy);
       _paintRedraw();
       return;
@@ -55736,6 +55749,67 @@ function _paintDuplicateSelected(){
   _paintUpdateDeleteBtn();
   _paintRedraw(); _paintPositionShapeMenu();
 }
+/* ═══ v5.41.201 — Côtés AIMANTÉS (demande de Rémi) ═══════════════════
+   Les rectangles (et les pièces posées en rectangle : tige filetée,
+   goujon, écrou…) ont leurs 4 côtés aimantés : en déplaçant l'un d'eux près
+   d'un autre, il vient se coller bord à bord (ou s'aligner sur le même
+   bord). Seuil ≈ 12 px à l'écran, quel que soit le zoom.
+   Désactivable forme par forme via le menu ⋮ → « 🧲 Désaimanter »
+   (s.magnet === false) : une forme désaimantée ne se colle plus et
+   n'attire plus les autres. Formes tournées (⋮ Rotation) : ignorées, leurs
+   bords n'étant plus horizontaux/verticaux. */
+function _paintIsMagnetShape(s){
+  if(!s || s.magnet === false) return false;
+  if(s.rotation && (s.rotation % 360) !== 0) return false;
+  if(s.type === 'rect') return true;
+  if(s.type === 'symbol'){
+    const def = PAINT_SYMBOLS.find(d => d.id === s.symbol);
+    return !!(def && def.placement === 'rect');
+  }
+  return false;
+}
+function _paintMagnetSnap(idx, origShape, dx, dy){
+  const out = { dx, dy };
+  if(!_paint || !_paintIsMagnetShape(origShape)) return out;
+  const scale = (_paint.view && _paint.view.scale) || 1;
+  const thr = 12 * (_paint.dpr || 1) / scale;
+  const b0 = _paintShapeBounds(origShape);
+  const m = { x1:b0.x1+dx, x2:b0.x2+dx, y1:b0.y1+dy, y2:b0.y2+dy };
+  let bestX = null, bestY = null;
+  _paint.shapes.forEach((o, i) => {
+    if(i === idx || !_paintIsMagnetShape(o)) return;
+    const b = _paintShapeBounds(o);
+    // Aimant horizontal (côtés gauche/droite) seulement si les deux formes
+    // sont en vis-à-vis verticalement (ou presque), et inversement.
+    const vOverlap = m.y1 < b.y2 + thr && m.y2 > b.y1 - thr;
+    const hOverlap = m.x1 < b.x2 + thr && m.x2 > b.x1 - thr;
+    if(vOverlap){
+      [[m.x1, b.x2], [m.x2, b.x1], [m.x1, b.x1], [m.x2, b.x2]].forEach(([a, t]) => {
+        const d = t - a;
+        if(Math.abs(d) <= thr && (bestX === null || Math.abs(d) < Math.abs(bestX))) bestX = d;
+      });
+    }
+    if(hOverlap){
+      [[m.y1, b.y2], [m.y2, b.y1], [m.y1, b.y1], [m.y2, b.y2]].forEach(([a, t]) => {
+        const d = t - a;
+        if(Math.abs(d) <= thr && (bestY === null || Math.abs(d) < Math.abs(bestY))) bestY = d;
+      });
+    }
+  });
+  if(bestX !== null) out.dx += bestX;
+  if(bestY !== null) out.dy += bestY;
+  return out;
+}
+function _paintToggleMagnetSelected(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const s = _paint.shapes[_paint.selectedIdx];
+  _paintPushHistory();
+  s.magnet = (s.magnet === false) ? true : false;
+  showToast(s.magnet === false ? '🧲 Forme désaimantée' : '🧲 Forme aimantée');
+  _paintRenderShapeMenu();
+  _paintRedraw();
+}
+
 function _paintRotateSelected(deltaDeg){
   if(!_paint || _paint.selectedIdx < 0) return;
   _paintPushHistory();
@@ -55806,6 +55880,14 @@ function _paintRenderShapeMenu(){
   const btn = document.getElementById('paintShapeMenuBtn');
   if(!pop || !btn) return;
   if(!_paintShapeMenuOpen){ pop.style.display = 'none'; return; }
+  // v5.41.201 — bouton aimant : visible seulement pour les formes aimantables
+  const mb = document.getElementById('paintMagnetMenuBtn');
+  if(mb){
+    const sel = _paint && _paint.shapes[_paint.selectedIdx];
+    const can = sel && (sel.type === 'rect' || (sel.type === 'symbol' && (PAINT_SYMBOLS.find(d => d.id === sel.symbol)||{}).placement === 'rect'));
+    mb.style.display = can ? '' : 'none';
+    if(can) mb.textContent = sel.magnet === false ? '🧲 Aimanter' : '🧲 Désaimanter';
+  }
   pop.style.left = btn.style.left;
   pop.style.top = (parseFloat(btn.style.top) + 26) + 'px';
   pop.style.display = 'flex';
@@ -57181,14 +57263,28 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
       // continue d'être sélectionnable/déplaçable/redimensionnable en bloc,
       // le(s) trou(s) se déplaçant avec elle (voir _paintTranslateShape/
       // _paintScaleShape, qui transforment aussi s.holes).
-      const cw = _paint.baseImage.width, ch = _paint.baseImage.height;
-      if(!_paintHoleLayer || _paintHoleLayer.width !== cw || _paintHoleLayer.height !== ch){
-        _paintHoleLayer = document.createElement('canvas');
-        _paintHoleLayer.width = cw; _paintHoleLayer.height = ch;
-      }
+      // v5.41.201 — CORRECTIF « la Découpe gomme TOUTE la forme » (Rémi) :
+      // le calque isolé faisait la taille de la FEUILLE de départ (0..largeur
+      // du canvas en coordonnées monde). Une forme dessinée après avoir
+      // dézoomé/déplacé la vue (coordonnées hors de cette zone) était donc
+      // rognée, voire entièrement effacée, dès qu'on la découpait. Le calque
+      // est maintenant calé sur la forme elle-même (+ marge pour le trait, la
+      // rotation, le dôme d'écrou…), quelle que soit sa position ou sa taille,
+      // à la résolution du zoom courant pour rester net.
+      const hb = _paintShapeBounds(s);
+      const hcx = (hb.x1 + hb.x2) / 2, hcy = (hb.y1 + hb.y2) / 2;
+      const hr = Math.hypot(hb.x2 - hb.x1, hb.y2 - hb.y1) * 0.75 + 30 * (_paint.dpr || 1) + (s.width || 0) * 2;
+      const lx0 = hcx - hr, ly0 = hcy - hr, lsz = hr * 2;
+      let res = 1;
+      try{ const t = ctx.getTransform(); res = Math.max(1, Math.hypot(t.a, t.b)); }catch(e){}
+      res = Math.min(res, 4096 / Math.max(1, lsz));
+      const lw = Math.max(1, Math.ceil(lsz * res)), lh = lw;
+      if(!_paintHoleLayer) _paintHoleLayer = document.createElement('canvas');
+      if(_paintHoleLayer.width !== lw || _paintHoleLayer.height !== lh){ _paintHoleLayer.width = lw; _paintHoleLayer.height = lh; }
       const lctx = _paintHoleLayer.getContext('2d');
       lctx.setTransform(1,0,0,1,0,0);
-      lctx.clearRect(0, 0, cw, ch);
+      lctx.clearRect(0, 0, lw, lh);
+      lctx.setTransform(res, 0, 0, res, -lx0 * res, -ly0 * res);
       lctx.save();
       _paintDrawOneShape(lctx, s);
       lctx.restore();
@@ -57205,7 +57301,7 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
       // déjà active (v.scale/x/y), sans y toucher — exactement comme
       // baseImage, pour qu'il zoome/se déplace avec le reste du croquis.
       ctx.save();
-      ctx.drawImage(_paintHoleLayer, 0, 0);
+      ctx.drawImage(_paintHoleLayer, lx0, ly0, lsz, lsz);
       ctx.restore();
       if(idx === selectedIdx){
         ctx.save();
