@@ -35238,9 +35238,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.222';
+const APP_VERSION = '5.41.223';
 
 const CHANGELOG = [
+  {
+    version: '5.41.223',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🚗', text: "App Android : compatible Android Auto. Les messages RWOOD sont lus à voix haute et tu peux répondre en dictant. La radio du mode musique est dans les apps audio de la voiture, classée par genre. L'écran RWOOD affiche la feuille de route et les chantiers, et un appui lance la navigation." },
+      { icon: '🎵', text: "App Android : la radio est maintenant jouée par le téléphone. Elle continue écran éteint, avec un lecteur ⏮ ⏯ ⏭ sur l'écran verrouillé, et le widget Musique marche même app fermée." },
+    ],
+  },
   {
     version: '5.41.222',
     date: '24/09/2026',
@@ -61328,6 +61336,66 @@ if(RWOOD_NATIVE){
   };
 }
 /* MODULE — RwoodWidgets 2 (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodRadioNative  (v5.41.223)
+   APK ≥ 1.3 : la radio du mode musique est jouée par le TÉLÉPHONE (lecteur
+   natif Media3) et plus par la page web — elle continue écran éteint, a
+   son lecteur sur l'écran verrouillé et apparaît dans Android Auto.
+   Les boutons de l'app pilotent ce lecteur ; son état revient ici
+   (événement « musicState ») pour garder l'affichage à jour.
+   ═══════════════════════════════════════════════════════════════════ */
+function _rrN(){ const R = _rn2(); return (R && typeof R.musicPlay === 'function') ? R : null; }
+
+if(RWOOD_NATIVE && _rrN()){
+  const R = _rrN();
+  // Catalogue des radios → téléphone (Android Auto, widgets)
+  try{
+    const list = _musicFlatStations().map(s => {
+      const g = MUSIC_STATIONS[s.genre] || {};
+      return { id: s.id, name: s.name, url: s.url, genre: s.genre, genreLabel: ((g.emoji ? g.emoji + ' ' : '') + (g.label || s.genre)) };
+    });
+    R.setStations({ stations: list }).catch(()=>{});
+  }catch(e){ console.warn('radio stations', e); }
+
+  const _stopWebAudio = () => { try{ const a = document.getElementById('musicAudioPlayer'); if(a && !a.paused) a.pause(); }catch(_){} };
+
+  musicPlayStation = function(stationId){
+    const st = _musicFindStation(stationId);
+    if(!st) return;
+    _stopWebAudio();
+    _musicCurrentStationId = stationId;
+    try{ localStorage.setItem('rwood-music-last-station', stationId); }catch(e){}
+    _musicIsPlaying = true;           // affichage immédiat, confirmé par musicState
+    musicRenderHeaderWidget();
+    try{ _musicRenderGenreList(); }catch(_){}
+    R.musicPlay({ id: stationId }).catch(() => showToast('Impossible de lancer cette radio'));
+  };
+  musicTogglePlay = function(){
+    if(!_musicCurrentStationId){ toggleMusicDropdown(true); return; }
+    _stopWebAudio();
+    if(_musicIsPlaying){ _musicIsPlaying = false; musicRenderHeaderWidget(); R.musicPause().catch(()=>{}); }
+    else { musicPlayStation(_musicCurrentStationId); }
+  };
+  const _rrOrigVol = musicSetVolume;
+  musicSetVolume = function(val){
+    _rrOrigVol.apply(this, arguments);
+    R.musicVolume({ volume: (parseInt(val, 10) || 0) / 100 }).catch(()=>{});
+  };
+
+  R.addListener('musicState', (e) => {
+    if(!e) return;
+    if(e.id) _musicCurrentStationId = e.id;
+    _musicIsPlaying = !!e.playing;
+    try{ musicRenderHeaderWidget(); _musicRenderGenreList(); }catch(_){}
+  });
+  R.musicState().then(e => {
+    if(e && e.id) _musicCurrentStationId = e.id;
+    if(e) _musicIsPlaying = !!e.playing;
+    try{ musicRenderHeaderWidget(); }catch(_){}
+  }).catch(()=>{});
+}
+/* MODULE — RwoodRadioNative (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
