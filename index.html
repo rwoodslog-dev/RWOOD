@@ -5116,6 +5116,7 @@
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotificationDelayed()">⏳ Tester à retardement (app fermée)</button>
             <div class="hint" style="margin-top:6px;">Envoie la notification 20 secondes plus tard (délai côté serveur) — le temps de fermer complètement l'application pour vérifier qu'elle apparaît bien même app fermée.</div>
           </div>
+          <div id="rwoodNativeSettings" style="display:none;"></div>
 
           <!-- MODULE — Mode montre (v5.41.51, revu en v5.41.52) : envoie le
                contenu de la liste "à faire" dans une notification, lisible
@@ -8811,7 +8812,9 @@ async function notifyPush(userIds, title, body, tag, url, delaySeconds){
   // déployée, on ignore sans rien casser.
   const fcmP = fetch(SUPA_URL + '/functions/v1/rwood-fcm', {
     method:'POST', headers:{ 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
-    body: JSON.stringify({ action:'send', user_ids: userIds, title, body, tag, url, delay_seconds: delaySeconds||0 })
+    body: JSON.stringify({ action:'send', user_ids: userIds, title, body, tag, url, delay_seconds: delaySeconds||0,
+      from_auth: (data.settings && data.settings.auth && data.settings.auth.authId) || '',
+      from_name: (((data.settings && data.settings.myProfile && data.settings.myProfile.firstName)||'') + ' ' + ((data.settings && data.settings.myProfile && data.settings.myProfile.lastName)||'')).trim() })
   }).then(r => r.ok ? r.json() : null).catch(() => null);
   const web = await _notifyPushWeb(userIds, title, body, tag, url, delaySeconds);
   const fcm = await fcmP;
@@ -28651,6 +28654,13 @@ function getDateOfISOWeek(week, year){
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
+    // v5.41.220 — App Android native : le site est intégré à l'app et mis à
+    // jour par l'app elle-même → pas de service worker (il servirait une
+    // ancienne copie en cache après une mise à jour).
+    if(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()){
+      navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
+      return;
+    }
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
       reg.update().catch(()=>{});
 
@@ -35228,9 +35238,26 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.219';
+const APP_VERSION = '5.41.221';
 
 const CHANGELOG = [
+  {
+    version: '5.41.221',
+    date: '24/09/2026',
+    entries: [
+      { icon: '🏠', text: "App Android : 6 widgets pour l'écran d'accueil. Chantier actif (média, itinéraire, notes, boîte à clés, flèches pour changer de chantier), Musique (lecture/pause/suivante sans ouvrir l'app, plus un lecteur sur l'écran verrouillé), Magasin (dispo, sorties, SAV, ce que tu as dans ton camion), Raccourci (tu choisis l'onglet), L'essentiel (tout en un) et Météo & messages." },
+    ],
+  },
+  {
+    version: '5.41.220',
+    date: '24/09/2026',
+    entries: [
+      { icon: '💬', text: "App Android : réponds à un message directement depuis la notification, sans ouvrir l'app. Les messages sont regroupés par conversation avec le nombre de non-lus (pastille sur l'icône)." },
+      { icon: '👆', text: "App Android : verrouillage par empreinte (Paramètres → Notifications → App Android RWOOD)." },
+      { icon: '🏠', text: "App Android : widget pour l'écran d'accueil, avec la météo de ton chantier favori et tes messages non lus." },
+      { icon: '⚡', text: "App Android : le site est intégré à l'app, qui démarre instantanément et fonctionne sans réseau. Les nouvelles versions se téléchargent toutes seules." },
+    ],
+  },
   {
     version: '5.41.219',
     date: '24/09/2026',
@@ -60630,7 +60657,7 @@ async function _rnSaveToken(token){
   try{
     const r = await fetch(SUPA_URL + '/functions/v1/rwood-fcm', { method:'POST',
       headers:{ 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
-      body: JSON.stringify({ action:'register', user_id: authId, token, device: navigator.userAgent.substring(0,120) }) });
+      body: JSON.stringify({ action:'register', user_id: authId, token, device: navigator.userAgent.substring(0,100) + (_rnPlug('RwoodNative') ? ' [rich]' : '') }) });
     try{ localStorage.setItem('rwood_fcm_saved', authId + '|' + token.slice(-12)); }catch(_){}
     return r.ok;
   }catch(e){ return false; }
@@ -60667,6 +60694,8 @@ async function _rnPushInit(interactive){
       P.addListener('pushNotificationReceived', async (n) => {
         const LN = _rnPlug('LocalNotifications');
         const d = (n && n.data) || {};
+        if(!n.title && d.title) n.title = d.title;
+        if(!n.body && d.body) n.body = d.body;
         if(LN){
           try{
             await LN.schedule({ notifications:[{ id: Math.floor(Math.random()*2e9), title: n.title || 'RWOOD', body: n.body || '',
@@ -60856,6 +60885,325 @@ if(RWOOD_NATIVE){
   })();
 }
 /* MODULE — RwoodNative (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodNative 2  (v5.41.220)
+   Fonctions de l'APK RWOOD ≥ 1.1 (plugin natif « RwoodNative ») :
+   - Répondre depuis la notification : le téléphone connaît le compte
+     (setUser) ; la réponse part via l'Edge Function rwood-fcm (action reply).
+   - Non-lus : ouvrir une conversation efface ses notifs + la pastille.
+   - 👆 Verrou par empreinte (réglage propre à CE téléphone).
+   - 🏠 Widget : météo du chantier favori + messages non lus.
+   - ⚡ Site intégré à l'app + mises à jour automatiques (bannière).
+   ═══════════════════════════════════════════════════════════════════ */
+function _rn2(){ return _rnPlug('RwoodNative'); }
+const _RN_BIO_KEY = 'rwood_bio_lock';
+function _rnBioEnabled(){ try{ return localStorage.getItem(_RN_BIO_KEY) === '1'; }catch(_){ return false; } }
+
+async function _rnBioAuth(subtitle){
+  const R = _rn2(); if(!R) return false;
+  try{
+    const r = await R.biometricAuth({ title:'Déverrouiller RWOOD', subtitle: subtitle || 'Pose ton doigt sur le capteur' });
+    return !!(r && r.ok);
+  }catch(e){ return false; }
+}
+
+/* Écran de verrouillage par empreinte (par-dessus l'app) */
+let _rnLockedAt = 0, _rnPausedAt = 0;
+function _rnShowBioLock(){
+  if(!_rnBioEnabled() || !_rn2()) return;
+  let o = document.getElementById('rwBioLock');
+  if(!o){
+    o = document.createElement('div');
+    o.id = 'rwBioLock';
+    o.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:#110D09;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center;color:#F5EDE3;';
+    o.innerHTML = `<div style="font-size:64px;line-height:1;">👆</div>
+      <div style="font-size:20px;font-weight:800;">RWOOD est verrouillé</div>
+      <div style="opacity:.7;font-size:14px;max-width:300px;">Pose ton doigt sur le capteur d'empreinte pour ouvrir l'app.</div>
+      <button class="btn btn-primary" style="min-width:220px;" onclick="_rnTryUnlock()">👆 Déverrouiller</button>
+      <button class="btn btn-outline" style="min-width:220px;" onclick="_rnUnlockWithPassword()">Utiliser le mot de passe</button>`;
+    document.body.appendChild(o);
+  }
+  o.style.display = 'flex';
+  _rnLockedAt = Date.now();
+  setTimeout(_rnTryUnlock, 350);
+}
+async function _rnTryUnlock(){
+  if(await _rnBioAuth()){ const o = document.getElementById('rwBioLock'); if(o) o.style.display = 'none'; }
+}
+function _rnUnlockWithPassword(){
+  const o = document.getElementById('rwBioLock'); if(o) o.style.display = 'none';
+  if(data.settings && data.settings.auth) data.settings.auth.locked = true;
+  const a = document.getElementById('authScreen');
+  if(a){ a.style.display = 'flex'; showAuthLoginForm(); }
+}
+function _rnUnlockAuthScreen(){
+  const auth = data.settings && data.settings.auth;
+  if(auth) auth.locked = false;
+  saveData();
+  const a = document.getElementById('authScreen'); if(a) a.style.display = 'none';
+  const o = document.getElementById('rwBioLock'); if(o) o.style.display = 'none';
+  if(navigator.onLine){ syncPull().then(p => { if(p) renderSites(); startSyncPolling(); }); }
+  renderSites();
+}
+/* Bouton « empreinte » sur l'écran de connexion */
+function _rnAddBioButtonToLogin(){
+  if(!_rnBioEnabled() || !_rn2()) return;
+  const form = document.getElementById('authLoginForm');
+  if(!form || document.getElementById('rwBioLoginBtn')) return;
+  const b = document.createElement('button');
+  b.id = 'rwBioLoginBtn';
+  b.className = 'btn btn-outline btn-block';
+  b.style.marginTop = '10px';
+  b.textContent = '👆 Se connecter avec l\'empreinte';
+  b.onclick = async () => { if(await _rnBioAuth('Connexion à ton compte RWOOD')) _rnUnlockAuthScreen(); };
+  const primary = form.querySelector('.btn-primary');
+  if(primary && primary.parentNode) primary.parentNode.insertBefore(b, primary.nextSibling); else form.appendChild(b);
+}
+
+async function _rnToggleBio(on){
+  const R = _rn2(); if(!R) return;
+  if(on){
+    const av = await R.biometricAvailable().catch(() => ({ available:false }));
+    if(!av.available){
+      showToast(av.enrolled === false ? '👆 Aucune empreinte enregistrée — ajoute-la dans les réglages du téléphone' : '👆 Pas de capteur d\'empreinte utilisable sur ce téléphone');
+      _rnRenderSettings(); return;
+    }
+    if(!(await _rnBioAuth('Confirme pour activer le verrou'))){ _rnRenderSettings(); return; }
+    try{ localStorage.setItem(_RN_BIO_KEY, '1'); }catch(_){}
+    showToast('👆 Verrou par empreinte activé sur ce téléphone');
+  } else {
+    try{ localStorage.removeItem(_RN_BIO_KEY); }catch(_){}
+    showToast('Verrou par empreinte désactivé');
+  }
+  _rnRenderSettings();
+}
+
+/* Réglages → Notifications : bloc « App Android » */
+async function _rnRenderSettings(){
+  const box = document.getElementById('rwoodNativeSettings');
+  const R = _rn2();
+  if(!box || !R) return;
+  let info = {};
+  try{ info = await R.getBundleInfo(); }catch(_){}
+  const bio = _rnBioEnabled();
+  box.style.display = 'block';
+  box.innerHTML = `<div class="card" style="margin-top:12px;">
+    <div style="font-weight:800;font-size:14px;margin-bottom:8px;">📱 App Android RWOOD</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <div><div style="font-weight:700;font-size:14px;">👆 Verrouiller par empreinte</div>
+      <div class="hint" style="margin-top:2px;">Demande ton empreinte à chaque ouverture (et après 5 min en arrière-plan). Réglage propre à ce téléphone.</div></div>
+      <label class="toggle-switch" style="flex-shrink:0;"><input type="checkbox" ${bio ? 'checked' : ''} onchange="_rnToggleBio(this.checked)"><span class="toggle-slider"></span></label>
+    </div>
+    <button class="btn btn-outline btn-block" style="margin-top:12px;" onclick="_rn2().openAutostartSettings()">🔋 Réglages batterie & démarrage auto</button>
+    <div class="hint" style="margin-top:6px;">Sur Xiaomi / Redmi / Poco : active le <b>démarrage automatique</b> de RWOOD et mets la batterie sur <b>« Pas de restrictions »</b>, sinon les notifications peuvent arriver en retard.</div>
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="_rn2().openAppSettings()">🔔 Sons des notifications (par catégorie)</button>
+    <div class="hint" style="margin-top:6px;">Messages, Alertes & SAV, Météo, Général : choisis un son différent pour chacune.</div>
+    <div class="hint" style="margin-top:12px;">🏠 <b>Widget</b> : appui long sur l'écran d'accueil → Widgets → RWOOD. Il affiche la météo de ton 1er chantier ⭐ favori et tes messages non lus.</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;">
+      <div class="hint" style="margin:0;">App ${escapeHtml(String(info.apk || '?'))} · site ${escapeHtml(String(info.version || APP_VERSION))}${info.pending ? ' · <b>mise à jour prête</b>' : ''}</div>
+      <button class="btn btn-outline btn-sm" onclick="${info.pending ? '_rnApplyUpdate()' : '_rnCheckUpdate()'}">${info.pending ? '⚡ Installer' : '🔄 Vérifier'}</button>
+    </div>
+  </div>`;
+}
+
+/* ⚡ Mises à jour du site intégré */
+function _rnCheckUpdate(){ const R = _rn2(); if(R){ R.checkUpdate(); showToast('🔄 Recherche de mise à jour…'); } }
+async function _rnApplyUpdate(){ const R = _rn2(); if(R){ showToast('⚡ Mise à jour…'); try{ await R.applyUpdate(); }catch(_){} } }
+function _rnShowUpdateBanner(version){
+  if(document.getElementById('rwUpdBanner')) return;
+  const b = document.createElement('div');
+  b.id = 'rwUpdBanner';
+  b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 74px);z-index:99990;background:#1E1812;border:1px solid var(--accent,#E8AC3D);border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 24px rgba(0,0,0,.45);color:#F5EDE3;font-size:13.5px;';
+  b.innerHTML = `<div style="flex:1;">⚡ <b>Nouvelle version de RWOOD prête</b><div style="opacity:.7;font-size:12px;">Elle s'installera à la prochaine ouverture.</div></div>
+    <button class="btn btn-primary btn-sm" onclick="_rnApplyUpdate()">Mettre à jour</button>
+    <button class="btn btn-outline btn-sm" onclick="this.parentNode.remove()">Plus tard</button>`;
+  document.body.appendChild(b);
+}
+
+/* 🏠 Widget : météo du 1er chantier favori */
+async function _rnPushWidget(){
+  const R = _rn2(); if(!R) return;
+  try{
+    if(typeof _meteoFavCoords !== 'function') return;
+    const sites = await _meteoFavCoords();
+    if(!sites.length) return;
+    const st = sites[0];
+    let meteo = '';
+    try{ const sm = rwoodMeteoSummary(await _meteoFetchDay(st.lat, st.lng), st.name); meteo = sm.body; }catch(_){}
+    await R.setWidget({ site: st.name, meteo, lat: st.lat, lng: st.lng });
+  }catch(e){ console.warn('widget', e); }
+}
+
+if(RWOOD_NATIVE){
+  (function _rn2Boot(){
+    let tries = 0;
+    const tick = () => {
+      const R = _rn2();
+      if(!R) return; // APK 1.0 : pas encore ces fonctions
+      const ready = !!(data && data.settings && data.settings.auth && data.settings.auth.authId);
+      if(!ready){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      const p = data.settings.myProfile || {};
+      const name = ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || data.settings.auth.authId;
+      R.setUser({ authId: data.settings.auth.authId, name }).catch(()=>{});
+      _rnRenderSettings();
+      setTimeout(_rnPushWidget, 4000);
+    };
+    setTimeout(tick, 1200);
+
+    const R = _rn2();
+    if(!R) return;
+    R.addListener('updateReady', (e) => _rnShowUpdateBanner(e && e.version));
+    R.getBundleInfo().then(i => { if(i && i.pending) _rnShowUpdateBanner(i.pending); }).catch(()=>{});
+
+    // Verrou empreinte : au démarrage…
+    if(_rnBioEnabled()) setTimeout(() => {
+      const a = document.getElementById('authScreen');
+      if(a && a.style.display !== 'none'){ _rnAddBioButtonToLogin(); setTimeout(async () => { if(await _rnBioAuth('Connexion à ton compte RWOOD')) _rnUnlockAuthScreen(); }, 300); }
+      else _rnShowBioLock();
+    }, 600);
+    // …et au retour après 5 min en arrière-plan
+    const APP = _rnPlug('App');
+    if(APP){
+      APP.addListener('pause', () => { _rnPausedAt = Date.now(); });
+      APP.addListener('resume', () => {
+        if(_rnBioEnabled() && _rnPausedAt && Date.now() - _rnPausedAt > 5 * 60 * 1000) _rnShowBioLock();
+        setTimeout(_rnPushWidget, 2000);
+      });
+    }
+  })();
+
+  // Écran de connexion : ajoute le bouton empreinte
+  const _rnOrigShowLogin = showAuthLoginForm;
+  showAuthLoginForm = function(){ _rnOrigShowLogin.apply(this, arguments); _rnAddBioButtonToLogin(); };
+
+  // Ouvrir une conversation = ses notifications sont lues
+  const _rnOrigRenderThread = _renderChatThreadModal;
+  _renderChatThreadModal = async function(row){
+    const r = await _rnOrigRenderThread.apply(this, arguments);
+    try{ const R = _rn2(); if(R && row && row.authId) R.clearConversation({ key: 'conv:' + row.authId }); }catch(_){}
+    return r;
+  };
+
+  // Réglages : le bloc natif se redessine quand on ouvre Paramètres
+  const _rnOrigPush = renderPushNotifSection;
+  renderPushNotifSection = function(){ _rnOrigPush.apply(this, arguments); _rnRenderSettings(); };
+}
+/* MODULE — RwoodNative 2 (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodWidgets  (v5.41.221)
+   Données et boutons des widgets Android (APK ≥ 1.2) :
+   Chantier actif · Musique · Magasin · Raccourci · L'essentiel · Météo.
+   L'app envoie ses infos au téléphone (setSites / setTiles / setMagasin /
+   setMusic) ; les boutons des widgets ouvrent l'app sur la bonne action
+   (« act:… », voir _handleNotifTarget) ou agissent directement (musique,
+   flèches chantier → événement « widgetAction »).
+   ═══════════════════════════════════════════════════════════════════ */
+function _rwW(){ const R = _rn2(); return (R && typeof R.setSites === 'function') ? R : null; }
+
+function _rwPushSites(){
+  const R = _rwW(); if(!R || !data || !Array.isArray(data.sites)) return;
+  const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
+  const list = data.sites.filter(s => s.status !== 'termine')
+    .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
+    .slice(0, 40).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '' }));
+  let activeId = null; try{ activeId = getActiveSiteId(); }catch(_){}
+  R.setSites({ sites: list, activeId }).catch(()=>{});
+}
+function _rwPushTiles(){
+  const R = _rwW(); if(!R || typeof SIMPLE_ALL_TILES === 'undefined') return;
+  const canDev = (typeof devAccessIsDevUser === 'function') && devAccessIsDevUser();
+  const ok = v => v !== 'quincaillerie' && (v !== 'dev' || canDev) && (typeof _simpleTileAllowedForRole !== 'function' || _simpleTileAllowedForRole(v));
+  const map = v => { const d = SIMPLE_ALL_TILES.find(t => t.view === v) || { view:v, label:v }; return { view:d.view, label:d.label, img:d.img || '', icon:d.icon || '' }; };
+  const all = SIMPLE_ALL_TILES.map(t => t.view).filter(ok).map(map);
+  let mine = [];
+  try{ mine = (typeof _simpleGetTiles === 'function' ? _simpleGetTiles() : []).filter(ok).map(map); }catch(_){}
+  R.setTiles({ all, mine }).catch(()=>{});
+}
+function _rwPushMagasin(){
+  const R = _rwW(); if(!R || !Array.isArray(data.magasinMachines)) return;
+  const ms = data.magasinMachines;
+  const me = (data.settings && data.settings.auth && data.settings.auth.authId) || '';
+  const mine = ms.filter(m => m.borrow && me && (m.borrow.borrowerId === me || m.borrow.chefId === me)).map(m => m.name || 'Machine');
+  R.setMagasin({ total: ms.length, dispo: ms.filter(m => !m.borrow && !m.sav).length, pris: ms.filter(m => m.borrow).length,
+    sav: ms.filter(m => m.sav).length, mine: mine.slice(0, 4).join(', ') + (mine.length > 4 ? '…' : '') }).catch(()=>{});
+}
+let _rwMusicLast = '';
+function _rwPushMusic(){
+  const R = _rwW(); if(!R) return;
+  let name = '';
+  try{ const st = _musicCurrentStationId ? _musicFindStation(_musicCurrentStationId) : null; name = st ? st.name : ''; }catch(_){}
+  const key = name + '|' + (!!_musicIsPlaying);
+  if(key === _rwMusicLast) return;
+  _rwMusicLast = key;
+  R.setMusic({ station: name, playing: !!_musicIsPlaying }).catch(()=>{});
+}
+function _rwMusicStart(){
+  try{
+    if(!_musicCurrentStationId){ const all = _musicFlatStations(); if(all.length) _musicCurrentStationId = all[0].id; }
+    if(!_musicIsPlaying && _musicCurrentStationId) musicPlayStation(_musicCurrentStationId);
+  }catch(e){ console.warn('music', e); }
+}
+
+if(RWOOD_NATIVE){
+  // Envoi initial (dès que le compte est chargé)
+  (function _rwBoot(){
+    let tries = 0;
+    const tick = () => {
+      if(!_rwW()) return;
+      if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic();
+    };
+    setTimeout(tick, 2500);
+    const APP = _rnPlug('App');
+    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); });
+    const R = _rwW();
+    if(R) R.addListener('widgetAction', (e) => {
+      const a = (e && e.action) || '';
+      try{
+        if(a === 'music-toggle'){ if(_musicCurrentStationId) musicTogglePlay(); else _rwMusicStart(); }
+        else if(a === 'music-next') musicNext();
+        else if(a === 'music-prev') musicPrev();
+        else if(a.startsWith('site:')){ const id = a.slice(5); if((data.sites||[]).some(s => s.id === id)) setActiveSiteId(id); }
+      }catch(err){ console.warn('widgetAction', err); }
+    });
+  })();
+
+  // Mises à jour automatiques des widgets quand les infos changent dans l'app
+  const _wrap = (name, after) => {
+    const orig = window[name];
+    if(typeof orig !== 'function') return;
+    window[name] = function(){ const r = orig.apply(this, arguments); try{ after(); }catch(_){} return r; };
+  };
+  _wrap('setActiveSiteId', _rwPushSites);
+  _wrap('renderSites', () => { clearTimeout(window._rwSitesT); window._rwSitesT = setTimeout(_rwPushSites, 800); });
+  _wrap('magasinRender', _rwPushMagasin);
+  _wrap('musicRenderHeaderWidget', _rwPushMusic);
+  _wrap('simpleModeRenderDash', () => { clearTimeout(window._rwTilesT); window._rwTilesT = setTimeout(_rwPushTiles, 800); });
+
+  // Boutons des widgets qui ouvrent l'app : « act:<action>:<chantier> »
+  const _rwOrigTarget = _handleNotifTarget;
+  _handleNotifTarget = async function(target){
+    const t = decodeURIComponent(String(target || '')).replace(/^#/, '');
+    if(!t.startsWith('act:')) return _rwOrigTarget.apply(this, arguments);
+    const [, act, siteId] = t.split(':');
+    const hasSite = siteId && (data.sites || []).some(s => s.id === siteId);
+    try{
+      if(hasSite) setActiveSiteId(siteId);
+      if(act === 'site'){ if(hasSite) goTo('detail', siteId); else goTo('chantiers'); }
+      else if(act === 'media'){ if(hasSite) openMediaFabSheet(siteId); }
+      else if(act === 'waze'){ if(hasSite) openWaze(siteId); }
+      else if(act === 'notes'){ if(hasSite) openSiteNotesModal(siteId); }
+      else if(act === 'keybox'){ if(hasSite) openKeyboxModal(siteId); }
+      else if(act === 'tuile'){ if(hasSite) dashOpenTuileFiche(siteId); }
+      else if(act === 'mag-sav'){ goTo('magasin'); showToast('⚠️ Touche la machine concernée puis « SAV »'); }
+      else if(act === 'music-play'){ _rwMusicStart(); }
+      else if(act === 'music-menu'){ if(typeof toggleMusicDropdown === 'function') toggleMusicDropdown(true); }
+    }catch(e){ console.error('widget target', t, e); }
+  };
+}
+/* MODULE — RwoodWidgets (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
