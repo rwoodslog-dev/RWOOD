@@ -8806,6 +8806,23 @@ async function supaFetch(path, options={}){
    valeur de retour (immense majorité) ne sont pas affectés. */
 async function notifyPush(userIds, title, body, tag, url, delaySeconds){
   if(!userIds || !userIds.length) return { ok:false, reason:'no-recipients' };
+  // v5.41.219 — envoi en parallèle vers les téléphones de l'app Android
+  // native (Firebase, Edge Function rwood-fcm). Si la fonction n'est pas
+  // déployée, on ignore sans rien casser.
+  const fcmP = fetch(SUPA_URL + '/functions/v1/rwood-fcm', {
+    method:'POST', headers:{ 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
+    body: JSON.stringify({ action:'send', user_ids: userIds, title, body, tag, url, delay_seconds: delaySeconds||0 })
+  }).then(r => r.ok ? r.json() : null).catch(() => null);
+  const web = await _notifyPushWeb(userIds, title, body, tag, url, delaySeconds);
+  const fcm = await fcmP;
+  if(!fcm || !fcm.tokens) return web;
+  const out = Object.assign({}, web, { ok: true, android: fcm });
+  out.subscriptions = (Number(web.subscriptions) || 0) + fcm.tokens;
+  out.sent = (Number(web.sent) || 0) + (fcm.sent || 0);
+  out.failed = (Number(web.failed) || 0) + (fcm.failed || 0);
+  return out;
+}
+async function _notifyPushWeb(userIds, title, body, tag, url, delaySeconds){
   try{
     const res = await fetch(SUPA_URL + '/functions/v1/send-push', {
       method: 'POST',
@@ -35211,9 +35228,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.218';
+const APP_VERSION = '5.41.219';
 
 const CHANGELOG = [
+  {
+    version: '5.41.219',
+    date: '24/09/2026',
+    entries: [
+      { icon: '📱', text: "Préparation de l'application Android native : notifications Firebase (4 canaux réglables : Messages, Alertes & SAV, Météo, Général), bouton retour Android, enregistrement des PDF/Excel dans Documents/RWOOD. Aucun changement pour la version web, iPhone et PC." },
+    ],
+  },
   {
     version: '5.41.218',
     date: '24/09/2026',
@@ -60572,6 +60596,266 @@ async function _confirmCroquisGalleryAddToSite(id){
   const m = document.getElementById('modal-croquisGalleryAddSite');
   if(m) m.remove();
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodNative  (v5.41.219)
+   Pont avec l'application ANDROID NATIVE (Capacitor, projet rwood-android).
+   L'app native charge ce même index.html depuis GitHub Pages : ce module ne
+   fait RIEN dans Chrome / iPhone / PC (window.Capacitor absent).
+   Dans l'app native :
+   - Notifications : Firebase (FCM) au lieu du push web (qui n'existe pas
+     dans une WebView) → jeton enregistré via l'Edge Function « rwood-fcm »,
+     4 canaux Android (Messages, Alertes & SAV, Météo, Général) dont chacun
+     peut avoir son propre son.
+   - Bouton retour Android : ferme la fenêtre ouverte, sinon revient à
+     l'accueil, sinon met l'app en arrière-plan (au lieu de la quitter).
+   - Fichiers (PDF, Excel, photos…) : les téléchargements <a download> et
+     navigator.share, absents d'une WebView, passent par le stockage et le
+     menu de partage natifs.
+   ═══════════════════════════════════════════════════════════════════ */
+const RWOOD_NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+function _rnPlug(name){ return (RWOOD_NATIVE && window.Capacitor.Plugins && window.Capacitor.Plugins[name]) || null; }
+
+const _RN_CHANNELS = [
+  { id:'rwood_messages', name:'Messages', description:'Messages, photos, croquis et documents reçus', importance:5, visibility:1, vibration:true },
+  { id:'rwood_alertes',  name:'Alertes & SAV', description:'Magasin, SAV, dépannages, feuilles de route', importance:5, visibility:1, vibration:true },
+  { id:'rwood_meteo',    name:'Météo du matin', description:'Prévisions de la journée sur tes chantiers favoris', importance:3, visibility:1, vibration:false },
+  { id:'rwood_general',  name:'Général', description:'Rappels, agenda, documents et autres infos', importance:4, visibility:1, vibration:true },
+];
+let _rnPushReady = false, _rnPushToken = null;
+
+async function _rnSaveToken(token){
+  const authId = getSupaUserId();
+  if(!authId || !token) return false;
+  try{
+    const r = await fetch(SUPA_URL + '/functions/v1/rwood-fcm', { method:'POST',
+      headers:{ 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ action:'register', user_id: authId, token, device: navigator.userAgent.substring(0,120) }) });
+    try{ localStorage.setItem('rwood_fcm_saved', authId + '|' + token.slice(-12)); }catch(_){}
+    return r.ok;
+  }catch(e){ return false; }
+}
+
+async function _rnPushInit(interactive){
+  const P = _rnPlug('PushNotifications');
+  if(!P) return null;
+  try{
+    let perm = await P.checkPermissions();
+    if(perm.receive !== 'granted'){
+      if(!interactive && perm.receive === 'denied') return null;
+      perm = await P.requestPermissions();
+    }
+    if(perm.receive !== 'granted'){
+      if(interactive) showToast('🔕 Notifications refusées — Réglages du téléphone → Applis → RWOOD → Notifications');
+      _rnUpdateNotifStatus('denied');
+      return null;
+    }
+    for(const c of _RN_CHANNELS){ try{ await P.createChannel(c); }catch(_){} }
+    if(!_rnPushReady){
+      _rnPushReady = true;
+      P.addListener('registration', async (t) => {
+        _rnPushToken = t && t.value;
+        const ok = await _rnSaveToken(_rnPushToken);
+        if(window._rnInteractivePending){ window._rnInteractivePending = false; showToast(ok ? '✅ Notifications activées sur ce téléphone' : '⚠️ Notifications : enregistrement serveur impossible (fonction rwood-fcm déployée ?)'); }
+        _rnUpdateNotifStatus('granted');
+      });
+      P.addListener('registrationError', (e) => {
+        console.error('FCM registrationError', e);
+        if(window._rnInteractivePending){ window._rnInteractivePending = false; showToast('⚠️ Notifications : ' + ((e && e.error) || 'erreur Firebase')); }
+      });
+      // App ouverte : Android n'affiche rien tout seul → on montre la notif nous-mêmes
+      P.addListener('pushNotificationReceived', async (n) => {
+        const LN = _rnPlug('LocalNotifications');
+        const d = (n && n.data) || {};
+        if(LN){
+          try{
+            await LN.schedule({ notifications:[{ id: Math.floor(Math.random()*2e9), title: n.title || 'RWOOD', body: n.body || '',
+              channelId: _rnChannelFor(d.tag, d.url), smallIcon:'ic_stat_rwood', iconColor:'#E8AC3D', extra:{ url: d.url || '' } }] });
+            return;
+          }catch(_){}
+        }
+        showToast((n.title ? n.title + ' — ' : '') + (n.body || ''));
+      });
+      // Appui sur une notif (app fermée ou en arrière-plan) → bon écran
+      P.addListener('pushNotificationActionPerformed', (a) => {
+        const url = a && a.notification && a.notification.data && a.notification.data.url;
+        _rnOpenTarget(url);
+      });
+      const LN = _rnPlug('LocalNotifications');
+      if(LN) LN.addListener('localNotificationActionPerformed', (a) => { _rnOpenTarget(a && a.notification && a.notification.extra && a.notification.extra.url); });
+    }
+    if(interactive) window._rnInteractivePending = true;
+    await P.register();
+    return { native:true };
+  }catch(e){
+    console.error('_rnPushInit', e);
+    if(interactive) showToast('⚠️ Notifications : ' + (e && e.message ? e.message : e));
+    return null;
+  }
+}
+function _rnChannelFor(tag, url){
+  const t = String(tag||'').toLowerCase(), u = String(url||'');
+  if(t.startsWith('meteo')) return 'rwood_meteo';
+  if(t === 'magasin' || t.includes('sav') || t.startsWith('route') || t.includes('alerte')) return 'rwood_alertes';
+  if(u.startsWith('conv:') || ['info','fichier','photo','croquis','signature','message','alert','urgent'].includes(t)) return 'rwood_messages';
+  return 'rwood_general';
+}
+function _rnOpenTarget(url){
+  if(!url) return;
+  let tries = 0;
+  const go = () => {
+    const ready = !!(data && data.settings && data.settings.auth && data.settings.auth.authId) && !isAppLocked();
+    if(!ready && ++tries < 30){ setTimeout(go, 500); return; }
+    if(ready) _handleNotifTarget(url);
+  };
+  go();
+}
+function _rnUpdateNotifStatus(state){
+  const status = document.getElementById('notifPermStatus');
+  const btn = document.getElementById('notifPermBtn');
+  if(!status) return;
+  if(state === 'granted'){ status.textContent = '✅ Notifications natives activées (app Android).'; if(btn) btn.style.display = 'none'; }
+  else if(state === 'denied'){ status.textContent = '🔕 Notifications bloquées — Réglages du téléphone → Applis → RWOOD → Notifications.'; if(btn) btn.style.display = 'none'; }
+  else { status.textContent = ''; if(btn) btn.style.display = 'block'; }
+}
+
+/* ── Fichiers : téléchargement / partage natifs ── */
+function _rnBlobToB64(blob){
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+}
+function _rnSafeName(n){ return String(n || 'fichier').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || 'fichier'; }
+async function _rnShareFiles(files, title, text){
+  const FS = _rnPlug('Filesystem'), SH = _rnPlug('Share');
+  if(!SH) throw new Error('Partage indisponible');
+  const uris = [];
+  if(FS){
+    for(const f of files){
+      const w = await FS.writeFile({ path: 'partage/' + _rnSafeName(f.name), data: await _rnBlobToB64(f), directory:'CACHE', recursive:true });
+      uris.push(w.uri);
+    }
+  }
+  const opt = { title: title || (files[0] && files[0].name) || 'RWOOD', dialogTitle: 'Enregistrer ou envoyer' };
+  if(text) opt.text = text;
+  if(uris.length) opt.files = uris;
+  await SH.share(opt);
+}
+async function _rnSaveBlob(blob, name){
+  const FS = _rnPlug('Filesystem');
+  const safe = _rnSafeName(name);
+  if(FS){
+    try{
+      await FS.writeFile({ path: 'RWOOD/' + safe, data: await _rnBlobToB64(blob), directory:'DOCUMENTS', recursive:true });
+      showToast('📁 Enregistré dans Documents/RWOOD : ' + safe);
+      return true;
+    }catch(e){ console.warn('Documents indisponible → partage', e); }
+  }
+  const f = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
+  await _rnShareFiles([f], safe);
+  return true;
+}
+async function _rnDownloadHref(href, name){
+  try{
+    const blob = await (await fetch(href)).blob();
+    await _rnSaveBlob(blob, name || ('RWOOD_' + Date.now()));
+  }catch(e){ if(!(e && /cancel/i.test(String(e.message||e)))) showToast('⚠️ Enregistrement impossible : ' + (e && e.message || e)); }
+}
+
+if(RWOOD_NATIVE){
+  document.documentElement.classList.add('rwood-native');
+
+  // navigator.share / canShare → menu de partage Android
+  try{
+    const _nShare = async (d) => {
+      d = d || {};
+      if(d.files && d.files.length) return _rnShareFiles(Array.from(d.files), d.title, d.text);
+      const SH = _rnPlug('Share'); if(!SH) throw new Error('Partage indisponible');
+      return SH.share({ title: d.title || 'RWOOD', text: d.text || undefined, url: d.url || undefined, dialogTitle:'Partager' });
+    };
+    Object.defineProperty(navigator, 'share', { configurable:true, value: _nShare });
+    Object.defineProperty(navigator, 'canShare', { configurable:true, value: () => true });
+  }catch(e){ console.warn('share polyfill', e); }
+
+  // <a download href="blob:/data:"> → stockage natif
+  const _origAClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function(){
+    const href = this.href || '';
+    if(this.hasAttribute('download') && /^(blob:|data:)/.test(href)){ _rnDownloadHref(href, this.getAttribute('download')); return; }
+    return _origAClick.call(this);
+  };
+  document.addEventListener('click', (ev) => {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a[download]') : null;
+    if(a && /^(blob:|data:)/.test(a.href || '')){ ev.preventDefault(); _rnDownloadHref(a.href, a.getAttribute('download')); }
+  }, true);
+  const _origOpen = window.open;
+  window.open = function(url, ...rest){
+    if(typeof url === 'string' && /^blob:/.test(url)){ _rnDownloadHref(url, 'RWOOD_' + Date.now()); return null; }
+    return _origOpen.call(window, url, ...rest);
+  };
+
+  // Bouton retour Android
+  const APP = _rnPlug('App');
+  if(APP){
+    APP.addListener('backButton', () => {
+      const overlays = Array.from(document.querySelectorAll('.modal-overlay.open'));
+      const top = overlays[overlays.length - 1];
+      if(top){
+        const close = top.querySelector('.modal-close');
+        if(close){ close.click(); return; }
+        if(top.id && top.id.startsWith('modal-') && document.getElementById(top.id)){ top.classList.remove('open'); return; }
+        top.remove(); return;
+      }
+      const auth = document.getElementById('authScreen');
+      if(auth && auth.style.display !== 'none'){ APP.minimizeApp(); return; }
+      const active = document.querySelector('main .view.active');
+      const home = document.body.classList.contains('simple-mode') ? 'simpleDash' : 'chantiers';
+      if(active && active.id !== 'view-' + home && typeof goTo === 'function'){ goTo(home); return; }
+      APP.minimizeApp();
+    });
+    // Retour au premier plan : recharge les messages / données
+    APP.addListener('resume', () => { try{ if(typeof syncPull === 'function' && navigator.onLine) syncPull().then(p => { if(p) refreshCurrentView(); }); }catch(_){} });
+  }
+
+  // Remplace l'abonnement push web par Firebase
+  subscribeToPush = async function(){ return _rnPushInit(true); };
+  _pushRetrySubscribe = async function(){ return _rnPushInit(true); };
+  requestNotifPermission = function(){ _rnPushInit(true); };
+  updateNotifPermStatus = function(){
+    const P = _rnPlug('PushNotifications');
+    if(!P){ _rnUpdateNotifStatus('none'); return; }
+    P.checkPermissions().then(p => _rnUpdateNotifStatus(p.receive === 'granted' ? 'granted' : (p.receive === 'denied' ? 'denied' : 'none'))).catch(()=>{});
+  };
+  setPushNotifEnabled = async function(enabled){
+    ensureNotifSettings();
+    data.settings.notifications.pushEnabled = enabled;
+    saveData();
+    if(enabled){ await _rnPushInit(true); }
+    else {
+      const P = _rnPlug('PushNotifications');
+      try{
+        if(_rnPushToken) await fetch(SUPA_URL + '/functions/v1/rwood-fcm', { method:'POST', headers:{ 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' }, body: JSON.stringify({ action:'unregister', token:_rnPushToken }) });
+        if(P) await P.unregister();
+      }catch(_){}
+      showToast('Notifications désactivées sur ce téléphone');
+    }
+    updateNotifPermStatus();
+  };
+
+  // Démarrage : dès que le compte est chargé, on (ré)enregistre le téléphone
+  (function _rnBoot(){
+    let tries = 0;
+    const tick = () => {
+      const ready = !!(data && data.settings && data.settings.auth && data.settings.auth.authId);
+      if(!ready){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      try{ ensureNotifSettings(); }catch(_){}
+      const n = data.settings.notifications || {};
+      if(n.pushEnabled === false) return;
+      if(n.pushEnabled == null){ n.pushEnabled = true; try{ saveData(); }catch(_){} }
+      _rnPushInit(false);
+    };
+    setTimeout(tick, 1500);
+  })();
+}
+/* MODULE — RwoodNative (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
