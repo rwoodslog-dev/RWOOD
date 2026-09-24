@@ -35238,9 +35238,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.221';
+const APP_VERSION = '5.41.222';
 
 const CHANGELOG = [
+  {
+    version: '5.41.222',
+    date: '24/09/2026',
+    entries: [
+      { icon: '📋', text: "App Android : widget « À faire », ta liste de la bulle sur l'écran d'accueil. Tu peux cocher les tâches directement, même app fermée : la coche est synchronisée à la prochaine ouverture. ＋ pour ajouter une tâche." },
+      { icon: '🚚', text: "App Android : widget « Feuille de route », avec le chantier en cours de la tournée (adresse, tâches, notes du conducteur), les prochains arrêts et les boutons 🧭 Waze, 📋 Détail et ✅ Dépannage fini." },
+    ],
+  },
   {
     version: '5.41.221',
     date: '24/09/2026',
@@ -61204,6 +61212,122 @@ if(RWOOD_NATIVE){
   };
 }
 /* MODULE — RwoodWidgets (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodWidgets 2  (v5.41.222)
+   Widgets « À faire » (liste de la bulle, cochable depuis l'écran
+   d'accueil) et « Feuille de route » (chantier en cours de la tournée).
+   ═══════════════════════════════════════════════════════════════════ */
+function _rwW2(){ const R = _rn2(); return (R && typeof R.setTodo === 'function') ? R : null; }
+
+function _rwPushTodo(){
+  const R = _rwW2(); if(!R || typeof _getPinnedNote !== 'function') return;
+  const pn = _getPinnedNote();
+  const tasks = (pn.tasks || []).slice(0, 40).map(t => ({ id: t.id, text: String(t.text || '').slice(0, 140), done: !!t.done }));
+  R.setTodo({ tasks, title: 'À faire' }).catch(()=>{});
+}
+async function _rwApplyTodoOps(ops){
+  if(!ops || !ops.length || typeof _getPinnedNote !== 'function') return;
+  const pn = _getPinnedNote();
+  let changed = false;
+  ops.forEach(op => {
+    const t = pn.tasks.find(x => x.id === op.id);
+    if(t && !!t.done !== !!op.done){ t.done = !!op.done; t.updatedAt = new Date().toISOString(); changed = true; }
+  });
+  const R = _rwW2(); if(R) R.clearTodoOps().catch(()=>{});
+  if(!changed) return;
+  saveData();
+  try{ _renderPinnedBubble(pn); }catch(_){}
+  try{ _renderPinnedTasksInPopup(); }catch(_){}
+  try{ await pushMyTodoList(); }catch(_){}
+  _rwPushTodo();
+}
+
+function _rwPushRoute(){
+  const R = _rwW2(); if(!R || typeof _routeCache === 'undefined') return;
+  const r = _routeCache[0];
+  const json = !r ? '{}' : JSON.stringify({
+    count: _routeCache.length, routeId: r.id,
+    from: (r.createdBy && r.createdBy.name) || '',
+    stops: (r.stops || []).map(s => ({
+      id: s.id, name: s.name || 'Chantier', addr: s.address || '', status: s.status || '',
+      notes: String(s.notes || '').slice(0, 160),
+      tasksTotal: (s.tasks || []).length, tasksDone: (s.tasks || []).filter(t => t.done).length,
+    })),
+  });
+  R.setRoute({ json }).catch(()=>{});
+}
+async function _rwFindRoute(routeId){
+  try{ await routeLoadMine(); }catch(_){}
+  return (_routeCache || []).find(r => r.id === routeId) || null;
+}
+function _rwOpenPinnedPopup(tab){
+  const pop = document.getElementById('pinnedNotePopup');
+  if(pop && !pop.classList.contains('open')) togglePinnedNotePopup();
+  setTimeout(() => { try{ _pinnedSwitchTab(tab); if(tab === 'route') renderRoutePane(); }catch(_){} }, 700);
+}
+
+if(RWOOD_NATIVE){
+  (function _rw2Boot(){
+    let tries = 0;
+    const tick = async () => {
+      const R = _rwW2(); if(!R) return;
+      if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      try{ const r = await R.getTodoOps(); await _rwApplyTodoOps(r && r.ops); }catch(_){}
+      _rwPushTodo();
+      try{ await routeLoadMine(); }catch(_){}
+    };
+    setTimeout(tick, 3000);
+    const APP = _rnPlug('App');
+    if(APP) APP.addListener('resume', async () => {
+      const R = _rwW2(); if(!R) return;
+      try{ const r = await R.getTodoOps(); await _rwApplyTodoOps(r && r.ops); }catch(_){}
+      try{ await routeLoadMine(); }catch(_){}
+    });
+    const R = _rwW2();
+    if(R) R.addListener('widgetAction', async (e) => {
+      const a = (e && e.action) || '';
+      if(!a.startsWith('todo:')) return;
+      try{ const r = await R.getTodoOps(); await _rwApplyTodoOps(r && r.ops); }catch(_){}
+    });
+  })();
+
+  // Mise à jour des widgets quand la liste / la feuille de route changent
+  const _wrap2 = (name, after) => {
+    const orig = window[name];
+    if(typeof orig !== 'function') return;
+    window[name] = function(){
+      const r = orig.apply(this, arguments);
+      if(r && typeof r.then === 'function') return r.then(v => { try{ after(); }catch(_){} return v; });
+      try{ after(); }catch(_){}
+      return r;
+    };
+  };
+  _wrap2('_renderPinnedBubble', () => { clearTimeout(window._rwTodoT); window._rwTodoT = setTimeout(_rwPushTodo, 500); });
+  _wrap2('routeLoadMine', _rwPushRoute);
+  _wrap2('_routeMutate', _rwPushRoute);
+
+  // Boutons des widgets
+  const _rw2OrigTarget = _handleNotifTarget;
+  _handleNotifTarget = async function(target){
+    const t = decodeURIComponent(String(target || '')).replace(/^#/, '');
+    const p = t.split(':');
+    try{
+      if(t === 'act:todo'){ _rwOpenPinnedPopup('list'); return; }
+      if(t === 'act:todo-add'){ _rwOpenPinnedPopup('list'); setTimeout(() => { const i = document.getElementById('pinnedPopupAddInput'); if(i) i.focus(); }, 900); return; }
+      if(t === 'act:route'){ _rwOpenPinnedPopup('route'); return; }
+      if(p[0] === 'act' && (p[1] === 'route-stop' || p[1] === 'route-finish')){
+        const r = await _rwFindRoute(p[2]);
+        if(!r){ showToast('Feuille de route introuvable (déjà terminée ?)'); _rwOpenPinnedPopup('route'); return; }
+        if(p[1] === 'route-stop') openRouteStopDetail(r._key, r.id, p[3]);
+        else routeFinishStop(r._key, r.id, p[3]);
+        return;
+      }
+    }catch(e){ console.error('widget target', t, e); return; }
+    return _rw2OrigTarget.apply(this, arguments);
+  };
+}
+/* MODULE — RwoodWidgets 2 (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
