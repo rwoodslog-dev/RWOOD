@@ -5111,6 +5111,7 @@
             <div id="notifPermStatus" class="hint" style="margin-top:10px;"></div>
             <button class="btn btn-outline btn-block" id="notifPermBtn" style="margin-top:10px; display:none;" onclick="requestNotifPermission()">🔔 Activer les notifications</button>
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotification()">🧪 Tester la notification</button>
+            <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_pushRetrySubscribe()">🔄 Réactiver les notifications de ce téléphone</button>
             <div class="hint" style="margin-top:6px;">Envoie une vraie notification à ce compte et affiche le résultat réel du serveur (utile pour diagnostiquer si une notification n'arrive pas).</div>
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="testPushNotificationDelayed()">⏳ Tester à retardement (app fermée)</button>
             <div class="hint" style="margin-top:6px;">Envoie la notification 20 secondes plus tard (délai côté serveur) — le temps de fermer complètement l'application pour vérifier qu'elle apparaît bien même app fermée.</div>
@@ -8439,6 +8440,8 @@ function stripBlobsForSync(d){
     (site.documents || []).forEach(doc => { if(doc.data && isDataUrlRef(doc.data)) delete doc.data; });
   });
   if(copy.settings && copy.settings.companyLogo && isDataUrlRef(copy.settings.companyLogo)) delete copy.settings.companyLogo;
+  // v5.41.218 — l'état de verrouillage reste local à l'appareil
+  if(copy.settings && copy.settings.auth){ copy.settings.auth.locked = false; delete copy.settings.auth.lockPin; delete copy.settings.auth.autoLock; }
   (copy.payslips || []).forEach(p => { if(p.data && isDataUrlRef(p.data)) delete p.data; });
   (copy.tiles || []).forEach(t => {
     if(t.photo && isDataUrlRef(t.photo)) delete t.photo;
@@ -8644,6 +8647,20 @@ function mergeSyncedData(local, remote){
       liens:  Object.assign({}, ro.liens||{},  lo.liens||{}),
       ajouts: Object.values(ajoutsMap)
     };
+  }
+  // v5.41.218 — le verrouillage (locked / PIN / verrou auto) est propre à CET
+  // appareil : ne jamais le reprendre du cloud (sinon un ancien « déconnecté »
+  // ou un autre téléphone reverrouille l'app à chaque synchro → identifiant
+  // redemandé à chaque ouverture).
+  if(merged.settings){
+    const la = (local.settings && local.settings.auth) || {};
+    const ra = (remote.settings && remote.settings.auth) || {};
+    merged.settings = Object.assign({}, merged.settings);
+    const na = Object.assign({}, la, ra);
+    na.locked = !!la.locked;
+    if(la.lockPin) na.lockPin = la.lockPin; else delete na.lockPin;
+    na.autoLock = !!la.autoLock;
+    merged.settings.auth = na;
   }
   return merged;
 }
@@ -29636,6 +29653,41 @@ function urlBase64ToUint8Array(base64String){
   return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
 }
 
+/* v5.41.217 — aide claire quand le téléphone refuse l'abonnement aux notifs
+   (au lieu du message technique « Registration failed - push service error »). */
+function _pushShowHelp(err){
+  const msg = String((err && err.message) || err || '');
+  const isXiaomi = /xiaomi|redmi|poco|miui|hyperos/i.test(navigator.userAgent);
+  let ex = document.getElementById('modal-pushHelp'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'modal-pushHelp'; ex.className = 'modal-overlay open';
+  ex.innerHTML = `<div class="modal">
+    <div class="modal-header"><h2>🔔 Notifications non activées</h2><button class="modal-close" onclick="document.getElementById('modal-pushHelp').remove()">×</button></div>
+    <div class="hint" style="margin-bottom:10px;">Le service de notifications du téléphone n'a pas répondu. Ça arrive souvent juste après avoir réinstallé l'icône ou quand le téléphone bride Chrome en arrière-plan.</div>
+    <ol style="margin:0 0 12px 18px;padding:0;font-size:13.5px;line-height:1.55;">
+      <li>Vérifie que tu as du réseau (Wi-Fi ou 4G/5G), puis appuie sur <b>Réessayer</b> ci-dessous.</li>
+      <li>Réglages du téléphone → <b>Applications → Chrome</b> → <b>Notifications</b> : activées.</li>
+      ${isXiaomi ? `<li>Réglages → <b>Applications → Chrome</b> → <b>Économiseur de batterie</b> : « <b>Pas de restrictions</b> », et <b>Démarrage automatique</b> : activé (idem pour l'appli RWOOD si elle apparaît).</li>` : `<li>Réglages → <b>Applications → Chrome</b> → <b>Batterie</b> : « Sans restriction ».</li>`}
+      <li>Vérifie que <b>Services Google Play</b> est à jour (Play Store).</li>
+      <li>Si ça bloque encore : redémarre le téléphone, puis réessaie.</li>
+    </ol>
+    <button class="btn btn-primary btn-block" onclick="document.getElementById('modal-pushHelp').remove(); _pushRetrySubscribe()">🔄 Réessayer</button>
+    <div style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Détail technique : ${escapeHtml(msg || 'inconnu')}</div>
+  </div>`;
+  document.body.appendChild(ex);
+}
+async function _pushRetrySubscribe(){
+  if(!('serviceWorker' in navigator)) return;
+  showToast('⏳ Nouvelle tentative…');
+  try{
+    const reg = await navigator.serviceWorker.getRegistration();
+    if(!reg){ showToast('⚠️ Recharge l\'app puis réessaie'); return; }
+    try{ const old = await reg.pushManager.getSubscription(); if(old) await old.unsubscribe(); }catch(_){}
+    try{ localStorage.removeItem('rwood_vapid_key'); }catch(_){}
+    const sub = await subscribeToPush(reg);
+    if(sub) showToast('✅ Notifications activées sur ce téléphone');
+  }catch(e){ _pushShowHelp(e); }
+}
+
 /* Abonne l'appareil aux push et enregistre la subscription dans Supabase */
 async function subscribeToPush(reg){
   try{
@@ -29650,10 +29702,29 @@ async function subscribeToPush(reg){
       sub = null;
     }
     if(!sub){
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
-      });
+      // v5.41.217 — « Registration failed - push service error » : le service
+      // de notifications du téléphone (Google / FCM) n'a pas répondu. C'est
+      // souvent passager (juste après une réinstallation de l'icône, réseau,
+      // économiseur de batterie…) : on réessaie 3 fois en repartant de zéro.
+      let lastErr = null;
+      for(let attempt = 0; attempt < 3 && !sub; attempt++){
+        try{
+          if(attempt > 0){
+            try{ const old = await reg.pushManager.getSubscription(); if(old) await old.unsubscribe(); }catch(_){}
+            await new Promise(r => setTimeout(r, attempt === 1 ? 1500 : 4000));
+          }
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+          });
+        }catch(err){ lastErr = err; }
+      }
+      if(!sub){
+        try{ localStorage.setItem('rwood_push_last_error', String((lastErr && lastErr.message) || lastErr)); }catch(_){}
+        _pushShowHelp(lastErr);
+        return null;
+      }
+      try{ localStorage.removeItem('rwood_push_last_error'); }catch(_){}
       localStorage.setItem('rwood_vapid_key', VAPID_PUBLIC_KEY);
     }
     // Sauvegarder la subscription dans Supabase (table rwood_push_subscriptions)
@@ -35140,9 +35211,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.216';
+const APP_VERSION = '5.41.218';
 
 const CHANGELOG = [
+  {
+    version: '5.41.218',
+    date: '24/09/2026',
+    entries: [
+      { icon: '🔐', text: "Connexion : l'app ne redemande plus l'identifiant et le mot de passe à chaque ouverture. L'état « verrouillé / déconnecté » restait enregistré dans le cloud et reverrouillait le téléphone à chaque synchro — il est maintenant propre à chaque appareil." },
+      { icon: '🌦️', text: "Météo du matin : changer l'heure de la notif la réarme pour le jour même (avant, une seule notif par jour : si elle était déjà partie, plus rien ne sortait). Nécessite de redéployer la fonction Supabase « meteo-matin »." },
+    ],
+  },
+  {
+    version: '5.41.217',
+    date: '24/09/2026',
+    entries: [
+      { icon: '🔔', text: "Notifications : si le téléphone refuse l'abonnement (« Registration failed - push service error », fréquent juste après avoir réinstallé l'icône), l'app réessaie automatiquement 3 fois, puis affiche une aide claire (réseau, notifications Chrome, batterie « Pas de restrictions » / démarrage auto sur Xiaomi, Services Google Play) avec un bouton Réessayer. Nouveau bouton « Réactiver les notifications de ce téléphone » dans Paramètres → Notifications." },
+    ],
+  },
   {
     version: '5.41.216',
     date: '24/09/2026',
