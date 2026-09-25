@@ -4520,6 +4520,7 @@
 
       <!-- MODULE — RéunionChantier (v5.41.20) : juste sous le statut du chantier. -->
       <div id="detailReunionZone"></div>
+      <div id="detailModel3dZone"></div>
 
       <!-- Point 2c : barre d'avancement déplacée juste sous Statut. -->
       <div class="section-title" style="margin-top:18px;">Avancement</div>
@@ -11798,6 +11799,10 @@ function renderDetail(siteId){
       ? _renderReunionChantierCard(site, !!site.syncLive, (typeof _reunionCanEdit === 'function') && _reunionCanEdit())
       : '';
   }
+
+  // v5.41.224 — Maquette 3D du chantier (lien valable 3 mois)
+  const _m3dZone = document.getElementById('detailModel3dZone');
+  if(_m3dZone) _m3dZone.innerHTML = _m3dCardHtml(site);
 
   // Bouton Supprimer : tout en bas de la page (action rare, volontairement isolée).
   const _deleteZone = document.getElementById('detailDeleteZone');
@@ -35238,9 +35243,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.223';
+const APP_VERSION = '5.41.224';
 
 const CHANGELOG = [
+  {
+    version: '5.41.224',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🧊', text: "Fiche chantier : nouvelle zone « Maquette 3D ». Le conducteur colle le lien de la visionneuse 3D, qui devient un bouton « Voir la 3D du chantier » pour toute l'équipe (aussi dans le bandeau Chantier actif). Le lien est valable 3 mois : il passe en orange 14 jours avant, puis en rouge « lien obsolète ». Il peut être modifié ou supprimé à tout moment par le conducteur ou le patron." },
+    ],
+  },
   {
     version: '5.41.223',
     date: '25/09/2026',
@@ -51210,6 +51222,7 @@ function renderChantierActifBanner(){
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
       <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.noteCategories||[]).filter(c=>!c.archived).reduce((sum,c)=>sum+(c.notes||[]).filter(x=>!x.archived).length,0); return n ? ` (${n})` : ''; })()}</button>
       <button onclick="openReunionChantierModal('${site.id}')"><img src="icons/agenda.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🗓️'}))"> Réunion${(site.reunionChantier && site.reunionChantier.enabled) ? ' ✅' : ''}</button>
+      ${(site.model3d && site.model3d.url) ? `<button onclick="_m3dOpen('${site.id}')" style="${_m3dStatus(site).expired ? 'color:#ff6b6b;border-color:#ff6b6b;' : ''}">🧊 3D${_m3dStatus(site).expired ? ' ⚠️' : ''}</button>` : ''}
     </div>
   `;
 }
@@ -61396,6 +61409,118 @@ if(RWOOD_NATIVE && _rrN()){
   }).catch(()=>{});
 }
 /* MODULE — RwoodRadioNative (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — Maquette3D  (v5.41.224)
+   Lien vers la visionneuse 3D du chantier (ex. projekteprofi.sema-server.com
+   /webviewer/…). Le lien fourni n'est valable que 3 mois : on mémorise la
+   date d'ajout et le bouton passe en ROUGE « lien obsolète » 3 mois après.
+   Ajout / modification / suppression : conducteur de travaux, patron (et dev).
+   Tout le monde voit et ouvre le bouton. Stocké sur le chantier (site.model3d
+   = { url, setAt, setBy }) → synchronisé avec l'équipe comme le reste.
+   ═══════════════════════════════════════════════════════════════════ */
+function _m3dCanEdit(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'conducteur' || r === 'patron';
+}
+function _m3dStatus(site){
+  const m = site && site.model3d;
+  if(!m || !m.url) return { has:false };
+  const set = new Date(m.setAt || Date.now());
+  const exp = new Date(set); exp.setMonth(exp.getMonth() + 3);
+  const now = new Date();
+  const daysLeft = Math.ceil((exp - now) / 86400000);
+  return { has:true, set, exp, daysLeft, expired: daysLeft <= 0, soon: daysLeft > 0 && daysLeft <= 14 };
+}
+function _m3dFmt(d){ return d.toLocaleDateString('fr-FR', { day:'numeric', month:'short', year:'numeric' }); }
+function _m3dCardHtml(site){
+  const st = _m3dStatus(site);
+  const canEdit = _m3dCanEdit();
+  if(!st.has){
+    if(!canEdit) return '';
+    return `<div class="card" style="margin-top:12px;">
+      <div style="font-weight:800;font-size:14px;margin-bottom:6px;">🧊 Maquette 3D du chantier</div>
+      <div class="hint" style="margin-bottom:8px;">Colle le lien de la visionneuse 3D. Il sera valable 3 mois, ensuite le bouton passera en rouge pour te rappeler de le renouveler.</div>
+      <button class="btn btn-outline btn-block" onclick="_m3dEdit('${site.id}')">＋ Ajouter le lien 3D</button>
+    </div>`;
+  }
+  const color = st.expired ? '#ff6b6b' : (st.soon ? '#F5A623' : 'var(--wood)');
+  const status = st.expired
+    ? `⚠️ <b>Lien obsolète</b> depuis le ${_m3dFmt(st.exp)}${canEdit ? ' — colle le nouveau lien avec « Modifier »' : ' — demande au conducteur de le renouveler'}`
+    : (st.soon ? `⏳ Expire bientôt : le ${_m3dFmt(st.exp)} (${st.daysLeft} j)` : `Valable jusqu'au ${_m3dFmt(st.exp)}`);
+  const who = site.model3d.setBy ? ` par ${escapeHtml(site.model3d.setBy)}` : '';
+  return `<div class="card" style="margin-top:12px;border:1.5px solid ${color};">
+    <div style="font-weight:800;font-size:14px;margin-bottom:8px;">🧊 Maquette 3D du chantier</div>
+    <button class="btn btn-block" onclick="_m3dOpen('${site.id}')" style="background:${st.expired ? '#ff6b6b' : 'var(--wood)'};color:${st.expired ? '#fff' : '#1a0f00'};font-weight:800;border:none;">
+      ${st.expired ? '⚠️ Lien obsolète — ouvrir quand même' : '🧊 Voir la 3D du chantier'}
+    </button>
+    <div class="hint" style="margin-top:8px;color:${st.expired ? '#ff6b6b' : ''};">${status}</div>
+    <div class="hint" style="margin-top:2px;">Ajouté le ${_m3dFmt(st.set)}${who}</div>
+    ${canEdit ? `<div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="btn btn-outline btn-sm" style="flex:1;" onclick="_m3dEdit('${site.id}')">✏️ Modifier</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;color:#ff6b6b;border-color:#ff6b6b;" onclick="_m3dDelete('${site.id}')">🗑️ Supprimer</button>
+    </div>` : ''}
+  </div>`;
+}
+function _m3dOpen(siteId){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site || !site.model3d || !site.model3d.url) return;
+  if(_m3dStatus(site).expired) showToast('⚠️ Ce lien a plus de 3 mois, il est peut-être expiré');
+  window.open(site.model3d.url, '_blank');
+}
+function _m3dEdit(siteId){
+  if(!_m3dCanEdit()){ showToast('🔒 Réservé au conducteur de travaux'); return; }
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site) return;
+  let ex = document.getElementById('modal-m3dEdit'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'modal-m3dEdit'; ex.className = 'modal-overlay open';
+  ex.innerHTML = `<div class="modal">
+    <div class="modal-header"><h2>🧊 Lien 3D — ${escapeHtml(site.name || '')}</h2><button class="modal-close" onclick="document.getElementById('modal-m3dEdit').remove()">×</button></div>
+    <div class="field"><label>Lien de la visionneuse 3D</label>
+      <textarea id="m3dUrlInput" rows="3" style="width:100%;font-size:13px;" placeholder="https://projekteprofi.sema-server.com/webviewer/index.html?model=…">${escapeHtml((site.model3d && site.model3d.url) || '')}</textarea>
+    </div>
+    <div class="hint" style="margin-bottom:12px;">Enregistrer un lien (nouveau ou modifié) relance le compteur de 3 mois à partir d'aujourd'hui.</div>
+    <button class="btn btn-primary btn-block" onclick="_m3dSave('${site.id}')">Enregistrer</button>
+  </div>`;
+  document.body.appendChild(ex);
+  setTimeout(() => { const i = document.getElementById('m3dUrlInput'); if(i) i.focus(); }, 150);
+}
+function _m3dSave(siteId){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  const inp = document.getElementById('m3dUrlInput');
+  if(!site || !inp) return;
+  let url = inp.value.trim();
+  const m = url.match(/https?:\/\/\S+/);
+  if(!m){ showToast('Colle un lien qui commence par https://'); return; }
+  url = m[0];
+  const p = (data.settings && data.settings.myProfile) || {};
+  const me = ((p.firstName || '') + ' ' + (p.lastName || '')).trim();
+  site.model3d = { url, setAt: new Date().toISOString(), setBy: me || null };
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  if(site.syncLive && typeof pushSharedSite === 'function') pushSharedSite(site).catch(()=>{});
+  const md = document.getElementById('modal-m3dEdit'); if(md) md.remove();
+  showToast('🧊 Lien 3D enregistré — valable 3 mois');
+  renderDetail(siteId);
+  if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
+}
+function _m3dDelete(siteId){
+  if(!_m3dCanEdit()) return;
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site) return;
+  if(!confirm('Supprimer le lien 3D de ce chantier ?')) return;
+  site.model3d = null;
+  site.updatedAt = new Date().toISOString();
+  saveData();
+  if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
+  if(site.syncLive && typeof pushSharedSite === 'function') pushSharedSite(site).catch(()=>{});
+  showToast('Lien 3D supprimé');
+  renderDetail(siteId);
+  if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
+}
+/* MODULE — Maquette3D (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
