@@ -35243,9 +35243,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.228';
+const APP_VERSION = '5.41.229';
 
 const CHANGELOG = [
+  {
+    version: '5.41.229',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🔔', text: "App Android : si le service de notifications Google du téléphone ne répond pas (« SERVICE_NOT_AVAILABLE »), l'app réessaie 3 fois toute seule, puis affiche une aide claire (données mobiles, DNS privé, batterie des Services Google Play) au lieu du message technique." },
+    ],
+  },
   {
     version: '5.41.228',
     date: '25/09/2026',
@@ -60767,6 +60774,24 @@ async function _rnSaveToken(token){
   }catch(e){ return false; }
 }
 
+function _rnShowFcmHelp(msg){
+  let ex = document.getElementById('modal-fcmHelp'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'modal-fcmHelp'; ex.className = 'modal-overlay open';
+  ex.innerHTML = `<div class="modal">
+    <div class="modal-header"><h2>🔔 Service Google indisponible</h2><button class="modal-close" onclick="document.getElementById('modal-fcmHelp').remove()">×</button></div>
+    <div class="hint" style="margin-bottom:10px;">Le téléphone n'arrive pas à joindre le service de notifications de Google. Ce n'est pas RWOOD : c'est un réglage ou le réseau du téléphone. Les notifications déjà activées continuent souvent de marcher (teste avec « 🧪 Tester »).</div>
+    <ol style="margin:0 0 12px 18px;padding:0;font-size:13.5px;line-height:1.55;">
+      <li>Essaie en <b>données mobiles</b> (coupe le Wi-Fi) : certains Wi-Fi bloquent Google.</li>
+      <li>Réglages → <b>Connexion et partage → DNS privé</b> : mets <b>Désactivé</b> ou <b>Automatique</b> (un bloqueur de pubs y empêche Google).</li>
+      <li>Réglages → Applis → <b>Services Google Play</b> → Économiseur de batterie : <b>Pas de restrictions</b>, et données en arrière-plan autorisées.</li>
+      <li>Vérifie que la <b>date et l'heure</b> sont automatiques, puis <b>redémarre</b> le téléphone.</li>
+    </ol>
+    <button class="btn btn-primary btn-block" onclick="document.getElementById('modal-fcmHelp').remove(); window._rnRegRetry = 0; _rnPushInit(true)">🔄 Réessayer</button>
+    <div style="font-size:10.5px;color:var(--ink-soft);margin-top:8px;">Détail technique : ${escapeHtml(String(msg || '').slice(0, 160))}</div>
+  </div>`;
+  document.body.appendChild(ex);
+}
+
 async function _rnPushInit(interactive){
   const P = _rnPlug('PushNotifications');
   if(!P) return null;
@@ -60792,7 +60817,21 @@ async function _rnPushInit(interactive){
       });
       P.addListener('registrationError', (e) => {
         console.error('FCM registrationError', e);
-        if(window._rnInteractivePending){ window._rnInteractivePending = false; showToast('⚠️ Notifications : ' + ((e && e.error) || 'erreur Firebase')); }
+        const msg = String((e && e.error) || '');
+        // v5.41.229 — SERVICE_NOT_AVAILABLE / TIMEOUT : le service Google du
+        // téléphone n'a pas répondu (réseau, économie de batterie, DNS privé…).
+        // Souvent passager → 3 nouveaux essais automatiques, et un vrai message.
+        const transient = /SERVICE_NOT_AVAILABLE|TIMEOUT|INTERNAL_SERVER_ERROR|IOException/i.test(msg);
+        window._rnRegRetry = (window._rnRegRetry || 0) + 1;
+        if(transient && window._rnRegRetry <= 3){
+          setTimeout(() => { try{ P.register(); }catch(_){} }, [5000, 15000, 45000][window._rnRegRetry - 1]);
+          if(window._rnInteractivePending) showToast('⏳ Service Google pas disponible, nouvel essai automatique…');
+          return;
+        }
+        if(window._rnInteractivePending || window._rnRegRetry > 3){
+          window._rnInteractivePending = false;
+          if(transient) _rnShowFcmHelp(msg); else showToast('⚠️ Notifications : ' + (msg || 'erreur Firebase'));
+        }
       });
       // App ouverte : Android n'affiche rien tout seul → on montre la notif nous-mêmes
       P.addListener('pushNotificationReceived', async (n) => {
