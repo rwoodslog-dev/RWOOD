@@ -1,0 +1,84 @@
+# RWOOD — fabrique l'application Android à chaque envoi de fichiers sur GitHub.
+# Résultat : onglet « Releases » du dépôt → RWOOD-x.y.z.apk (à installer)
+#            + RWOOD-x.y.z.aab (à envoyer sur le Play Store).
+name: Construire l'app Android RWOOD
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Dépôt GitHub du site RWOOD intégré à l'app (doit être public, comme pour GitHub Pages)
+  SITE_REPO: rwoodslog-dev/RWOOD
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier le fichier Firebase (google-services.json)
+        run: |
+          if [ -f google-services.json ]; then cp google-services.json android/app/google-services.json; fi
+          if [ ! -f android/app/google-services.json ]; then
+            echo "::error::Fichier google-services.json manquant : télécharge-le depuis Firebase et dépose-le à la racine du dépôt."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Intégrer le site RWOOD dans l'app
+        run: |
+          git clone --depth 1 "https://github.com/${SITE_REPO}.git" site
+          rm -rf www && mkdir www
+          rsync -a --exclude .git --exclude .github --exclude supabase --exclude '*.zip' --exclude '*.md' site/ www/
+          node scripts/make-manifest.js www
+          ls www | head -30
+
+      - name: Installer Capacitor
+        run: npm ci
+
+      - name: Préparer le projet Android
+        run: npx cap sync android
+
+      - name: Compiler l'APK et l'AAB
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace
+
+      - name: Renommer les fichiers
+        run: |
+          V="1.0.${{ github.run_number }}"
+          mkdir -p sortie
+          cp android/app/build/outputs/apk/release/app-release.apk "sortie/RWOOD-$V.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "sortie/RWOOD-$V.aab"
+          echo "V=$V" >> $GITHUB_ENV
+
+      - name: Publier dans Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.V }}
+          name: RWOOD Android ${{ env.V }}
+          body: |
+            📱 **RWOOD-${{ env.V }}.apk** → à télécharger sur le téléphone et installer.
+            🏪 **RWOOD-${{ env.V }}.aab** → à envoyer sur le Play Store (Google Play Console).
+          files: |
+            sortie/RWOOD-${{ env.V }}.apk
+            sortie/RWOOD-${{ env.V }}.aab
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RWOOD-android-${{ env.V }}
+          path: sortie/
