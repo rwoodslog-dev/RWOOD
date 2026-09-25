@@ -35243,9 +35243,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.225';
+const APP_VERSION = '5.41.226';
 
 const CHANGELOG = [
+  {
+    version: '5.41.226',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🚗', text: "Android Auto : nouvelle app « RWOOD Route » à côté de la radio RWOOD. Elle affiche la liste des chantiers (🧭 Itinéraire vers Waze, 🔑 code boîte à clés en grand) et la feuille de route active dans l'ordre. « ✅ Dépannage fini » propose directement l'itinéraire du chantier suivant. Le pointage est rappelé à la prochaine ouverture de l'app sur le téléphone." },
+    ],
+  },
   {
     version: '5.41.225',
     date: '25/09/2026',
@@ -61155,7 +61162,7 @@ function _rwPushSites(){
   const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
   const list = data.sites.filter(s => s.status !== 'termine')
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
-    .slice(0, 40).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '' }));
+    .slice(0, 40).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim() }));
   let activeId = null; try{ activeId = getActiveSiteId(); }catch(_){}
   R.setSites({ sites: list, activeId }).catch(()=>{});
 }
@@ -61291,7 +61298,7 @@ function _rwPushRoute(){
     from: (r.createdBy && r.createdBy.name) || '',
     stops: (r.stops || []).map(s => ({
       id: s.id, name: s.name || 'Chantier', addr: s.address || '', status: s.status || '',
-      notes: String(s.notes || '').slice(0, 160),
+      notes: String(s.notes || '').slice(0, 160), keybox: String(s.keybox || '').trim(),
       tasksTotal: (s.tasks || []).length, tasksDone: (s.tasks || []).filter(t => t.done).length,
     })),
   });
@@ -61540,6 +61547,99 @@ function _m3dDelete(siteId){
   if(typeof renderChantierActifBanner === 'function') renderChantierActifBanner();
 }
 /* MODULE — Maquette3D (fin) */
+
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodRouteAuto  (v5.41.226)
+   « Dépannage fini » appuyé dans la voiture (app RWOOD Route, Android Auto) :
+   l'arrêt est marqué terminé et synchronisé avec l'équipe ici (même logique
+   que le bouton de l'app, sans les fenêtres), et un rappel « pointage à
+   compléter » s'affiche à la prochaine ouverture de l'app, une fois garé.
+   ═══════════════════════════════════════════════════════════════════ */
+const _RRA_KEY = 'rwood_car_pointage_todo';
+function _rraTodo(){ try{ return JSON.parse(localStorage.getItem(_RRA_KEY) || '[]'); }catch(_){ return []; } }
+function _rraSaveTodo(a){ try{ localStorage.setItem(_RRA_KEY, JSON.stringify(a.slice(-20))); }catch(_){} }
+
+async function _rraRouteDone(routeId, stopId){
+  const r0 = await _rwFindRoute(routeId);
+  if(!r0) return false;
+  const ls = (r0.stops || []).find(s => s.id === stopId);
+  if(!ls) return false;
+  if(ls.status === 'done') return true;
+  const now = new Date().toISOString();
+  const me = _routeMyName();
+  let justDone = false;
+  const r = await _routeMutate(r0._key, routeId, rt => {
+    const s = rt.stops.find(x => x.id === stopId);
+    if(s && s.status !== 'done'){ s.status = 'done'; s.doneAt = now; s.doneBy = me; s.updatedAt = now; s.doneFromCar = true; }
+    if(rt.stops.every(x => x.status === 'done') && rt.status !== 'done'){ rt.status = 'done'; rt.doneAt = now; rt.doneBy = me; justDone = true; }
+  });
+  if(!r) return false;
+  if(justDone){ try{ _routeNotifyDone(r); }catch(_){} }
+  const todo = _rraTodo();
+  todo.push({ routeId, stopId, name: ls.name, at: now, stop: JSON.parse(JSON.stringify(ls)), route: { id: r0.id, _key: r0._key, createdBy: r0.createdBy, recipients: r0.recipients, stops: r0.stops } });
+  _rraSaveTodo(todo);
+  try{ await routeLoadMine(); _routeUpdateIndicators(); renderRoutePane(); }catch(_){}
+  return true;
+}
+async function _rraProcessOps(){
+  const R = _rn2(); if(!R || typeof R.getCarOps !== 'function') return;
+  let ops = [];
+  try{ const res = await R.getCarOps(); ops = (res && res.ops) || []; }catch(_){ return; }
+  if(!ops.length) return;
+  const left = [];
+  for(const op of ops){
+    if(op.type !== 'route-done') continue;
+    const ok = await _rraRouteDone(op.routeId, op.stopId).catch(() => false);
+    if(!ok) left.push(op);
+  }
+  await R.clearCarOps().catch(()=>{});
+  if(left.length){ /* réseau KO : on les regardera au prochain retour */ try{ localStorage.setItem('rwood_car_ops_retry', JSON.stringify(left)); }catch(_){} }
+}
+/* Rappel « pointage à compléter » quand on revient dans l'app */
+function _rraOfferPointageReminder(){
+  const todo = _rraTodo();
+  if(!todo.length || document.getElementById('modal-rraPointage')) return;
+  const ex = document.createElement('div'); ex.id = 'modal-rraPointage'; ex.className = 'modal-overlay open';
+  ex.innerHTML = `<div class="modal">
+    <div class="modal-header"><h2>⏱ Pointage à compléter</h2><button class="modal-close" onclick="document.getElementById('modal-rraPointage').remove()">×</button></div>
+    <div class="hint" style="margin-bottom:10px;">Dépannage(s) terminé(s) depuis la voiture : ajoute-les à ta fiche d'heures.</div>
+    ${todo.map((t, i) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div style="flex:1;"><b>${escapeHtml(t.name || 'Chantier')}</b><div class="hint" style="margin:0;">${new Date(t.at).toLocaleString('fr-FR', {weekday:'short', hour:'2-digit', minute:'2-digit'})}</div></div>
+      <button class="btn btn-primary btn-sm" onclick="_rraPointer(${i})">Pointer</button>
+      <button class="btn btn-outline btn-sm" onclick="_rraSkip(${i})">Ignorer</button></div>`).join('')}
+  </div>`;
+  document.body.appendChild(ex);
+}
+async function _rraPointer(i){
+  const todo = _rraTodo(); const t = todo[i]; if(!t) return;
+  const md = document.getElementById('modal-rraPointage'); if(md) md.remove();
+  try{ await _routeOfferPointage(t.stop, t.route); }catch(e){ console.warn(e); }
+  todo.splice(i, 1); _rraSaveTodo(todo);
+  setTimeout(_rraOfferPointageReminder, 400);
+}
+function _rraSkip(i){
+  const todo = _rraTodo(); todo.splice(i, 1); _rraSaveTodo(todo);
+  const md = document.getElementById('modal-rraPointage'); if(md) md.remove();
+  setTimeout(_rraOfferPointageReminder, 200);
+}
+
+if(RWOOD_NATIVE){
+  const R = _rn2();
+  if(R && typeof R.getCarOps === 'function'){
+    R.addListener('widgetAction', (e) => { if(e && e.action === 'car-ops') _rraProcessOps(); });
+    let tries = 0;
+    const tick = async () => {
+      if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      try{ const retry = JSON.parse(localStorage.getItem('rwood_car_ops_retry') || '[]'); if(retry.length){ localStorage.removeItem('rwood_car_ops_retry'); for(const op of retry) await _rraRouteDone(op.routeId, op.stopId).catch(()=>{}); } }catch(_){}
+      await _rraProcessOps();
+      setTimeout(_rraOfferPointageReminder, 1500);
+    };
+    setTimeout(tick, 3500);
+    const APP = _rnPlug('App');
+    if(APP) APP.addListener('resume', async () => { await _rraProcessOps(); setTimeout(_rraOfferPointageReminder, 1200); });
+  }
+}
+/* MODULE — RwoodRouteAuto (fin) */
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
