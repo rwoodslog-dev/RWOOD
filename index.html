@@ -35243,9 +35243,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.226';
+const APP_VERSION = '5.41.228';
 
 const CHANGELOG = [
+  {
+    version: '5.41.228',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🚗', text: "RWOOD Route (Android Auto) : tous les chantiers sont maintenant accessibles, par pages avec « ➡️ Suivants » et « ⬅️ Précédents ». Android Auto limite chaque liste à environ 6 lignes pour la sécurité en conduite." },
+    ],
+  },
+  {
+    version: '5.41.227',
+    date: '25/09/2026',
+    entries: [
+      { icon: '📷', text: "Magasin : les photos des outils et des machines sont réduites avant l'envoi. Les grosses photos du téléphone échouaient en silence, et les outils restaient sans photo. Le bouton affiche l'avancement (📷 3/16…), un 2e essai est fait automatiquement, et une miniature est gardée si le serveur ne répond pas." },
+    ],
+  },
   {
     version: '5.41.226',
     date: '25/09/2026',
@@ -49574,7 +49588,7 @@ async function magasinSubmitAdd(){
     if(!m){ if(btn){ btn.disabled=false; btn.textContent=btnLabel; } closeModal('magasinAdd'); return; }
     let newPhoto = m.photo || null;
     try{
-      if(file){ newPhoto = await uploadFileToSupabase(file, 'magasin'); }
+      if(file){ const r = await _magasinUploadPhoto(file); if(r.url) newPhoto = r.url; if(!r.ok) showToast('⚠️ Photo gardée en miniature (envoi serveur échoué)'); }
     } catch(e){ showToast('⚠️ Upload photo échoué — ancienne photo conservée'); }
     m.name  = name;
     m.ref   = ref;
@@ -49595,7 +49609,8 @@ async function magasinSubmitAdd(){
   try{
     if(file){
       // Réutilise l'uploader bucket existant (dossier dédié magasin/)
-      photoUrl = await uploadFileToSupabase(file, 'magasin');
+      const r = await _magasinUploadPhoto(file);
+      photoUrl = r.url || null;
     }
   } catch(e){
     showToast('⚠️ Upload photo échoué — machine créée sans photo');
@@ -49636,7 +49651,7 @@ function magasinAddToolRow(tool){
   row.dataset.photo = t.photo || '';
   const inputId = 'mgt_' + row.dataset.toolId;
   row.innerHTML =
-      (t.photo ? '<img class="tthumb" src="'+escapeHtml(t.photo)+'" alt="">' : '<div class="tthumb"></div>')
+      (t.photo ? '<img class="tthumb" src="'+escapeHtml(t.photo)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;tthumb&quot; style=&quot;display:flex;align-items:center;justify-content:center;font-size:14px;&quot; title=&quot;Photo introuvable&quot;>⚠️</div>\'">' : '<div class="tthumb" style="display:flex;align-items:center;justify-content:center;font-size:13px;opacity:.45;" title="Pas de photo">📷</div>')
     + '<input type="text" class="tname" placeholder="Ex : Pince plate" value="'+escapeHtml(t.name||'')+'">'
     + '<label class="tphoto" for="'+inputId+'" title="Photo">📷</label>'
     + '<input type="file" id="'+inputId+'" class="tfile" accept="image/*" style="display:none;">'
@@ -49654,10 +49669,52 @@ function magasinAddToolRow(tool){
   if(!tool){ const inp = row.querySelector('.tname'); if(inp) inp.focus(); }
 }
 
+/* v5.41.227 — photos du magasin : réduites (1280 px, JPEG) avant l'envoi.
+   Les photos du téléphone font souvent 4 à 10 Mo : envoyées telles quelles,
+   une partie échouait en silence (outils sans photo). Si l'envoi échoue
+   quand même, 2e essai, puis on garde une miniature intégrée pour que la
+   photo s'affiche malgré tout. */
+function _magImgToJpeg(file, maxDim, quality){
+  return new Promise((resolve) => {
+    try{
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try{
+          let w = img.naturalWidth, h = img.naturalHeight;
+          const k = Math.min(1, maxDim / Math.max(w, h));
+          w = Math.max(1, Math.round(w * k)); h = Math.max(1, Math.round(h * k));
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          cv.toBlob(b => resolve(b ? new File([b], (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg', { type:'image/jpeg' }) : null), 'image/jpeg', quality);
+        }catch(e){ URL.revokeObjectURL(url); resolve(null); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    }catch(e){ resolve(null); }
+  });
+}
+function _magFileToDataUrl(f){
+  return new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(null); r.readAsDataURL(f); });
+}
+async function _magasinUploadPhoto(file){
+  const small = (await _magImgToJpeg(file, 1280, 0.82)) || file;
+  for(let i = 0; i < 2; i++){
+    try{ return { url: await uploadFileToSupabase(small, 'magasin'), ok: true }; }
+    catch(e){ console.warn('photo magasin', i, e); await new Promise(r => setTimeout(r, 1200)); }
+  }
+  // Dernier recours : miniature intégrée (s'affiche partout, même sans stockage)
+  const thumb = await _magImgToJpeg(file, 320, 0.7);
+  const dataUrl = thumb ? await _magFileToDataUrl(thumb) : null;
+  return { url: dataUrl, ok: false };
+}
+
 async function _magasinCollectTools(){
   const rows = Array.from(document.querySelectorAll('#magasinAddTools .magasin-tool-row'));
   const out = [];
-  let uploadFailed = false;
+  let failed = 0, sent = 0;
+  const withFile = rows.filter(r => { const f = r.querySelector('.tfile'); return f && f.files && f.files[0]; }).length;
   for(const row of rows){
     const name = (row.querySelector('.tname').value || '').trim();
     const fileInp = row.querySelector('.tfile');
@@ -49665,12 +49722,16 @@ async function _magasinCollectTools(){
     if(!name && !file) continue; // ligne vide ignorée
     let photo = row.dataset.photo || null;
     if(file){
-      try{ photo = await uploadFileToSupabase(file, 'magasin'); }
-      catch(e){ uploadFailed = true; }
+      sent++;
+      const btn = document.getElementById('magasinAddSubmit');
+      if(btn) btn.textContent = '📷 Envoi des photos ' + sent + '/' + withFile + '…';
+      const r = await _magasinUploadPhoto(file);
+      if(r.url) photo = r.url;
+      if(!r.ok) failed++;
     }
     out.push({ id: row.dataset.toolId || uid(), name: name || 'Outil', photo: photo || null });
   }
-  if(uploadFailed) showToast('⚠️ Une photo d\'outil n\'a pas pu être envoyée');
+  if(failed) alert('⚠️ ' + failed + ' photo(s) d\'outil n\'ont pas pu être envoyées sur le serveur (réseau ?). Une miniature a été gardée à la place : tu pourras la remplacer plus tard via « Modifier ».');
   return out;
 }
 
@@ -61162,7 +61223,7 @@ function _rwPushSites(){
   const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
   const list = data.sites.filter(s => s.status !== 'termine')
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
-    .slice(0, 40).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim() }));
+    .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim() }));
   let activeId = null; try{ activeId = getActiveSiteId(); }catch(_){}
   R.setSites({ sites: list, activeId }).catch(()=>{});
 }
