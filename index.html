@@ -28649,7 +28649,7 @@ function getDateOfISOWeek(week, year){
   defer(() => { restoreCaniculeBanner(); }, 500);
 
   // Caméra — prewarm encore plus tardif
-  defer(() => prewarmCamera(), 3000);
+  defer(() => { if(typeof prewarmCamera === 'function') prewarmCamera(); }, 3000);
 
   // Revérifie quand l'app revient au premier plan
   document.addEventListener('visibilitychange', () => {
@@ -32932,6 +32932,7 @@ async function openAtelier3D(projectId){
 }
 
 function _a3dBuildUI(proj){
+  if(!Array.isArray(proj.joints)) proj.joints = [];
   const ex = document.getElementById('modal-atelier3d'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-atelier3d';
@@ -32944,7 +32945,7 @@ function _a3dBuildUI(proj){
       <span style="width:10px;"></span>
       ${btn('a3dV3d','🧊 3D','Vue 3D')}${btn('a3dVFace','Face','Vue de face')}${btn('a3dVTop','Dessus','Vue de dessus')}${btn('a3dVSide','Côté','Vue de côté')}${btn('a3dFit','⤢','Tout voir')}
       <span style="width:10px;"></span>
-      ${btn('a3dMeasure','📏 Mesurer','Cliquer 2 points pour poser une cote')}${btn('a3dAllLen','🏷 Longueurs','Afficher la longueur de toutes les pièces')}
+      ${btn('a3dJoin','🔗 Assembler','Créer un assemblage (tenon, mortaise, embrèvement…) entre 2 pièces')}${btn('a3dMeasure','📏 Mesurer','Cliquer 2 points pour poser une cote')}${btn('a3dAllLen','🏷 Longueurs','Afficher la longueur de toutes les pièces')}
       ${btn('a3dUndo','↶','Annuler (Ctrl+Z)')}
       <span style="flex:1;"></span>
       ${btn('a3dProjects','📂 Projets','Ouvrir / gérer les projets')}${btn('a3dPng','🖼 Image','Exporter une image')}
@@ -32955,7 +32956,7 @@ function _a3dBuildUI(proj){
       <div id="a3dView" style="flex:1;position:relative;min-width:0;overflow:hidden;">
         <div id="a3dLabels" style="position:absolute;inset:0;pointer-events:none;overflow:hidden;"></div>
         <div id="a3dFloat"></div>
-        <div id="a3dHelp" style="position:absolute;left:10px;bottom:8px;font-size:11px;color:rgba(255,255,255,.75);background:rgba(20,26,32,.6);padding:3px 8px;border-radius:6px;pointer-events:none;">Flèches rouge/verte/bleue : déplacer sur un axe · Rond central ou pièce : glisser au sol (aimanté) · Clic droit glissé : tourner la vue · Molette : zoom · Maj+glisser : décaler la vue · Suppr / Ctrl+D / R / ↑↓</div>
+        <div id="a3dHelp" style="position:absolute;left:10px;bottom:8px;font-size:11px;color:rgba(255,255,255,.75);background:rgba(20,26,32,.6);padding:3px 8px;border-radius:6px;pointer-events:none;"> 🔗 Assembler : clic pièce qui entre puis pièce qui reçoit · Flèches rouge/verte/bleue : déplacer sur un axe · Rond central ou pièce : glisser au sol (aimanté) · Clic droit glissé : tourner la vue · Molette : zoom · Maj+glisser : décaler la vue · Suppr / Ctrl+D / R / ↑↓</div>
       </div>
     </div>`;
   document.body.appendChild(div);
@@ -33000,7 +33001,7 @@ function _a3dBuildUI(proj){
   _a3dRenderSide();
   _a3dBindEvents();
   _a3dBuildGizmo();
-  const loop = () => { if(!A3D) return; _a3dUpdateCamera(); _a3dUpdateGizmo(); renderer.render(scene, A3D.cam); _a3dUpdateLabels(); A3D.raf = requestAnimationFrame(loop); };
+  const loop = () => { if(!A3D) return; _a3dUpdateCamera(); _jAnimTick(); _a3dUpdateGizmo(); renderer.render(scene, A3D.cam); _a3dUpdateLabels(); A3D.raf = requestAnimationFrame(loop); };
   loop();
 
   const $ = id => document.getElementById(id);
@@ -33009,6 +33010,7 @@ function _a3dBuildUI(proj){
   $('a3dVTop').onclick = () => _a3dSetView('top');
   $('a3dVSide').onclick = () => _a3dSetView('side');
   $('a3dFit').onclick = () => _a3dFit();
+  $('a3dJoin').onclick = () => { if(A3D.joinPick){ A3D.joinPick = null; _a3dToolbarState(); return; } _jStartPick(A3D.sel || null); };
   $('a3dMeasure').onclick = () => { A3D.measure = A3D.measure ? null : { a: null }; _a3dToolbarState(); showToast(A3D.measure ? '📏 Clique le 1er point, puis le 2e' : 'Mesure terminée'); };
   $('a3dAllLen').onclick = () => { A3D.showAll = !A3D.showAll; _a3dToolbarState(); };
   $('a3dUndo').onclick = () => _a3dUndo();
@@ -33019,7 +33021,7 @@ function _a3dBuildUI(proj){
 }
 function _a3dToolbarState(){
   const on = (id, v) => { const b = document.getElementById(id); if(b){ b.style.background = v ? '#E8AC3D' : ''; b.style.color = v ? '#1a0d00' : ''; } };
-  on('a3dMeasure', !!(A3D && A3D.measure)); on('a3dAllLen', !!(A3D && A3D.showAll));
+  on('a3dMeasure', !!(A3D && A3D.measure)); on('a3dAllLen', !!(A3D && A3D.showAll)); on('a3dJoin', !!(A3D && A3D.joinPick));
   ['3d','face','top','side'].forEach(v => on({ '3d':'a3dV3d', face:'a3dVFace', top:'a3dVTop', side:'a3dVSide' }[v], A3D && ((v === '3d' && !A3D.orthoView) || A3D.orthoView === v)));
 }
 function _a3dClose(){
@@ -33042,13 +33044,14 @@ function _a3dSave(){
 }
 function _a3dPushHistory(){
   if(!A3D) return;
-  A3D.history.push(JSON.stringify({ pieces: A3D.proj.pieces, dims: A3D.proj.dims }));
+  A3D.history.push(JSON.stringify({ pieces: A3D.proj.pieces, dims: A3D.proj.dims, joints: A3D.proj.joints || [] }));
   if(A3D.history.length > 60) A3D.history.shift();
 }
 function _a3dUndo(){
   if(!A3D || !A3D.history.length) return;
   const st = JSON.parse(A3D.history.pop());
-  A3D.proj.pieces = st.pieces; A3D.proj.dims = st.dims;
+  A3D.proj.pieces = st.pieces; A3D.proj.dims = st.dims; A3D.proj.joints = st.joints || [];
+  _jStopAnim(); _jClearHits();
   A3D.sel = null; _a3dRebuildAll(); _a3dRenderSide(); _a3dSave();
 }
 
@@ -33062,12 +33065,23 @@ function _a3dSize(p){
 function _a3dMakeMesh(p){
   const T = A3D.T;
   const [sx, sy, sz] = _a3dSize(p);
-  const geo = new T.BoxGeometry(sx, sy, sz);
-  const tex = _a3dWoodTexture(p.color || A3D_WOOD[0]);
-  if(p.axis === 'y'){ tex.center.set(0.5, 0.5); tex.rotation = Math.PI / 2; }
-  const mat = new T.MeshStandardMaterial({ color: 0xffffff, map: tex, roughness: 0.8, metalness: 0 });
+  // v5.41.231 — pièce usinée (tenon, mortaise, embrèvement…) : forme découpée
+  const cuts = A3D.cuts && A3D.cuts.get(p.id);
+  let geo, mat, polys = null;
+  if(cuts && cuts.length){
+    polys = _jBuildPolys(p, cuts, sx, sy, sz);
+    geo = _jPolysToGeo(polys, p, sx, sy, sz);
+    mat = [new T.MeshStandardMaterial({ color: 0xffffff, map: _a3dWoodTexture(p.color || A3D_WOOD[0]), roughness: 0.8, metalness: 0 }),
+           new T.MeshStandardMaterial({ color: 0xf0d6a2, roughness: 0.9, metalness: 0 })];
+  } else {
+    geo = new T.BoxGeometry(sx, sy, sz);
+    const tex = _a3dWoodTexture(p.color || A3D_WOOD[0]);
+    if(p.axis === 'y'){ tex.center.set(0.5, 0.5); tex.rotation = Math.PI / 2; }
+    mat = new T.MeshStandardMaterial({ color: 0xffffff, map: tex, roughness: 0.8, metalness: 0 });
+  }
   const mesh = new T.Mesh(geo, mat);
-  const edges = new T.LineSegments(new T.EdgesGeometry(geo), new T.LineBasicMaterial({ color: 0x2a1c0e, transparent: true, opacity: 0.55 }));
+  mesh.userData.polys = polys;
+  const edges = new T.LineSegments(polys ? _jEdgesGeo(polys) : new T.EdgesGeometry(geo), new T.LineBasicMaterial({ color: 0x2a1c0e, transparent: true, opacity: 0.55 }));
   mesh.add(edges);
   // contour de sélection (bleu, légèrement plus grand, toujours visible)
   const out = new T.LineSegments(new T.EdgesGeometry(new T.BoxGeometry(sx + 8, sy + 8, sz + 8)), new T.LineBasicMaterial({ color: 0x2e9bff, depthTest: false, transparent: true }));
@@ -33085,6 +33099,7 @@ function _a3dPlaceMesh(mesh, p){
   mesh.updateMatrixWorld(true);
 }
 function _a3dRebuildAll(){
+  _jComputeAll(); A3D.cutSig = new Map(A3D.proj.pieces.map(p => [p.id, _jSig(p)]));
   const g = A3D.group;
   while(g.children.length){ const c = g.children.pop(); c.geometry && c.geometry.dispose(); }
   A3D.meshes.clear();
@@ -33199,7 +33214,7 @@ function _a3dRenderFloating(){
         <button type="button" id="a3dFMenu" title="Plus" style="background:none;border:none;color:#cfd8e0;font-size:18px;cursor:pointer;padding:0 4px;">⋮</button>
       </div>
       <div id="a3dFMenuPop" style="display:none;background:#232b33;border-radius:10px;padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.35);">
-        ${[['a3dMRen','✏️ Renommer'],['a3dMDup','⧉ Dupliquer'],['a3dMRep','🔁 Répéter…'],['a3dMDrop','⬇ Poser dessus'],['a3dMDel','🗑 Supprimer']].map(([id,l]) => `<button type="button" id="${id}" style="display:block;width:100%;text-align:left;background:none;border:none;color:#e6edf3;padding:7px 12px;font-size:13px;cursor:pointer;border-radius:7px;">${l}</button>`).join('')}
+        ${[['a3dMJoin','🔗 Assembler avec…'],['a3dMDelard','⟋ Délarder…'],['a3dMRen','✏️ Renommer'],['a3dMDup','⧉ Dupliquer'],['a3dMRep','🔁 Répéter…'],['a3dMDrop','⬇ Poser dessus'],['a3dMDel','🗑 Supprimer']].map(([id,l]) => `<button type="button" id="${id}" style="display:block;width:100%;text-align:left;background:none;border:none;color:#e6edf3;padding:7px 12px;font-size:13px;cursor:pointer;border-radius:7px;">${l}</button>`).join('')}
       </div>
       <div style="display:flex;gap:4px;background:#232b33;border-radius:14px;padding:6px;box-shadow:0 4px 14px rgba(0,0,0,.35);">
         ${ico('a3dFMove','Déplacer (flèches)', S('<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>'))}
@@ -33216,6 +33231,8 @@ function _a3dRenderFloating(){
     </div>`;
   const $ = id => document.getElementById(id);
   $('a3dFMenu').onclick = () => { const m = $('a3dFMenuPop'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; };
+  $('a3dMJoin').onclick = () => _jStartPick(p.id);
+  $('a3dMDelard').onclick = () => { const j = (A3D.proj.joints || []).find(x => x.type === 'delard' && x.a === p.id); _jDialog(j ? { edit: j } : { a: p.id, type: 'delard' }); };
   $('a3dMRen').onclick = () => { const n = prompt('Nom de la pièce :', p.name || ''); if(n != null) _a3dUpdateSel({ name: n.trim() || p.name }); };
   $('a3dMDup').onclick = () => _a3dDuplicate();
   $('a3dMRep').onclick = () => { A3D.tab = 'sel'; _a3dRenderSide(); const e = document.getElementById('a3dRepN'); if(e) e.focus(); };
@@ -33310,6 +33327,8 @@ function _a3dBindEvents(){
   el.addEventListener('mousedown', ev => {
     if(ev.button === 2 || ev.button === 1 || ev.shiftKey){ drag = { mode: (ev.shiftKey || ev.button === 1) ? 'pan' : 'orbit', x: ev.clientX, y: ev.clientY }; return; }
     if(A3D.measure){ _a3dMeasureClick(ev); return; }
+    if(A3D.anim) _jStopAnim();
+    if(A3D.joinPick){ const h = _a3dPickPiece(ev); if(h){ _jPickClick(h.id); return; } }
     // v5.41.214 — flèche du gizmo : déplacement contraint sur UN axe
     const gz = _a3dPickGizmo(ev);
     if(gz && A3D.sel){
@@ -33379,7 +33398,7 @@ function _a3dBindEvents(){
       _a3dRenderSelFields();
     }
   });
-  window.addEventListener('mouseup', () => { if(drag && (drag.mode === 'move' || drag.mode === 'axis') && drag.pushed){ _a3dSave(); _a3dRenderFloating(); } drag = null; });
+  window.addEventListener('mouseup', () => { if(drag && (drag.mode === 'move' || drag.mode === 'axis') && drag.pushed){ _a3dSave(); _a3dRenderFloating(); if(A3D) _jAfterChange(); } drag = null; });
   el.addEventListener('wheel', ev => {
     ev.preventDefault();
     const f = ev.deltaY > 0 ? 1.12 : 1 / 1.12;
@@ -33392,6 +33411,7 @@ function _a3dBindEvents(){
     if(tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     const p = A3D.sel && _a3dPiece(A3D.sel);
     if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z'){ ev.preventDefault(); _a3dUndo(); return; }
+    if(ev.key === 'Escape' && A3D.joinPick){ A3D.joinPick = null; _a3dToolbarState(); showToast('Assemblage annulé'); return; }
     if(ev.key === 'Escape'){ if(A3D.measure){ A3D.measure = null; _a3dToolbarState(); } else if(A3D.sel){ A3D.sel = null; _a3dHighlight(); _a3dRenderSide(); } return; }
     if(!p) return;
     if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); _a3dDeleteSel(); }
@@ -33493,14 +33513,15 @@ function _a3dUpdateSel(patch){
   const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
   _a3dPushHistory();
   Object.assign(p, patch);
-  _a3dRefreshPiece(p); _a3dRenderSelFields(); _a3dRenderSide(true); _a3dSave(); _a3dRenderFloating();
+  _jAfterChange(p.id); _a3dRenderSelFields(); _a3dRenderSide(true); _a3dSave(); _a3dRenderFloating();
 }
 function _a3dDeleteSel(){
   if(!A3D.sel) return;
   _a3dPushHistory();
   A3D.proj.pieces = A3D.proj.pieces.filter(p => p.id !== A3D.sel);
+  A3D.proj.joints = (A3D.proj.joints || []).filter(j => j.a !== A3D.sel && j.b !== A3D.sel);
   const m = A3D.meshes.get(A3D.sel); if(m){ A3D.group.remove(m); m.geometry.dispose(); }
-  A3D.meshes.delete(A3D.sel); A3D.sel = null; _a3dRenderSide(); _a3dSave(); _a3dRenderFloating();
+  A3D.meshes.delete(A3D.sel); A3D.sel = null; _jAfterChange(); _a3dRenderSide(); _a3dSave(); _a3dRenderFloating();
 }
 function _a3dDuplicate(){
   const p = A3D.sel && _a3dPiece(A3D.sel); if(!p) return;
@@ -33535,7 +33556,7 @@ function _a3dDropOnTop(){
 function _a3dRenderSide(keepScroll){
   const side = document.getElementById('a3dSide'); if(!side || !A3D) return;
   const sc = side.scrollTop;
-  const tabs = [['pieces','➕ Pièces'],['sel','✏️ Sélection'],['debit','📋 Débit']];
+  const tabs = [['pieces','➕ Pièces'],['sel','✏️ Pièce'],['join','🔗 Assemb.'],['debit','📋 Débit']];
   if(A3D.sel && !keepScroll && A3D.tab === 'pieces') A3D.tab = 'sel';
   if(!A3D.sel && A3D.tab === 'sel') A3D.tab = 'pieces';
   let body = '';
@@ -33553,6 +33574,7 @@ function _a3dRenderSide(keepScroll){
       <button class="btn btn-primary btn-block" style="margin-top:6px;" id="a3dAddBtn">➕ Ajouter la pièce</button>
       <div class="section-title">Modèles paramétriques</div>
       <button class="btn btn-outline btn-block" id="a3dPergolaBtn">🏡 Générer une pergola…</button>
+      <button class="btn btn-outline btn-block" id="a3dFermeBtn" style="margin-top:6px;">🏠 Générer une ferme (charpente)…</button>
       <div class="section-title">Pièces du projet (${A3D.proj.pieces.length})</div>
       ${A3D.proj.pieces.map(p => `<div data-pick="${p.id}" style="display:flex;justify-content:space-between;gap:6px;padding:5px 8px;margin-bottom:3px;border-radius:7px;cursor:pointer;background:${p.id===A3D.sel?'rgba(232,172,61,.18)':'var(--card)'};font-size:12px;"><span>${escapeHtml(p.name||'Pièce')}</span><span style="color:var(--ink-soft);">${p.w}×${p.h} · ${p.L}</span></div>`).join('') || '<div class="hint" style="font-size:11.5px;">Aucune pièce : ajoute-en une ou génère une pergola.</div>'}
       ${(A3D.proj.dims||[]).length ? `<div class="section-title">Cotes (${A3D.proj.dims.length})</div><button class="btn btn-outline btn-sm btn-block" id="a3dClearDims">Effacer les cotes</button>` : ''}`;
@@ -33584,6 +33606,8 @@ function _a3dRenderSide(keepScroll){
       </div>
       <button class="btn btn-outline btn-sm btn-block" style="margin-top:6px;" id="a3dRep">🔁 Répéter</button>
       <button class="btn btn-outline btn-sm btn-block" style="margin-top:12px;color:#E07A63;" id="a3dDel">🗑 Supprimer (Suppr)</button>`;
+  } else if(A3D.tab === 'join'){
+    body = _jSideHtml();
   } else {
     const rows = _a3dCutList();
     const vol = rows.reduce((s, r) => s + r.vol, 0);
@@ -33591,7 +33615,7 @@ function _a3dRenderSide(keepScroll){
       <div class="section-title" style="margin-top:4px;">Liste de débit</div>
       ${rows.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px;">
         <tr style="color:var(--ink-soft);text-align:left;"><th>Qté</th><th>Pièce</th><th>Section</th><th style="text-align:right;">Long.</th></tr>
-        ${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,.08);"><td style="font-weight:800;">${r.qty}</td><td>${escapeHtml(r.name)}</td><td>${r.w}×${r.h}</td><td style="text-align:right;">${r.L}</td></tr>`).join('')}
+        ${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,.08);"><td style="font-weight:800;">${r.qty}</td><td>${escapeHtml(r.name)}${r.mach ? `<div style="font-size:10.5px;color:var(--ink-soft);">${escapeHtml(r.mach)}</div>` : ''}</td><td>${r.w}×${r.h}</td><td style="text-align:right;">${r.L}</td></tr>`).join('')}
       </table>
       <div style="margin-top:8px;font-size:12.5px;">Total : <b>${rows.reduce((s,r)=>s+r.qty,0)}</b> pièces · <b>${(rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2).replace('.',',')}</b> m linéaires · <b>${vol.toFixed(3).replace('.',',')}</b> m³</div>
       <div style="display:flex;gap:6px;margin-top:10px;"><button class="btn btn-primary btn-sm" style="flex:1;" id="a3dXls">📊 Excel</button><button class="btn btn-outline btn-sm" style="flex:1;" id="a3dPdf">📄 PDF</button></div>` : '<div class="hint">Aucune pièce.</div>'}`;
@@ -33610,6 +33634,7 @@ function _a3dRenderSide(keepScroll){
       _a3dAddPiece({ name: $('a3dNName').value.trim() || 'Pièce', w, h, L, axis: $('a3dNAxis').value, x: Math.round(t.x / 10) * 10, z: Math.round(t.z / 10) * 10 });
     };
     $('a3dPergolaBtn').onclick = () => _a3dPergolaDialog();
+    $('a3dFermeBtn').onclick = () => _jFermeDialog();
     side.querySelectorAll('[data-pick]').forEach(r => r.onclick = () => { A3D.sel = r.dataset.pick; _a3dHighlight(); _a3dRenderSide(); });
     if($('a3dClearDims')) $('a3dClearDims').onclick = () => { _a3dPushHistory(); A3D.proj.dims = []; _a3dRebuildDims(); _a3dRenderSide(); _a3dSave(); };
   } else if(A3D.tab === 'sel'){
@@ -33624,6 +33649,8 @@ function _a3dRenderSide(keepScroll){
     $('a3dDel').onclick = () => _a3dDeleteSel();
     side.querySelectorAll('[data-col]').forEach(b => b.onclick = () => _a3dUpdateSel({ color: b.dataset.col }));
     _a3dRenderSelFields();
+  } else if(A3D.tab === 'join'){
+    _jSideBind();
   } else {
     if($('a3dXls')) $('a3dXls').onclick = () => _a3dExportCutList('excel');
     if($('a3dPdf')) $('a3dPdf').onclick = () => _a3dExportCutList('pdf');
@@ -33643,9 +33670,9 @@ function _a3dRenderSelFields(){
 function _a3dCutList(){
   const map = new Map();
   A3D.proj.pieces.forEach(p => {
-    const w = Math.min(p.w, p.h), h = Math.max(p.w, p.h);
-    const k = (p.name || 'Pièce') + '|' + w + '|' + h + '|' + Math.round(p.L);
-    const r = map.get(k) || { name: p.name || 'Pièce', w, h, L: Math.round(p.L), qty: 0, vol: 0 };
+    const w = Math.min(p.w, p.h), h = Math.max(p.w, p.h), mach = _jMachining(p.id);
+    const k = (p.name || 'Pièce') + '|' + w + '|' + h + '|' + Math.round(p.L) + '|' + mach;
+    const r = map.get(k) || { name: p.name || 'Pièce', w, h, L: Math.round(p.L), qty: 0, vol: 0, mach };
     r.qty++; r.vol += (p.w * p.h * p.L) / 1e9; map.set(k, r);
   });
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'fr') || (b.h - a.h) || (b.L - a.L));
@@ -33662,9 +33689,9 @@ async function _a3dExportCutList(fmt){
     }
     if(typeof ExcelJS === 'undefined'){ showToast('❌ Moteur Excel indisponible'); return; }
     const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Débit');
-    ws.columns = [{ header:'Qté', key:'qty', width:7 }, { header:'Pièce', key:'name', width:22 }, { header:'Épaisseur (mm)', key:'w', width:15 }, { header:'Largeur (mm)', key:'h', width:14 }, { header:'Longueur (mm)', key:'L', width:15 }, { header:'Mètres linéaires', key:'ml', width:16 }, { header:'Volume (m³)', key:'vol', width:13 }];
+    ws.columns = [{ header:'Qté', key:'qty', width:7 }, { header:'Pièce', key:'name', width:22 }, { header:'Épaisseur (mm)', key:'w', width:15 }, { header:'Largeur (mm)', key:'h', width:14 }, { header:'Longueur (mm)', key:'L', width:15 }, { header:'Mètres linéaires', key:'ml', width:16 }, { header:'Volume (m³)', key:'vol', width:13 }, { header:'Usinages', key:'mach', width:40 }];
     ws.getRow(1).font = { bold:true, color:{ argb:'FFFFFFFF' } }; ws.getRow(1).fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF2A2118' } };
-    rows.forEach(r => ws.addRow({ qty:r.qty, name:r.name, w:r.w, h:r.h, L:r.L, ml: +(r.qty*r.L/1000).toFixed(2), vol: +r.vol.toFixed(4) }));
+    rows.forEach(r => ws.addRow({ qty:r.qty, name:r.name, w:r.w, h:r.h, L:r.L, ml: +(r.qty*r.L/1000).toFixed(2), vol: +r.vol.toFixed(4), mach: r.mach || '' }));
     const tr = ws.addRow({ name:'TOTAL', qty: rows.reduce((s,r)=>s+r.qty,0), ml: +(rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2), vol: +rows.reduce((s,r)=>s+r.vol,0).toFixed(4) }); tr.font = { bold:true };
     try{ const id = wb.addImage({ base64: img, extension:'jpeg' }); ws.addImage(id, { tl:{ col:0, row: rows.length + 3 }, ext:{ width:640, height:400 } }); }catch(e){}
     const buf = await wb.xlsx.writeBuffer();
@@ -33686,6 +33713,7 @@ async function _a3dExportCutList(fmt){
       if(y > 285){ doc.addPage(); y = 16; }
       if(i % 2 === 0){ doc.setFillColor(245,240,232); doc.rect(10, y-4, 190, 6, 'F'); }
       doc.text(String(r.qty), 12, y); doc.text(r.name, 26, y); doc.text(r.w + ' × ' + r.h, 90, y); doc.text(String(r.L), 130, y); doc.text(r.vol.toFixed(4).replace('.',','), 170, y); y += 6;
+      if(r.mach){ doc.setFontSize(7.5); doc.setTextColor(110,90,60); doc.text(doc.splitTextToSize('Usinages : ' + r.mach, 170)[0], 26, y - 1.5); doc.setFontSize(9); doc.setTextColor(0,0,0); y += 3; }
     });
     y += 3; doc.setFont('helvetica','bold');
     doc.text('Total : ' + rows.reduce((s,r)=>s+r.qty,0) + ' pièces · ' + (rows.reduce((s,r)=>s+r.qty*r.L,0)/1000).toFixed(2).replace('.',',') + ' ml · ' + rows.reduce((s,r)=>s+r.vol,0).toFixed(3).replace('.',',') + ' m³', 12, y);
@@ -33722,7 +33750,7 @@ function _a3dPergolaDialog(){
 }
 function _a3dBuildPergola(o){
   _a3dPushHistory();
-  if(o.replace){ A3D.proj.pieces = []; A3D.proj.dims = []; }
+  if(o.replace){ A3D.proj.pieces = []; A3D.proj.dims = []; A3D.proj.joints = []; }
   const add = p => _a3dAddPiece(p, true);
   const px = o.L / 2 - o.P / 2, pz = o.l / 2 - o.P / 2;
   [[-px,-pz],[px,-pz],[-px,pz],[px,pz]].forEach(([x,z]) => add({ name:'Poteau', w:o.P, h:o.P, L:o.H, axis:'y', x, y:o.H/2, z, color:A3D_WOOD[1] }));
@@ -33762,6 +33790,846 @@ function _a3dProjectsDialog(){
   });
   document.getElementById('a3dNewProj').onclick = () => { ex.remove(); _a3dClose(); openAtelier3D(null); };
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   ATELIER 3D — ASSEMBLAGES DE CHARPENTE (v5.41.231)
+   Demande de Rémi : « crée un assemblage à cette intersection, dessine
+   les tenons, les mortaises et teste l'assemblage ».
+     - 🔗 Assembler : clic sur la pièce qui ENTRE puis sur celle qui REÇOIT
+       → tenon/mortaise (cheville), embrèvement, embrèvement + tenon,
+       mi-bois, entaille (épouse la pièce), coupe d'about / d'empanon ;
+     - ⟋ Délarder (arêtier en dos d'âne / noue en creux, angle calculé
+       depuis la pente) ;
+     - les coupes suivent les pièces (recalculées si on les déplace) ;
+     - la pièce qui porte le tenon est allongée automatiquement (débit) ;
+     - ▶ Tester : démontage / remontage animé + contrôle des collisions
+       (zones rouges), 💥 vue éclatée, 🔍 collisions de tout le projet ;
+     - générateur de FERME (entrait, arbalétriers, poinçon, contrefiches)
+       avec tous ses assemblages.
+   Découpes = soustractions booléennes (petite librairie CSG ci-dessous,
+   d'après csg.js d'Evan Wallace, licence MIT). Unités : mm.
+   ═══════════════════════════════════════════════════════════════════ */
+const _CSG_EPS = 1e-3;
+const _cV = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const _cAdd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const _cMul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const _cDot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const _cCross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const _cLen = a => Math.hypot(a[0], a[1], a[2]);
+const _cNorm = a => { const l = _cLen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const _cLerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+class _CPlane {
+  constructor(n, w){ this.n = n; this.w = w; }
+  clone(){ return new _CPlane(this.n.slice(), this.w); }
+  flip(){ this.n = [-this.n[0], -this.n[1], -this.n[2]]; this.w = -this.w; }
+  split(poly, cf, cb, f, b){
+    const types = []; let pt = 0;
+    for(const v of poly.v){ const t = _cDot(this.n, v) - this.w; const ty = t < -_CSG_EPS ? 2 : (t > _CSG_EPS ? 1 : 0); pt |= ty; types.push(ty); }
+    if(pt === 0) (_cDot(this.n, poly.p.n) > 0 ? cf : cb).push(poly);
+    else if(pt === 1) f.push(poly);
+    else if(pt === 2) b.push(poly);
+    else {
+      const fv = [], bv = [], n = poly.v.length;
+      for(let i = 0; i < n; i++){
+        const j = (i + 1) % n, ti = types[i], tj = types[j], vi = poly.v[i], vj = poly.v[j];
+        if(ti !== 2) fv.push(vi);
+        if(ti !== 1) bv.push(vi);
+        if((ti | tj) === 3){ const t = (this.w - _cDot(this.n, vi)) / _cDot(this.n, _cV(vj, vi)); const v = _cLerp(vi, vj, t); fv.push(v); bv.push(v); }
+      }
+      if(fv.length >= 3) f.push(new _CPoly(fv, poly.s, poly.p.clone()));
+      if(bv.length >= 3) b.push(new _CPoly(bv, poly.s, poly.p.clone()));
+    }
+  }
+}
+function _cPlaneFrom(v){
+  let nx = 0, ny = 0, nz = 0;
+  for(let i = 0; i < v.length; i++){ const a = v[i], b = v[(i + 1) % v.length]; nx += (a[1] - b[1]) * (a[2] + b[2]); ny += (a[2] - b[2]) * (a[0] + b[0]); nz += (a[0] - b[0]) * (a[1] + b[1]); }
+  const n = _cNorm([nx, ny, nz]);
+  return new _CPlane(n, _cDot(n, v[0]));
+}
+class _CPoly {
+  constructor(v, s, p){ this.v = v; this.s = s || 0; this.p = p || _cPlaneFrom(v); }
+  clone(){ return new _CPoly(this.v.slice(), this.s, this.p.clone()); }
+  flip(){ this.v.reverse(); this.p.flip(); }
+}
+class _CNode {
+  constructor(polys){ this.p = null; this.f = null; this.b = null; this.polys = []; if(polys) this.build(polys); }
+  invert(){ for(const q of this.polys) q.flip(); if(this.p) this.p.flip(); if(this.f) this.f.invert(); if(this.b) this.b.invert(); const t = this.f; this.f = this.b; this.b = t; }
+  clip(polys){
+    if(!this.p) return polys.slice();
+    let f = [], b = [];
+    for(const q of polys) this.p.split(q, f, b, f, b);
+    if(this.f) f = this.f.clip(f);
+    b = this.b ? this.b.clip(b) : [];
+    return f.concat(b);
+  }
+  clipTo(bsp){ this.polys = bsp.clip(this.polys); if(this.f) this.f.clipTo(bsp); if(this.b) this.b.clipTo(bsp); }
+  all(){ let r = this.polys.slice(); if(this.f) r = r.concat(this.f.all()); if(this.b) r = r.concat(this.b.all()); return r; }
+  build(polys){
+    if(!polys.length) return;
+    if(!this.p) this.p = polys[0].p.clone();
+    const f = [], b = [];
+    for(const q of polys) this.p.split(q, this.polys, this.polys, f, b);
+    if(f.length){ if(!this.f) this.f = new _CNode(); this.f.build(f); }
+    if(b.length){ if(!this.b) this.b = new _CNode(); this.b.build(b); }
+  }
+}
+function _csgSubtract(a, b){
+  const A = new _CNode(a.map(q => q.clone())), B = new _CNode(b.map(q => q.clone()));
+  A.invert(); A.clipTo(B); B.clipTo(A); B.invert(); B.clipTo(A); B.invert(); A.build(B.all()); A.invert();
+  return A.all();
+}
+function _csgIntersect(a, b){
+  const A = new _CNode(a.map(q => q.clone())), B = new _CNode(b.map(q => q.clone()));
+  A.invert(); B.clipTo(A); B.invert(); A.clipTo(B); B.clipTo(A); A.build(B.all()); A.invert();
+  return A.all();
+}
+/* Boîte centrée (faces = listes de sommets, sens direct vu de l'extérieur). */
+function _cBoxVerts(hx, hy, hz){
+  const P = i => [(i & 1 ? 1 : -1) * hx, (i & 2 ? 1 : -1) * hy, (i & 4 ? 1 : -1) * hz];
+  return [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]].map(f => f.map(P));
+}
+/* Coupe un polyèdre convexe par un plan (garde n·x ≤ d) et referme la face. */
+function _cClipConvex(polys, pl){
+  const n = [pl[0], pl[1], pl[2]], d = pl[3], E = 1e-6, out = [], cap = [];
+  for(const poly of polys){
+    const m = poly.length, ds = poly.map(v => _cDot(n, v) - d);
+    if(ds.every(x => Math.abs(x) <= E)){ if(_cDot(_cPlaneFrom(poly).n, n) < 0) out.push(poly); continue; }
+    const res = [];
+    for(let i = 0; i < m; i++){
+      const a = poly[i], b = poly[(i + 1) % m], da = ds[i], db = ds[(i + 1) % m];
+      if(da <= E){ res.push(a); if(da >= -E) cap.push(a); }
+      if((da < -E && db > E) || (da > E && db < -E)){ const p = _cLerp(a, b, da / (da - db)); res.push(p); cap.push(p); }
+    }
+    if(res.length >= 3) out.push(res);
+  }
+  const pts = [];
+  for(const p of cap) if(!pts.some(q => Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]) + Math.abs(q[2] - p[2]) < 1e-4)) pts.push(p);
+  if(pts.length >= 3){
+    const c = [0, 0, 0]; pts.forEach(p => { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }); c[0] /= pts.length; c[1] /= pts.length; c[2] /= pts.length;
+    const u = _cNorm(Math.abs(n[0]) < 0.9 ? _cCross(n, [1, 0, 0]) : _cCross(n, [0, 1, 0])), w = _cCross(n, u);
+    const ang = p => { const q = _cV(p, c); return Math.atan2(_cDot(q, w), _cDot(q, u)); };
+    pts.sort((p, q) => ang(p) - ang(q));
+    out.push(pts);
+  }
+  return out;
+}
+function _cConvex(planes, hx, hy, hz){
+  let polys = _cBoxVerts(hx, hy, hz);
+  for(const pl of planes){ polys = _cClipConvex(polys, pl); if(polys.length < 4) return []; }
+  return polys;
+}
+function _cVolVerts(polys){
+  let v = 0;
+  for(const q of polys){ const a = q.v || q; for(let i = 1; i < a.length - 1; i++) v += _cDot(a[0], _cCross(a[i], a[i + 1])); }
+  return Math.abs(v) / 6;
+}
+
+/* ── Repère d'une pièce (monde) ───────────────────────────────────── */
+function _jFrame(p){
+  const o3 = new A3D.T.Object3D(); _a3dPlaceMesh(o3, p);
+  const e = o3.matrixWorld.elements;
+  const ax = [[e[0], e[1], e[2]], [e[4], e[5], e[6]], [e[8], e[9], e[10]]].map(_cNorm);
+  const s = _a3dSize(p), Li = { x: 0, y: 1, z: 2 }[p.axis || 'x'];
+  return { p, o: [p.x || 0, p.y || 0, p.z || 0], ax, hs: [s[0] / 2, s[1] / 2, s[2] / 2], Li, L: ax[Li], hL: s[Li] / 2 };
+}
+function _jDistOBB(x, F){
+  let s = 0;
+  for(let i = 0; i < 3; i++){ const q = _cDot(_cV(x, F.o), F.ax[i]), c = Math.max(-F.hs[i], Math.min(F.hs[i], q)); s += (q - c) * (q - c); }
+  return Math.sqrt(s);
+}
+function _jPickEnd(A, B){
+  const e1 = _cAdd(A.o, _cMul(A.L, A.hL)), e2 = _cAdd(A.o, _cMul(A.L, -A.hL));
+  const d1 = _jDistOBB(e1, B), d2 = _jDistOBB(e2, B);
+  if(Math.abs(d1 - d2) < 1) return _cDot(_cV(B.o, A.o), A.L) >= 0 ? 1 : -1;
+  return d1 < d2 ? 1 : -1;
+}
+/* Face de B par laquelle entre l'axe de A (rayon depuis le centre de A). */
+function _jEntry(A, B, d){
+  let tE = -Infinity, tX = Infinity, nE = null, axE = -1;
+  for(let i = 0; i < 3; i++){
+    const e = B.ax[i], den = _cDot(d, e), c = _cDot(_cV(B.o, A.o), e);
+    if(Math.abs(den) < 1e-9){ if(Math.abs(c) > B.hs[i]) return null; continue; }
+    const t1 = (c - B.hs[i]) / den, t2 = (c + B.hs[i]) / den, tn = Math.min(t1, t2), tf = Math.max(t1, t2);
+    if(tn > tE){ tE = tn; nE = den > 0 ? _cMul(e, -1) : e.slice(); axE = i; }
+    if(tf < tX) tX = tf;
+  }
+  if(!nE || tE > tX) return null;
+  return { t: tE, P0: _cAdd(A.o, _cMul(d, tE)), n: nE, axis: axE, depth: 2 * B.hs[axE] };
+}
+const _jPl = (n, k) => [n[0], n[1], n[2], k];                 // n·x ≤ k
+const _jNeg = pl => [-pl[0], -pl[1], -pl[2], -pl[3]];
+function _jMinus(X, T){ const out = []; T.forEach((t, k) => out.push(X.concat([_jNeg(t)], T.slice(0, k)))); return out; }
+function _jCyl(P, axis, r){
+  const u = _cNorm(Math.abs(axis[1]) < 0.9 ? _cCross(axis, [0, 1, 0]) : _cCross(axis, [1, 0, 0])), w = _cCross(axis, u), out = [];
+  for(let k = 0; k < 16; k++){ const a = Math.PI * k / 8, m = _cAdd(_cMul(u, Math.cos(a)), _cMul(w, Math.sin(a))); out.push(_jPl(m, _cDot(m, P) + r)); }
+  return out;
+}
+const _jR5 = v => Math.max(5, Math.round(v / 5) * 5);
+
+const J_TYPES = {
+  tenon:       { label: 'Tenon / mortaise', a: 'Tenon', b: 'Mortaise' },
+  embrevTenon: { label: 'Embrèvement + tenon', a: 'Embrèvement + tenon', b: 'Embrèvement + mortaise' },
+  embrev:      { label: 'Embrèvement', a: 'Embrèvement', b: 'Logement d\'embrèvement' },
+  mibois:      { label: 'Mi-bois', a: 'Mi-bois', b: 'Mi-bois' },
+  entaille:    { label: 'Entaille (épouse la pièce)', a: 'Entaille', b: 'Entaille' },
+  coupe:       { label: 'Coupe d\'about / d\'empanon', a: 'Coupe d\'about', b: '' },
+  delard:      { label: 'Délardement', a: 'Délardé', b: '' },
+};
+const J_ICONS = {
+  tenon: '<rect x="18" y="2" width="12" height="18" /><rect x="21" y="20" width="6" height="9" fill="#E8AC3D"/><rect x="2" y="20" width="44" height="14"/><rect x="21" y="20" width="6" height="10" fill="none" stroke-dasharray="2 2"/>',
+  embrevTenon: '<path d="M4 4 L18 4 L34 20 L26 26 L20 20 Z"/><rect x="2" y="20" width="44" height="14"/><path d="M24 22 l6 6" stroke="#E8AC3D" stroke-width="3"/>',
+  embrev: '<path d="M4 4 L18 4 L34 20 L26 25 L20 20 Z"/><rect x="2" y="20" width="44" height="14"/>',
+  mibois: '<rect x="2" y="12" width="44" height="10"/><rect x="19" y="1" width="10" height="33"/><rect x="19" y="12" width="10" height="5" fill="#E8AC3D"/>',
+  entaille: '<path d="M2 20 H16 V26 H32 V20 H46 V34 H2 Z"/><rect x="16" y="10" width="16" height="16" fill="#E8AC3D"/>',
+  coupe: '<path d="M2 6 L30 6 L38 18 L2 18 Z"/><path d="M30 2 L46 30 L38 34 L22 6" fill="none"/>',
+  delard: '<path d="M10 34 V14 L24 6 L38 14 V34 Z"/><path d="M10 14 L24 6 L38 14" stroke="#E8AC3D" stroke-width="3" fill="none"/>',
+};
+function _jIcon(t, sz){ return `<svg viewBox="0 0 48 36" width="${sz || 48}" height="${Math.round((sz || 48) * 0.75)}" fill="#C8A26A" stroke="#2a1c0e" stroke-width="1.3">${J_ICONS[t] || ''}</svg>`; }
+
+/* ── Géométrie d'un assemblage : coupes (en repère monde) ─────────── */
+function _jCompute(j){
+  const pa = _a3dPiece(j.a), pb = j.b ? _a3dPiece(j.b) : null;
+  if(!pa || (j.type !== 'delard' && !pb)) return { err: 'pièce supprimée' };
+  const A = _jFrame(pa), B = pb ? _jFrame(pb) : null, P = j.prm || {};
+  const res = { cuts: {}, need: 0, dist: 60 };
+  const add = (id, list) => { (res.cuts[id] = res.cuts[id] || []).push(...list); };
+  const cr = [0, 1, 2].filter(i => i !== A.Li);
+
+  if(j.type === 'delard'){
+    let [i1, i2] = cr; if(Math.abs(A.ax[i1][1]) < Math.abs(A.ax[i2][1])) [i1, i2] = [i2, i1];
+    let u = A.ax[i1]; if(u[1] < 0) u = _cMul(u, -1);
+    const hu = A.hs[i1], v = A.ax[i2], hv = A.hs[i2], dl = (+P.delta || 0) * Math.PI / 180;
+    if(!(dl > 0 && dl < Math.PI / 2)) return { err: 'angle de délardement invalide' };
+    const top = _cAdd(A.o, _cMul(u, hu));
+    if(P.mode === 'noue'){
+      const Pp = _cAdd(top, _cMul(u, -hv * Math.tan(dl)));
+      const n1 = _cAdd(_cMul(u, Math.cos(dl)), _cMul(v, Math.sin(dl))), n2 = _cAdd(_cMul(u, Math.cos(dl)), _cMul(v, -Math.sin(dl)));
+      add(pa.id, [[_jPl(_cMul(n1, -1), -_cDot(n1, Pp)), _jPl(_cMul(n2, -1), -_cDot(n2, Pp))]]);
+    } else {
+      [1, -1].forEach(sg => { const nn = _cAdd(_cMul(u, Math.cos(dl)), _cMul(v, sg * Math.sin(dl))); add(pa.id, [[_jPl(_cMul(nn, -1), -_cDot(nn, top))]]); });
+    }
+    return res;
+  }
+
+  if(j.type === 'mibois'){
+    let s = _cCross(A.L, B.L);
+    if(_cLen(s) < 0.2) return { err: 'pièces parallèles : utilise « Entaille »' };
+    s = _cNorm(s);
+    if(_cDot(A.o, s) < _cDot(B.o, s)) s = _cMul(s, -1);
+    const ext = F => F.hs.reduce((acc, h, i) => acc + Math.abs(_cDot(F.ax[i], s)) * h, 0);
+    const ca = _cDot(A.o, s), cb = _cDot(B.o, s), ea = ext(A), eb = ext(B);
+    const lo = Math.max(ca - ea, cb - eb), hi = Math.min(ca + ea, cb + eb);
+    if(hi - lo < 1) return { err: 'les pièces ne se croisent pas' };
+    const m = lo + (hi - lo) * Math.max(0, Math.min(100, P.part == null ? 50 : +P.part)) / 100;
+    const lat = F => { const out = []; for(let i = 0; i < 3; i++){ if(Math.abs(_cDot(F.ax[i], s)) > 0.7) continue; [1, -1].forEach(sg => { const n = _cMul(F.ax[i], sg); out.push(_jPl(n, _cDot(n, F.o) + F.hs[i])); }); } return out; };
+    add(pa.id, [lat(B).concat([_jPl(s, m)])]);
+    add(pb.id, [lat(A).concat([_jPl(_cMul(s, -1), -m)])]);
+    res.dir = s; res.dist = (hi - lo) + 60;
+    return res;
+  }
+
+  if(j.type === 'entaille'){
+    const jl = +P.jl || 0, whoB = P.who === 'B';
+    const F = whoB ? A : B, target = whoB ? pb : pa, other = whoB ? B : A;
+    const box = []; for(let i = 0; i < 3; i++) [1, -1].forEach(sg => { const n = _cMul(F.ax[i], sg); box.push(_jPl(n, _cDot(n, F.o) + F.hs[i] + jl)); });
+    add(target.id, [box]);
+    // sens de démontage : on regarde la zone entaillée (A ∩ B) et on sort
+    // par la face de B la plus courte, de préférence vers le haut
+    const tr = (F, v) => _cAdd(F.o, _cAdd(_cAdd(_cMul(F.ax[0], v[0]), _cMul(F.ax[1], v[1])), _cMul(F.ax[2], v[2])));
+    let N = _cBoxVerts(other.hs[0], other.hs[1], other.hs[2]).map(f => f.map(v => tr(other, v)));
+    for(let i = 0; i < 3 && N.length; i++) [1, -1].forEach(sg => { if(!N.length) return; const nn = _cMul(F.ax[i], sg); N = _cClipConvex(N, _jPl(nn, _cDot(nn, F.o) + F.hs[i])); });
+    const pts = N.flat();
+    if(!pts.length) return { err: 'les pièces ne se touchent pas' };
+    const cands = [];
+    for(let i = 0; i < 3; i++){
+      const e = F.ax[i], sgn = _cDot(_cV(other.o, F.o), e) >= 0 ? 1 : -1, v = _cMul(e, sgn);
+      const pr = pts.map(p => _cDot(p, v)), ext = Math.max(...pr) - Math.min(...pr);
+      cands.push({ v, ext });
+    }
+    const mn = Math.min(...cands.map(c => c.ext));
+    const best = cands.filter(c => c.ext <= Math.max(2 * mn, mn + 30)).sort((x, y) => Math.abs(y.v[1]) - Math.abs(x.v[1]))[0];
+    res.dir = best.v; res.dist = best.ext + 60;
+    return res;
+  }
+
+  // Types où le BOUT de A vient contre une face de B
+  const sg = _jPickEnd(A, B), d = _cMul(A.L, sg);
+  const en = _jEntry(A, B, d);
+  if(!en) return { err: 'l\'axe de la 1re pièce ne rencontre pas la 2e (rapproche-les)' };
+  const n = en.n, P0 = en.P0, dn = -_cDot(d, n), sd = _cDot(n, P0);
+  if(dn < 0.05) return { err: 'pièces presque parallèles' };
+  const endC = _cAdd(A.o, _cMul(d, A.hL));
+  res.endDir = d; res.dir = _cMul(d, -1); res.angle = Math.round(Math.asin(Math.min(1, dn)) * 180 / Math.PI); res.faceDepth = en.depth;
+  const depthOf = c => sd - _cDot(n, c);
+  const needDepth = (corners, L) => corners.forEach(c => { res.need = Math.max(res.need, (L - depthOf(c)) / dn); });
+
+  if(j.type === 'coupe'){
+    add(pa.id, [[_jPl(n, sd)]]);
+    const corners = []; [1, -1].forEach(s1 => [1, -1].forEach(s2 => corners.push(_cAdd(_cAdd(endC, _cMul(A.ax[cr[0]], s1 * A.hs[cr[0]])), _cMul(A.ax[cr[1]], s2 * A.hs[cr[1]])))));
+    needDepth(corners, 0);
+    res.dist = 80;
+    return res;
+  }
+
+  if(j.type === 'tenon'){
+    const lB = B.L;
+    let [i1, i2] = cr; if(Math.abs(_cDot(A.ax[i1], lB)) > Math.abs(_cDot(A.ax[i2], lB))) [i1, i2] = [i2, i1];
+    const ct = A.ax[i1]; let cw = A.ax[i2]; if(cw[1] < -0.01 || (Math.abs(cw[1]) <= 0.01 && cw[0] + cw[2] < 0)) cw = _cMul(cw, -1);
+    const hw = A.hs[i2], t = +P.t || 20, r1 = +P.r1 || 0, r2 = +P.r2 || 0, jf = +P.jf || 0, jl = +P.jl || 0;
+    const L = P.through ? en.depth : (+P.L || 50), C = A.o;
+    const hi = hw - r1, lo = -hw + r2;
+    if(hi - lo < 5) return { err: 'épaulements trop grands pour la largeur de la pièce' };
+    if(t >= 2 * A.hs[i1] + 0.5) return { err: 'tenon plus épais que la pièce' };
+    const S = _jPl(n, sd), Send = _jPl(_cMul(n, -1), -(sd - L));
+    const chP = _jPl(ct, _cDot(ct, C) + t / 2), chM = _jPl(_cMul(ct, -1), -_cDot(ct, C) + t / 2);
+    const wP = _jPl(cw, _cDot(cw, C) + hi), wM = _jPl(_cMul(cw, -1), -(_cDot(cw, C) + lo));
+    add(pa.id, _jMinus([S], [Send, chP, chM, wP, wM]));
+    add(pb.id, [[_jPl(n, sd + 10), _jPl(_cMul(n, -1), -(sd - L - (P.through ? 20 : jf))),
+      _jPl(ct, _cDot(ct, C) + t / 2 + jl), _jPl(_cMul(ct, -1), -_cDot(ct, C) + t / 2 + jl),
+      _jPl(cw, _cDot(cw, C) + hi + jl), _jPl(_cMul(cw, -1), -(_cDot(cw, C) + lo - jl))]]);
+    if(+P.peg > 0){ const Pc = _cAdd(P0, _cMul(d, (Math.min(L, en.depth) * 0.5) / dn)); const cyl = _jCyl(Pc, ct, +P.peg / 2); add(pa.id, [cyl]); add(pb.id, [cyl]); }
+    const corners = []; [1, -1].forEach(s1 => [hi, lo].forEach(w => corners.push(_cAdd(_cAdd(endC, _cMul(ct, s1 * t / 2)), _cMul(cw, w)))));
+    needDepth(corners, L);
+    res.dist = L / dn + 60;
+    return res;
+  }
+
+  if(j.type === 'embrev' || j.type === 'embrevTenon'){
+    const tdir0 = _cAdd(d, _cMul(n, dn));
+    if(_cLen(tdir0) < 0.12) return { err: 'l\'embrèvement demande une pièce inclinée (sinon : tenon / mortaise)' };
+    const tdir = _cNorm(tdir0);
+    let [i1, i2] = cr; if(Math.abs(_cDot(A.ax[i1], tdir)) < Math.abs(_cDot(A.ax[i2], tdir))) [i1, i2] = [i2, i1];
+    let cf = A.ax[i1]; if(_cDot(cf, tdir) < 0) cf = _cMul(cf, -1);
+    const hf = A.hs[i1], cz = A.ax[i2], hz = A.hs[i2], e = +P.e || 20;
+    const nd = _cDot(n, d), ncf = _cDot(n, cf);
+    const Pf = _cAdd(_cAdd(P0, _cMul(cf, hf)), _cMul(d, -hf * ncf / nd));
+    const Pk = _cAdd(_cAdd(P0, _cMul(cf, -hf)), _cMul(d, hf * ncf / nd));
+    const Q = _cAdd(_cAdd(Pf, _cMul(n, -e)), _cMul(tdir, e * nd / _cDot(d, tdir)));
+    if(_cDot(_cV(Q, Pk), tdir) < 5) return { err: 'embrèvement trop profond pour cette section' };
+    let g = _cNorm(_cCross(_cV(Pk, Q), cz)); if(_cDot(g, _cV(Pf, Q)) > 0) g = _cMul(g, -1);
+    const below = _jPl(n, sd), aboutBeyond = _jPl(_cMul(d, -1), -_cDot(d, Pf)), aboutBehind = _jPl(d, _cDot(d, Pf));
+    const gorgeBelow = _jPl(_cMul(g, -1), -_cDot(g, Q)), gorgeAbove = _jPl(g, _cDot(g, Q));
+    const zP = _jPl(cz, _cDot(cz, A.o) + hz), zM = _jPl(_cMul(cz, -1), -_cDot(cz, A.o) + hz);
+    let remA = [[below, aboutBeyond], [below, aboutBehind, gorgeBelow]];
+    const cutsB = [[aboutBehind, gorgeAbove, zP, zM]];
+    [1, -1].forEach(s1 => [1, -1].forEach(s2 => { const c = _cAdd(_cAdd(endC, _cMul(cf, s1 * hf)), _cMul(cz, s2 * hz)); res.need = Math.max(res.need, -_cDot(d, _cV(c, Pf))); }));
+    res.dir = n.slice(); res.dist = e + 80;
+    if(j.type === 'embrevTenon'){
+      const t = +P.t || 20, L = +P.L || (e + 40), r1 = +P.r1 || 0, r2 = +P.r2 || 0, jf = +P.jf || 0, jl = +P.jl || 0;
+      if(L <= e) return { err: 'le tenon doit être plus long que l\'embrèvement' };
+      if(t >= 2 * hz + 0.5) return { err: 'tenon plus épais que la pièce' };
+      const hi = hf - r1, lo = -hf + r2, C = A.o;
+      if(hi - lo < 5) return { err: 'retraits trop grands pour la hauteur de la pièce' };
+      const T = [_jPl(_cMul(n, -1), -(sd - L)), _jPl(cz, _cDot(cz, C) + t / 2), _jPl(_cMul(cz, -1), -_cDot(cz, C) + t / 2),
+        _jPl(cf, _cDot(cf, C) + hi), _jPl(_cMul(cf, -1), -(_cDot(cf, C) + lo))];
+      remA = remA.flatMap(X => _jMinus(X, T));
+      cutsB.push([_jPl(n, sd + 10), _jPl(_cMul(n, -1), -(sd - L - jf)), _jPl(cz, _cDot(cz, C) + t / 2 + jl), _jPl(_cMul(cz, -1), -_cDot(cz, C) + t / 2 + jl),
+        _jPl(cf, _cDot(cf, C) + hi + jl), _jPl(_cMul(cf, -1), -(_cDot(cf, C) + lo - jl))]);
+      if(+P.peg > 0){ const Pc = _cAdd(P0, _cMul(d, (e + (L - e) * 0.5) / dn)); const cyl = _jCyl(Pc, cz, +P.peg / 2); add(pa.id, [cyl]); cutsB.push(cyl); }
+      const corners = []; [1, -1].forEach(s1 => [hi, lo].forEach(w => corners.push(_cAdd(_cAdd(endC, _cMul(cz, s1 * t / 2)), _cMul(cf, w)))));
+      needDepth(corners, L);
+      res.dir = _cMul(d, -1); res.dist = L / dn + 80;
+    }
+    add(pa.id, remA); add(pb.id, cutsB);
+    return res;
+  }
+  return { err: 'type inconnu' };
+}
+
+/* Valeurs par défaut (règles de charpentier : tenon ≈ 1/3 de l'épaisseur…) */
+function _jDefaults(type, aId, bId){
+  const pa = _a3dPiece(aId), pb = bId ? _a3dPiece(bId) : null;
+  const P = { jf: 5, jl: 0, peg: 22, through: false };
+  if(type === 'delard') return { mode: 'arete', delta: 30, pitch: 45, plan: 45 };
+  if(type === 'mibois') return { part: 50 };
+  if(type === 'entaille') return { who: 'A', jl: 0 };
+  if(type === 'coupe') return {};
+  try{
+    const A = _jFrame(pa), B = _jFrame(pb), d = _cMul(A.L, _jPickEnd(A, B)), en = _jEntry(A, B, d);
+    const cr = [0, 1, 2].filter(i => i !== A.Li);
+    const DB = en ? en.depth : 150;
+    let thick, wid;
+    if(type === 'tenon'){
+      let [i1, i2] = cr; if(Math.abs(_cDot(A.ax[i1], B.L)) > Math.abs(_cDot(A.ax[i2], B.L))) [i1, i2] = [i2, i1];
+      thick = 2 * A.hs[i1]; wid = 2 * A.hs[i2];
+    } else {
+      const n = en ? en.n : [0, 1, 0], tdir = _cNorm(_cAdd(d, _cMul(n, -_cDot(d, n))));
+      let [i1, i2] = cr; if(Math.abs(_cDot(A.ax[i1], tdir)) < Math.abs(_cDot(A.ax[i2], tdir))) [i1, i2] = [i2, i1];
+      wid = 2 * A.hs[i1]; thick = 2 * A.hs[i2];
+    }
+    P.t = Math.max(15, _jR5(thick / 3));
+    P.r1 = P.r2 = type === 'tenon' ? _jR5(wid * 0.12) : _jR5(wid * 0.15);
+    P.e = Math.max(15, Math.min(50, _jR5(DB / 6)));
+    P.L = type === 'tenon' ? Math.min(150, _jR5(DB * 0.66)) : Math.max(P.e + 30, Math.min(150, _jR5(DB * 0.5)));
+    if(P.L < 45) P.peg = 0;
+    if(P.t < 25) P.peg = Math.min(P.peg, 12);
+  }catch(e){ Object.assign(P, { t: 25, r1: 15, r2: 15, e: 25, L: 60 }); }
+  return P;
+}
+function _jSuggest(aId, bId){
+  try{
+    const A = _jFrame(_a3dPiece(aId)), B = _jFrame(_a3dPiece(bId));
+    const d = _cMul(A.L, _jPickEnd(A, B)), end = _cAdd(A.o, _cMul(d, A.hL));
+    const far = _jDistOBB(end, B) > 3 * Math.max(...A.hs.filter((h, i) => i !== A.Li));
+    if(far && _cLen(_cCross(A.L, B.L)) > 0.2) return 'mibois';
+    const en = _jEntry(A, B, d); if(!en) return 'entaille';
+    return -_cDot(d, en.n) > 0.97 ? 'tenon' : 'embrevTenon';
+  }catch(e){ return 'tenon'; }
+}
+/* Angle de délardement d'un arêtier (pente des versants, angle en plan). */
+function _jBacking(pitch, plan){
+  const t = Math.tan(pitch * Math.PI / 180), th = plan * Math.PI / 180;
+  const h = _cNorm([Math.sin(th), t * Math.sin(th), Math.cos(th)]), N = _cNorm([-t, 1, 0]);
+  const proj = v => _cNorm(_cV(v, _cMul(h, _cDot(v, h))));
+  const u = proj([0, 1, 0]), nn = proj(N);
+  return Math.round(Math.acos(Math.max(-1, Math.min(1, _cDot(u, nn)))) * 1800 / Math.PI) / 10;
+}
+
+/* ── Calcul de toutes les coupes → repère local de chaque pièce ───── */
+function _jJoints(){
+  const list = (A3D.proj.joints || []).slice();
+  const pv = A3D.jPreview;
+  if(pv){ const i = list.findIndex(j => j.id === pv.id); if(i >= 0) list[i] = pv; else list.push(pv); }
+  return list;
+}
+function _jComputeAll(){
+  const cuts = new Map(), errs = new Map();
+  _jJoints().forEach(j => {
+    let r; try{ r = _jCompute(j); }catch(e){ r = { err: String(e && e.message || e) }; }
+    if(r.err){ errs.set(j.id, r.err); return; }
+    Object.entries(r.cuts).forEach(([id, list]) => {
+      const p = _a3dPiece(id); if(!p) return;
+      const F = _jFrame(p);
+      const loc = list.map(planes => planes.map(pl => { const nn = [pl[0], pl[1], pl[2]]; return [_cDot(F.ax[0], nn), _cDot(F.ax[1], nn), _cDot(F.ax[2], nn), pl[3] - _cDot(nn, F.o)]; }));
+      if(!cuts.has(id)) cuts.set(id, []);
+      cuts.get(id).push(...loc);
+    });
+  });
+  A3D.cuts = cuts; A3D.jErr = errs;
+}
+function _jSig(p){
+  const c = A3D.cuts && A3D.cuts.get(p.id);
+  return JSON.stringify([p.w, p.h, p.L, p.axis, c ? c.map(pl => pl.map(q => q.map(x => Math.round(x * 100) / 100))) : 0]);
+}
+const _jGeoCache = new Map();
+function _jBuildPolys(p, cuts, sx, sy, sz){
+  const key = _jSig(p);
+  if(_jGeoCache.has(key)) return _jGeoCache.get(key);
+  let polys = _cBoxVerts(sx / 2, sy / 2, sz / 2).map(v => new _CPoly(v, 0));
+  for(const planes of cuts){
+    if(_cVolVerts(_cConvex(planes, sx / 2, sy / 2, sz / 2)) < 1) continue;   // ne touche pas la pièce
+    const reg = _cConvex(planes, sx / 2 + 20, sy / 2 + 20, sz / 2 + 20);
+    if(!reg.length) continue;
+    try{ polys = _csgSubtract(polys, reg.map(v => new _CPoly(v, 1))); }catch(e){ console.warn('CSG', e); }
+  }
+  if(_jGeoCache.size > 300) _jGeoCache.clear();
+  _jGeoCache.set(key, polys);
+  return polys;
+}
+function _jPolysToGeo(polys, p, sx, sy, sz){
+  const T = A3D.T, Li = { x: 0, y: 1, z: 2 }[p.axis || 'x'], size = [sx, sy, sz];
+  const G = [{ pos: [], nor: [], uv: [] }, { pos: [], nor: [], uv: [] }];
+  for(const q of polys){
+    const n = q.p.n, g = G[q.s ? 1 : 0];
+    const an = n.map(Math.abs), na = an[0] > an[1] ? (an[0] > an[2] ? 0 : 2) : (an[1] > an[2] ? 1 : 2);
+    let ua, va;
+    if(na !== Li){ ua = Li; va = [0, 1, 2].find(k => k !== na && k !== Li); } else { const o = [0, 1, 2].filter(k => k !== Li); ua = o[0]; va = o[1]; }
+    const uv = v => [(v[ua] + size[ua] / 2) / size[ua], (v[va] + size[va] / 2) / size[va]];
+    for(let i = 1; i < q.v.length - 1; i++) [q.v[0], q.v[i], q.v[i + 1]].forEach(v => { g.pos.push(v[0], v[1], v[2]); g.nor.push(n[0], n[1], n[2]); g.uv.push(...uv(v)); });
+  }
+  const geo = new T.BufferGeometry();
+  const cat = k => G[0][k].concat(G[1][k]);
+  geo.setAttribute('position', new T.Float32BufferAttribute(cat('pos'), 3));
+  geo.setAttribute('normal', new T.Float32BufferAttribute(cat('nor'), 3));
+  geo.setAttribute('uv', new T.Float32BufferAttribute(cat('uv'), 2));
+  const n0 = G[0].pos.length / 3, n1 = G[1].pos.length / 3;
+  geo.addGroup(0, n0, 0); if(n1) geo.addGroup(n0, n1, 1);
+  geo.computeBoundingBox(); geo.computeBoundingSphere();
+  return geo;
+}
+/* Arêtes vives d'une pièce usinée (sans les traits internes du découpage). */
+function _jEdgesGeo(polys){
+  const T = A3D.T, groups = new Map(), key = q => q.p.n.map(x => Math.round(x * 200)).join(',') + '|' + Math.round(q.p.w * 5);
+  polys.forEach(q => { const k = key(q); if(!groups.has(k)) groups.set(k, []); groups.get(k).push(q); });
+  const inside = (q, pt) => {
+    const n = q.p.n, v = q.v;
+    if(Math.abs(_cDot(n, pt) - q.p.w) > 0.05) return false;
+    for(let i = 0; i < v.length; i++){ const a = v[i], b = v[(i + 1) % v.length]; if(_cDot(_cCross(_cV(b, a), _cV(pt, a)), n) < -1e-3) return false; }
+    return true;
+  };
+  const pos = [];
+  polys.forEach(q => {
+    const same = groups.get(key(q)), n = q.p.n, v = q.v;
+    for(let i = 0; i < v.length; i++){
+      const a = v[i], b = v[(i + 1) % v.length], e = _cV(b, a), len = _cLen(e); if(len < 0.5) continue;
+      const out = _cNorm(_cCross(e, n)), m = _cAdd(_cLerp(a, b, 0.5), _cMul(out, 0.2));
+      if(same.some(o => o !== q && inside(o, m))) continue;
+      pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    }
+  });
+  const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+  return g;
+}
+/* Recalcule les coupes et reconstruit les pièces dont la forme a changé. */
+function _jAfterChange(forceId){
+  if(!A3D) return;
+  const old = A3D.cutSig || new Map();
+  _jComputeAll();
+  const sig = new Map();
+  A3D.proj.pieces.forEach(p => sig.set(p.id, _jSig(p)));
+  A3D.cutSig = sig;
+  A3D.proj.pieces.forEach(p => { if(p.id === forceId || old.get(p.id) !== sig.get(p.id)) _a3dRefreshPiece(p); });
+  if(A3D.tab === 'join') _a3dRenderSide(true);
+}
+function _jWorldPolys(p, off){
+  const m = A3D.meshes.get(p.id), F = _jFrame(p), o = _cAdd(F.o, off || [0, 0, 0]);
+  const s = _a3dSize(p);
+  const loc = (m && m.userData.polys) || _cBoxVerts(s[0] / 2, s[1] / 2, s[2] / 2).map(v => new _CPoly(v, 0));
+  const tr = v => _cAdd(o, _cAdd(_cAdd(_cMul(F.ax[0], v[0]), _cMul(F.ax[1], v[1])), _cMul(F.ax[2], v[2])));
+  return loc.map(q => new _CPoly(q.v.map(tr), q.s));
+}
+
+/* ── Choix des 2 pièces à assembler ───────────────────────────────── */
+function _jStartPick(aId){
+  if(!A3D) return;
+  A3D.measure = null;
+  A3D.joinPick = { a: aId || null };
+  if(aId){ A3D.sel = aId; _a3dHighlight(); }
+  _a3dToolbarState();
+  showToast(aId ? '🔗 Clique maintenant la pièce qui REÇOIT (mortaise, entrait…)' : '🔗 Clique la pièce qui ENTRE (tenon, arbalétrier, empanon…) — Échap pour annuler');
+}
+function _jPickClick(id){
+  const jp = A3D.joinPick; if(!jp) return;
+  if(!jp.a){ jp.a = id; A3D.sel = id; _a3dHighlight(); _a3dRenderSide(); showToast('🔗 Clique maintenant la pièce qui REÇOIT'); return; }
+  if(id === jp.a){ showToast('Choisis une AUTRE pièce'); return; }
+  A3D.joinPick = null; _a3dToolbarState();
+  _jDialog({ a: jp.a, b: id });
+}
+
+/* ── Fenêtre de création / modification (aperçu en direct) ────────── */
+const J_PRM = {
+  tenon: [['t', 'Épaisseur du tenon'], ['L', 'Longueur du tenon'], ['r1', 'Épaulement côté 1'], ['r2', 'Épaulement côté 2'], ['jf', 'Jeu en fond de mortaise'], ['jl', 'Jeu latéral'], ['peg', 'Cheville ø (0 = sans)'], ['through', 'Tenon traversant', 'chk']],
+  embrevTenon: [['e', 'Profondeur d\'embrèvement'], ['t', 'Épaisseur du tenon'], ['L', 'Profondeur du tenon (depuis la face)'], ['r1', 'Retrait côté dessus'], ['r2', 'Retrait côté dessous'], ['jf', 'Jeu en fond'], ['jl', 'Jeu latéral'], ['peg', 'Cheville ø (0 = sans)']],
+  embrev: [['e', 'Profondeur d\'embrèvement']],
+  mibois: [['part', 'Part enlevée dans la 1re pièce (%)']],
+  entaille: [['who', 'Pièce entaillée', 'sel', [['A', '1re pièce (épouse la 2e)'], ['B', '2e pièce (reçoit la 1re)']]], ['jl', 'Jeu']],
+  coupe: [],
+  delard: [['mode', 'Type', 'sel', [['arete', 'Arêtier (dos d\'âne)'], ['noue', 'Noue (en creux)']]], ['delta', 'Angle de délardement (°)']],
+};
+function _jDialog(o){
+  if(!A3D) return;
+  const edit = o.edit || null;
+  const st = { a: edit ? edit.a : o.a, b: edit ? edit.b : (o.b || null), type: edit ? edit.type : (o.type || null), prm: edit ? Object.assign({}, edit.prm) : null };
+  if(!st.type) st.type = _jSuggest(st.a, st.b);
+  if(!st.prm) st.prm = _jDefaults(st.type, st.a, st.b);
+  const snap = JSON.stringify({ pieces: A3D.proj.pieces, dims: A3D.proj.dims, joints: A3D.proj.joints });
+  const orig = {}; [st.a, st.b].filter(Boolean).forEach(id => { const p = _a3dPiece(id); orig[id] = { L: p.L, x: p.x, y: p.y, z: p.z }; });
+  const jid = edit ? edit.id : '__preview';
+  let info = {};
+  const restore = () => Object.entries(orig).forEach(([id, v]) => { const p = _a3dPiece(id); if(p) Object.assign(p, v); });
+  const preview = () => {
+    restore();
+    const j0 = { id: jid, type: st.type, a: st.a, b: st.b, prm: st.prm };
+    let r; try{ r = _jCompute(j0); }catch(e){ r = { err: String(e.message || e) }; }
+    info = { err: r.err, ext: 0, angle: r.angle };
+    if(!r.err && r.need > 0.5 && r.endDir){
+      const pa = _a3dPiece(st.a), ext = Math.ceil(r.need);
+      pa.L += ext; pa.x = Math.round((pa.x + r.endDir[0] * ext / 2) * 10) / 10; pa.y = Math.round((pa.y + r.endDir[1] * ext / 2) * 10) / 10; pa.z = Math.round((pa.z + r.endDir[2] * ext / 2) * 10) / 10;
+      info.ext = ext;
+    }
+    A3D.jPreview = j0;
+    _jAfterChange();
+    const box = document.getElementById('jDlgInfo'); if(box) box.innerHTML = infoHtml();
+  };
+  let tmr = null;
+  const later = () => { clearTimeout(tmr); tmr = setTimeout(preview, 350); };
+  const nameOf = id => { const p = _a3dPiece(id); return p ? escapeHtml(p.name || 'Pièce') : '?'; };
+  const infoHtml = () => {
+    if(info.err) return `<div style="color:#E07A63;font-weight:700;">⚠️ ${escapeHtml(info.err)}</div>`;
+    const bits = [];
+    if(info.angle != null) bits.push(`Arrive à <b>${info.angle}°</b> sur la face`);
+    if(info.ext) bits.push(`« ${nameOf(st.a)} » allongée de <b>${info.ext} mm</b> (débit)`);
+    return bits.length ? '✓ ' + bits.join(' · ') : '✓ Aperçu à jour';
+  };
+  let ex = document.getElementById('a3dJoinDlg'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'a3dJoinDlg';
+  ex.style.cssText = 'position:fixed;top:60px;right:14px;z-index:99995;width:340px;max-height:calc(100vh - 80px);overflow-y:auto;background:var(--card,#211a12);border:1.5px solid var(--wood,#C8A26A);border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.5);color:var(--ink,#f0e6d2);';
+  const render = () => {
+    const types = st.type === 'delard' ? ['delard'] : ['tenon', 'embrevTenon', 'embrev', 'mibois', 'entaille', 'coupe'];
+    const field = ([k, label, kind, opts]) => {
+      if(kind === 'chk') return `<label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input type="checkbox" data-k="${k}" ${st.prm[k] ? 'checked' : ''}> ${label}</label>`;
+      if(kind === 'sel') return `<label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><span style="flex:1;">${label}</span><select data-k="${k}" style="width:170px;padding:5px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${opts.map(([v, l]) => `<option value="${v}" ${st.prm[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+      return `<label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><span style="flex:1;">${label}</span><input data-k="${k}" type="number" value="${st.prm[k] == null ? '' : st.prm[k]}" style="width:80px;padding:5px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+    };
+    ex.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;"><b style="font-size:15px;">${st.type === 'delard' ? '⟋ Délardement' : '🔗 Assemblage'}</b>
+        <button type="button" id="jDlgX" style="background:none;border:none;color:var(--ink);font-size:20px;cursor:pointer;">×</button></div>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin:4px 0 8px;">${st.type === 'delard' ? `Pièce : <b style="color:var(--ink);">${nameOf(st.a)}</b>` : `<b style="color:var(--ink);">${nameOf(st.a)}</b> (entre) → <b style="color:var(--ink);">${nameOf(st.b)}</b> (reçoit)
+        ${edit ? '' : ' <button type="button" id="jDlgSwap" class="btn btn-outline btn-sm" style="padding:2px 7px;margin-left:4px;">⇄ Inverser</button>'}`}</div>
+      ${types.length > 1 ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;">${types.map(t => `<button type="button" data-type="${t}" style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 3px;border-radius:10px;cursor:pointer;border:2px solid ${st.type === t ? '#E8AC3D' : 'rgba(255,255,255,.12)'};background:${st.type === t ? 'rgba(232,172,61,.14)' : 'var(--bg-elev)'};color:var(--ink);font-size:11px;font-weight:700;line-height:1.15;">${_jIcon(t, 42)}<span>${J_TYPES[t].label}</span></button>`).join('')}</div>` : ''}
+      <div>${J_PRM[st.type].map(field).join('') || '<div class="hint" style="font-size:12px;">La 1re pièce est coupée exactement contre la face de la 2e (coupe d\'about, coupe d\'empanon sur arêtier : double biais calculé tout seul). Elle est allongée si besoin.</div>'}</div>
+      ${st.type === 'delard' ? `<div style="margin-top:8px;padding:8px;border-radius:9px;background:var(--bg-elev);font-size:12px;">Calcul depuis la toiture :<div style="display:flex;gap:6px;align-items:center;margin-top:5px;">pente <input id="jDlgPitch" type="number" value="${st.prm.pitch || 45}" style="width:52px;padding:4px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);">° · plan <input id="jDlgPlan" type="number" value="${st.prm.plan || 45}" style="width:48px;padding:4px;border-radius:7px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);">° <button type="button" id="jDlgCalc" class="btn btn-outline btn-sm" style="padding:3px 8px;">Calculer</button></div><div class="hint" style="font-size:10.5px;margin-top:3px;">Plan 45° = arêtier régulier (versants de même pente).</div></div>` : ''}
+      <div id="jDlgInfo" style="margin:10px 0 4px;font-size:12px;padding:7px 9px;border-radius:9px;background:rgba(255,255,255,.05);">${infoHtml()}</div>
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        ${edit ? '<button type="button" id="jDlgDel" class="btn btn-outline" style="color:#E07A63;">🗑</button>' : ''}
+        <button type="button" id="jDlgCancel" class="btn btn-outline" style="flex:1;">Annuler</button>
+        <button type="button" id="jDlgOk" class="btn btn-primary" style="flex:1.4;">${edit ? '✓ Enregistrer' : '✓ Créer'}</button></div>`;
+    const $ = id => document.getElementById(id);
+    ex.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { st.type = b.dataset.type; st.prm = _jDefaults(st.type, st.a, st.b); render(); preview(); });
+    ex.querySelectorAll('[data-k]').forEach(inp => {
+      const k = inp.dataset.k;
+      const upd = () => { st.prm[k] = inp.type === 'checkbox' ? inp.checked : (inp.tagName === 'SELECT' ? inp.value : (inp.value === '' ? 0 : parseFloat(inp.value))); };
+      inp.onkeydown = e => e.stopPropagation();
+      inp.oninput = () => { upd(); later(); };
+      inp.onchange = () => { upd(); preview(); };
+    });
+    if($('jDlgSwap')) $('jDlgSwap').onclick = () => { restore(); const t = st.a; st.a = st.b; st.b = t; st.type = _jSuggest(st.a, st.b); st.prm = _jDefaults(st.type, st.a, st.b); render(); preview(); };
+    if($('jDlgCalc')) $('jDlgCalc').onclick = () => { const p = +$('jDlgPitch').value, pl = +$('jDlgPlan').value; st.prm.pitch = p; st.prm.plan = pl; st.prm.delta = _jBacking(p, pl); render(); preview(); };
+    const close = (commit) => {
+      clearTimeout(tmr);
+      if(commit){
+        A3D.history.push(snap); if(A3D.history.length > 60) A3D.history.shift();
+        const j = { id: edit ? edit.id : uid(), type: st.type, a: st.a, b: st.b, prm: Object.assign({}, st.prm) };
+        if(!Array.isArray(A3D.proj.joints)) A3D.proj.joints = [];
+        const i = A3D.proj.joints.findIndex(x => x.id === j.id);
+        if(i >= 0) A3D.proj.joints[i] = j; else A3D.proj.joints.push(j);
+        A3D.jPreview = null; _jAfterChange(); _a3dSave();
+        A3D.tab = 'join'; A3D.sel = null; _a3dHighlight(); _a3dRenderSide();
+        ex.remove();
+        if(j.type !== 'delard' && !info.err) setTimeout(() => _jTest(j.id), 150);
+        else showToast(info.err ? '⚠️ ' + info.err : '✓ Délardement appliqué');
+      } else {
+        restore(); A3D.jPreview = null; _jAfterChange(); ex.remove();
+      }
+    };
+    $('jDlgX').onclick = () => close(false);
+    $('jDlgCancel').onclick = () => close(false);
+    $('jDlgOk').onclick = () => close(true);
+    if($('jDlgDel')) $('jDlgDel').onclick = () => { clearTimeout(tmr); restore(); A3D.jPreview = null; ex.remove(); _jDelete(edit.id, snap); };
+  };
+  document.body.appendChild(ex);
+  render();
+  preview();
+}
+function _jDelete(id, snap){
+  A3D.history.push(snap || JSON.stringify({ pieces: A3D.proj.pieces, dims: A3D.proj.dims, joints: A3D.proj.joints }));
+  A3D.proj.joints = (A3D.proj.joints || []).filter(j => j.id !== id);
+  _jClearHits(); _jAfterChange(); _a3dSave(); _a3dRenderSide();
+  showToast('🗑 Assemblage supprimé (la pièce garde sa longueur)');
+}
+
+/* ── Tester : démontage / remontage + contrôle des collisions ─────── */
+function _jClearHits(){
+  if(!A3D || !A3D.hitGroup) return;
+  const g = A3D.hitGroup; while(g.children.length){ const c = g.children.pop(); c.geometry && c.geometry.dispose(); }
+}
+function _jShowHit(polys){
+  const T = A3D.T;
+  if(!A3D.hitGroup){ A3D.hitGroup = new T.Group(); A3D.scene.add(A3D.hitGroup); }
+  const pos = [];
+  polys.forEach(q => { for(let i = 1; i < q.v.length - 1; i++) [q.v[0], q.v[i], q.v[i + 1]].forEach(v => pos.push(v[0], v[1], v[2])); });
+  const geo = new T.BufferGeometry(); geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); geo.computeVertexNormals();
+  const m = new T.Mesh(geo, new T.MeshBasicMaterial({ color: 0xff2020, transparent: true, opacity: 0.85, depthTest: false, side: T.DoubleSide }));
+  m.renderOrder = 45; A3D.hitGroup.add(m);
+}
+const _jEase = x => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+function _jAnimTick(){
+  const a = A3D && A3D.anim; if(!a) return;
+  const t = performance.now() - a.t0; let k;
+  if(a.mode === 'test'){
+    if(t < 900) k = _jEase(t / 900); else if(t < 1600) k = 1; else if(t < 2500) k = 1 - _jEase((t - 1600) / 900); else { k = 0; A3D.anim = null; }
+  } else {
+    k = _jEase(Math.min(1, t / 450)); if(!a.on) k = 1 - k;
+    if(!a.on && t >= 450){ k = 0; A3D.anim = null; }
+  }
+  a.offs.forEach(o => { const m = A3D.meshes.get(o.id), p = _a3dPiece(o.id); if(m && p) m.position.set((p.x || 0) + o.v[0] * k, (p.y || 0) + o.v[1] * k, (p.z || 0) + o.v[2] * k); });
+}
+function _jStopAnim(){
+  if(!A3D || !A3D.anim) return;
+  A3D.anim = null; A3D.exploded = false;
+  A3D.proj.pieces.forEach(p => { const m = A3D.meshes.get(p.id); if(m) _a3dPlaceMesh(m, p); });
+}
+function _jOffsets(list){
+  const map = new Map();
+  list.forEach(({ j, r }) => { if(!r || r.err || !r.dir) return; const v = _cMul(r.dir, r.dist); const cur = map.get(j.a) || [0, 0, 0]; map.set(j.a, _cAdd(cur, v)); });
+  return Array.from(map.entries()).map(([id, v]) => ({ id, v }));
+}
+function _jTest(jid){
+  if(!A3D) return;
+  _jStopAnim(); _jClearHits();
+  const joints = (A3D.proj.joints || []).filter(j => j.type !== 'delard' && (!jid || j.id === jid));
+  if(!joints.length){ showToast('Aucun assemblage à tester'); return; }
+  const out = [], done = [];
+  joints.forEach(j => {
+    const pa = _a3dPiece(j.a), pb = _a3dPiece(j.b), lab = `${J_TYPES[j.type].label} · ${escapeHtml((pa && pa.name) || '?')} → ${escapeHtml((pb && pb.name) || '?')}`;
+    let r; try{ r = _jCompute(j); }catch(e){ r = { err: String(e.message || e) }; }
+    if(r.err){ out.push({ ok: false, html: `⚠️ ${lab} : ${escapeHtml(r.err)}` }); return; }
+    done.push({ j, r });
+    try{
+      const Bw = _jWorldPolys(pb);
+      const inter = _csgIntersect(_jWorldPolys(pa), Bw), v0 = _cVolVerts(inter);
+      if(v0 > 300){ _jShowHit(inter); out.push({ ok: false, html: `❌ ${lab} : collision de <b>${(v0 / 1000).toFixed(1).replace('.', ',')} cm³</b> (en rouge)` }); return; }
+      let block = null;
+      for(const f of [0.15, 0.35, 0.6, 0.85]){
+        const it = _csgIntersect(_jWorldPolys(pa, _cMul(r.dir, r.dist * f)), Bw);
+        if(_cVolVerts(it) > 300){ block = Math.round(r.dist * f); _jShowHit(it); break; }
+      }
+      if(block != null) out.push({ ok: false, html: `❌ ${lab} : ça bloque au démontage vers ${block} mm (en rouge)` });
+      else out.push({ ok: true, html: `✅ ${lab} : s'emboîte sans collision${j.prm && +j.prm.jf ? ` (jeu en fond ${j.prm.jf} mm)` : ''}` });
+    }catch(e){ out.push({ ok: false, html: `⚠️ ${lab} : test impossible (${escapeHtml(String(e.message || e))})` }); }
+  });
+  A3D.jResults = out;
+  const offs = _jOffsets(done);
+  if(offs.length) A3D.anim = { mode: 'test', t0: performance.now(), offs };
+  A3D.tab = 'join'; _a3dRenderSide();
+  const bad = out.filter(x => !x.ok).length;
+  showToast(bad ? `❌ ${bad} problème(s) — voir la liste` : `✅ ${out.length} assemblage(s) OK`);
+}
+function _jExplode(){
+  if(!A3D) return;
+  if(A3D.exploded){ A3D.exploded = false; if(A3D.anim){ A3D.anim.on = false; A3D.anim.t0 = performance.now(); } _a3dRenderSide(true); return; }
+  _jStopAnim(); _jClearHits();
+  const list = (A3D.proj.joints || []).filter(j => j.type !== 'delard').map(j => { let r = null; try{ r = _jCompute(j); }catch(e){} return { j, r }; });
+  const offs = _jOffsets(list);
+  if(!offs.length){ showToast('Aucun assemblage'); return; }
+  A3D.exploded = true; A3D.anim = { mode: 'explode', on: true, t0: performance.now(), offs };
+  _a3dRenderSide(true);
+}
+function _jCheckAll(){
+  if(!A3D) return;
+  _jStopAnim(); _jClearHits();
+  const ps = A3D.proj.pieces, out = []; let n = 0;
+  for(let i = 0; i < ps.length; i++) for(let k = i + 1; k < ps.length; k++){
+    const a = _a3dBox(ps[i].id), b = _a3dBox(ps[k].id); if(!a || !b) continue;
+    if(a.min.x > b.max.x - 1 || b.min.x > a.max.x - 1 || a.min.y > b.max.y - 1 || b.min.y > a.max.y - 1 || a.min.z > b.max.z - 1 || b.min.z > a.max.z - 1) continue;
+    const it = _csgIntersect(_jWorldPolys(ps[i]), _jWorldPolys(ps[k])), v = _cVolVerts(it);
+    if(v > 300){ n++; _jShowHit(it); out.push({ ok: false, html: `❌ ${escapeHtml(ps[i].name || 'Pièce')} ↔ ${escapeHtml(ps[k].name || 'Pièce')} : ${(v / 1000).toFixed(1).replace('.', ',')} cm³ se chevauchent` }); }
+  }
+  if(!n) out.push({ ok: true, html: '✅ Aucune pièce ne rentre dans une autre' });
+  A3D.jResults = out; A3D.tab = 'join'; _a3dRenderSide();
+}
+
+/* ── Onglet « Assemblages » du panneau ────────────────────────────── */
+function _jSideHtml(){
+  const js = A3D.proj.joints || [];
+  const nm = id => { const p = _a3dPiece(id); return p ? escapeHtml(p.name || 'Pièce') : '?'; };
+  return `
+    <div class="section-title" style="margin-top:4px;">Assemblages (${js.length})</div>
+    <button class="btn btn-primary btn-block" id="jNew">🔗 Nouvel assemblage</button>
+    <div class="hint" style="font-size:11px;margin:4px 0 8px;">Clique la pièce qui entre (tenon…) puis celle qui reçoit (mortaise…). Les coupes suivent les pièces si tu les déplaces.</div>
+    ${js.map(j => { const err = A3D.jErr && A3D.jErr.get(j.id); return `<div style="display:flex;align-items:center;gap:6px;padding:6px;margin-bottom:4px;border-radius:9px;background:var(--card);${err ? 'border:1px solid #E07A63;' : ''}">
+      ${_jIcon(j.type, 34)}
+      <div style="flex:1;min-width:0;font-size:12px;line-height:1.25;"><b>${J_TYPES[j.type].label}</b><div style="color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${nm(j.a)}${j.b ? ' → ' + nm(j.b) : ''}</div>${err ? `<div style="color:#E07A63;">⚠️ ${escapeHtml(err)}</div>` : ''}</div>
+      ${j.type !== 'delard' ? `<button type="button" class="btn btn-outline btn-sm" data-jtest="${j.id}" title="Tester" style="padding:3px 6px;">▶</button>` : ''}
+      <button type="button" class="btn btn-outline btn-sm" data-jedit="${j.id}" title="Modifier" style="padding:3px 6px;">✏️</button>
+    </div>`; }).join('') || '<div class="hint" style="font-size:11.5px;">Aucun assemblage pour l\'instant.</div>'}
+    <div class="section-title">Tester</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;">
+      <button class="btn btn-outline btn-sm" style="flex:1;" id="jTestAll">▶ Tout tester</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;${A3D.exploded ? 'background:#E8AC3D;color:#1a0d00;' : ''}" id="jExplode">💥 Éclaté</button>
+      <button class="btn btn-outline btn-sm" style="flex:1;" id="jCheck">🔍 Collisions</button>
+    </div>
+    <div style="margin-top:8px;font-size:12px;line-height:1.35;">${(A3D.jResults || []).map(r => `<div style="padding:5px 7px;margin-bottom:4px;border-radius:8px;background:${r.ok ? 'rgba(63,185,80,.12)' : 'rgba(224,122,99,.14)'};">${r.html}</div>`).join('')}</div>
+    <div class="section-title">Modèles de charpente</div>
+    <button class="btn btn-outline btn-block" id="jFerme">🏠 Générer une ferme…</button>`;
+}
+function _jSideBind(){
+  const $ = id => document.getElementById(id), side = document.getElementById('a3dSide');
+  $('jNew').onclick = () => _jStartPick(null);
+  $('jTestAll').onclick = () => _jTest(null);
+  $('jExplode').onclick = () => _jExplode();
+  $('jCheck').onclick = () => _jCheckAll();
+  $('jFerme').onclick = () => _jFermeDialog();
+  side.querySelectorAll('[data-jtest]').forEach(b => b.onclick = () => _jTest(b.dataset.jtest));
+  side.querySelectorAll('[data-jedit]').forEach(b => b.onclick = () => { const j = (A3D.proj.joints || []).find(x => x.id === b.dataset.jedit); if(j) _jDialog({ edit: j }); });
+}
+/* Usinages d'une pièce (pour la liste de débit) */
+function _jMachining(id){
+  const out = [];
+  (A3D && A3D.proj.joints || []).forEach(j => {
+    const t = J_TYPES[j.type]; if(!t) return;
+    if(j.a === id){ if(j.type === 'entaille' && j.prm && j.prm.who === 'B') return; out.push(t.a); }
+    else if(j.b === id){ if(j.type === 'entaille' && !(j.prm && j.prm.who === 'B')) return; if(t.b) out.push(t.b); }
+  });
+  const c = {}; out.forEach(x => c[x] = (c[x] || 0) + 1);
+  return Object.entries(c).map(([k, v]) => v > 1 ? k + ' ×' + v : k).join(', ');
+}
+
+/* ── Générateur de ferme (entrait, arbalétriers, poinçon, contrefiches) ── */
+function _jFermeDialog(){
+  let ex = document.getElementById('a3dFerme'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'a3dFerme';
+  ex.style.cssText = 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;';
+  const f = (id, l, v) => `<label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px;"><span style="flex:1;">${l}</span><input id="${id}" type="number" value="${v}" style="width:100px;padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+  const f2 = (id, l, a, b) => `<label style="display:flex;align-items:center;gap:6px;margin:5px 0;font-size:13px;"><span style="flex:1;">${l}</span><input id="${id}W" type="number" value="${a}" style="width:58px;padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">×<input id="${id}H" type="number" value="${b}" style="width:58px;padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></label>`;
+  ex.innerHTML = `<div style="background:var(--card,#211a12);border:1.5px solid var(--wood);border-radius:14px;padding:16px;width:390px;max-height:90vh;overflow-y:auto;color:var(--ink);">
+    <h3 style="margin:0 0 8px;">🏠 Ferme de charpente</h3>
+    ${f('fmP', 'Portée entre appuis (mm)', 6000)}${f('fmA', 'Pente (°)', 35)}${f('fmD', 'Débord de l\'entrait (mm)', 250)}
+    <div class="hint" style="font-size:11px;margin:6px 0 2px;">Sections : épaisseur × hauteur (mm)</div>
+    ${f2('fmE', 'Entrait', 100, 225)}${f2('fmR', 'Arbalétriers', 100, 175)}${f2('fmK', 'Poinçon', 150, 150)}${f2('fmC', 'Contrefiches', 100, 125)}
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmCf" type="checkbox" checked> Contrefiches</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmJ" type="checkbox" checked> Assemblages automatiques (tenons, mortaises, embrèvements, chevilles)</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmR2" type="checkbox" checked> Remplacer le projet actuel</label>
+    <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('a3dFerme').remove()">Annuler</button><button class="btn btn-primary" style="flex:1;" id="fmGo">Générer</button></div>
+  </div>`;
+  document.body.appendChild(ex);
+  document.getElementById('fmGo').onclick = () => {
+    const v = id => +document.getElementById(id).value, c = id => document.getElementById(id).checked;
+    const o = { P: v('fmP'), a: v('fmA'), D: v('fmD'), E: [v('fmEW'), v('fmEH')], R: [v('fmRW'), v('fmRH')], K: [v('fmKW'), v('fmKH')], C: [v('fmCW'), v('fmCH')], cf: c('fmCf'), joints: c('fmJ'), replace: c('fmR2') };
+    if(!(o.P > 500 && o.a > 5 && o.a < 80)){ showToast('Portée ou pente invalide'); return; }
+    ex.remove(); _jBuildFerme(o);
+  };
+}
+function _jBuildFerme(o){
+  _a3dPushHistory();
+  if(o.replace){ A3D.proj.pieces = []; A3D.proj.dims = []; A3D.proj.joints = []; }
+  if(!Array.isArray(A3D.proj.joints)) A3D.proj.joints = [];
+  _jStopAnim(); _jClearHits();
+  const add = p => _a3dAddPiece(p, true);
+  const al = o.a * Math.PI / 180, sin = Math.sin(al), cos = Math.cos(al), tan = Math.tan(al);
+  const [ew, eh] = o.E, [aw, ah] = o.R, [kw, kh] = o.K, [cw, ch] = o.C;
+  const ent = add({ name: 'Entrait', w: ew, h: eh, L: Math.round(o.P + 2 * o.D), axis: 'x', x: 0, y: eh / 2, z: 0, color: A3D_WOOD[1] });
+  const xf = -o.P / 2 + (ah / 2) / sin, yt = eh + (-kw / 2 - xf) * tan;
+  const mkArb = side => {
+    const x1 = side * xf, x2 = side * (-kw / 2);
+    const L = Math.hypot(x2 - x1, yt - eh);
+    return add({ name: 'Arbalétrier', w: aw, h: ah, L: Math.round(L), axis: 'x', x: Math.round((x1 + x2) / 2 * 10) / 10, y: Math.round((eh + yt) / 2 * 10) / 10, z: 0, tilt: side * o.a, color: A3D_WOOD[0] });
+  };
+  const arbL = mkArb(1), arbR = mkArb(-1);
+  const kTop = yt + (ah / 2) / cos + 150;
+  const poi = add({ name: 'Poinçon', w: kw, h: kh, L: Math.round(kTop - eh), axis: 'y', x: 0, y: Math.round((eh + kTop) / 2 * 10) / 10, z: 0, color: A3D_WOOD[3] });
+  const joints = [];
+  const J = (type, a, b, prm) => joints.push({ id: uid(), type, a: a.id, b: b.id, prm: Object.assign(_jDefaults(type, a.id, b.id), prm || {}) });
+  let cfs = [];
+  if(o.cf){
+    const yc1 = eh + (yt - eh) * 0.22;
+    cfs = [1, -1].map(side => {
+      const fx = side * xf, M = [fx + (side * (-kw / 2) - fx) * 0.5, eh + (yt - eh) * 0.5];
+      const nu = [-side * sin, cos];            // normale « dessus » de l'arbalétrier
+      const U = [M[0] - nu[0] * ah / 2, M[1] - nu[1] * ah / 2], Lo = [side * (-kw / 2), yc1];
+      const dx = U[0] - Lo[0], dy = U[1] - Lo[1];
+      return add({ name: 'Contrefiche', w: cw, h: ch, L: Math.round(Math.hypot(dx, dy)), axis: 'x', x: Math.round((U[0] + Lo[0]) / 2 * 10) / 10, y: Math.round((U[1] + Lo[1]) / 2 * 10) / 10, z: 0, tilt: Math.round(Math.atan(dy / dx) * 1800 / Math.PI) / 10, color: A3D_WOOD[4] });
+    });
+  }
+  if(o.joints){
+    J('tenon', poi, ent, { L: _jR5(eh * 0.5), peg: 22 });
+    [arbL, arbR].forEach(a => { J('embrevTenon', a, ent); J('tenon', a, poi, { L: _jR5(kw * 0.35), r1: _jR5(ah * 0.15), r2: _jR5(ah * 0.15) }); });
+    cfs.forEach((c, i) => { J('tenon', c, poi, { L: _jR5(kw * 0.35), peg: 0 }); J('embrevTenon', c, i ? arbR : arbL, { peg: 0 }); });
+    // allongements (tenons) un par un
+    joints.forEach(j => {
+      const r = _jCompute(j);
+      if(!r.err && r.need > 0.5 && r.endDir){ const pa = _a3dPiece(j.a), ext = Math.ceil(r.need); pa.L += ext; pa.x = Math.round((pa.x + r.endDir[0] * ext / 2) * 10) / 10; pa.y = Math.round((pa.y + r.endDir[1] * ext / 2) * 10) / 10; pa.z = Math.round((pa.z + r.endDir[2] * ext / 2) * 10) / 10; }
+    });
+    A3D.proj.joints.push(...joints);
+  }
+  A3D.proj.joints = A3D.proj.joints.filter((j, i, arr) => arr.findIndex(x => x.id === j.id) === i);
+  A3D.sel = null; _a3dRebuildAll(); _a3dFit(); A3D.tab = 'join'; A3D.jResults = []; _a3dRenderSide(); _a3dSave();
+  showToast('🏠 Ferme générée : ' + A3D.proj.pieces.length + ' pièces, ' + A3D.proj.joints.length + ' assemblages');
+}
+/* ATELIER 3D — ASSEMBLAGES (fin) */
+
 function _a3dRenderDevList(){
   const host = document.getElementById('a3dDevList'); if(!host) return;
   const list = _a3dProjects().slice().sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0)).slice(0, 5);
@@ -35243,9 +36111,26 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.229';
+const APP_VERSION = '5.41.231';
 
 const CHANGELOG = [
+  {
+    version: '5.41.231',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🔗', text: "Atelier 3D — assemblages de charpente : bouton « 🔗 Assembler », clic sur la pièce qui entre puis sur celle qui reçoit. Tenon / mortaise (épaulements, jeu, traversant, cheville), embrèvement, embrèvement + tenon, mi-bois, entaille (la pièce épouse l'autre), coupe d'about / d'empanon (double biais calculé tout seul). Aperçu en direct des tenons et mortaises, coupes en bois clair." },
+      { icon: '⟋', text: "Délardement d'arêtier (dos d'âne) ou de noue (en creux), angle calculé depuis la pente des versants." },
+      { icon: '▶', text: "Tester l'assemblage : démontage / remontage animé, contrôle des collisions (zones en rouge), vue éclatée, recherche des pièces qui se chevauchent. La pièce à tenon est allongée automatiquement et la liste de débit indique les usinages." },
+      { icon: '🏠', text: "Nouveau générateur de ferme : entrait, arbalétriers, poinçon, contrefiches avec tous leurs assemblages (embrèvements, tenons, chevilles)." },
+    ],
+  },
+  {
+    version: '5.41.230',
+    date: '25/09/2026',
+    entries: [
+      { icon: '🧊', text: "Bandeau « Chantier actif » : bouton 3D toujours présent pour le conducteur et le patron. « 🧊 Ajouter la 3D » s'il n'y a pas encore de lien, sinon « 🧊 Voir la 3D » + « ✏️ 3D » pour le modifier. Les autres rôles voient « 🧊 Voir la 3D » dès qu'un lien existe." },
+    ],
+  },
   {
     version: '5.41.229',
     date: '25/09/2026',
@@ -51304,7 +52189,9 @@ function renderChantierActifBanner(){
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
       <button onclick="openSiteNotesModal('${site.id}')"><img src="icons/afaire.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'📝'}))"> Notes${(() => { const n = (site.noteCategories||[]).filter(c=>!c.archived).reduce((sum,c)=>sum+(c.notes||[]).filter(x=>!x.archived).length,0); return n ? ` (${n})` : ''; })()}</button>
       <button onclick="openReunionChantierModal('${site.id}')"><img src="icons/agenda.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🗓️'}))"> Réunion${(site.reunionChantier && site.reunionChantier.enabled) ? ' ✅' : ''}</button>
-      ${(site.model3d && site.model3d.url) ? `<button onclick="_m3dOpen('${site.id}')" style="${_m3dStatus(site).expired ? 'color:#ff6b6b;border-color:#ff6b6b;' : ''}">🧊 3D${_m3dStatus(site).expired ? ' ⚠️' : ''}</button>` : ''}
+      ${(site.model3d && site.model3d.url)
+        ? `<button onclick="_m3dOpen('${site.id}')" style="${_m3dStatus(site).expired ? 'color:#ff6b6b;border-color:#ff6b6b;' : ''}" title="${_m3dStatus(site).expired ? 'Lien 3D obsolète (plus de 3 mois)' : 'Voir la maquette 3D'}">🧊 Voir la 3D${_m3dStatus(site).expired ? ' ⚠️' : ''}</button>${_m3dCanEdit() ? `<button onclick="_m3dEdit('${site.id}')" title="Modifier le lien 3D">✏️ 3D</button>` : ''}`
+        : (_m3dCanEdit() ? `<button onclick="_m3dEdit('${site.id}')" title="Ajouter le lien de la maquette 3D">🧊 Ajouter la 3D</button>` : '')}
     </div>
   `;
 }
@@ -61740,6 +62627,7 @@ if(RWOOD_NATIVE){
   }
 }
 /* MODULE — RwoodRouteAuto (fin) */
+
 </script>
 
 <!-- MENU : Lier une tâche — chantier + date simultanément -->
