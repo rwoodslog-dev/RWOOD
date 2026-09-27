@@ -33283,6 +33283,8 @@ function _a3dBindEvents(){
       A3D._magEx = new Set(_a3dSelIds());
       if(gz === 'free'){
         const plane = new A3D.T.Plane(new A3D.T.Vector3(0, 1, 0), -gp.y);
+        if(A3D.orthoView === 'face') plane.set(new A3D.T.Vector3(0, 0, 1), -gp.z);
+        if(A3D.orthoView === 'side') plane.set(new A3D.T.Vector3(1, 0, 0), -gp.x);
         const start = new A3D.T.Vector3(); _a3dRay(ev).ray.intersectPlane(plane, start);
         drag = { mode: 'move', primary: p.id, others: others(p.id), plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
       } else {
@@ -34926,7 +34928,7 @@ function _a3dPanelHtml(p, mode){
   if(mode === 'move') return title('Position')
     + row(lab('Hauteur'), 'bottom', round('fGround', '⤓0', 'Poser au sol'))
     + row(lab('X'), 'x') + row(lab('Z'), 'z')
-    + `<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">${round('fPlace', '📍 Point à point', 'Déplacer d\'un point précis à un autre (ou d\'une distance tapée)')}${round('fRepart', '↔ Répartir', 'Copier la pièce régulièrement entre 2 points (chevrons, solives…)')}${round('fDrop', '⬇ Poser dessus', 'Poser sur la pièce en dessous')}${round('fMeasure', '📏 Mesure', 'Poser une cote (2 clics)', !!A3D.measure)}</div>`;
+    + `<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">${round('fPlace', '📍 Point à point', 'Déplacer d\'un point précis à un autre (ou d\'une distance tapée)')}${round('fStick', '🧲 Coller contre', 'Clique la face d\'une autre pièce : collage exact')}${round('fRepart', '↔ Répartir', 'Copier la pièce régulièrement entre 2 points (chevrons, solives…)')}${round('fDrop', '⬇ Poser dessus', 'Poser sur la pièce en dessous')}${round('fMeasure', '📏 Mesure', 'Poser une cote (2 clics)', !!A3D.measure)}</div>`;
   if(mode === 'dims') return title('Dimensions (mm)', round('fLink', '🔗', 'Garder les proportions', _a3dLinkDims))
     + row(dot('#e5484d'), 'd0') + row(dot('#3fb950'), 'd1') + row(dot('#2e9bff'), 'd2')
     + (['tube', 'tubecarre', 'U', 'L'].includes(p.shape) ? `<div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Paroi')}<input id="fTh" type="number" value="${p.th || 20}" style="${_a3dInpCss}"></div>` : '');
@@ -35024,6 +35026,7 @@ function _a3dRenderFloating(){
   if($('fDrop')) $('fDrop').onclick = () => _a3dDropOnTop();
   if($('fPlace')) $('fPlace').onclick = () => _a3dToolStart('place');
   if($('fRepart')) $('fRepart').onclick = () => _a3dToolStart('repart');
+  if($('fStick')) $('fStick').onclick = () => _a3dToolStart('stick');
   if($('fMeasure')) $('fMeasure').onclick = () => { A3D.measure = A3D.measure ? null : { a: null }; _a3dToolbarState(); _a3dRenderFloating(); showToast(A3D.measure ? '📏 Clique le 1er point, puis le 2e' : 'Mesure terminée'); };
   if($('fLink')) $('fLink').onclick = () => { _a3dLinkDims = !_a3dLinkDims; _a3dRenderFloating(); };
   if($('fTh')) $('fTh').onchange = e => { const v = +e.target.value; if(v > 0) _a3dUpdateSel({ th: v }); };
@@ -35075,13 +35078,18 @@ function _a3dUpdateGizmo(){
   const pos = multi ? _a3dSelBox(ids).getCenter(new A3D.T.Vector3()) : m.position;
   const dist = A3D.orthoView ? A3D.orthoZoom * 0.9 : A3D.cam.position.distanceTo(pos), k = dist * 0.11 * (multi ? 1.3 : 1);
   [g, rg].forEach(o => { o.position.copy(pos); o.scale.set(k, k, k); });
+  // flèche qui pointe vers la caméra : invisible et intouchable (sinon on déplace « en profondeur » sans le voir)
+  const vd = new A3D.T.Vector3(); A3D.cam.getWorldDirection(vd);
+  [[1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach((a, i) => { if(g.children[i]) g.children[i].visible = Math.abs(vd.x * a[0] + vd.y * a[1] + vd.z * a[2]) < 0.9; });
 }
 function _a3dPickGizmo(ev){
   const objs = [];
   if(A3D.gizmo && A3D.gizmo.visible) objs.push(...A3D.gizmo.children);
   if(A3D.gizmoRot && A3D.gizmoRot.visible) objs.push(...A3D.gizmoRot.children);
   if(!objs.length) return null;
-  const hits = _a3dRay(ev).intersectObjects(objs, true).filter(h => h.object.userData.gizmoAxis);
+  const shown = o => { for(let x = o; x; x = x.parent){ if(!x.visible && !(x.material && x.material.visible === false && x === o)) return false; } return true; };
+  const hits = _a3dRay(ev).intersectObjects(objs, true).filter(h => h.object.userData.gizmoAxis && shown(h.object));
+  if(hits.some(h => h.object.userData.gizmoAxis === 'free')) return 'free';   // le rond central est prioritaire
   return hits.length ? hits[0].object.userData.gizmoAxis : null;
 }
 /* ATELIER 3D — INTERFACE (fin) */
@@ -35214,7 +35222,7 @@ function _a3dRenderFloatingMulti(host, ids){
     <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Hauteur')}${inp('bottom', box.min.y)}${rb('gGround', '⤓0', 'Poser au sol')}</div>
     <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('X')}${inp('x', c.x)}</div>
     <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Z')}${inp('z', c.z)}</div>
-    <div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;">${rb('gPlace', '📍 Point à point', 'Déplacer d\'un point précis à un autre')}${rb('gRepart', '↔ Répartir', 'Copier régulièrement entre 2 points')}</div>
+    <div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;">${rb('gPlace', '📍 Point à point', 'Déplacer d\'un point précis à un autre')}${rb('gStick', '🧲 Coller contre', 'Collage exact contre une face')}${rb('gRepart', '↔ Répartir', 'Copier régulièrement entre 2 points')}</div>
     <div style="font-size:10.5px;color:#8b96a0;">Glisse une pièce ou les flèches : tout bouge ensemble.</div>`;
   if(mode === 'rot') panel = `<div style="font-size:13px;color:#aeb8c2;font-weight:700;">Tourner autour du centre</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0;">${rb('gR-90', '−90°')}${rb('gR-15', '−15°')}${rb('gR15', '+15°')}${rb('gR90', '+90°')}</div>
@@ -35254,6 +35262,7 @@ function _a3dRenderFloatingMulti(host, ids){
   });
   if($('gPlace')) $('gPlace').onclick = () => _a3dToolStart('place');
   if($('gRepart')) $('gRepart').onclick = () => _a3dToolStart('repart');
+  if($('gStick')) $('gStick').onclick = () => _a3dToolStart('stick');
   if($('gGround')) $('gGround').onclick = () => _a3dMoveSel(0, -box.min.y, 0);
   [['gR-90', -90], ['gR-15', -15], ['gR15', 15], ['gR90', 90]].forEach(([id, d]) => { if($(id)) $(id).onclick = () => _a3dRotateSel(d); });
   if($('gRGo')) $('gRGo').onclick = () => { const v = parseFloat($('gRotV').value); if(v) _a3dRotateSel(v); };
@@ -35362,6 +35371,11 @@ function _a3dToolBar(){
   if(!bar){ bar = document.createElement('div'); bar.id = 'a3dToolBar'; bar.style.cssText = 'position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:6;background:#232b33;color:#e6edf3;border-radius:14px;padding:8px 12px;box-shadow:0 4px 14px rgba(0,0,0,.4);font-size:12.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;max-width:calc(100% - 160px);'; view.appendChild(bar); }
   const seg = (k, v, l) => `<button type="button" data-tk="${k}" data-tv="${v}" style="padding:4px 9px;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:12px;background:${t[k] === v ? '#2e9bff' : 'rgba(255,255,255,.08)'};color:#fff;">${l}</button>`;
   const ninp = (k, v) => `<input data-tn="${k}" type="number" value="${v}" style="width:52px;background:transparent;border:none;border-bottom:1.5px solid #6b7884;color:#fff;font-weight:800;font-size:13px;outline:none;">`;
+  if(t.type === 'stick'){
+    bar.innerHTML = `<b>🧲 Coller contre</b> <span style="color:#E8AC3D;font-weight:700;">→ clique la face de l'autre pièce contre laquelle coller</span> <span style="color:#8b96a0;">Échap : annuler</span> <button type="button" id="a3dToolX" style="background:none;border:none;color:#E07A63;font-size:16px;cursor:pointer;">✕</button>`;
+    document.getElementById('a3dToolX').onclick = () => _a3dToolEnd(true);
+    return;
+  }
   if(t.type === 'repart'){
     const st = t.a ? 'point d\'arrivée du DERNIER (ou tape la longueur + Entrée)' : 'point de départ sur la pièce modèle (un coin)';
     bar.innerHTML = `<b>↔ Répartir</b> ${seg('mode', 'step', 'Entraxe maxi')}${seg('mode', 'count', 'Nombre total')} ${ninp(t.mode === 'step' ? 'step' : 'count', t.mode === 'step' ? t.step : t.count)}${t.mode === 'step' ? ' mm' : ''} <span style="color:#E8AC3D;font-weight:700;">→ ${st}</span> <span style="color:#8b96a0;">Échap : annuler</span> <button type="button" id="a3dToolX" style="background:none;border:none;color:#E07A63;font-size:16px;cursor:pointer;">✕</button>`;
@@ -35386,6 +35400,9 @@ function _a3dToolStart(type, opts){
     const s = Object.assign({ w: 63, h: 175, name: 'Chevron' }, A3D.lastSec || {}, opts || {});
     A3D.tool = { type, w: s.w, h: s.h, name: s.name, anchor: A3D.lastAnchor || 'axe', a: null, cur: null, typed: '' };
     A3D.sel = null; A3D.multi = null; _a3dHighlight();
+  } else if(type === 'stick'){
+    const ids = _a3dSelIds(); if(!ids.length){ showToast('Sélectionne d\'abord la pièce à coller'); return; }
+    A3D.tool = { type, ids, a: null, cur: null, typed: '' };
   } else if(type === 'repart'){
     const ids = _a3dSelIds(); if(!ids.length){ showToast('Sélectionne d\'abord la pièce modèle (ex. le 1er chevron)'); return; }
     A3D.tool = { type, ids, a: null, cur: null, typed: '', mode: A3D.lastRepMode || 'step', step: A3D.lastRepStep || 600, count: 10 };
@@ -35402,6 +35419,7 @@ function _a3dToolEnd(cancel){
 }
 function _a3dToolMove(ev){
   const t = A3D.tool; if(!t) return;
+  if(t.type === 'stick') return;
   const ex = t.type === 'place' && t.a ? new Set(t.ids) : null;
   const sn = _a3dSnap(ev, ex); t.snap = sn;
   if(!sn) return;
@@ -35420,6 +35438,20 @@ function _a3dPlacePreview(){
 }
 function _a3dToolClick(ev){
   const t = A3D.tool; if(!t) return;
+  if(t.type === 'stick'){
+    const ex = new Set(t.ids);
+    const h = _a3dRay(ev).intersectObjects(A3D.group.children, false).find(x => !ex.has(x.object.userData.id));
+    if(!h || !h.face){ showToast('Clique sur une face d\'une AUTRE pièce'); return; }
+    const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+    const an = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)], k = an[0] > an[1] ? (an[0] > an[2] ? 0 : 2) : (an[1] > an[2] ? 1 : 2), ax = ['x', 'y', 'z'][k], sg = n[ax] > 0 ? 1 : -1;
+    const tb = _a3dBox(h.object.userData.id), sb = _a3dSelBox(t.ids);
+    const delta = sg > 0 ? tb.max[ax] - sb.min[ax] : tb.min[ax] - sb.max[ax];
+    const d = [0, 0, 0]; d[k] = delta;
+    A3D.tool = null; _a3dToolBar(); _a3dToolbarState();
+    _a3dMoveSel(d[0], d[1], d[2]);
+    showToast('🧲 Collée contre « ' + ((_a3dPiece(h.object.userData.id) || {}).name || 'la pièce') + ' » (' + (Math.round(delta * 10) / 10) + ' mm)');
+    return;
+  }
   _a3dToolMove(ev);
   if(!t.snap) return;
   if(!t.a){ t.a = t.snap.pt.clone(); t.cur = t.a.clone(); t.typed = ''; _a3dToolBar(); _a3dToolVisual(); return; }
@@ -36989,9 +37021,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.236';
+const APP_VERSION = '5.41.238';
 
 const CHANGELOG = [
+  {
+    version: '5.41.238',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🎸', text: "Radio (app Android + Android Auto) : pour les radios qui l'annoncent (ex. Pure Rock), affichage du groupe et du titre en cours (« Led Zeppelin — Stairway to Heaven ») avec la pochette de l'album, sur Android Auto, l'écran verrouillé, la notification, le widget Musique et l'en-tête de l'app. Pendant les jingles : nom de la radio + logo RWOOD." },
+    ],
+  },
+  {
+    version: '5.41.237',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🧲', text: "Atelier 3D : en vue Face / Côté / Dessus, la flèche qui pointe vers toi (invisible) attrapait la pièce et la déplaçait en profondeur au lieu de la descendre — elle est maintenant désactivée, la pièce se glisse et se colle normalement. Nouveau bouton « 🧲 Coller contre » (panneau Déplacer) : clique la face d'une autre pièce, la pièce vient s'y coller exactement (0 mm)." },
+    ],
+  },
   {
     version: '5.41.236',
     date: '27/09/2026',
@@ -40139,7 +40185,8 @@ function musicRenderHeaderWidget(){
   const btnImg = document.querySelector('#musicPlayPauseBtn img');
   if(btnImg) btnImg.src = _musicIsPlaying ? 'icons/musique/pause.png' : 'icons/musique/play.png';
   const ddName = document.getElementById('musicDropdownStationName');
-  if(ddName) ddName.textContent = st ? st.name : 'Aucune radio sélectionnée';
+  if(ddName) ddName.textContent = st ? st.name + (window._musicTrack && _musicIsPlaying ? ' — ♪ ' + window._musicTrack : '') : 'Aucune radio sélectionnée';
+  if(nameTextEl && st && window._musicTrack && _musicIsPlaying){ nameTextEl.textContent = '♪ ' + window._musicTrack; nameTextEl.title = st.name + ' — ' + window._musicTrack; }
   const ddBtnImg = document.querySelector('#musicDropdownPlayBtn img');
   if(ddBtnImg) ddBtnImg.src = _musicIsPlaying ? 'icons/musique/pause.png' : 'icons/musique/play.png';
 }
@@ -63331,11 +63378,13 @@ if(RWOOD_NATIVE && _rrN()){
     if(!e) return;
     if(e.id) _musicCurrentStationId = e.id;
     _musicIsPlaying = !!e.playing;
+    window._musicTrack = e.track || '';
     try{ musicRenderHeaderWidget(); _musicRenderGenreList(); }catch(_){}
   });
   R.musicState().then(e => {
     if(e && e.id) _musicCurrentStationId = e.id;
     if(e) _musicIsPlaying = !!e.playing;
+    if(e) window._musicTrack = e.track || '';
     try{ musicRenderHeaderWidget(); }catch(_){}
   }).catch(()=>{});
 }
