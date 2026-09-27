@@ -34405,17 +34405,20 @@ function _jFermeDialog(){
   ex.innerHTML = `<div style="background:var(--card,#211a12);border:1.5px solid var(--wood);border-radius:14px;padding:16px;width:390px;max-height:90vh;overflow-y:auto;color:var(--ink);">
     <h3 style="margin:0 0 8px;">🏠 Ferme de charpente</h3>
     ${f('fmP', 'Portée entre appuis (mm)', 6000)}${f('fmA', 'Pente (°)', 35)}${f('fmD', 'Débord de l\'entrait (mm)', 250)}
+    <div style="display:flex;gap:10px;"><div style="flex:1;">${f('fmN', 'Nombre de fermes', 1)}</div></div>
+    ${f('fmS', 'Entraxe entre fermes (mm)', 4000)}
     <div class="hint" style="font-size:11px;margin:6px 0 2px;">Sections : épaisseur × hauteur (mm)</div>
     ${f2('fmE', 'Entrait', 100, 225)}${f2('fmR', 'Arbalétriers', 100, 175)}${f2('fmK', 'Poinçon', 150, 150)}${f2('fmC', 'Contrefiches', 100, 125)}
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmCf" type="checkbox" checked> Contrefiches</label>
     <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmJ" type="checkbox" checked> Assemblages automatiques (tenons, mortaises, embrèvements, chevilles)</label>
-    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmR2" type="checkbox" checked> Remplacer le projet actuel</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;"><input id="fmR2" type="checkbox" ${(A3D && A3D.proj.pieces.length) ? '' : 'checked'}> Remplacer le projet actuel <span style="font-size:11px;color:var(--ink-soft);">(sinon ajoutées derrière les pièces existantes)</span></label>
     <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('a3dFerme').remove()">Annuler</button><button class="btn btn-primary" style="flex:1;" id="fmGo">Générer</button></div>
   </div>`;
   document.body.appendChild(ex);
   document.getElementById('fmGo').onclick = () => {
     const v = id => +document.getElementById(id).value, c = id => document.getElementById(id).checked;
-    const o = { P: v('fmP'), a: v('fmA'), D: v('fmD'), E: [v('fmEW'), v('fmEH')], R: [v('fmRW'), v('fmRH')], K: [v('fmKW'), v('fmKH')], C: [v('fmCW'), v('fmCH')], cf: c('fmCf'), joints: c('fmJ'), replace: c('fmR2') };
+    const o = { P: v('fmP'), a: v('fmA'), D: v('fmD'), E: [v('fmEW'), v('fmEH')], R: [v('fmRW'), v('fmRH')], K: [v('fmKW'), v('fmKH')], C: [v('fmCW'), v('fmCH')], cf: c('fmCf'), joints: c('fmJ'), replace: c('fmR2'), n: Math.max(1, Math.min(40, Math.round(v('fmN')) || 1)), S: v('fmS') || 4000 };
+    if(o.n > 1 && o.S < Math.max(o.E[0], o.K[1]) + 50){ showToast('Entraxe trop petit pour les sections'); return; }
     if(!(o.P > 500 && o.a > 5 && o.a < 80)){ showToast('Portée ou pente invalide'); return; }
     ex.remove(); _jBuildFerme(o);
   };
@@ -34425,7 +34428,19 @@ function _jBuildFerme(o){
   if(o.replace){ A3D.proj.pieces = []; A3D.proj.dims = []; A3D.proj.joints = []; }
   if(!Array.isArray(A3D.proj.joints)) A3D.proj.joints = [];
   _jStopAnim(); _jClearHits();
-  const add = p => _a3dAddPiece(p, true);
+  // v5.41.233 — plusieurs fermes alignées (entraxe), ajoutées derrière l'existant
+  const n = Math.max(1, o.n || 1), S = o.S || 4000;
+  let z0 = 0;
+  if(!o.replace && A3D.proj.pieces.length){ const mz = Math.max(...A3D.proj.pieces.map(p => p.z || 0)); z0 = Math.round((mz + S) / 10) * 10; }
+  const before = A3D.proj.pieces.length;
+  let num = (A3D.proj.pieces.filter(p => /^Entrait/.test(p.name || '')).length);
+  for(let i = 0; i < n; i++){ num++; _jBuildOneFerme(o, z0 + i * S, n > 1 || num > 1 ? ' F' + num : ''); }
+  A3D.proj.joints = A3D.proj.joints.filter((j, i, arr) => arr.findIndex(x => x.id === j.id) === i);
+  A3D.sel = null; _a3dRebuildAll(); _a3dFit(); A3D.tab = 'join'; A3D.jResults = []; _a3dRenderSide(); _a3dSave();
+  showToast('🏠 ' + n + ' ferme(s) générée(s) : ' + (A3D.proj.pieces.length - before) + ' pièces');
+}
+function _jBuildOneFerme(o, Z, suf){
+  const add = p => _a3dAddPiece(Object.assign(p, { z: Z, name: p.name + suf }), true);
   const al = o.a * Math.PI / 180, sin = Math.sin(al), cos = Math.cos(al), tan = Math.tan(al);
   const [ew, eh] = o.E, [aw, ah] = o.R, [kw, kh] = o.K, [cw, ch] = o.C;
   const ent = add({ name: 'Entrait', w: ew, h: eh, L: Math.round(o.P + 2 * o.D), axis: 'x', x: 0, y: eh / 2, z: 0, color: A3D_WOOD[1] });
@@ -34462,9 +34477,6 @@ function _jBuildFerme(o){
     });
     A3D.proj.joints.push(...joints);
   }
-  A3D.proj.joints = A3D.proj.joints.filter((j, i, arr) => arr.findIndex(x => x.id === j.id) === i);
-  A3D.sel = null; _a3dRebuildAll(); _a3dFit(); A3D.tab = 'join'; A3D.jResults = []; _a3dRenderSide(); _a3dSave();
-  showToast('🏠 Ferme générée : ' + A3D.proj.pieces.length + ' pièces, ' + A3D.proj.joints.length + ' assemblages');
 }
 /* ATELIER 3D — ASSEMBLAGES (fin) */
 
@@ -36491,9 +36503,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.232';
+const APP_VERSION = '5.41.233';
 
 const CHANGELOG = [
+  {
+    version: '5.41.233',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🏠', text: "Générateur de fermes : nombre de fermes + entraxe. Sans « Remplacer le projet », les nouvelles fermes s'ajoutent derrière ce qui existe déjà (F1, F2, F3…), chacune avec ses assemblages." },
+    ],
+  },
   {
     version: '5.41.232',
     date: '27/09/2026',
