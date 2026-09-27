@@ -37044,9 +37044,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.248';
+const APP_VERSION = '5.41.249';
 
 const CHANGELOG = [
+  {
+    version: '5.41.249',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🚗', text: "Android Auto (RWOOD Route) : pointe ta journée depuis la voiture. Chantier détecté, heures, panier, tâche (ou ta fiche multi-chantiers de la feuille de route), puis « Valider avec ma signature » : ta signature enregistrée est utilisée et la fiche est envoyée tout de suite." },
+    ],
+  },
   {
     version: '5.41.248',
     date: '27/09/2026',
@@ -63405,11 +63412,28 @@ function _rwPushPointage(){
   const tasks = [];
   (typeof TRANCHES !== 'undefined' ? TRANCHES : []).forEach(t => { tasks.push(t.label); (t.sub || []).forEach(x => tasks.push(t.label + ' / ' + x)); });
   const sig = String(st.signature || '');
-  const key = JSON.stringify([!!wid, today, sig.length]);
+  // Copie de ce qu'on envoie à la comptable : la voiture (RWOOD Route) peut ainsi valider ET envoyer la fiche sans ouvrir l'app
+  let sync = '';
+  try{ sync = JSON.stringify(_rwPointageSyncData()); }catch(_){}
+  const key = JSON.stringify([!!wid, today, sig.length, sync.length, sync.slice(-200)]);
   if(_rwPushPointage._k === key) return;
   const dc = st.depotCoords || null;
-  R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today, depotLat: dc && dc.lat, depotLng: dc && dc.lng })
+  R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today, depotLat: dc && dc.lat, depotLng: dc && dc.lng,
+    workerId: wid || '', syncUid: (typeof COMPANY_SYNC_KEY !== 'undefined' ? COMPANY_SYNC_KEY + '_' + getDeviceSyncId() : ''), sync: sync.length < 1500000 ? sync : '' })
     .then(() => { _rwPushPointage._k = key; }).catch(() => {});
+}
+/* Même contenu que pushPointageToSupabase (mon ouvrier + mes pointages), pour l'envoi direct depuis la voiture */
+function _rwPointageSyncData(){
+  const profile = (data.settings && data.settings.myProfile) || {};
+  const wid = profile.workerId;
+  if(!wid || profile.role === 'comptable' || !profile.role) return {};
+  const ownerName = (profile.firstName ? (profile.firstName + ' ' + (profile.lastName || '')) : (data.settings.teamName || 'Equipe')).trim();
+  const mySig = (data.settings && data.settings.signature) || null;
+  const workers = (data.workers || []).filter(w => w.id === wid).map(w => ({ id: w.id, name: w.name, signature: (w.signature || mySig) || '' }));
+  const attendance = {};
+  Object.entries(data.attendance || {}).forEach(([k, d]) => { if(d && d.workers && d.workers[wid]) attendance[k] = { ...d, workers: { [wid]: d.workers[wid] } }; });
+  return { ownerName, ownerRole: profile.role || 'chef', ownerAuthId: (data.settings.auth && data.settings.auth.authId) || '', ownerDeviceSyncId: getDeviceSyncId(),
+    workers, attendance, sites: (data.sites || []).map(x => ({ id: x.id, name: x.name, address: x.address || '', trajetZone: x.trajetZone || '', color: x.color || '' })) };
 }
 async function _rwApplyHoursOps(){
   const R = (typeof _rwW === 'function') ? _rwW() : null; if(!R || typeof R.getHoursOps !== 'function') return;
@@ -63488,6 +63512,11 @@ if(RWOOD_NATIVE){
       APP.addListener('resume', async () => { try{ await _rwApplyHoursOps(); }catch(_){} _rwPushPointage(); });
       APP.addListener('pause', () => { _rwPushPointage(); });
     }
+    // Fiche validée depuis la voiture pendant que RWOOD tourne en arrière-plan : on l'enregistre et on l'envoie
+    const RW = (typeof _rwW === 'function') ? _rwW() : null;
+    if(RW && typeof RW.addListener === 'function') RW.addListener('widgetAction', (e) => {
+      if(e && e.action === 'hours-ops') _rwApplyHoursOps().catch(() => {});
+    });
     // après une validation ou une signature dans l'app
     ['_pointageDoValidate', '_pointageSignConfirm'].forEach(n => {
       const o = window[n]; if(typeof o !== 'function') return;
