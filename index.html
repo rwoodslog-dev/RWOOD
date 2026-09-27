@@ -37044,9 +37044,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.244';
+const APP_VERSION = '5.41.246';
 
 const CHANGELOG = [
+  {
+    version: '5.41.246',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🎙', text: "App Android : talkie-walkie en direct. Nouveau widget « Talkie » : rejoins le canal d'un chef d'équipe (ou le canal général) et parle en direct comme au téléphone, en 4G. Un appui ouvre le micro, un 2ᵉ appui le coupe. Marche écran éteint." },
+    ],
+  },
+  {
+    version: '5.41.245',
+    date: '27/09/2026',
+    entries: [
+      { icon: '⏱️', text: "App Android : le rappel « Pense à remplir ta fiche d'heures » est programmé sur le téléphone. Il arrive à 15h45 du lundi au vendredi même app fermée (et le vendredi à 10h pour l'envoi à la comptable), plus à l'ouverture de l'app. Pas de rappel si tes heures du jour sont déjà remplies." },
+    ],
+  },
   {
     version: '5.41.244',
     date: '27/09/2026',
@@ -49993,6 +50007,9 @@ async function _checkAgendaReminders(){
 async function _checkHoursReminders(){
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
   if(role !== 'ouvrier' && role !== 'chef') return;
+  // v5.41.245 — sur l'app Android, le rappel est programmé sur le téléphone
+  // (part à 15h45 même app fermée) : on ne le renvoie plus à l'ouverture.
+  try{ if(localStorage.getItem('rw_native_rem') === '1' && typeof _rwW === 'function' && _rwW()){ _rwPushReminders(); return; } }catch(_){}
 
   if(!data.settings) data.settings = {};
   if(!data.settings.hoursReminderLog) data.settings.hoursReminderLog = {};
@@ -63190,6 +63207,25 @@ function _rwSitePhoto(site){
     return ph.length ? ph[0].u : '';
   }catch(_){ return ''; }
 }
+/* v5.41.245 — rappel fiche d'heures programmé sur le téléphone (Android) */
+function _rwPushReminders(){
+  const R = (typeof _rwW === 'function') ? _rwW() : null; if(!R) return;
+  const st = data.settings || {};
+  const role = st.myProfile && st.myProfile.role;
+  const on = (role === 'ouvrier' || role === 'chef') && !!(st.notifications && st.notifications.pushEnabled);
+  let done = false;
+  try{
+    const n = new Date(), k = n.getFullYear() + '-' + String(n.getMonth()+1).padStart(2,'0') + '-' + String(n.getDate()).padStart(2,'0');
+    const wid = st.myProfile && st.myProfile.workerId;
+    const e = wid && data.attendance && data.attendance[k] && data.attendance[k].workers && data.attendance[k].workers[wid];
+    done = !!(e && typeof _entryTotalHours === 'function' && _entryTotalHours(e) > 0);
+  }catch(_){}
+  const key = [on, done].join('|');
+  if(_rwPushReminders._last === key) return;
+  R.setReminders({ on, daily: '15:45', friday: '10:00', doneToday: done ? '1' : '0' })
+    .then(() => { _rwPushReminders._last = key; try{ localStorage.setItem('rw_native_rem', '1'); }catch(_){} })
+    .catch(() => {});
+}
 function _rwPushSites(){
   const R = _rwW(); if(!R || !data || !Array.isArray(data.sites)) return;
   const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
@@ -63240,6 +63276,14 @@ async function _rwPushLists(){
     .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')))
     .slice(0, 80).map(t => ({ date: t.date, time: t.time || '', text: String(t.text || '').slice(0, 140), site: siteName(t.siteId) }));
   R.setLists({ people, contacts, agenda }).catch(()=>{});
+  // v5.41.246 — talkie-walkie : un canal par chef d'équipe (+ un canal général)
+  try{
+    const clean = v => String(v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 60);
+    const chefs = people.filter(u => String(u.role || '').toLowerCase() === 'chef');
+    const channels = chefs.map(u => ({ id: 'rwood-chef-' + clean(u.authId), name: 'Canal de ' + String(u.name).split(' ')[0], sub: "Équipe de " + u.name }));
+    channels.push({ id: 'rwood-general', name: 'Canal général', sub: 'Toute l\'entreprise' });
+    if(typeof R.setVoice === 'function') R.setVoice({ channels }).catch(()=>{});
+  }catch(_){}
 }
 let _rwMusicLast = '';
 function _rwPushMusic(){
@@ -63265,12 +63309,12 @@ if(RWOOD_NATIVE){
     const tick = () => {
       if(!_rwW()) return;
       if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
-      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){}
+      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){} try{ _rwPushReminders(); }catch(_){}
     };
     setTimeout(tick, 2500);
     const APP = _rnPlug('App');
-    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){} });
-    if(APP) APP.addListener('pause', () => { _rwPushLists(); _rwPushMagasin(); _rwPushSites(); });
+    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){} try{ _rwPushReminders(); }catch(_){} });
+    if(APP) APP.addListener('pause', () => { _rwPushLists(); _rwPushMagasin(); _rwPushSites(); try{ _rwPushReminders(); }catch(_){} });
     const R = _rwW();
     if(R) R.addListener('widgetAction', (e) => {
       const a = (e && e.action) || '';
