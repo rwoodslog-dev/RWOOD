@@ -5093,6 +5093,29 @@
            interne par défaut), gérés par le code sans UI dédiée. -->
 
       <!-- ACCORDÉON : NOTIFICATIONS (push natif — recréé en v5.41.2) -->
+      <!-- ACCORDÉON : RWOOD ROUTE (Android Auto) — v5.41.244 -->
+      <div class="accordion-section" id="parametresMode-rwoodRoute">
+        <div class="accordion-header" onclick="toggleParametresSection('rwoodRoute'); routeFavRender()">
+          <span>RWOOD Route (Android Auto)</span><span class="accordion-arrow">▾</span>
+        </div>
+        <div class="accordion-body">
+          <div class="section-title">Mes favoris (onglet « Favoris » dans la voiture)</div>
+          <div class="card">
+            <div class="hint">Tes adresses habituelles (dépôt, maison, fournisseurs…) : un appui dans la voiture lance le GPS. Propres à toi, sur ce téléphone.</div>
+            <div id="routeFavList" style="margin-top:10px;"></div>
+            <div class="field" style="margin-top:12px;">
+              <label>Ajouter un favori</label>
+              <select id="routeFavPick" onchange="routeFavPickItin(this.value)" style="margin-bottom:6px;"></select>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="routeFavNewLabel" placeholder="Nom (ex : Point P)" style="flex:0 0 34%;">
+                <input type="text" id="routeFavNewAddr" placeholder="Adresse" style="flex:1;">
+              </div>
+            </div>
+            <button class="btn btn-block" style="margin-top:4px;" onclick="routeFavAdd()">＋ Ajouter aux favoris</button>
+          </div>
+        </div>
+      </div>
+
       <div class="accordion-section" id="parametresMode-notifications">
         <div class="accordion-header" onclick="toggleParametresSection('notifications')">
           <span>Notifications</span><span class="accordion-arrow">▾</span>
@@ -37021,9 +37044,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.243';
+const APP_VERSION = '5.41.244';
 
 const CHANGELOG = [
+  {
+    version: '5.41.244',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🚗', text: "Android Auto (RWOOD Route) : la photo de chaque chantier s'affiche devant son nom." },
+      { icon: '📍', text: "Paramètres › RWOOD Route : ajoute tes adresses favorites (dépôt, maison, fournisseurs, ou depuis tes itinéraires). Elles apparaissent dans l'onglet « Favoris » de la voiture." },
+    ],
+  },
   {
     version: '5.41.243',
     date: '27/09/2026',
@@ -63150,6 +63181,15 @@ if(RWOOD_NATIVE){
    ═══════════════════════════════════════════════════════════════════ */
 function _rwW(){ const R = _rn2(); return (R && typeof R.setSites === 'function') ? R : null; }
 
+/* v5.41.244 — photo du chantier (la plus récente, en miniature) pour Android Auto */
+function _rwSitePhoto(site){
+  try{
+    const ph = (site && site.sharedMedia || []).filter(m => m && (m.type === 'photo' || String(m.mimeType||'').startsWith('image/')))
+      .map(m => ({ u: m.thumbUrl || m.url || '', t: m.uploadedAt || '' })).filter(x => /^https?:/.test(x.u))
+      .sort((a, b) => String(b.t).localeCompare(String(a.t)));
+    return ph.length ? ph[0].u : '';
+  }catch(_){ return ''; }
+}
 function _rwPushSites(){
   const R = _rwW(); if(!R || !data || !Array.isArray(data.sites)) return;
   const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
@@ -63157,7 +63197,7 @@ function _rwPushSites(){
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
     .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim(),
       // v5.41.243 — notes et photo de la boîte à clés, affichées directement par le widget
-      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '',
+      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s),
       notes: (s.noteCategories || []).filter(c => c && !c.archived).map(c => ({ title: c.title || 'Notes',
         items: (c.notes || []).filter(n => n && !n.archived && n.text).slice(0, 30).map(n => ({ t: String(n.text).slice(0, 240), cb: !!n.hasCheckbox, done: !!n.done })) }))
         .filter(c => c.items.length).slice(0, 8) }));
@@ -63225,11 +63265,11 @@ if(RWOOD_NATIVE){
     const tick = () => {
       if(!_rwW()) return;
       if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
-      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic(); _rwPushLists();
+      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){}
     };
     setTimeout(tick, 2500);
     const APP = _rnPlug('App');
-    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); _rwPushLists(); });
+    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); _rwPushLists(); try{ _rwPushRoute(); }catch(_){} });
     if(APP) APP.addListener('pause', () => { _rwPushLists(); _rwPushMagasin(); _rwPushSites(); });
     const R = _rwW();
     if(R) R.addListener('widgetAction', (e) => {
@@ -63312,14 +63352,69 @@ async function _rwApplyTodoOps(ops){
   _rwPushTodo();
 }
 
+/* v5.41.244 — favoris de RWOOD Route (onglet « Favoris » dans la voiture), propres à chaque utilisateur */
+function _routeFavs(){
+  const st = data.settings || {};
+  if(Array.isArray(st.routeFavs)) return st.routeFavs.filter(f => f && f.addr).map(f => ({ label: f.label || 'Favori', addr: f.addr }));
+  // jamais réglé : on propose le dépôt et le domicile
+  const def = [];
+  if(st.depotAddress) def.push({ label: 'Dépôt', addr: st.depotAddress });
+  if(st.domicileAddress) def.push({ label: 'Maison', addr: st.domicileAddress });
+  return def;
+}
+function _routeFavsSet(list){
+  if(!data.settings) data.settings = {};
+  data.settings.routeFavs = list;
+  saveData();
+  try{ _rwPushRoute(); }catch(_){}
+  routeFavRender();
+}
+function routeFavRender(){
+  const box = document.getElementById('routeFavList'); if(!box) return;
+  const favs = _routeFavs();
+  box.innerHTML = favs.length ? favs.map((f, i) => `
+    <div style="display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06);">
+      <div style="flex:1; min-width:0;">
+        <div style="font-weight:700; font-size:14px;">${escapeHtml(f.label)}</div>
+        <div class="hint" style="margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(f.addr)}</div>
+      </div>
+      <button class="btn btn-outline" style="padding:4px 8px;" ${i === 0 ? 'disabled' : ''} onclick="routeFavMove(${i},-1)" title="Monter">↑</button>
+      <button class="btn btn-outline" style="padding:4px 8px; color:var(--red); border-color:var(--red);" onclick="routeFavDel(${i})" title="Supprimer">✕</button>
+    </div>`).join('') : '<div class="hint">Aucun favori pour l\'instant.</div>';
+  const pick = document.getElementById('routeFavPick');
+  if(pick){
+    const it = (data.itineraries || []).filter(x => x && x.address);
+    pick.innerHTML = '<option value="">Depuis mes itinéraires…</option>' + it.map(x => `<option value="${x.id}">${escapeHtml(x.name || x.address)}</option>`).join('');
+    pick.style.display = it.length ? '' : 'none';
+  }
+}
+function routeFavPickItin(id){
+  const x = (data.itineraries || []).find(i => i.id === id); if(!x) return;
+  const l = document.getElementById('routeFavNewLabel'), a = document.getElementById('routeFavNewAddr');
+  if(l) l.value = x.name || ''; if(a) a.value = x.address || '';
+}
+function routeFavAdd(){
+  const l = document.getElementById('routeFavNewLabel'), a = document.getElementById('routeFavNewAddr');
+  const addr = String(a && a.value || '').trim(), label = String(l && l.value || '').trim() || addr.split(',')[0];
+  if(!addr){ if(typeof showToast === 'function') showToast('Indique une adresse'); return; }
+  const list = _routeFavs(); list.push({ label, addr });
+  if(l) l.value = ''; if(a) a.value = '';
+  const pick = document.getElementById('routeFavPick'); if(pick) pick.value = '';
+  _routeFavsSet(list.slice(0, 30));
+  if(typeof showToast === 'function') showToast('⭐ ' + label + ' ajouté aux favoris');
+}
+function routeFavDel(i){ const list = _routeFavs(); list.splice(i, 1); _routeFavsSet(list); }
+function routeFavMove(i, d){ const list = _routeFavs(), j = i + d; if(j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; _routeFavsSet(list); }
 function _rwPushRoute(){
-  const R = _rwW2(); if(!R || typeof _routeCache === 'undefined') return;
-  const r = _routeCache[0];
-  const json = !r ? '{}' : JSON.stringify({
+  const R = _rwW2(); if(!R) return;
+  const r = (typeof _routeCache !== 'undefined' && _routeCache) ? _routeCache[0] : null;
+  const extra = { fav: _routeFavs(), web: (typeof APP_VERSION !== 'undefined' ? APP_VERSION : '') };
+  const json = !r ? JSON.stringify(extra) : JSON.stringify({ ...extra,
     count: _routeCache.length, routeId: r.id,
     from: (r.createdBy && r.createdBy.name) || '',
     stops: (r.stops || []).map(s => ({
       id: s.id, name: s.name || 'Chantier', addr: s.address || '', status: s.status || '',
+      photo: s.siteId ? _rwSitePhoto((data.sites||[]).find(x => x.id === s.siteId)) : '',
       notes: String(s.notes || '').slice(0, 160), keybox: String(s.keybox || '').trim(),
       tasksTotal: (s.tasks || []).length, tasksDone: (s.tasks || []).filter(t => t.done).length,
     })),
