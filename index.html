@@ -37044,9 +37044,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.247';
+const APP_VERSION = '5.41.248';
 
 const CHANGELOG = [
+  {
+    version: '5.41.248',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🚚', text: "Fenêtre Pointage : si ta journée est en multi-chantiers (feuille de route), la fenêtre te propose ta fiche multi, avec les heures et la tâche de chaque chantier, puis Valider et signer." },
+      { icon: '🛰', text: "Fenêtre Pointage (widgets Android) : le chantier se remplit tout seul. Si tu es à moins de 150 m d'un chantier, c'est lui ; sinon c'est le dernier chantier où tu as été vu dans la journée (pratique si tu pointes le soir chez toi). Le dépôt n'est jamais mis automatiquement." },
+    ],
+  },
   {
     version: '5.41.247',
     date: '27/09/2026',
@@ -63241,7 +63249,7 @@ function _rwPushSites(){
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
     .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim(),
       // v5.41.243 — notes et photo de la boîte à clés, affichées directement par le widget
-      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined,
+      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined, depot: /d[ée]p[ôo]t/i.test(String(s.name || '')) || (!!(data.settings && data.settings.depotAddress) && String(s.address || '').trim().toLowerCase() === String(data.settings.depotAddress).trim().toLowerCase()),
       notes: (s.noteCategories || []).filter(c => c && !c.archived).map(c => ({ title: c.title || 'Notes',
         items: (c.notes || []).filter(n => n && !n.archived && n.text).slice(0, 30).map(n => ({ t: String(n.text).slice(0, 240), cb: !!n.hasCheckbox, done: !!n.done })) }))
         .filter(c => c.items.length).slice(0, 8) }));
@@ -63385,13 +63393,22 @@ function _rwPushPointage(){
   const k = dateKeyOf(new Date());
   const day = data.attendance && data.attendance[k];
   const e = day && day.workers && wid ? day.workers[wid] : null;
-  const today = { date: k, hours: e ? _entryTotalHours(e) : 0, validated: !!(day && day.validated), siteId: (day && day.siteId) || '' };
+  const today = { date: k, hours: e ? _entryTotalHours(e) : 0, validated: !!(day && day.validated), siteId: (day && day.siteId) || '', panier: e ? !!e.panier : true };
+  // Journée multi-chantiers (feuille de route) : la fenêtre du téléphone propose la fiche multi
+  try{
+    if(e && typeof _entryHasMultiSites === 'function' && _entryHasMultiSites(e)){
+      today.multi = true;
+      today.rows = (e.sites || []).map(r => ({ siteId: r.siteId || '', name: (typeof _pointageSiteRowName === 'function' ? _pointageSiteRowName(r) : '') || 'Chantier',
+        hours: parseFloat(String(r.hours != null ? r.hours : '').replace(',', '.')) || 0, task: r.task || '' }));
+    }
+  }catch(_){}
   const tasks = [];
   (typeof TRANCHES !== 'undefined' ? TRANCHES : []).forEach(t => { tasks.push(t.label); (t.sub || []).forEach(x => tasks.push(t.label + ' / ' + x)); });
   const sig = String(st.signature || '');
   const key = JSON.stringify([!!wid, today, sig.length]);
   if(_rwPushPointage._k === key) return;
-  R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today })
+  const dc = st.depotCoords || null;
+  R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today, depotLat: dc && dc.lat, depotLng: dc && dc.lng })
     .then(() => { _rwPushPointage._k = key; }).catch(() => {});
 }
 async function _rwApplyHoursOps(){
@@ -63410,6 +63427,20 @@ async function _rwApplyHoursOps(){
     if(!day.workers) day.workers = {};
     const cur = day.workers[wid];
     if(day.validated && !op.validate) continue;                  // déjà validée : on ne touche plus
+    if(op.multi && Array.isArray(op.rows)){
+      // Fiche multi-chantiers : on reprend les lignes existantes (chantier libre, note de tournée…) et on met à jour heures / tâche
+      const prev = (cur && Array.isArray(cur.sites)) ? cur.sites : [];
+      const entryM = Object.assign({}, cur || {}, { mode: 'multi', hours: '', panier: op.panier !== false, typeJournee: 'normal' });
+      entryM.sites = op.rows.map((r, i) => Object.assign({}, prev[i] || { siteId: r.siteId || '' }, { hours: String(r.hours != null ? r.hours : ''), task: r.task || '' }));
+      day.workers[wid] = entryM;
+      prepared++;
+      if(op.validate && op.signature){
+        day.validated = true; day.signature = op.signature;
+        if(op.saveSig && data.settings){ data.settings.signature = op.signature; const w = (data.workers || []).find(x => x.id === wid); if(w) w.signature = op.signature; }
+        validated++;
+      }
+      continue;
+    }
     const realSite = op.siteId && (data.sites || []).some(x => x.id === op.siteId);
     const others = Object.keys(day.workers).some(id => id !== wid && _entryTotalHours(day.workers[id]) > 0);
     const h = String(op.hours != null ? op.hours : 8);
