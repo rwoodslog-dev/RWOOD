@@ -37044,9 +37044,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.246';
+const APP_VERSION = '5.41.247';
 
 const CHANGELOG = [
+  {
+    version: '5.41.247',
+    date: '27/09/2026',
+    entries: [
+      { icon: '⏱️', text: "App Android : pointe ta journée sans ouvrir l'app. La tuile « Heures » des widgets ouvre une petite fenêtre avec le chantier, les heures, le panier, la tâche et ta signature (enregistrée, ou à dessiner au doigt), puis « Valider et signer »." },
+      { icon: '📴', text: "Hors réseau : une fiche d'heures validée sans réseau est gardée sur le téléphone et envoyée toute seule dès que le réseau revient." },
+    ],
+  },
   {
     version: '5.41.246',
     date: '27/09/2026',
@@ -63233,7 +63241,7 @@ function _rwPushSites(){
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
     .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim(),
       // v5.41.243 — notes et photo de la boîte à clés, affichées directement par le widget
-      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s),
+      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined,
       notes: (s.noteCategories || []).filter(c => c && !c.archived).map(c => ({ title: c.title || 'Notes',
         items: (c.notes || []).filter(n => n && !n.archived && n.text).slice(0, 30).map(n => ({ t: String(n.text).slice(0, 240), cb: !!n.hasCheckbox, done: !!n.done })) }))
         .filter(c => c.items.length).slice(0, 8) }));
@@ -63359,10 +63367,128 @@ if(RWOOD_NATIVE){
       else if(act === 'mag-sav'){ goTo('magasin'); showToast('⚠️ Touche la machine concernée puis « SAV »'); }
       else if(act === 'music-play'){ _rwMusicStart(); }
       else if(act === 'music-menu'){ if(typeof toggleMusicDropdown === 'function') toggleMusicDropdown(true); }
+      else if(act === 'pointage' || act === 'pointage-sync'){ try{ await _rwApplyHoursOps(); }catch(_){} currentPointageDate = new Date().toISOString().slice(0,10); goTo('heures'); if(typeof setHeuresMode === 'function') setHeuresMode('pointage'); }
     }catch(e){ console.error('widget target', t, e); }
   };
 }
 /* MODULE — RwoodWidgets (fin) */
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — RwoodPointage (v5.41.247)
+   Pointage depuis le téléphone sans ouvrir l'app (fenêtre « Pointage » des
+   widgets : chantier, heures, panier, tâche, signature).
+   Le téléphone dépose des « opérations » que l'app applique ici.
+   ═══════════════════════════════════════════════════════════════════ */
+function _rwPushPointage(){
+  const R = (typeof _rwW === 'function') ? _rwW() : null; if(!R || typeof R.setPointage !== 'function') return;
+  const st = data.settings || {}, prof = st.myProfile || {};
+  const wid = prof.workerId;
+  const k = dateKeyOf(new Date());
+  const day = data.attendance && data.attendance[k];
+  const e = day && day.workers && wid ? day.workers[wid] : null;
+  const today = { date: k, hours: e ? _entryTotalHours(e) : 0, validated: !!(day && day.validated), siteId: (day && day.siteId) || '' };
+  const tasks = [];
+  (typeof TRANCHES !== 'undefined' ? TRANCHES : []).forEach(t => { tasks.push(t.label); (t.sub || []).forEach(x => tasks.push(t.label + ' / ' + x)); });
+  const sig = String(st.signature || '');
+  const key = JSON.stringify([!!wid, today, sig.length]);
+  if(_rwPushPointage._k === key) return;
+  R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today })
+    .then(() => { _rwPushPointage._k = key; }).catch(() => {});
+}
+async function _rwApplyHoursOps(){
+  const R = (typeof _rwW === 'function') ? _rwW() : null; if(!R || typeof R.getHoursOps !== 'function') return;
+  let ops = [];
+  try{ const r = await R.getHoursOps(); ops = (r && r.ops) || []; if(typeof ops === 'string') ops = JSON.parse(ops); }catch(_){ return; }
+  if(!Array.isArray(ops) || !ops.length) return;
+  const wid = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
+  if(!wid){ showToast('⚠️ Relie ton profil à un ouvrier pour pointer depuis le téléphone'); return; }
+  if(!data.attendance) data.attendance = {};
+  let validated = 0, prepared = 0;
+  for(const op of ops){
+    if(!op || !op.date) continue;
+    if(!data.attendance[op.date]) data.attendance[op.date] = { siteId: null, workers: {} };
+    const day = data.attendance[op.date];
+    if(!day.workers) day.workers = {};
+    const cur = day.workers[wid];
+    if(day.validated && !op.validate) continue;                  // déjà validée : on ne touche plus
+    const realSite = op.siteId && (data.sites || []).some(x => x.id === op.siteId);
+    const others = Object.keys(day.workers).some(id => id !== wid && _entryTotalHours(day.workers[id]) > 0);
+    const h = String(op.hours != null ? op.hours : 8);
+    const entry = Object.assign({}, cur || {}, { panier: op.panier !== false, typeJournee: 'normal' });
+    if(!realSite || !day.siteId || day.siteId === op.siteId || !others){
+      if(realSite){ day.siteId = op.siteId; delete day.customSite; }
+      entry.hours = h; entry.task = op.task || (cur && cur.task) || '';
+      delete entry.mode; delete entry.sites;
+    } else {
+      // Le jour a déjà un autre chantier (pointé pour l'équipe) : ma ligne en multi-chantiers
+      entry.mode = 'multi'; entry.hours = '';
+      entry.sites = [{ siteId: op.siteId, hours: h, task: op.task || '' }];
+    }
+    day.workers[wid] = entry;
+    prepared++;
+    if(op.validate && op.signature){
+      day.validated = true;
+      day.signature = op.signature;
+      if(op.saveSig && data.settings){
+        data.settings.signature = op.signature;
+        const w = (data.workers || []).find(x => x.id === wid); if(w) w.signature = op.signature;
+      }
+      validated++;
+    }
+  }
+  try{ await R.clearHoursOps(); }catch(_){}
+  saveData();
+  try{ if(validated) await pushPointageToSupabase(); else schedulePointageSync(); }catch(_){}
+  if(validated && typeof _dismissHoursAlerts === 'function') _dismissHoursAlerts();
+  try{ if(typeof renderPointage === 'function') renderPointage(); }catch(_){}
+  if(prepared) showToast(validated ? '✅ Fiche d\'heures validée, signée et envoyée' : '📋 Fiche d\'heures du jour préparée : ajoute la tâche puis valide et signe');
+  _rwPushPointage._k = null; _rwPushPointage();
+}
+if(RWOOD_NATIVE){
+  (function _rwPtBoot(){
+    let tries = 0;
+    const tick = async () => {
+      if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
+      try{ await _rwApplyHoursOps(); }catch(_){}
+      _rwPushPointage();
+    };
+    setTimeout(tick, 3500);
+    const APP = _rnPlug('App');
+    if(APP){
+      APP.addListener('resume', async () => { try{ await _rwApplyHoursOps(); }catch(_){} _rwPushPointage(); });
+      APP.addListener('pause', () => { _rwPushPointage(); });
+    }
+    // après une validation ou une signature dans l'app
+    ['_pointageDoValidate', '_pointageSignConfirm'].forEach(n => {
+      const o = window[n]; if(typeof o !== 'function') return;
+      window[n] = function(){ const r = o.apply(this, arguments); setTimeout(() => { _rwPushPointage._k = null; _rwPushPointage(); }, 500); return r; };
+    });
+  })();
+}
+
+/* v5.41.247 — Hors réseau : une fiche validée sans réseau (chantier en zone
+   blanche) n'était jamais renvoyée ensuite. On la marque « en attente » et on
+   la renvoie dès que le réseau revient (événement online, retour dans l'app,
+   et toutes les minutes). */
+(function(){
+  if(typeof pushPointageToSupabase !== 'function') return;
+  const orig = pushPointageToSupabase;
+  pushPointageToSupabase = async function(){
+    let ok;
+    try{ ok = await orig.apply(this, arguments); }catch(e){ ok = false; }
+    try{
+      if(ok === false){ localStorage.setItem('rw-pt-pending', '1'); if(!navigator.onLine && typeof showToast === 'function' && !pushPointageToSupabase._warned){ pushPointageToSupabase._warned = true; showToast('📴 Pas de réseau : ta fiche est gardée sur le téléphone et partira toute seule dès que le réseau revient'); } }
+      else { localStorage.removeItem('rw-pt-pending'); pushPointageToSupabase._warned = false; }
+    }catch(_){}
+    return ok;
+  };
+  const retry = () => { try{ if(navigator.onLine && localStorage.getItem('rw-pt-pending') === '1') pushPointageToSupabase(); }catch(_){} };
+  window.addEventListener('online', () => setTimeout(retry, 2500));
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') setTimeout(retry, 1500); });
+  setInterval(retry, 60000);
+  setTimeout(retry, 8000);
+})();
+/* MODULE — RwoodPointage (fin) */
+
 
 /* ═══════════════════════════════════════════════════════════════════
    MODULE — RwoodWidgets 2  (v5.41.222)
