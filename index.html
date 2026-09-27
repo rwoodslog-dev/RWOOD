@@ -37021,9 +37021,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.241';
+const APP_VERSION = '5.41.242';
 
 const CHANGELOG = [
+  {
+    version: '5.41.242',
+    date: '27/09/2026',
+    entries: [
+      { icon: '📱', text: "Widgets : chaque raccourci ouvre maintenant une petite fenêtre par-dessus l'écran d'accueil au lieu de l'app — Magasin (toutes les machines, dispo / prises / SAV, recherche), Musique (radios + ⏮ ⏯ ⏭), Itinéraire (chantier → Waze direct), Chantiers, Galerie, Météo 7 jours, Calculatrice, Agenda (3 semaines), Contacts (📞 💬 ✉️), Messagerie (écrire à un collègue sans ouvrir l'app), À faire (cocher + ajouter)." },
+    ],
+  },
   {
     version: '5.41.241',
     date: '27/09/2026',
@@ -63159,8 +63166,27 @@ function _rwPushMagasin(){
   const ms = data.magasinMachines;
   const me = (data.settings && data.settings.auth && data.settings.auth.authId) || '';
   const mine = ms.filter(m => m.borrow && me && (m.borrow.borrowerId === me || m.borrow.chefId === me)).map(m => m.name || 'Machine');
+  // v5.41.242 — liste complète pour la fenêtre « Magasin » du widget
+  const machines = ms.slice(0, 400).map(m => ({ id: m.id, name: m.name || 'Machine', ref: m.ref || '', cat: m.category || m.cat || '',
+    state: m.sav ? 'sav' : (m.borrow ? 'pris' : 'dispo'),
+    who: m.borrow ? (m.borrow.chefName || m.borrow.borrowerName || '') : '',
+    since: m.borrow && m.borrow.borrowedAt ? new Date(m.borrow.borrowedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : '' }));
   R.setMagasin({ total: ms.length, dispo: ms.filter(m => !m.borrow && !m.sav).length, pris: ms.filter(m => m.borrow).length,
-    sav: ms.filter(m => m.sav).length, mine: mine.slice(0, 4).join(', ') + (mine.length > 4 ? '…' : '') }).catch(()=>{});
+    sav: ms.filter(m => m.sav).length, mine: mine.slice(0, 4).join(', ') + (mine.length > 4 ? '…' : ''), machines }).catch(()=>{});
+}
+/* v5.41.242 — listes pour les petites fenêtres des widgets (collègues, contacts, agenda) */
+async function _rwPushLists(){
+  const R = _rwW(); if(!R || typeof R.setLists !== 'function') return;
+  let people = [];
+  try{ const users = window._usersRegistryCache && window._usersRegistryCache.length ? window._usersRegistryCache : await _fetchUsersRegistry(); people = (users || []).filter(u => u.authId && u.name).map(u => ({ authId: u.authId, name: u.name, role: u.role || '' })).sort((a, b) => a.name.localeCompare(b.name, 'fr')); }catch(_){}
+  const contacts = (data.contacts || []).filter(c => c && c.name).map(c => ({ name: c.name, role: c.role || '', phone: c.phone || '', email: c.email || '', fav: !!c.favorite }))
+    .sort((a, b) => (b.fav - a.fav) || a.name.localeCompare(b.name, 'fr')).slice(0, 500);
+  const today = dateKeyOf(new Date()), lim = new Date(); lim.setDate(lim.getDate() + 21); const end = dateKeyOf(lim);
+  const siteName = id => { const s = (data.sites || []).find(x => x.id === id); return s ? (s.name || '') : ''; };
+  const agenda = (data.tasks || []).filter(t => t && t.date && t.date >= today && t.date <= end && !t.done)
+    .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')))
+    .slice(0, 80).map(t => ({ date: t.date, time: t.time || '', text: String(t.text || '').slice(0, 140), site: siteName(t.siteId) }));
+  R.setLists({ people, contacts, agenda }).catch(()=>{});
 }
 let _rwMusicLast = '';
 function _rwPushMusic(){
@@ -63186,11 +63212,12 @@ if(RWOOD_NATIVE){
     const tick = () => {
       if(!_rwW()) return;
       if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(tick, 1000); return; }
-      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic();
+      _rwPushSites(); _rwPushTiles(); _rwPushMagasin(); _rwPushMusic(); _rwPushLists();
     };
     setTimeout(tick, 2500);
     const APP = _rnPlug('App');
-    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); });
+    if(APP) APP.addListener('resume', () => { _rwPushSites(); _rwPushMagasin(); _rwPushLists(); });
+    if(APP) APP.addListener('pause', () => { _rwPushLists(); _rwPushMagasin(); });
     const R = _rwW();
     if(R) R.addListener('widgetAction', (e) => {
       const a = (e && e.action) || '';
@@ -63230,6 +63257,8 @@ if(RWOOD_NATIVE){
       else if(act === 'notes'){ if(hasSite) openSiteNotesModal(siteId); }
       else if(act === 'keybox'){ if(hasSite) openKeyboxModal(siteId); }
       else if(act === 'tuile'){ if(hasSite) dashOpenTuileFiche(siteId); }
+      else if(act === 'magasin'){ goTo('magasin'); const mid = t.split(':')[2]; if(mid) setTimeout(() => { try{ magasinOpenDetail(mid); }catch(_){} }, 400); }
+      else if(act === 'agenda'){ const d = t.split(':')[2]; goTo('agenda'); if(d){ try{ const now = new Date(), dd = new Date(d + 'T00:00:00'); agendaMonthOffset = (dd.getFullYear() - now.getFullYear()) * 12 + dd.getMonth() - now.getMonth(); agendaSelectedDate = d; renderAgenda(); }catch(_){} } }
       else if(act === 'mag-sav'){ goTo('magasin'); showToast('⚠️ Touche la machine concernée puis « SAV »'); }
       else if(act === 'music-play'){ _rwMusicStart(); }
       else if(act === 'music-menu'){ if(typeof toggleMusicDropdown === 'function') toggleMusicDropdown(true); }
