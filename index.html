@@ -17708,6 +17708,11 @@ function camLensIndexForZoom(targetZoom){
 async function openCameraCapture(targetInputId){
   camTargetInputId = targetInputId;
 
+  // v5.41.250 — App Android : appareil photo D'ORIGINE du téléphone (pleine qualité,
+  // grand angle, zoom, fluidité). Repli sur l'appareil photo intégré ci-dessous si
+  // l'autorisation caméra n'est pas encore donnée ou en cas de souci.
+  if(typeof _rwNativePhoto === 'function' && await _rwNativePhoto(targetInputId)) return;
+
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     document.getElementById(targetInputId).click();
     return;
@@ -17759,6 +17764,37 @@ async function openCameraCapture(targetInputId){
   openModal('cameraCapture');
   await startCameraStream();
   renderCamZoomUI();
+}
+
+async function _rwNativePhoto(targetInputId){
+  try{
+    if(typeof RWOOD_NATIVE === 'undefined' || !RWOOD_NATIVE) return false;
+    const R = (typeof _rnPlug === 'function') ? _rnPlug('RwoodNative') : null;
+    if(!R || typeof R.takePhoto !== 'function') return false;
+    let r;
+    try{ r = await R.takePhoto(); }
+    catch(e){ const m = String((e && e.message) || e || ''); return /cancel/i.test(m); }   // annulé = on ne fait rien ; sinon repli
+    if(!r || !r.path) return false;
+    const url = window.Capacitor.convertFileSrc('file://' + r.path);
+    let blob = await (await fetch(url)).blob();
+    // Filigrane (logo de l'entreprise) comme avec l'appareil photo intégré
+    if(camWatermarkEnabled && data.settings && data.settings.companyLogo && typeof drawCamWatermark === 'function'){
+      try{
+        const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+        const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+        const ctx = cv.getContext('2d'); ctx.drawImage(bmp, 0, 0);
+        await drawCamWatermark(ctx, cv.width, cv.height);
+        blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92)) || blob;
+      }catch(_){}
+    }
+    const file = new File([blob], 'photo-rwood.jpg', { type: 'image/jpeg' });
+    const input = document.getElementById(targetInputId);
+    if(!input) return true;
+    const dt = new DataTransfer(); dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }catch(e){ console.warn('photo native', e); return false; }
 }
 
 function formatZoomLabel(z){
@@ -37044,9 +37080,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.249';
+const APP_VERSION = '5.41.250';
 
 const CHANGELOG = [
+  {
+    version: '5.41.250',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🚗', text: "Android Auto : la zone de trajet du chantier (ex. « Zone 5 ») s'affiche sous l'adresse, et le temps / la distance sont écrits en clair (plus de « X · X »)." },
+      { icon: '📷', text: "App Android : les photos se prennent avec l'appareil photo d'origine du téléphone (pleine qualité, grand angle, zoom, fluidité). Le logo en filigrane est toujours ajouté si tu l'as activé." },
+    ],
+  },
   {
     version: '5.41.249',
     date: '27/09/2026',
@@ -63256,7 +63300,7 @@ function _rwPushSites(){
     .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
     .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim(),
       // v5.41.243 — notes et photo de la boîte à clés, affichées directement par le widget
-      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined, depot: /d[ée]p[ôo]t/i.test(String(s.name || '')) || (!!(data.settings && data.settings.depotAddress) && String(s.address || '').trim().toLowerCase() === String(data.settings.depotAddress).trim().toLowerCase()),
+      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined, zone: String(s.trajetZone || ''), depot: /d[ée]p[ôo]t/i.test(String(s.name || '')) || (!!(data.settings && data.settings.depotAddress) && String(s.address || '').trim().toLowerCase() === String(data.settings.depotAddress).trim().toLowerCase()),
       notes: (s.noteCategories || []).filter(c => c && !c.archived).map(c => ({ title: c.title || 'Notes',
         items: (c.notes || []).filter(n => n && !n.archived && n.text).slice(0, 30).map(n => ({ t: String(n.text).slice(0, 240), cb: !!n.hasCheckbox, done: !!n.done })) }))
         .filter(c => c.items.length).slice(0, 8) }));
@@ -63645,6 +63689,7 @@ function _rwPushRoute(){
     stops: (r.stops || []).map(s => ({
       id: s.id, name: s.name || 'Chantier', addr: s.address || '', status: s.status || '',
       photo: s.siteId ? _rwSitePhoto((data.sites||[]).find(x => x.id === s.siteId)) : '',
+      zone: s.siteId ? String(((data.sites||[]).find(x => x.id === s.siteId) || {}).trajetZone || '') : '',
       notes: String(s.notes || '').slice(0, 160), keybox: String(s.keybox || '').trim(),
       tasksTotal: (s.tasks || []).length, tasksDone: (s.tasks || []).filter(t => t.done).length,
     })),
