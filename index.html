@@ -33111,7 +33111,8 @@ function _a3dRefreshPiece(p){
   _a3dHighlight();
 }
 function _a3dHighlight(){
-  A3D.meshes.forEach((m, id) => { if(m.userData.outline) m.userData.outline.visible = (A3D.sel === id); });
+  const ids = _a3dSelIds();
+  A3D.meshes.forEach((m, id) => { if(m.userData.outline) m.userData.outline.visible = ids.includes(id); });
   _a3dRenderFloating();
 }
 /* Texture bois procédurale (veinage), mise en cache par couleur. */
@@ -33244,6 +33245,11 @@ function _a3dPickPiece(ev){
 function _a3dBindEvents(){
   const el = A3D.renderer.domElement;
   el.addEventListener('contextmenu', e => e.preventDefault());
+  el.addEventListener('dblclick', ev => {
+    const h = _a3dPickPiece(ev); if(!h) return;
+    const p = _a3dPiece(h.id);
+    if(p && p.grp){ A3D.sel = h.id; A3D.multi = null; A3D.solo = true; _a3dHighlight(); showToast('✏️ Pièce seule — clic ailleurs pour revenir au groupe'); }
+  });
   let drag = null;
   el.addEventListener('mousedown', ev => {
     if(ev.button === 2 || ev.button === 1 || ev.shiftKey){ drag = { mode: (ev.shiftKey || ev.button === 1) ? 'pan' : 'orbit', x: ev.clientX, y: ev.clientY }; return; }
@@ -33252,6 +33258,14 @@ function _a3dBindEvents(){
     if(A3D.joinPick){ const h = _a3dPickPiece(ev); if(h){ _jPickClick(h.id); return; } }
     // v5.41.214 — flèche du gizmo : déplacement contraint sur UN axe
     const gz = _a3dPickGizmo(ev);
+    if(gz && A3D.sel && gz[0] === 'r' && _a3dSelIds().length > 1){
+      const ids = _a3dSelIds(), c = A3D.gizmo.position.clone();
+      const rc = A3D.renderer.domElement.getBoundingClientRect(), v = c.clone().project(A3D.cam);
+      const cx = rc.left + (v.x + 1) / 2 * rc.width, cy = rc.top + (1 - v.y) / 2 * rc.height;
+      drag = { mode: 'grot', cx, cy, a0: Math.atan2(-(ev.clientY - cy), ev.clientX - cx), sign: A3D.cam.position.y >= c.y ? 1 : -1, center: c,
+        origs: ids.map(id => { const q = _a3dPiece(id); return { id, x: q.x || 0, z: q.z || 0, ry: q.rotY || 0 }; }), pushed: false };
+      return;
+    }
     if(gz && A3D.sel && gz[0] === 'r'){
       const p = _a3dPiece(A3D.sel), m = A3D.meshes.get(A3D.sel);
       const rc = A3D.renderer.domElement.getBoundingClientRect(), v = m.position.clone().project(A3D.cam);
@@ -33260,31 +33274,37 @@ function _a3dBindEvents(){
       drag = { mode: 'rot', comp: gz[1], cx, cy, a0: Math.atan2(-(ev.clientY - cy), ev.clientX - cx), sign: (ax[0] * toCam.x + ax[1] * toCam.y + ax[2] * toCam.z) >= 0 ? 1 : -1, orig: _a3dRotGet(p), pushed: false };
       return;
     }
+    const others = pid => _a3dSelIds().filter(id => id !== pid).map(id => { const q = _a3dPiece(id); return { id, x: q.x || 0, y: q.y || 0, z: q.z || 0 }; });
     if(gz && A3D.sel){
-      const p = _a3dPiece(A3D.sel), m = A3D.meshes.get(A3D.sel);
+      const p = _a3dPiece(A3D.sel), m = A3D.meshes.get(A3D.sel), gp = A3D.gizmo.position.clone();
+      A3D._magEx = new Set(_a3dSelIds());
       if(gz === 'free'){
-        const plane = new A3D.T.Plane(new A3D.T.Vector3(0, 1, 0), -m.position.y);
+        const plane = new A3D.T.Plane(new A3D.T.Vector3(0, 1, 0), -gp.y);
         const start = new A3D.T.Vector3(); _a3dRay(ev).ray.intersectPlane(plane, start);
-        drag = { mode: 'move', plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
+        drag = { mode: 'move', primary: p.id, others: others(p.id), plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
       } else {
         const D = new A3D.T.Vector3(gz === 'x' ? 1 : 0, gz === 'y' ? 1 : 0, gz === 'z' ? 1 : 0);
-        const P0 = m.position.clone();
+        const P0 = gp;
         const t0 = _a3dAxisParam(_a3dRay(ev).ray, P0, D);
-        drag = { mode: 'axis', axis: gz, D, P0, t0: t0 || 0, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
+        drag = { mode: 'axis', primary: p.id, others: others(p.id), axis: gz, D, P0, t0: t0 || 0, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
       }
+      void m;
       return;
     }
     const hit = _a3dPickPiece(ev);
+    if(hit && (ev.ctrlKey || ev.metaKey)){ _a3dToggleMulti(hit.id); return; }
     if(hit){
-      if(A3D.sel !== hit.id){ A3D.sel = hit.id; _a3dHighlight(); _a3dRenderSide(); }
+      if(!_a3dSelIds().includes(hit.id)){ A3D.sel = hit.id; A3D.multi = null; A3D.solo = false; _a3dHighlight(); _a3dRenderSide(); }
+      else if(A3D.sel !== hit.id && !A3D.multi){ A3D.sel = hit.id; _a3dHighlight(); }
+      A3D._magEx = new Set(_a3dSelIds());
       const p = _a3dPiece(hit.id);
       const plane = new A3D.T.Plane(new A3D.T.Vector3(0, 1, 0), -hit.point.y);
       if(A3D.orthoView === 'face') plane.set(new A3D.T.Vector3(0, 0, 1), -hit.point.z);
       if(A3D.orthoView === 'side') plane.set(new A3D.T.Vector3(1, 0, 0), -hit.point.x);
       const start = new A3D.T.Vector3(); _a3dRay(ev).ray.intersectPlane(plane, start);
-      drag = { mode: 'move', plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
+      drag = { mode: 'move', primary: p.id, others: others(p.id), plane, start, orig: { x: p.x, y: p.y, z: p.z }, pushed: false };
     } else {
-      if(A3D.sel){ A3D.sel = null; _a3dHighlight(); _a3dRenderSide(); }
+      if(A3D.sel){ A3D.sel = null; A3D.multi = null; A3D.solo = false; _a3dHighlight(); _a3dRenderSide(); }
       drag = { mode: 'orbit', x: ev.clientX, y: ev.clientY };
     }
   });
@@ -33301,6 +33321,13 @@ function _a3dBindEvents(){
       }
       return;
     }
+    if(drag.mode === 'grot'){
+      if(!drag.pushed){ _a3dPushHistory(); drag.pushed = true; }
+      const da = (Math.atan2(-(ev.clientY - drag.cy), ev.clientX - drag.cx) - drag.a0) * 180 / Math.PI;
+      const st = ev.shiftKey ? 1 : 5;
+      _a3dRotateSel(Math.round(drag.sign * da / st) * st, drag.origs, drag.center, true);
+      return;
+    }
     if(drag.mode === 'rot'){
       const p = _a3dPiece(A3D.sel); if(!p) return;
       if(!drag.pushed){ _a3dPushHistory(); drag.pushed = true; }
@@ -33314,19 +33341,20 @@ function _a3dBindEvents(){
     if(drag.mode === 'axis'){
       const t = _a3dAxisParam(_a3dRay(ev).ray, drag.P0, drag.D); if(t == null) return;
       if(!drag.pushed){ _a3dPushHistory(); drag.pushed = true; }
-      const p = _a3dPiece(A3D.sel); if(!p) return;
+      const p = _a3dPiece(drag.primary || A3D.sel); if(!p) return;
       p.x = drag.orig.x; p.y = drag.orig.y; p.z = drag.orig.z;
       p[drag.axis] = Math.round((drag.orig[drag.axis] + t - drag.t0) / 10) * 10;
       _a3dPlaceMesh(A3D.meshes.get(p.id), p);
       _a3dMagnet(p, drag.axis);
       _a3dPlaceMesh(A3D.meshes.get(p.id), p);
+      _a3dMoveOthers(drag, p);
       _a3dRenderSelFields();
       return;
     }
     if(drag.mode === 'move'){
       const pt = new A3D.T.Vector3(); if(!_a3dRay(ev).ray.intersectPlane(drag.plane, pt)) return;
       if(!drag.pushed){ _a3dPushHistory(); drag.pushed = true; }
-      const p = _a3dPiece(A3D.sel); if(!p) return;
+      const p = _a3dPiece(drag.primary || A3D.sel); if(!p) return;
       const snap = v => Math.round(v / 10) * 10;
       p.x = snap(drag.orig.x + pt.x - drag.start.x);
       p.z = snap(drag.orig.z + pt.z - drag.start.z);
@@ -33334,10 +33362,11 @@ function _a3dBindEvents(){
       _a3dPlaceMesh(A3D.meshes.get(p.id), p);
       _a3dMagnet(p);
       _a3dPlaceMesh(A3D.meshes.get(p.id), p);
+      _a3dMoveOthers(drag, p);
       _a3dRenderSelFields();
     }
   });
-  window.addEventListener('mouseup', () => { if(drag && (drag.mode === 'move' || drag.mode === 'axis' || drag.mode === 'rot') && drag.pushed){ _a3dSave(); _a3dRenderFloating(); if(A3D) _jAfterChange(); } drag = null; });
+  window.addEventListener('mouseup', () => { A3D && (A3D._magEx = null); if(drag && (drag.mode === 'move' || drag.mode === 'axis' || drag.mode === 'rot' || drag.mode === 'grot') && drag.pushed){ _a3dSave(); _a3dRenderFloating(); if(A3D) _jAfterChange(); } drag = null; });
   el.addEventListener('wheel', ev => {
     ev.preventDefault();
     const f = ev.deltaY > 0 ? 1.12 : 1 / 1.12;
@@ -33351,14 +33380,28 @@ function _a3dBindEvents(){
     const p = A3D.sel && _a3dPiece(A3D.sel);
     if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z'){ ev.preventDefault(); _a3dUndo(); return; }
     if(ev.key === 'Escape' && A3D.joinPick){ A3D.joinPick = null; _a3dToolbarState(); showToast('Assemblage annulé'); return; }
-    if(ev.key === 'Escape'){ if(A3D.measure){ A3D.measure = null; _a3dToolbarState(); } else if(A3D.sel){ A3D.sel = null; _a3dHighlight(); _a3dRenderSide(); } return; }
+    if(ev.key === 'Escape'){ if(A3D.measure){ A3D.measure = null; _a3dToolbarState(); } else if(A3D.sel){ A3D.sel = null; A3D.multi = null; A3D.solo = false; _a3dHighlight(); _a3dRenderSide(); } return; }
     if(!p) return;
+    if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'g'){ ev.preventDefault(); if(ev.shiftKey) _a3dUngroupSel(); else _a3dGroupSel(); return; }
+    if(_a3dSelIds().length > 1){
+      const ids = _a3dSelIds();
+      if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); if(confirm('Supprimer les ' + ids.length + ' pièces ?')) _a3dDeleteMulti(ids); }
+      else if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd'){ ev.preventDefault(); _a3dDuplicateMulti(ids); }
+      else if(ev.key.toLowerCase() === 'r'){ ev.preventDefault(); _a3dRotateSel(90); }
+      else if(ev.key === 'ArrowUp' || ev.key === 'ArrowDown'){ ev.preventDefault(); _a3dMoveSel(0, (ev.key === 'ArrowUp' ? 1 : -1) * (ev.shiftKey ? 100 : 10), 0); }
+      return;
+    }
     if(ev.key === 'Delete' || ev.key === 'Backspace'){ ev.preventDefault(); _a3dDeleteSel(); }
     else if((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd'){ ev.preventDefault(); _a3dDuplicate(); }
     else if(ev.key.toLowerCase() === 'r'){ ev.preventDefault(); _a3dUpdateSel({ rotY: ((p.rotY || 0) + 90) % 360 }); }
     else if(ev.key === 'ArrowUp' || ev.key === 'ArrowDown'){ ev.preventDefault(); _a3dUpdateSel({ y: (p.y || 0) + (ev.key === 'ArrowUp' ? 1 : -1) * (ev.shiftKey ? 100 : 10) }); }
   };
   document.addEventListener('keydown', A3D._keyH, true);
+}
+function _a3dMoveOthers(drag, p){
+  if(!drag.others || !drag.others.length) return;
+  const dx = p.x - drag.orig.x, dy = p.y - drag.orig.y, dz = p.z - drag.orig.z;
+  drag.others.forEach(o => { const q = _a3dPiece(o.id); if(!q) return; q.x = o.x + dx; q.y = o.y + dy; q.z = o.z + dz; _a3dPlaceMesh(A3D.meshes.get(q.id), q); });
 }
 /* Aimant : colle la pièce déplacée bord à bord (ou alignée) avec les
    autres, sur X et Z (et Y en vue de face/côté), seuil 40 mm. */
@@ -33367,7 +33410,7 @@ function _a3dMagnet(p, onlyAxis){
   const thr = 40;
   let best = { x: null, y: null, z: null };
   A3D.proj.pieces.forEach(o => {
-    if(o.id === p.id) return;
+    if(o.id === p.id || (A3D._magEx && A3D._magEx.has(o.id))) return;
     const b = _a3dBox(o.id); if(!b) return;
     const ov = (a0, a1, b0, b1) => a0 < b1 + thr && a1 > b0 - thr;
     [['x', ov(me.min.y, me.max.y, b.min.y, b.max.y) && ov(me.min.z, me.max.z, b.min.z, b.max.z)],
@@ -34434,13 +34477,14 @@ function _jBuildFerme(o){
   if(!o.replace && A3D.proj.pieces.length){ const mz = Math.max(...A3D.proj.pieces.map(p => p.z || 0)); z0 = Math.round((mz + S) / 10) * 10; }
   const before = A3D.proj.pieces.length;
   let num = (A3D.proj.pieces.filter(p => /^Entrait/.test(p.name || '')).length);
-  for(let i = 0; i < n; i++){ num++; _jBuildOneFerme(o, z0 + i * S, n > 1 || num > 1 ? ' F' + num : ''); }
+  if(!A3D.proj.groups) A3D.proj.groups = {};
+  for(let i = 0; i < n; i++){ num++; const suf = n > 1 || num > 1 ? ' F' + num : ''; const g = uid(); A3D.proj.groups[g] = 'Ferme' + suf; _jBuildOneFerme(o, z0 + i * S, suf, g); }
   A3D.proj.joints = A3D.proj.joints.filter((j, i, arr) => arr.findIndex(x => x.id === j.id) === i);
   A3D.sel = null; _a3dRebuildAll(); _a3dFit(); A3D.tab = 'join'; A3D.jResults = []; _a3dRenderSide(); _a3dSave();
   showToast('🏠 ' + n + ' ferme(s) générée(s) : ' + (A3D.proj.pieces.length - before) + ' pièces');
 }
-function _jBuildOneFerme(o, Z, suf){
-  const add = p => _a3dAddPiece(Object.assign(p, { z: Z, name: p.name + suf }), true);
+function _jBuildOneFerme(o, Z, suf, grp){
+  const add = p => _a3dAddPiece(Object.assign(p, { z: Z, name: p.name + suf, grp }), true);
   const al = o.a * Math.PI / 180, sin = Math.sin(al), cos = Math.cos(al), tan = Math.tan(al);
   const [ew, eh] = o.E, [aw, ah] = o.R, [kw, kh] = o.K, [cw, ch] = o.C;
   const ent = add({ name: 'Entrait', w: ew, h: eh, L: Math.round(o.P + 2 * o.D), axis: 'x', x: 0, y: eh / 2, z: 0, color: A3D_WOOD[1] });
@@ -34917,6 +34961,9 @@ function _a3dRenderFloating(){
   const host = document.getElementById('a3dFloat'); if(!host || !A3D) return;
   const p = A3D.sel && _a3dPiece(A3D.sel);
   if(!p){ host.innerHTML = ''; return; }
+  const selIds = _a3dSelIds();
+  if(selIds.length > 1){ _a3dRenderFloatingMulti(host, selIds); return; }
+  if(A3D.mode === 'repeat' && !p) A3D.mode = 'move';
   const mode = A3D.mode || 'move';
   const S = path => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
   const menu = [['a3dMJoin', '🔗 Assembler avec…'], ['a3dMDelard', '⟋ Délarder…'], ['a3dMRen', '✏️ Renommer'], ['a3dMDup', '⧉ Dupliquer'], ['a3dMRep', '🔁 Répéter…'], ['a3dMDrop', '⬇ Poser dessus'], ['a3dMDel', '🗑 Supprimer']];
@@ -35005,12 +35052,15 @@ function _a3dUpdateGizmo(){
   const g = A3D.gizmo; if(!g) return;
   if(!A3D.gizmoRot) _a3dBuildRotGizmo();
   const rg = A3D.gizmoRot, m = A3D.sel && A3D.meshes.get(A3D.sel), mode = A3D.mode || 'move';
+  const ids = m ? _a3dSelIds() : [], multi = ids.length > 1;
   const free = !!m && !A3D.measure && !A3D.joinPick;
   g.visible = free && (mode === 'move' || mode === 'dims');
   rg.visible = free && mode === 'rot';
+  rg.children.forEach((c, i) => { c.visible = !multi || i === 1; });
   if(!m) return;
-  const dist = A3D.orthoView ? A3D.orthoZoom * 0.9 : A3D.cam.position.distanceTo(m.position), k = dist * 0.11;
-  [g, rg].forEach(o => { o.position.copy(m.position); o.scale.set(k, k, k); });
+  const pos = multi ? _a3dSelBox(ids).getCenter(new A3D.T.Vector3()) : m.position;
+  const dist = A3D.orthoView ? A3D.orthoZoom * 0.9 : A3D.cam.position.distanceTo(pos), k = dist * 0.11 * (multi ? 1.3 : 1);
+  [g, rg].forEach(o => { o.position.copy(pos); o.scale.set(k, k, k); });
 }
 function _a3dPickGizmo(ev){
   const objs = [];
@@ -35021,6 +35071,178 @@ function _a3dPickGizmo(ev){
   return hits.length ? hits[0].object.userData.gizmoAxis : null;
 }
 /* ATELIER 3D — INTERFACE (fin) */
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   ATELIER 3D — SÉLECTION MULTIPLE ET GROUPES (v5.41.234)
+   Ctrl+clic = ajouter / retirer une pièce de la sélection ; bouton
+   « Grouper » (Ctrl+G) ; un clic sur une pièce d'un groupe sélectionne
+   tout le groupe (double-clic = modifier la pièce seule). Le groupe se
+   déplace, tourne, se duplique (avec ses assemblages) et se supprime
+   d'un bloc.
+   ═══════════════════════════════════════════════════════════════════ */
+function _a3dSelIds(){
+  if(!A3D || !A3D.sel || !_a3dPiece(A3D.sel)) return [];
+  if(A3D.solo) return [A3D.sel];
+  if(A3D.multi && A3D.multi.length){
+    if(!A3D.multi.includes(A3D.sel)) A3D.multi = null;
+    else { A3D.multi = A3D.multi.filter(id => _a3dPiece(id)); return A3D.multi.slice(); }
+  }
+  const p = _a3dPiece(A3D.sel);
+  if(p && p.grp) return A3D.proj.pieces.filter(q => q.grp === p.grp).map(q => q.id);
+  return [A3D.sel];
+}
+function _a3dGroupOf(id){ const p = _a3dPiece(id); return p && p.grp ? A3D.proj.pieces.filter(q => q.grp === p.grp).map(q => q.id) : [id]; }
+function _a3dToggleMulti(id){
+  let ids = A3D.sel ? _a3dSelIds() : [];
+  const add = _a3dGroupOf(id);
+  if(ids.includes(id)) ids = ids.filter(x => !add.includes(x)); else ids = ids.concat(add.filter(x => !ids.includes(x)));
+  A3D.solo = false;
+  if(!ids.length){ A3D.sel = null; A3D.multi = null; }
+  else { A3D.sel = ids.includes(A3D.sel) ? A3D.sel : ids[ids.length - 1]; A3D.multi = ids.length > 1 ? ids : null; }
+  if(A3D.mode === 'dims' || A3D.mode === 'opts') A3D.mode = 'move';
+  _a3dHighlight(); _a3dRenderSide();
+}
+function _a3dSelBox(ids){
+  const b = new A3D.T.Box3();
+  (ids || _a3dSelIds()).forEach(id => { const m = A3D.meshes.get(id); if(m) b.expandByObject(m); });
+  return b;
+}
+function _a3dGroupName(ids){
+  const p = _a3dPiece(ids[0]);
+  if(p && p.grp && ids.every(id => (_a3dPiece(id) || {}).grp === p.grp)) return ((A3D.proj.groups || {})[p.grp]) || 'Groupe';
+  return null;
+}
+function _a3dGroupSel(){
+  const ids = _a3dSelIds(); if(ids.length < 2){ showToast('Ctrl+clic pour choisir plusieurs pièces'); return; }
+  _a3dPushHistory();
+  if(!A3D.proj.groups) A3D.proj.groups = {};
+  const gid = uid(), n = Object.keys(A3D.proj.groups).length + 1;
+  A3D.proj.groups[gid] = 'Groupe ' + n;
+  ids.forEach(id => { _a3dPiece(id).grp = gid; });
+  A3D.multi = null; A3D.solo = false;
+  _a3dHighlight(); _a3dSave();
+  showToast('🔗 ' + ids.length + ' pièces groupées');
+}
+function _a3dUngroupSel(){
+  const ids = _a3dSelIds(); if(!ids.some(id => (_a3dPiece(id) || {}).grp)) return;
+  _a3dPushHistory();
+  ids.forEach(id => { delete _a3dPiece(id).grp; });
+  A3D.multi = ids.length > 1 ? ids : null; A3D.solo = false;
+  _a3dHighlight(); _a3dSave();
+  showToast('Groupe défait (les pièces restent sélectionnées)');
+}
+/* Déplacement de toute la sélection */
+function _a3dMoveSel(dx, dy, dz){
+  _a3dPushHistory();
+  _a3dSelIds().forEach(id => { const q = _a3dPiece(id); q.x = Math.round(((q.x || 0) + dx) * 10) / 10; q.y = Math.round(((q.y || 0) + dy) * 10) / 10; q.z = Math.round(((q.z || 0) + dz) * 10) / 10; _a3dPlaceMesh(A3D.meshes.get(id), q); });
+  _jAfterChange(); _a3dSave(); _a3dRenderFloating();
+}
+/* Rotation de la sélection autour de son centre (axe vertical) */
+function _a3dRotateSel(deg, origs, center, noHist){
+  const ids = _a3dSelIds();
+  if(!noHist) _a3dPushHistory();
+  const c = center || _a3dSelBox(ids).getCenter(new A3D.T.Vector3());
+  const a = deg * Math.PI / 180, co = Math.cos(a), si = Math.sin(a);
+  ids.forEach(id => {
+    const q = _a3dPiece(id), o = origs ? origs.find(x => x.id === id) : { x: q.x || 0, z: q.z || 0, ry: q.rotY || 0 };
+    if(!o) return;
+    const X = o.x - c.x, Z = o.z - c.z;
+    q.x = (Math.round((c.x + X * co + Z * si) * 10) / 10) || 0; q.z = (Math.round((c.z - X * si + Z * co) * 10) / 10) || 0;
+    q.rotY = _a3dAng(o.ry + deg);
+    _a3dPlaceMesh(A3D.meshes.get(id), q);
+  });
+  if(!noHist){ _jAfterChange(); _a3dSave(); _a3dRenderFloating(); }
+}
+function _a3dDeleteMulti(ids){
+  _a3dPushHistory();
+  const set = new Set(ids);
+  A3D.proj.pieces = A3D.proj.pieces.filter(p => !set.has(p.id));
+  A3D.proj.joints = (A3D.proj.joints || []).filter(j => !set.has(j.a) && !set.has(j.b));
+  ids.forEach(id => { const m = A3D.meshes.get(id); if(m){ A3D.group.remove(m); m.geometry.dispose(); } A3D.meshes.delete(id); });
+  A3D.sel = null; A3D.multi = null; A3D.solo = false;
+  _jAfterChange(); _a3dRenderSide(); _a3dSave(); _a3dRenderFloating();
+  showToast('🗑 ' + ids.length + ' pièces supprimées');
+}
+/* Dupliquer une sélection : pièces + assemblages entre elles + groupe */
+function _a3dDuplicateMulti(ids){
+  _a3dPushHistory();
+  const box = _a3dSelBox(ids), size = box.getSize(new A3D.T.Vector3());
+  const off = size.z <= size.x ? { x: 0, z: Math.round(size.z + 300) } : { x: Math.round(size.x + 300), z: 0 };
+  const map = {}, grpMap = {};
+  if(!A3D.proj.groups) A3D.proj.groups = {};
+  ids.forEach(id => {
+    const p = _a3dPiece(id), c = JSON.parse(JSON.stringify(p));
+    c.id = uid(); c.x = (p.x || 0) + off.x; c.z = (p.z || 0) + off.z;
+    if(p.grp){ if(!grpMap[p.grp]){ grpMap[p.grp] = uid(); A3D.proj.groups[grpMap[p.grp]] = (A3D.proj.groups[p.grp] || 'Groupe') + ' (copie)'; } c.grp = grpMap[p.grp]; }
+    A3D.proj.pieces.push(c); map[id] = c.id;
+  });
+  (A3D.proj.joints || []).slice().forEach(j => {
+    if(map[j.a] && (!j.b || map[j.b])) A3D.proj.joints.push({ id: uid(), type: j.type, a: map[j.a], b: j.b ? map[j.b] : null, prm: JSON.parse(JSON.stringify(j.prm || {})) });
+  });
+  const nids = ids.map(id => map[id]);
+  A3D.sel = nids[0]; A3D.multi = nids.length > 1 ? nids : null; A3D.solo = false;
+  _a3dRebuildAll(); _a3dRenderSide(); _a3dSave();
+  showToast('⧉ ' + ids.length + ' pièces dupliquées');
+}
+/* Barre d'outils quand plusieurs pièces sont sélectionnées */
+function _a3dRenderFloatingMulti(host, ids){
+  const mode = ['move', 'rot', 'mat'].includes(A3D.mode) ? A3D.mode : 'move';
+  const gname = _a3dGroupName(ids), grouped = !!gname;
+  const S = path => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const modes = A3D_MODES.filter(m => ['move', 'rot', 'mat'].includes(m[0]));
+  const box = _a3dSelBox(ids), c = box.getCenter(new A3D.T.Vector3());
+  const inp = (key, val) => `<input data-gset="${key}" type="number" value="${Math.round(val)}" style="${_a3dInpCss}">`;
+  const lab = t => `<span style="width:54px;flex-shrink:0;font-size:12px;color:#aeb8c2;font-weight:700;">${t}</span>`;
+  const rb = (id, inner, tip) => `<button type="button" id="${id}" title="${tip || ''}" style="min-width:32px;height:32px;border-radius:16px;border:2px solid #6b7884;background:transparent;color:#cfd8e0;cursor:pointer;font-size:13px;font-weight:700;padding:0 9px;">${inner}</button>`;
+  let panel = '';
+  if(mode === 'move') panel = `<div style="font-size:13px;color:#aeb8c2;font-weight:700;">Position du ${grouped ? 'groupe' : 'lot'}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Hauteur')}${inp('bottom', box.min.y)}${rb('gGround', '⤓0', 'Poser au sol')}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('X')}${inp('x', c.x)}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Z')}${inp('z', c.z)}</div>
+    <div style="font-size:10.5px;color:#8b96a0;">Glisse une pièce ou les flèches : tout bouge ensemble.</div>`;
+  if(mode === 'rot') panel = `<div style="font-size:13px;color:#aeb8c2;font-weight:700;">Tourner autour du centre</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0;">${rb('gR-90', '−90°')}${rb('gR-15', '−15°')}${rb('gR15', '+15°')}${rb('gR90', '+90°')}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">${lab('Angle')}<input id="gRotV" type="number" value="45" style="${_a3dInpCss}">${rb('gRGo', 'OK')}</div>
+    <div style="font-size:10.5px;color:#8b96a0;">Ou glisse l'anneau vert (Maj : 1°).</div>`;
+  if(mode === 'mat') panel = `<div style="font-size:13px;color:#aeb8c2;font-weight:700;">Matière pour les ${ids.length} pièces</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">${A3D_MATS.map(m => `<button type="button" data-gmat="${m[0]}" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:12px;cursor:pointer;border:1.5px solid transparent;background:rgba(255,255,255,.06);color:#e6edf3;font-size:12px;font-weight:700;text-align:left;"><span style="width:20px;height:20px;border-radius:50%;background:${m[2]};flex-shrink:0;"></span>${m[1]}</button>`).join('')}</div>`;
+  const menu = grouped ? [['gMRen', '✏️ Renommer le groupe'], ['gMUng', '⛓️‍💥 Dégrouper'], ['gMDup', '⧉ Dupliquer'], ['gMDel', '🗑 Supprimer']] : [['gMGrp', '🔗 Grouper'], ['gMDup', '⧉ Dupliquer'], ['gMDel', '🗑 Supprimer']];
+  host.innerHTML = `
+    <div style="position:absolute;left:50%;bottom:40px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:auto;">
+      <div id="gMenuPop" style="display:none;background:#232b33;border-radius:12px;padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.35);">${menu.map(([id, l]) => `<button type="button" id="${id}" style="display:block;width:100%;text-align:left;background:none;border:none;color:#e6edf3;padding:7px 14px;font-size:13px;cursor:pointer;border-radius:8px;">${l}</button>`).join('')}</div>
+      <div style="display:flex;align-items:center;gap:8px;background:#232b33;border-radius:10px;padding:6px 8px 6px 12px;color:#fff;font-weight:700;font-size:13.5px;box-shadow:0 4px 14px rgba(0,0,0,.35);">
+        <span>${grouped ? '🔗 ' + escapeHtml(gname) + ' · ' : ''}${ids.length} pièces</span>
+        ${grouped ? '' : '<button type="button" id="gGroupBtn" style="background:#2e9bff;border:none;color:#fff;border-radius:8px;padding:4px 10px;font-weight:800;cursor:pointer;">Grouper</button>'}
+        <button type="button" id="gMenu" title="Plus" style="background:none;border:none;color:#cfd8e0;font-size:18px;cursor:pointer;padding:0 4px;">⋮</button>
+      </div>
+      <div style="display:flex;gap:4px;background:#232b33;border-radius:16px;padding:6px;box-shadow:0 4px 14px rgba(0,0,0,.35);">
+        ${modes.map(([k, l, path]) => `<button type="button" data-gmode="${k}" title="${l}" style="width:44px;height:44px;border-radius:12px;border:none;background:transparent;color:${mode === k ? '#2e9bff' : '#cfd8e0'};cursor:pointer;display:flex;align-items:center;justify-content:center;">${S(path)}</button>`).join('')}
+      </div>
+      ${grouped ? '<div style="font-size:10.5px;color:#cfd8e0;background:rgba(20,26,32,.6);padding:2px 8px;border-radius:6px;">Double-clic sur une pièce pour la modifier seule</div>' : ''}
+    </div>
+    <div id="a3dFloatPanel" style="position:absolute;right:14px;bottom:40px;width:270px;background:#232b33;border-radius:18px;padding:14px 16px 12px;color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.35);pointer-events:auto;">${panel}</div>`;
+  const $ = id => document.getElementById(id);
+  $('gMenu').onclick = () => { const m = $('gMenuPop'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; };
+  if($('gGroupBtn')) $('gGroupBtn').onclick = () => _a3dGroupSel();
+  if($('gMGrp')) $('gMGrp').onclick = () => _a3dGroupSel();
+  if($('gMUng')) $('gMUng').onclick = () => _a3dUngroupSel();
+  if($('gMRen')) $('gMRen').onclick = () => { const g = _a3dPiece(ids[0]).grp, n = prompt('Nom du groupe :', gname); if(n && n.trim()){ A3D.proj.groups[g] = n.trim(); _a3dSave(); _a3dRenderFloating(); } };
+  $('gMDup').onclick = () => _a3dDuplicateMulti(ids);
+  $('gMDel').onclick = () => { if(confirm('Supprimer les ' + ids.length + ' pièces ?')) _a3dDeleteMulti(ids); };
+  host.querySelectorAll('[data-gmode]').forEach(b => b.onclick = () => { A3D.mode = b.dataset.gmode; _a3dRenderFloating(); });
+  const panelEl = $('a3dFloatPanel');
+  panelEl.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if(e.key === 'Enter') i.blur(); e.stopPropagation(); }));
+  panelEl.querySelectorAll('[data-gset]').forEach(i => i.onchange = () => {
+    const v = parseFloat(i.value); if(isNaN(v)) return;
+    const k = i.dataset.gset;
+    if(k === 'bottom') _a3dMoveSel(0, v - box.min.y, 0); else if(k === 'x') _a3dMoveSel(v - c.x, 0, 0); else _a3dMoveSel(0, 0, v - c.z);
+  });
+  if($('gGround')) $('gGround').onclick = () => _a3dMoveSel(0, -box.min.y, 0);
+  [['gR-90', -90], ['gR-15', -15], ['gR15', 15], ['gR90', 90]].forEach(([id, d]) => { if($(id)) $(id).onclick = () => _a3dRotateSel(d); });
+  if($('gRGo')) $('gRGo').onclick = () => { const v = parseFloat($('gRotV').value); if(v) _a3dRotateSel(v); };
+  panelEl.querySelectorAll('[data-gmat]').forEach(b => b.onclick = () => { _a3dPushHistory(); ids.forEach(id => { const q = _a3dPiece(id); q.mat = b.dataset.gmat; _a3dRefreshPiece(q); }); _a3dHighlight(); _a3dSave(); });
+}
+/* ATELIER 3D — GROUPES (fin) */
 
 function _a3dRenderDevList(){
   const host = document.getElementById('a3dDevList'); if(!host) return;
@@ -36503,9 +36725,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.233';
+const APP_VERSION = '5.41.234';
 
 const CHANGELOG = [
+  {
+    version: '5.41.234',
+    date: '27/09/2026',
+    entries: [
+      { icon: '🔗', text: "Atelier 3D — groupes : Ctrl+clic pour choisir plusieurs pièces, bouton « Grouper » (Ctrl+G). Un clic sur une pièce du groupe sélectionne tout le groupe : on le déplace (flèches ou glisser), on le tourne (anneau vert, ±15° / ±90°), on change la matière, on le duplique (avec ses assemblages) ou on le supprime d'un bloc. Double-clic = modifier une pièce seule. Chaque ferme générée est déjà un groupe." },
+    ],
+  },
   {
     version: '5.41.233',
     date: '27/09/2026',
