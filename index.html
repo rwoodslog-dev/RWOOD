@@ -12021,6 +12021,7 @@ async function _pfsGoTo(index){
     openPhotoFullscreen(entry.url || entry.thumbUrl, entry.name || '', null);
     const editBtn = document.getElementById('photoFullscreenEditBtn');
     if(editBtn) editBtn.style.display = 'none';
+    if(typeof _todoPhotoDeleteBtn === 'function') _todoPhotoDeleteBtn();
     return;
   }
   const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
@@ -12141,6 +12142,7 @@ function openPhotoFullscreen(src, caption, logId){
   // Cache le bouton supprimer si on visionne depuis la corbeille (pas d'entrée de journal active)
   const deleteBtn = document.getElementById('photoFullscreenDeleteBtn');
   deleteBtn.style.display = currentFullscreenLogId ? 'flex' : 'none';
+  deleteBtn.onclick = deleteCurrentFullscreenPhoto;   // v5.41.254 — un appelant (photos de tâche) peut le rebrancher ensuite
   // Réafficher les actions édition/partage (peuvent avoir été masquées par un autre appelant, ex. photo boîte à clés)
   const editBtn = document.getElementById('photoFullscreenEditBtn');
   const shareBtn = document.getElementById('photoFullscreenShareBtn');
@@ -37125,9 +37127,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.253';
+const APP_VERSION = '5.41.254';
 
 const CHANGELOG = [
+  {
+    version: '5.41.254',
+    date: '29/09/2026',
+    entries: [
+      { icon: '📷', text: "Liste « À faire » : ajoute une ou plusieurs photos à chaque tâche (appareil photo ou galerie), comme pour les croquis. Touche une miniature pour la voir en grand, avec ‹ › et 🗑 pour la retirer." },
+      { icon: '📌', text: "Liste « À faire » : épingle les tâches importantes avec 📌 — elles restent en tête de liste (onglet, bulle et widget)." },
+      { icon: '🖼️', text: "Widget « À faire » : miniature de la photo à côté de la tâche et 📌 devant les tâches épinglées. Touche le titre du widget pour ouvrir la liste et voir les photos en grand (appui long sur une tâche = épingler)." },
+      { icon: '🚗', text: "App Android : RWOOD Route est maintenant intégrée à l'app RWOOD (plus d'app séparée à installer)." },
+    ],
+  },
   {
     version: '5.41.253',
     date: '27/09/2026',
@@ -44219,7 +44231,8 @@ function _renderPinnedTasksInPopup(){
     container.innerHTML = syncBtn + '<div style="color:var(--ink-soft);font-size:12px;padding:4px 0 6px;">Aucune tâche pour le moment.</div>';
     return;
   }
-  const sorted = [...pn.tasks].sort((a,b)=> (a.done?1:0)-(b.done?1:0));
+  // v5.41.254 — épinglées en tête, puis à faire, puis faites
+  const sorted = [...pn.tasks].sort((a,b)=> ((b.pinned?1:0)-(a.pinned?1:0)) || ((a.done?1:0)-(b.done?1:0)));
   container.innerHTML = syncBtn + sorted.map(t => {
     const hasLink = !!(t.link && (t.link.siteId || t.link.date));
     const linkLabel = t.link ? [t.link.siteName, t.link.dateLabel].filter(Boolean).join(' · ') : '';
@@ -44235,10 +44248,11 @@ function _renderPinnedTasksInPopup(){
     <div class="pinned-task-item" data-id="${t.id}">
       <div class="pinned-task-cb ${t.done?'done':''}" onclick="togglePinnedTask('${t.id}')"></div>
       <div style="flex:1;min-width:0;">
-        <div class="pinned-task-text ${t.done?'done':''}" onclick="togglePinnedTask('${t.id}')">${escapeHtml(t.text)}</div>
+        <div class="pinned-task-text ${t.done?'done':''}" onclick="togglePinnedTask('${t.id}')">${t.pinned ? '📌 ' : ''}${escapeHtml(t.text)}</div>
         ${hasLink ? `<div onclick="_openPinnedLink(${JSON.stringify(t).replace(/"/g,'&quot;')})" style="font-size:10px;color:var(--wood);cursor:pointer;margin-top:2px;">${linkLabel}</div>` : ''}
       </div>
       ${linkOrSketchBtn}
+      ${_todoPhotos(t).length ? `<button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--wood);" onclick="viewTaskPhotos('${t.id}',0)" title="Voir les photos">🖼️</button>` : ''}
       <button style="background:none;border:none;font-size:14px;cursor:pointer;padding:2px 4px;color:var(--ink-soft);" onclick="editPinnedTask('${t.id}')" title="Modifier">✏️</button>
       ${t.done ? `<button class="pinned-task-reopen visible" onclick="reopenPinnedTask('${t.id}')" title="Remettre à faire">↩</button>` : ''}
     </div>`;
@@ -52192,6 +52206,13 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
   + '#view-notes .notes-sketch-thumb{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1.5px solid rgba(255,255,255,.12);cursor:pointer;background:#fff;flex-shrink:0;}'
   + '#view-notes .notes-sketch-btn{background:none;border:1.5px dashed var(--wood,#C8862B);color:var(--wood,#C8862B);font-size:12px;font-weight:700;cursor:pointer;padding:6px 10px;border-radius:8px;margin-top:8px;}'
   + '#view-notes .notes-sketch-row .notes-sketch-btn{margin-top:0;}'
+  + '#view-notes .notes-item.pinned{border-color:rgba(232,172,61,.55);background:linear-gradient(0deg,rgba(232,172,61,.06),rgba(232,172,61,.06)),var(--card,#211a12);}'
+  + '#view-notes .notes-pin{background:none;border:none;cursor:pointer;padding:2px 4px;flex-shrink:0;font-size:16px;line-height:1;filter:grayscale(1);opacity:.45;}'
+  + '#view-notes .notes-pin.on{filter:none;opacity:1;}'
+  + '#view-notes .notes-side{display:flex;flex-direction:column;align-items:center;gap:6px;}'
+  + '#view-notes .notes-media{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;}'
+  + '#view-notes .notes-media .notes-sketch-btn{margin-top:0;}'
+  + '#view-notes .notes-photo-thumb{width:44px;height:44px;border-radius:8px;object-fit:cover;border:1.5px solid rgba(255,255,255,.12);cursor:pointer;background:#000;flex-shrink:0;}'
   + '@media (min-width:860px){'
   +   '#view-notes .notes-wrap{max-width:720px;margin:0 auto;}'
   + '}';
@@ -52268,7 +52289,7 @@ function notesRender(){
   if(!tasks.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
   if(empty) empty.style.display='none';
 
-  list.innerHTML = tasks.map(t => {
+  list.innerHTML = _todoSorted(tasks).map(t => {
     const text = t.text || '';
     const isMulti = /\n/.test(text) || text.length > 90; // plusieurs lignes ou texte long
     const open = !!_notesExpanded[t.id];
@@ -52284,13 +52305,18 @@ function notesRender(){
     // dont le crayon rouvre l'outil de croquis) et "Refaire" devient
     // "Modifier" (notesEditSketch, reprend la forme existante) plutôt que de
     // reforcer à tout redessiner depuis zéro.
-    const sketchRow = t.media && t.media.url
-      ? '<div class="notes-sketch-row">'
-        + '<img src="'+escapeHtml(t.media.url)+'" class="notes-sketch-thumb" onclick="viewTaskSketch(\''+t.id+'\')" alt="Croquis">'
-        + '<button class="notes-sketch-btn" onclick="notesEditSketch(\''+t.id+'\')" title="Modifier le croquis">✏️ Modifier</button>'
-        + '</div>'
-      : '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Ajouter un croquis avec côtes">📐 Ajouter un croquis</button>';
-    return '<div class="notes-item'+(t.done?' done':'')+'">'
+    // v5.41.254 — croquis + photos de la tâche sur une même ligne
+    const photos = _todoPhotos(t);
+    const sketchRow = '<div class="notes-media">'
+      + (t.media && t.media.url
+          ? '<img src="'+escapeHtml(t.media.url)+'" class="notes-sketch-thumb" onclick="viewTaskSketch(\''+t.id+'\')" alt="Croquis">'
+            + '<button class="notes-sketch-btn" onclick="notesEditSketch(\''+t.id+'\')" title="Modifier le croquis">✏️ Croquis</button>'
+          : '<button class="notes-sketch-btn" onclick="notesAddSketch(\''+t.id+'\')" title="Ajouter un croquis avec côtes">📐 Croquis</button>')
+      + photos.map((ph, i) => '<img src="'+escapeHtml(ph.url)+'" class="notes-photo-thumb" loading="lazy" onclick="viewTaskPhotos(\''+t.id+'\','+i+')" alt="Photo">').join('')
+      + '<button class="notes-sketch-btn" onclick="notesAddPhoto(\''+t.id+'\',\'camera\')" title="Prendre une photo">📷 Photo</button>'
+      + '<button class="notes-sketch-btn" onclick="notesAddPhoto(\''+t.id+'\',\'gallery\')" title="Choisir dans la galerie">🖼️</button>'
+      + '</div>';
+    return '<div class="notes-item'+(t.done?' done':'')+(t.pinned?' pinned':'')+'">'
       + '<button class="notes-check'+(t.done?' on':'')+'" onclick="notesToggle(\''+t.id+'\')">'+(t.done?'✓':'')+'</button>'
       + '<div class="notes-body">'
       +   '<div class="notes-item-text'+(isMulti && !open ? ' collapsed' : '')+'" onclick="notesEditPrompt(\''+t.id+'\')">'+escapeHtml(text)+'</div>'
@@ -52298,9 +52324,12 @@ function notesRender(){
       +   authorLine
       +   sketchRow
       + '</div>'
+      + '<div class="notes-side">'
       + '<button class="notes-del" onclick="notesDelete(\''+t.id+'\')" title="Supprimer">'
       +   '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>'
       + '</button>'
+      + '<button class="notes-pin'+(t.pinned?' on':'')+'" onclick="notesTogglePin(\''+t.id+'\')" title="'+(t.pinned?'Désépingler':'Épingler en tête de liste')+'">📌</button>'
+      + '</div>'
       + '</div>';
   }).join('');
 }
@@ -52392,6 +52421,93 @@ function viewTaskSketch(id){
   openPhotoFullscreen(t.media.url, 'Croquis', null);
   const editBtn = document.getElementById('photoFullscreenEditBtn');
   if(editBtn) editBtn.onclick = () => { closeModal('photoFullscreen'); notesEditSketch(id); };
+}
+/* ═══ v5.41.254 — Photos et épingle sur les tâches « À faire » ═══════
+   t.photos = [{url, at}] (Supabase Storage, dossier « todo »), t.pinned = bool.
+   Les deux champs voyagent avec la tâche (synchro équipe par updatedAt). */
+function _todoPhotos(t){ return (t && Array.isArray(t.photos)) ? t.photos.filter(p => p && p.url) : []; }
+function _todoSorted(tasks){
+  // épinglées d'abord, sinon l'ordre d'origine est conservé (tri stable)
+  return [...(tasks || [])].sort((a, b) => ((b && b.pinned) ? 1 : 0) - ((a && a.pinned) ? 1 : 0));
+}
+function _todoFind(id){ return (_getPinnedNote().tasks || []).find(x => x.id === id); }
+function notesTogglePin(id){
+  const t = _todoFind(id); if(!t) return;
+  t.pinned = !t.pinned;
+  t.updatedAt = new Date().toISOString();
+  _notesCommit();
+  showToast(t.pinned ? '📌 Épinglée en tête de liste' : 'Tâche désépinglée');
+}
+let _todoPhotoTarget = null;
+function _todoPhotoInput(){
+  let i = document.getElementById('todoPhotoInput');
+  if(!i){
+    i = document.createElement('input');
+    i.type = 'file'; i.accept = 'image/*'; i.multiple = true; i.id = 'todoPhotoInput'; i.style.display = 'none';
+    i.addEventListener('change', _todoPhotoPicked);
+    document.body.appendChild(i);
+  }
+  return i;
+}
+function notesAddPhoto(id, src){
+  _todoPhotoTarget = id;
+  const inp = _todoPhotoInput();
+  if(src === 'camera' && typeof openCameraCapture === 'function'){ openCameraCapture('todoPhotoInput'); return; }
+  inp.value = ''; inp.click();
+}
+/* Réduit la photo (1920 px max, JPEG) : envoi plus rapide, widget plus léger. */
+async function _todoShrink(file){
+  try{
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const k = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.85));
+    return blob ? new File([blob], 'photo-' + Date.now() + '.jpg', { type: 'image/jpeg' }) : file;
+  }catch(_){ return file; }
+}
+async function _todoPhotoPicked(e){
+  const files = [...((e.target && e.target.files) || [])];
+  const id = _todoPhotoTarget;
+  if(!id || !files.length) return;
+  showToast(files.length > 1 ? '⏳ Envoi de ' + files.length + ' photos…' : '⏳ Envoi de la photo…');
+  let n = 0;
+  for(const f of files){
+    try{
+      const url = await uploadFileToSupabase(await _todoShrink(f), 'todo');
+      const t = _todoFind(id); if(!t) break;
+      if(!Array.isArray(t.photos)) t.photos = [];
+      t.photos.push({ url, at: new Date().toISOString() });
+      t.updatedAt = new Date().toISOString();
+      n++;
+    }catch(err){ console.warn('photo tâche', err); }
+  }
+  if(n){ _notesCommit(); showToast(n > 1 ? '✅ ' + n + ' photos ajoutées' : '✅ Photo ajoutée à la tâche'); }
+  else showToast('❌ Échec de l\'envoi de la photo');
+}
+/* Visionneuse plein écran (‹ › entre les photos de la tâche, 🗑 pour en retirer une). */
+function viewTaskPhotos(id, idx){
+  const t = _todoFind(id); if(!t) return;
+  const photos = _todoPhotos(t).map((p, i) => ({ url: p.url, name: (t.text || 'Photo').split('\n')[0].slice(0, 60) }));
+  if(!photos.length) return;
+  openCloudPhotoFullscreen(photos, Math.max(0, Math.min(idx || 0, photos.length - 1)), '__todo:' + id);
+  _todoPhotoDeleteBtn();
+}
+function _todoPhotoDeleteBtn(){
+  const btn = document.getElementById('photoFullscreenDeleteBtn');
+  if(!btn || !String(_pfsCloudSiteId || '').startsWith('__todo:')) return;
+  btn.style.display = 'flex';
+  btn.onclick = () => {
+    const id = String(_pfsCloudSiteId).slice(7), t = _todoFind(id);
+    if(!t || !confirm('Retirer cette photo de la tâche ?')) return;
+    const ph = _todoPhotos(t)[_pfsNavIndex];
+    if(ph) t.photos = (t.photos || []).filter(p => p !== ph);
+    t.updatedAt = new Date().toISOString();
+    _notesCommit();
+    closeModal('photoFullscreen');
+    showToast('Photo retirée');
+  };
 }
 function notesAddManual(){
   const inp = document.getElementById('notesAddInput');
@@ -63674,7 +63790,9 @@ function _rwW2(){ const R = _rn2(); return (R && typeof R.setTodo === 'function'
 function _rwPushTodo(){
   const R = _rwW2(); if(!R || typeof _getPinnedNote !== 'function') return;
   const pn = _getPinnedNote();
-  const tasks = (pn.tasks || []).slice(0, 40).map(t => ({ id: t.id, text: String(t.text || '').slice(0, 140), done: !!t.done }));
+  // v5.41.254 — épinglées en tête + photos (et croquis) pour les miniatures du widget
+  const tasks = _todoSorted(pn.tasks).slice(0, 40).map(t => ({ id: t.id, text: String(t.text || '').slice(0, 140), done: !!t.done, pinned: !!t.pinned,
+    pics: _todoPhotos(t).map(p => p.url).concat(t.media && t.media.url ? [t.media.url] : []).slice(0, 8) }));
   R.setTodo({ tasks, title: 'À faire' }).catch(()=>{});
 }
 async function _rwApplyTodoOps(ops){
@@ -63684,6 +63802,8 @@ async function _rwApplyTodoOps(ops){
   ops.forEach(op => {
     const t = pn.tasks.find(x => x.id === op.id);
     // v5.41.241 — tâche ajoutée depuis le widget (fenêtre par-dessus l'écran d'accueil)
+    // v5.41.254 — épingler / désépingler depuis le widget (appui long)
+    if(op.pin !== undefined){ if(t && !!t.pinned !== !!op.pin){ t.pinned = !!op.pin; t.updatedAt = new Date().toISOString(); changed = true; } return; }
     if(op.add){ if(!t && op.text){ pn.tasks.push({ id: op.id, text: String(op.text).slice(0, 300), done: false, updatedAt: new Date(op.at || Date.now()).toISOString() }); changed = true; } return; }
     if(t && !!t.done !== !!op.done){ t.done = !!op.done; t.updatedAt = new Date().toISOString(); changed = true; }
   });
