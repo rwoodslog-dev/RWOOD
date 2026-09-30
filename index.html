@@ -37127,9 +37127,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.263';
+const APP_VERSION = '5.41.264';
 
 const CHANGELOG = [
+  {
+    version: '5.41.264',
+    date: '30/09/2026',
+    entries: [
+      { icon: '🐞', text: "Croquis : le dessin ne rétrécit plus à chaque passage plein écran ↔ écran réduit — il ne se réduit que s'il ne tient plus, et reprend sa taille dès qu'il y a la place. Un croquis rouvert garde aussi ses proportions (plus d'étirement)." },
+    ],
+  },
   {
     version: '5.41.263',
     date: '30/09/2026',
@@ -54092,8 +54099,10 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   if(existingSketch && Array.isArray(existingSketch.segments) && existingSketch.segments.length){
     const sw = existingSketch.canvasWidth || canvas.width;
     const sh = existingSketch.canvasHeight || canvas.height;
-    const scaleX = canvas.width / sw, scaleY = canvas.height / sh;
-    const scalePt = p => ({ x: p.x * scaleX, y: p.y * scaleY });
+    // v5.41.264 — même échelle en largeur et en hauteur (plus de forme déformée si le cadre a changé), centrée
+    const kk = Math.min(canvas.width / sw, canvas.height / sh);
+    const offX = (canvas.width - sw * kk) / 2, offY = (canvas.height - sh * kk) / 2;
+    const scalePt = p => ({ x: p.x * kk + offX, y: p.y * kk + offY });
     _sketch.segments = existingSketch.segments.map(seg => ({
       p1: scalePt(seg.p1), p2: scalePt(seg.p2), color: seg.color, text: seg.text || '', dash: seg.dash || null
     }));
@@ -54375,8 +54384,24 @@ function _sketchResizeCanvas(){
   const newW = Math.round(r.width * dpr), newH = Math.round(r.height * dpr);
   if(!newW || !newH || (newW === canvas.width && newH === canvas.height)) return;
   const oldW = canvas.width, oldH = canvas.height;
-  const k = Math.min(newW / oldW, newH / oldH);
-  const ox = (newW - oldW * k) / 2, oy = (newH - oldH * k) / 2;
+  // v5.41.264 — on ne rapetisse le dessin QUE s'il ne tient plus dans le nouveau cadre, et on lui rend
+  // sa taille d'origine dès qu'il y a de nouveau la place (avant : il rétrécissait à chaque aller-retour).
+  const segsR = _sketch.segments || [];
+  let k = 1, ox = (newW - oldW) / 2, oy = (newH - oldH) / 2;
+  if(segsR.length){
+    const xs = [], ys = [];
+    segsR.forEach(sg => { xs.push(sg.p1.x, sg.p2.x); ys.push(sg.p1.y, sg.p2.y); });
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const m = 40 * dpr, bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+    const fitK = Math.min((newW - 2 * m) / bw, (newH - 2 * m) / bh);
+    const viewK = _sketch.viewK || 1;
+    k = Math.max(0.05, Math.min(1 / viewK, fitK));
+    _sketch.viewK = Math.abs(viewK * k - 1) < 0.01 ? 1 : viewK * k;
+    // le centre du dessin garde sa place par rapport au centre du cadre
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const tx = newW / 2 + (cx - oldW / 2) * k, ty = newH / 2 + (cy - oldH / 2) * k;
+    ox = tx - cx * k; oy = ty - cy * k;
+  }
   const map = q => ({ x: q.x * k + ox, y: q.y * k + oy });
   (_sketch.segments || []).forEach(sg => { sg.p1 = map(sg.p1); sg.p2 = map(sg.p2); });
   if(_sketch.bgRect){ const b = _sketch.bgRect; _sketch.bgRect = { dx: b.dx * k + ox, dy: b.dy * k + oy, dw: b.dw * k, dh: b.dh * k }; }
