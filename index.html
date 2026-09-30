@@ -8908,28 +8908,116 @@ function _rwGSave(sess){
   if(!sess || !sess.access_token) return null;
   const o = { access_token:sess.access_token, refresh_token:sess.refresh_token||'',
     expires_at: sess.expires_at ? +sess.expires_at*1000 : Date.now() + (+sess.expires_in||3600)*1000,
-    user: sess.user ? { id:sess.user.id, email:sess.user.email } : null };
+    user: sess.user ? { id:sess.user.id, email:sess.user.email } : ((rwGoogleSession()||{}).user || null) };
   try{ localStorage.setItem(RW_G_KEY, JSON.stringify(o)); }catch(e){}
+  _rwGPushNative();
   return o;
+}
+/* Session partagée avec le code natif Android (widgets, pointage auto, talkie…) */
+async function _rwGPushNative(){
+  try{
+    const R = (typeof _rnPlug === 'function') ? _rnPlug('RwoodNative') : null;
+    if(!R || typeof R.setAuthSession !== 'function') return;
+    const s0 = rwGoogleSession();
+    await R.setAuthSession(s0 ? { access_token:s0.access_token, refresh_token:s0.refresh_token||'', expires_at:s0.expires_at } : { access_token:'' });
+  }catch(e){}
+}
+async function _rwGPullNative(){
+  try{
+    const R = (typeof _rnPlug === 'function') ? _rnPlug('RwoodNative') : null;
+    if(!R || typeof R.getAuthSession !== 'function') return;
+    const s0 = rwGoogleSession(); if(!s0) return;
+    const n = await R.getAuthSession();
+    if(n && n.access_token && +n.expires_at > +s0.expires_at){
+      const o = Object.assign({}, s0, { access_token:n.access_token, refresh_token:n.refresh_token||s0.refresh_token, expires_at:+n.expires_at });
+      localStorage.setItem(RW_G_KEY, JSON.stringify(o));
+    }
+  }catch(e){}
 }
 function rwGoogleSignOut(silent){
   const s0 = rwGoogleSession();
   try{ localStorage.removeItem(RW_G_KEY); }catch(e){}
+  _rwGPushNative();
   if(s0 && s0.access_token) fetch(SUPA_URL+'/auth/v1/logout', { method:'POST', headers:{ apikey:SUPA_KEY, Authorization:'Bearer '+s0.access_token } }).catch(()=>{});
   if(!silent){ showToast('Déconnecté de Google'); rwGoogleRenderStatus(); }
 }
 /* Jeton valide (rafraîchi si besoin) ou null */
-async function rwGoogleToken(){
+let _rwGRefreshing = null;
+async function rwGoogleToken(minMs){
+  minMs = minMs || 60000;
   let s0 = rwGoogleSession(); if(!s0) return null;
-  if(s0.expires_at - Date.now() > 60000) return s0.access_token;
-  if(!s0.refresh_token) return null;
-  try{
-    const r = await fetch(SUPA_URL+'/auth/v1/token?grant_type=refresh_token', { method:'POST',
-      headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' }, body: JSON.stringify({ refresh_token:s0.refresh_token }) });
-    if(!r.ok){ if(r.status===400||r.status===401) rwGoogleSignOut(true); return null; }
-    const n = _rwGSave(await r.json()); return n && n.access_token;
-  }catch(e){ return null; }
+  if(s0.expires_at - Date.now() > minMs) return s0.access_token;
+  if(_rwGRefreshing) return _rwGRefreshing;
+  _rwGRefreshing = (async () => {
+    await _rwGPullNative();                       // le natif a peut-être déjà rafraîchi
+    s0 = rwGoogleSession(); if(!s0) return null;
+    if(s0.expires_at - Date.now() > minMs) return s0.access_token;
+    if(!s0.refresh_token) return null;
+    try{
+      const r = await fetch(SUPA_URL+'/auth/v1/token?grant_type=refresh_token', { method:'POST',
+        headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' }, body: JSON.stringify({ refresh_token:s0.refresh_token }) });
+      if(!r.ok){
+        if(r.status===400||r.status===401){ await _rwGPullNative(); const s1 = rwGoogleSession(); if(s1 && s1.expires_at - Date.now() > 60000) return s1.access_token; rwGoogleSignOut(true); }
+        return (s0.expires_at > Date.now() + 5000) ? s0.access_token : null;
+      }
+      const n = _rwGSave(await r.json()); return n && n.access_token;
+    }catch(e){ return (s0.expires_at > Date.now() + 5000) ? s0.access_token : null; }
+  })();
+  try{ return await _rwGRefreshing; } finally { _rwGRefreshing = null; }
 }
+
+/* ── Étape 2 sécurité (v5.41.282) : les requêtes vers Supabase partent avec le
+   jeton de l'utilisateur connecté (« carte d'identité ») au lieu de la clé
+   publique. Activé seulement si le script SQL etape2 a été lancé
+   (fonction rwood_auth_ready). En cas de refus (401/403), on renvoie
+   automatiquement la requête avec la clé publique : rien ne peut casser
+   tant que le serveur n'est pas verrouillé (étape 3). ── */
+let _rwAuthReady = (function(){ try{ return localStorage.getItem('rwood-auth-ready') === '1'; }catch(e){ return false; } })();
+window._rwAuthStats = { ok:0, fallback:0, last:'' };
+async function rwAuthReadyCheck(){
+  try{
+    const r = await (window._rwOrigFetch || fetch)(SUPA_URL+'/rest/v1/rpc/rwood_auth_ready', { method:'POST',
+      headers:{ apikey:SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, 'Content-Type':'application/json' }, body:'{}' });
+    let v = false; if(r.ok){ try{ v = (await r.json()) === true; }catch(_){} }
+    _rwAuthReady = v;
+    try{ localStorage.setItem('rwood-auth-ready', v ? '1' : '0'); }catch(e){}
+  }catch(e){}
+  return _rwAuthReady;
+}
+(function _rwAuthFetchWrap(){
+  if(window._rwOrigFetch) return;
+  const orig = window.fetch.bind(window);
+  window._rwOrigFetch = orig;
+  window.fetch = async function(input, init){
+    let url = '';
+    try{ url = typeof input === 'string' ? input : ((input && input.url) || ''); }catch(e){}
+    if(!_rwAuthReady || !init || !init.headers || !url.startsWith(SUPA_URL) || url.includes('/auth/v1/')) return orig(input, init);
+    try{
+      const h = init.headers, isH = (typeof Headers !== 'undefined' && h instanceof Headers);
+      const auth = isH ? h.get('Authorization') : (h.Authorization || h.authorization);
+      if(auth !== 'Bearer ' + SUPA_KEY) return orig(input, init);
+      const tok = await rwGoogleToken();
+      if(!tok) return orig(input, init);
+      let init2;
+      if(isH){ const n = new Headers(h); n.set('Authorization', 'Bearer ' + tok); init2 = Object.assign({}, init, { headers:n }); }
+      else { const n = Object.assign({}, h); delete n.authorization; n.Authorization = 'Bearer ' + tok; init2 = Object.assign({}, init, { headers:n }); }
+      const res = await orig(input, init2);
+      let refused = (res.status === 401 || res.status === 403);
+      if(!refused && res.status === 400 && url.includes('/storage/v1/')){
+        try{ refused = /row-level security|unauthori[sz]ed|403/i.test(await res.clone().text()); }catch(_){}
+      }
+      if(refused){
+        window._rwAuthStats.fallback++; window._rwAuthStats.last = url.replace(SUPA_URL,'').split('?')[0] + ' → ' + res.status;
+        console.warn('[auth] refusé avec le jeton, repli clé publique :', window._rwAuthStats.last);
+        return orig(input, init);
+      }
+      window._rwAuthStats.ok++;
+      return res;
+    }catch(e){ return orig(input, init); }
+  };
+})();
+setTimeout(()=>{ rwAuthReadyCheck(); _rwGPushNative(); }, 1500);
+setInterval(()=>{ if(_rwAuthReady && rwGoogleSession()) rwGoogleToken(10*60000).catch(()=>{}); }, 5*60000);
 async function _rwGApi(path, opt){
   const tok = await rwGoogleToken(); if(!tok) throw new Error('Session Google expirée');
   return fetch(SUPA_URL+path, Object.assign({}, opt||{}, { headers: Object.assign({ apikey:SUPA_KEY, Authorization:'Bearer '+tok, 'Content-Type':'application/json' }, (opt&&opt.headers)||{}) }));
@@ -9091,7 +9179,11 @@ async function rwGoogleRenderStatus(){
     const link = await _rwGMyLink();
     const myId = (data.settings && data.settings.auth && data.settings.auth.authId || '').toLowerCase();
     if(link && link.rwood_id.toLowerCase() === myId){
-      st.innerHTML = '✅ Relié à Google : <b>'+escapeHtml(sess.user && sess.user.email || '')+'</b><br><a href="#" onclick="rwGoogleSignOut(); return false;" style="color:var(--ink-soft); font-size:12px;">Se déconnecter de Google sur cet appareil</a>';
+      const S = window._rwAuthStats || {ok:0,fallback:0};
+      const srv = !_rwAuthReady ? '<br><span style="font-size:12px;color:var(--ink-soft);">Connexion serveur : clé publique (script étape 2 pas encore lancé)</span>'
+        : (S.fallback ? '<br><span style="font-size:12px;color:var(--red);">Connexion serveur : '+S.ok+' OK, '+S.fallback+' refus ('+escapeHtml(S.last)+')</span>'
+                      : '<br><span style="font-size:12px;color:var(--green);">🔒 Connexion serveur sécurisée ('+S.ok+' requêtes)</span>');
+      st.innerHTML = '✅ Relié à Google : <b>'+escapeHtml(sess.user && sess.user.email || '')+'</b>'+srv+'<br><a href="#" onclick="rwGoogleSignOut(); return false;" style="color:var(--ink-soft); font-size:12px;">Se déconnecter de Google sur cet appareil</a>';
       if(btn) btn.style.display = 'none';
     } else {
       st.innerHTML = 'Connecté à Google ('+escapeHtml(sess.user && sess.user.email || '')+') mais pas encore relié à ce compte.';
@@ -38344,9 +38436,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.281';
+const APP_VERSION = '5.41.282';
 
 const CHANGELOG = [
+  {
+    version: '5.41.282',
+    date: '01/10/2026',
+    entries: [
+      { icon: '🔒', text: "Sécurité étape 2 : les échanges avec le serveur se font avec ta connexion Google (au lieu d'une clé commune), y compris widgets et pointage auto. Aucun changement visible ; repli automatique si besoin." },
+    ],
+  },
   {
     version: '5.41.281',
     date: '01/10/2026',
