@@ -11428,6 +11428,7 @@ function _galerieRenderLightbox(){
 
   lb.innerHTML = `
     <button class="galerie-lb-close" onclick="event.stopPropagation(); document.getElementById('galerieLightbox').style.display='none';">✕</button>
+    <button type="button" onclick="event.stopPropagation(); galerieAnnotateCopy()" style="position:fixed;top:calc(14px + env(safe-area-inset-top,0px));left:14px;z-index:1002;height:40px;border-radius:20px;border:none;background:rgba(200,134,43,.95);color:#1a0d00;font-weight:900;font-size:14px;padding:0 14px;">✏️ Annoter une copie</button>
     ${hasPrev ? `<button class="galerie-lb-arrow galerie-lb-arrow-left" onclick="event.stopPropagation(); galerieLightboxPrev();">‹</button>` : ''}
     <div class="galerie-lb-imgwrap"><img id="galerieLbImg" src="${escapeHtml(m.url)}" alt="photo"></div>
     ${hasNext ? `<button class="galerie-lb-arrow galerie-lb-arrow-right" onclick="event.stopPropagation(); galerieLightboxNext();">›</button>` : ''}
@@ -11442,6 +11443,31 @@ function _galerieRenderLightbox(){
     () => _galerieLbZoom.scale <= 1.01 && (_galerieCurrentPhotos || []).length > 1,
     () => { if(_galerieLbIndex > 0){ galerieLightboxPrev(); return true; } return false; },
     () => { if(_galerieLbIndex < (_galerieCurrentPhotos || []).length - 1){ galerieLightboxNext(); return true; } return false; });
+}
+/* v5.41.270 — « ✏️ Annoter une copie » : l'original reste dans la galerie, la copie annotée est ajoutée à côté. */
+function galerieAnnotateCopy(){
+  const m = (_galerieCurrentPhotos || [])[_galerieLbIndex];
+  const sid = _galerieOpenSiteId;
+  if(!m || !sid) return;
+  rwAnnotateCopyToSite(sid, m.url, m.name, () => {
+    const lb = document.getElementById('galerieLightbox'); if(lb) lb.style.display = 'none';
+  });
+}
+async function rwAnnotateCopyToSite(siteId, url, name, onSaved){
+  const site = (data.sites || []).find(x => x.id === siteId);
+  if(!site || !url) return;
+  const an = await rwAnnotatePhoto(url, { okLabel: 'Enregistrer la copie' });
+  if(!an) return;
+  if(!an.file){ showToast('Rien de dessiné : pas de copie créée'); return; }
+  const base = String(name || 'photo').replace(/\.[a-z0-9]+$/i, '');
+  const file = new File([an.file], base + ' (annotée).jpg', { type: 'image/jpeg' });
+  showToast('⬆️ Enregistrement de la copie annotée…');
+  try{
+    await addSharedMediaToSite(siteId, file, { silent: true });
+    showToast('✅ Copie annotée ajoutée à ' + site.name + ' (l\'original est gardé)');
+    if(onSaved) onSaved();
+    _rwAfterSitePhotos(siteId);
+  }catch(e){ showToast('❌ Échec de l\'enregistrement (connexion ?)'); }
 }
 function galerieLightboxPrev(){
   if(_galerieLbIndex > 0){ _galerieLbIndex--; _galerieRenderLightbox(); }
@@ -12020,6 +12046,16 @@ function openCloudPhotoFullscreen(photos, index, siteId){
   // vers sharedMedia) : on masque le crayon, contrairement au journal/Photos.
   const editBtn = document.getElementById('photoFullscreenEditBtn');
   if(editBtn) editBtn.style.display = 'none';
+  _pfsCloudAnnotBtn();
+}
+/* v5.41.270 — photo d'un chantier : le crayon crée une COPIE annotée (l'original est gardé). */
+function _pfsCloudAnnotBtn(){
+  const sid = _pfsCloudSiteId;
+  if(!sid || String(sid).startsWith('__') || !(data.sites || []).some(x => x.id === sid)) return;
+  const editBtn = document.getElementById('photoFullscreenEditBtn');
+  if(!editBtn) return;
+  editBtn.style.display = '';
+  editBtn.onclick = () => { const e = _pfsNavList[_pfsNavIndex]; if(e) rwAnnotateCopyToSite(sid, e.url || e.thumbUrl, e.name, () => closeModal('photoFullscreen')); };
 }
 
 async function _pfsGoTo(index){
@@ -12032,6 +12068,7 @@ async function _pfsGoTo(index){
     const editBtn = document.getElementById('photoFullscreenEditBtn');
     if(editBtn) editBtn.style.display = 'none';
     if(typeof _todoPhotoDeleteBtn === 'function') _todoPhotoDeleteBtn();
+    _pfsCloudAnnotBtn();
     return;
   }
   const src = await resolveMediaUrl(entry.photo) || mediaUrl(entry.photo);
@@ -17742,7 +17779,9 @@ function rwAnnotatePhoto(src, opts){
       const e = Math.min(1, 3000 / Math.max(W, H));
       const out = document.createElement('canvas'); out.width = Math.round(W * e); out.height = Math.round(H * e);
       const oc = out.getContext('2d'); oc.scale(e, e); oc.drawImage(img, 0, 0, W, H); S.objs.forEach(o => drawObj(oc, o));
-      const blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.9));
+      let blob = null;
+      try{ blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.9)); }
+      catch(e){ showToast('❌ Impossible d\'enregistrer cette photo (photo protégée ou hors ligne)'); }
       root.remove(); _rwAn = null;
       resolve(blob ? { file: new File([blob], 'photo-annotee-' + Date.now() + '.jpg', { type: 'image/jpeg' }), changed: true } : null);
     };
@@ -37844,9 +37883,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.269';
+const APP_VERSION = '5.41.270';
 
 const CHANGELOG = [
+  {
+    version: '5.41.270',
+    date: '30/09/2026',
+    entries: [
+      { icon: '✏️', text: "Galerie d'un chantier : en ouvrant une photo, nouveau bouton « ✏️ Annoter une copie » — la photo est dupliquée, tu dessines sur la copie (flèches, cotes, texte…) et elle est ajoutée au chantier à côté de l'original, qui reste intact. Même chose avec le crayon sur les photos des documents du chantier." },
+    ],
+  },
   {
     version: '5.41.269',
     date: '30/09/2026',
