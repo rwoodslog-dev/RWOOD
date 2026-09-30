@@ -9068,7 +9068,7 @@ async function rwGoogleRenderStatus(){
   const st = document.getElementById('rwGStatus'), btn = document.getElementById('rwGLinkSettingsBtn');
   if(!st) return;
   const sess = rwGoogleSession();
-  if(!sess){ st.innerHTML = "Non relié. Relie ton compte pour te connecter avec Google (plus simple et plus sûr)."; if(btn){ btn.style.display=''; btn.textContent='Relier mon compte à Google'; } return; }
+  if(!sess){ st.innerHTML = "Non relié. Relie ton compte pour te connecter avec Google (plus simple et plus sûr).<br><a href=\"#\" onclick=\"rwGmailPrompt(); return false;\" style=\"font-size:12px;color:var(--wood);\">Accès Google pas encore activé ? Envoyer mon adresse Gmail au responsable</a>"; if(btn){ btn.style.display=''; btn.textContent='Relier mon compte à Google'; } return; }
   st.textContent = 'Vérification…';
   try{
     const link = await _rwGMyLink();
@@ -9082,6 +9082,147 @@ async function rwGoogleRenderStatus(){
     }
   }catch(e){ st.textContent = '⚠️ '+e.message; if(btn) btn.style.display=''; }
 }
+/* Invitation « Relier à Google » en un appui (v5.41.279).
+   Affichée aux utilisateurs déjà connectés dont le compte n'est pas encore
+   relié. « Plus tard » → redemandé 2 jours après. L'identifiant et le mot
+   de passe sont fournis automatiquement depuis le compte local. */
+function _rwGNagDismiss(){
+  try{ localStorage.setItem('rwood-g-nag', String(Date.now())); }catch(e){}
+  const o = document.getElementById('rwGNag'); if(o) o.remove();
+}
+function _rwGNagGo(){
+  const o = document.getElementById('rwGNag'); if(o) o.remove();
+  rwGoogleStart('link');
+}
+async function _rwGmailStatus(id){
+  try{
+    const r = await supaFetch('/rest/v1/rpc/rwood_gmail_status', { method:'POST', headers:{ Prefer:'' }, body: JSON.stringify({ p_rwood_id:id }) });
+    if(!r.ok) return null;
+    return (await r.json()) === true;
+  }catch(e){ return null; }
+}
+function _rwGOverlay(html){
+  const old = document.getElementById('rwGNag'); if(old) old.remove();
+  const d = document.createElement('div');
+  d.id = 'rwGNag';
+  d.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px;';
+  d.innerHTML = `<div style="background:var(--card);border:1.5px solid var(--wood);border-radius:18px;max-width:340px;width:100%;padding:22px 18px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.5);">${html}</div>`;
+  document.body.appendChild(d);
+}
+function _rwGNagLink(){
+  _rwGOverlay(`<div style="font-size:38px;margin-bottom:4px;">🔐</div>
+    <div style="font-weight:800;font-size:18px;margin-bottom:6px;">Sécurise ton compte</div>
+    <div class="hint" style="margin-bottom:16px;">Relie ton compte RWOOD à ton compte Google : un seul appui, tu gardes toutes tes données, et personne d'autre ne pourra ouvrir ton compte.</div>
+    <button class="btn btn-block rw-gbtn" onclick="_rwGNagGo()">Relier à Google</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_rwGNagDismiss()">Plus tard</button>`);
+}
+/* Demande de l'adresse Gmail (collecte pour le DEV → Test users Google) */
+function rwGmailPrompt(){
+  const auth = data && data.settings && data.settings.auth || {};
+  let prev = ''; try{ prev = localStorage.getItem('rwood-gmail-sent') || ''; }catch(e){}
+  if(!prev){ try{ const me = (data.contacts||[]).find(c=>c.role==='Moi' && c.email); if(me) prev = me.email; }catch(e){} }
+  _rwGOverlay(`<div style="font-size:38px;margin-bottom:4px;">🔐</div>
+    <div style="font-weight:800;font-size:18px;margin-bottom:6px;">Connexion Google bientôt</div>
+    <div class="hint" style="margin-bottom:12px;">Pour activer la connexion sécurisée avec ton compte Google, indique l'adresse Google de ton téléphone.<br><span style="font-size:11px;">(Play Store › ta photo en haut à droite)</span></div>
+    <input type="email" id="rwGmailInput" placeholder="prenom.nom@gmail.com" value="${escapeHtml(prev)}" autocapitalize="none" autocomplete="email" style="width:100%;margin-bottom:6px;">
+    <div class="hint" id="rwGmailErr" style="color:var(--red);display:none;margin-bottom:6px;"></div>
+    <button class="btn btn-primary btn-block" id="rwGmailBtn" onclick="rwGmailSend()">Envoyer au responsable</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_rwGNagDismiss()">Plus tard</button>`);
+  setTimeout(()=>{ const i=document.getElementById('rwGmailInput'); if(i && !prev) i.focus(); }, 200);
+}
+async function rwGmailSend(){
+  const inp = document.getElementById('rwGmailInput'), err = document.getElementById('rwGmailErr'), btn = document.getElementById('rwGmailBtn');
+  const mail = (inp.value||'').trim().toLowerCase();
+  err.style.display = 'none';
+  if(!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(mail)){ err.textContent = 'Adresse e-mail invalide'; err.style.display = 'block'; return; }
+  const auth = data && data.settings && data.settings.auth || {};
+  const mp = (data.settings && data.settings.myProfile) || {};
+  const name = [mp.firstName, mp.lastName].filter(Boolean).join(' ') || auth.authId || '';
+  btn.disabled = true;
+  try{
+    const r = await supaFetch('/rest/v1/rpc/rwood_gmail_submit', { method:'POST', headers:{ Prefer:'' },
+      body: JSON.stringify({ p_rwood_id: auth.authId, p_name: String(name), p_email: mail }) });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok) throw new Error(j.error==='bad_email' ? 'Adresse e-mail invalide' : 'Envoi impossible, réessaie plus tard');
+    try{ localStorage.setItem('rwood-gmail-sent', mail); }catch(e){}
+    _rwGOverlay(`<div style="font-size:38px;margin-bottom:4px;">✅</div>
+      <div style="font-weight:800;font-size:18px;margin-bottom:6px;">Merci !</div>
+      <div class="hint" style="margin-bottom:16px;">Ton adresse a été transmise. Dès que ton accès sera activé, l'appli te proposera de relier ton compte en un appui.</div>
+      <button class="btn btn-primary btn-block" onclick="document.getElementById('rwGNag').remove()">OK</button>`);
+  }catch(e){ err.textContent = e.message; err.style.display = 'block'; btn.disabled = false; }
+}
+async function rwGoogleMaybeNag(){
+  try{
+    const auth = data && data.settings && data.settings.auth;
+    if(!auth || !auth.authId || auth.locked) return;
+    const as = document.getElementById('authScreen');
+    if(as && as.style.display && as.style.display !== 'none') return;
+    if(!navigator.onLine || document.getElementById('rwGNag')) return;
+    let last = 0; try{ last = +localStorage.getItem('rwood-g-nag') || 0; }catch(e){}
+    if(Date.now() - last < 2*86400000) return;
+    const me = auth.authId.toLowerCase();
+    if(rwGoogleSession()){
+      // Déjà connecté à Google sur cet appareil : relié à CE compte ?
+      try{ const l = await _rwGMyLink(); if(l && l.rwood_id.toLowerCase() === me) return; }catch(e){ return; }
+      _rwGNagLink(); return;
+    }
+    const ids = await rwGoogleLinkedIds();
+    if(ids === null) return;                            // SQL étape 1 absent → rien
+    const st = await _rwGmailStatus(me);                // true = le DEV l'a ajouté dans Google
+    if(st === null){ _rwGNagLink(); return; }           // SQL étape 1b absent → invitation simple
+    if(st === true || ids.has(me)){ _rwGNagLink(); return; }
+    let sent = ''; try{ sent = localStorage.getItem('rwood-gmail-sent') || ''; }catch(e){}
+    if(sent) return;                                    // en attente d'activation par le DEV
+    rwGmailPrompt();
+  }catch(e){ console.warn('[google nag]', e); }
+}
+/* DEV › Comptes : carte « Demandes Gmail » à copier dans Google Cloud › Test users */
+async function rwGmailDevCard(list){
+  await new Promise(r=>setTimeout(r,400));
+  if(!list || !list.isConnected || document.getElementById('rwGmailDev')) return;
+  const box = document.createElement('div');
+  box.id = 'rwGmailDev'; box.className = 'card'; box.style.marginBottom = '12px';
+  list.prepend(box);
+  if(!rwGoogleSession()){
+    box.innerHTML = '<div style="font-weight:800;">📧 Demandes Gmail</div><div class="hint" style="margin-top:4px;">Pour voir la liste, relie d\'abord ton compte à Google (Paramètres › Compte).</div>'; return;
+  }
+  box.innerHTML = '<div class="hint">📧 Chargement des demandes Gmail…</div>';
+  try{
+    const r = await _rwGApi('/rest/v1/rpc/rwood_gmail_list', { method:'POST', body:'{}', headers:{ Prefer:'' } });
+    const j = await r.json().catch(()=>null);
+    if(!r.ok){
+      const msg = (j && j.message || '').includes('not_dev') ? "Ton compte n'a pas le rôle dev côté serveur : lance la dernière ligne du script etape1b-gmail.sql avec ton identifiant." : 'Liste indisponible ('+r.status+') — script etape1b-gmail.sql lancé ?';
+      box.innerHTML = '<div style="font-weight:800;">📧 Demandes Gmail</div><div class="hint" style="margin-top:4px;">'+msg+'</div>'; return;
+    }
+    const todo = (j||[]).filter(x=>!x.done), done = (j||[]).filter(x=>x.done);
+    window._rwGmailTodo = todo;
+    box.innerHTML = `<div style="font-weight:800;">📧 Demandes Gmail à ajouter : ${todo.length}</div>
+      ${todo.length ? `<div class="hint" style="margin:4px 0 8px;">1. Copie · 2. Google Cloud › Google Auth Platform › Audience › Test users › <b>Add users</b> › colle › Save · 3. Marque comme ajoutées.</div>
+      ${todo.map(x=>`<div class="meta" style="margin:2px 0;">• <b>${escapeHtml(x.name||x.rwood_id)}</b> — ${escapeHtml(x.email)}</div>`).join('')}
+      <textarea id="rwGmailCopy" readonly style="width:100%;height:60px;margin-top:8px;font-size:12px;">${escapeHtml(todo.map(x=>x.email).join(', '))}</textarea>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button class="btn btn-primary" style="flex:1;" onclick="rwGmailCopy()">📋 Copier les adresses</button>
+        <button class="btn btn-outline" style="flex:1;" onclick="rwGmailMarkDone()">✓ Marquer ajoutées</button>
+      </div>` : '<div class="hint" style="margin-top:4px;">Aucune nouvelle demande.</div>'}
+      ${done.length ? `<div class="hint" style="margin-top:8px;font-size:11px;">Déjà ajoutées : ${done.length}</div>` : ''}`;
+  }catch(e){ box.innerHTML = '<div class="hint">📧 Demandes Gmail : '+escapeHtml(e.message)+'</div>'; }
+}
+async function rwGmailCopy(){
+  const t = document.getElementById('rwGmailCopy'); if(!t) return;
+  try{ await navigator.clipboard.writeText(t.value); showToast('Adresses copiées ✓'); }
+  catch(e){ t.select(); try{ document.execCommand('copy'); showToast('Adresses copiées ✓'); }catch(_){ showToast('Sélectionne et copie le texte'); } }
+}
+async function rwGmailMarkDone(){
+  const ids = (window._rwGmailTodo||[]).map(x=>x.rwood_id); if(!ids.length) return;
+  try{
+    const r = await _rwGApi('/rest/v1/rpc/rwood_gmail_mark_done', { method:'POST', body: JSON.stringify({ p_ids: ids }), headers:{ Prefer:'' } });
+    if(!r.ok) throw new Error('erreur '+r.status);
+    showToast('✓ '+ids.length+' marquée(s) comme ajoutée(s) — ils vont recevoir l\'invitation « Relier à Google »');
+    const b = document.getElementById('rwGmailDev'); const l = b && b.parentNode; if(b) b.remove(); if(l) rwGmailDevCard(l);
+  }catch(e){ showToast('⚠️ '+e.message); }
+}
+setTimeout(()=>{ try{ rwGoogleMaybeNag(); }catch(e){} }, 8000);
+
 /* Pour DEV › Comptes : liste des identifiants déjà reliés */
 async function rwGoogleLinkedIds(){
   try{
@@ -38186,9 +38327,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.278';
+const APP_VERSION = '5.41.280';
 
 const CHANGELOG = [
+  {
+    version: '5.41.280',
+    date: '01/10/2026',
+    entries: [
+      { icon: '📧', text: "Collecte des adresses Gmail : chaque utilisateur envoie son adresse Google depuis l'appli ; le DEV les retrouve dans DEV › Comptes, prêtes à copier dans Google Cloud. Une fois ajoutés, ils reçoivent l'invitation « Relier à Google »." },
+    ],
+  },
+  {
+    version: '5.41.279',
+    date: '01/10/2026',
+    entries: [
+      { icon: '🔐', text: "Invitation « Sécurise ton compte » : relie ton compte à Google en un seul appui, sans retaper ton identifiant ni ton mot de passe." },
+    ],
+  },
   {
     version: '5.41.278',
     date: '01/10/2026',
@@ -47941,6 +48096,7 @@ async function _renderDevTabComptes(list){
   users = _dedupeUsersRegistry(users);
   const devList = (typeof devAccessFetchList === 'function') ? await devAccessFetchList() : []; // MODULE — DevAccess
   const gLinked = (typeof rwGoogleLinkedIds === 'function') ? await rwGoogleLinkedIds() : null; // MODULE — Google
+  if(typeof rwGmailDevCard === 'function') rwGmailDevCard(list); // MODULE — Google : demandes Gmail
   if(!users || !users.length){
     list.innerHTML = '<div class="hint" style="text-align:center;padding:20px 0;">Aucun utilisateur inscrit.<br><span style="font-size:12px;">Les comptes apparaissent ici dès qu\'un utilisateur crée son profil.</span></div>';
     return;
