@@ -37127,9 +37127,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.261';
+const APP_VERSION = '5.41.262';
 
 const CHANGELOG = [
+  {
+    version: '5.41.262',
+    date: '30/09/2026',
+    entries: [
+      { icon: '⛶', text: "Croquis : le dessin prend maintenant tout l'écran (outils posés directement sur le dessin : ↺ recommencer, 💾 enregistrer, ✕ fermer). Le bouton ⛶ / ⤡ bascule entre plein écran et l'affichage complet (côtes, repères…)." },
+      { icon: '✂️', text: "Croquis : outil « ✂️ Couper » — touche un segment à l'endroit voulu pour le couper en deux (chaque moitié a sa propre cote)." },
+      { icon: '⬡', text: "Croquis : bouton « ⬡ Fermée » — le dernier segment s'accroche au point de départ, même s'il ne le touchait pas pile (rectangle, cadre…). Activé avant de dessiner, il ferme automatiquement la forme ; le choix est retenu." },
+      { icon: '∠', text: "Croquis : outil « ∠ Angle » — touche 2 segments pour noter l'angle relevé (ex : 90°, 33°), juste pour mémoire : le dessin n'est pas modifié. Touche l'étiquette pour le changer ou le supprimer." },
+    ],
+  },
   {
     version: '5.41.261',
     date: '30/09/2026',
@@ -53977,6 +53987,16 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
       </div>
       <div id="sketchCanvasWrap" style="position:relative; width:100%; flex:1; min-height:0; background:#fff; border-radius:12px; overflow:hidden; border:1.5px solid var(--line); touch-action:none;">
         <canvas id="sketchCanvas" style="width:100%; height:100%; display:block; transform-origin:0 0;"></canvas>
+        <!-- v5.41.262 — outils posés sur le dessin : plein écran, forme fermée, couper un segment, angle relevé -->
+        <div id="sketchToolsBar">
+          <button type="button" class="sk-tb" id="sketchFullBtn" onclick="_sketchToggleFull()" title="Plein écran">⛶</button>
+          <button type="button" class="sk-tb" id="sketchClosedBtn" onclick="_sketchToggleClosed()" title="Forme fermée : le dernier segment s'accroche au début">⬡ Fermée</button>
+          <button type="button" class="sk-tb sk-need-seg" id="sketchSplitBtn" onclick="_sketchArmTool('split')" title="Couper un segment en deux à l'endroit touché">✂️<span class="sk-lbl"> Couper</span></button>
+          <button type="button" class="sk-tb sk-need-seg" id="sketchAngleBtn" onclick="_sketchArmTool('angle')" title="Noter l'angle relevé entre 2 segments (indicatif)">∠<span class="sk-lbl"> Angle</span></button>
+          <button type="button" class="sk-tb sk-full-only" style="margin-left:auto;" onclick="_sketchRedo()" title="Recommencer">↺</button>
+          <button type="button" class="sk-tb sk-full-only sk-need-seg sk-save" onclick="_sketchFinish()" title="Enregistrer">💾</button>
+          <button type="button" class="sk-tb sk-full-only" onclick="_sketchClose()" title="Fermer">✕</button>
+        </div>
         <!-- v5.41.100 — zoom/dézoom sur le croquis : les segments courts d'un
              gabarit (ex: retours 45° courts) sont parfois difficiles à taper
              sans toucher l'arc d'angle voisin, trop grand à côté d'eux. Zoomer
@@ -54006,6 +54026,11 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
       </div>
     </div>`;
   document.body.appendChild(div);
+  _sketchInjectCSS();
+  // v5.41.262 — plein écran par défaut (le dessin prend toute la place) ; « ⛶ » pour revenir à l'affichage complet.
+  // Pas par défaut pour le pliage : le choix du type (Simple, Noue…) se fait avant de dessiner.
+  let _skFullPref = null; try{ _skFullPref = localStorage.getItem('rw-sketch-full'); }catch(_){}
+  if(_skFullPref === '1' || (_skFullPref === null && !(opts && opts.pliageTypeSelector))) div.classList.add('sk-full');
 
   const canvas = document.getElementById('sketchCanvas');
   const wrap = document.getElementById('sketchCanvasWrap');
@@ -54034,7 +54059,10 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     // de la croix d'épaisseur, sans effet pour axe/rameneret). markerArm =
     // type actuellement « armé » (prochain tap sur un segment le pose), ou
     // null si aucun outil de repère n'est sélectionné.
-    markers: [], markerArm: null };
+    markers: [], markerArm: null,
+    // v5.41.262 — outil armé ('split' = couper un segment, 'angle' = noter un angle entre 2 segments),
+    // angles relevés { a, b, deg } (indicatifs, ne changent pas le dessin), forme fermée forcée.
+    tool: null, angleFirst: -1, angleNotes: [], forceClose: (() => { try{ return localStorage.getItem('rw-sketch-closed') === '1'; }catch(_){ return false; } })() };
   if(opts && opts.title){
     const titleEl = div.querySelector('.modal-header h2');
     if(titleEl) titleEl.textContent = opts.title;
@@ -54064,6 +54092,9 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
     // t, type, side } — t (0-1 le long du segment) ne dépend pas de l'échelle,
     // seul segIndex doit rester valide (vrai tant que les segments ne sont
     // pas réordonnés, ce qui n'arrive jamais ici).
+    _sketch.closed = !!existingSketch.closed;
+    _sketch.angleNotes = Array.isArray(existingSketch.angleNotes)
+      ? existingSketch.angleNotes.filter(n => n && _sketch.segments[n.a] && _sketch.segments[n.b]).map(n => ({ a:n.a, b:n.b, deg:n.deg })) : [];
     _sketch.markers = Array.isArray(existingSketch.markers)
       ? existingSketch.markers.filter(m => m && _sketch.segments[m.segIndex]).map(m => ({ segIndex:m.segIndex, t:m.t, type:m.type, side:m.side||1 }))
       : [];
@@ -54189,6 +54220,10 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
         // Reste armé après la pose (poser plusieurs repères d'affilée sans
         // re-cliquer le bouton à chaque fois) — se désarme via un nouveau tap
         // sur le même bouton, ou en changeant d'étape/fermant l'outil.
+        // v5.41.262 — outil « Couper » ou « Angle » armé : le tap sert à cet outil
+        if(_sketch.tool){ _sketchToolTap(_sketch._downPos); return; }
+        const noteIdx = _sketchNearestAngleNote(_sketch._downPos);
+        if(noteIdx >= 0){ _sketchEditAngleNote(noteIdx); return; }
         if(_sketch.markerArm){
           const placed = _sketchPlaceMarkerAt(_sketch._downPos);
           if(placed) _sketchRenderLabelStep();
@@ -54240,6 +54275,281 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   // Forme préchargée (édition d'un croquis existant) : afficher directement
   // l'étape "côtes" avec la forme dessinée, plutôt qu'un canevas vide.
   if(_sketch.step === 'label') _sketchRenderLabelStep();
+  _sketchUpdateTools();
+}
+
+/* ═══ v5.41.262 — plein écran, forme fermée, couper un segment, angles relevés ═══ */
+function _sketchInjectCSS(){
+  if(document.getElementById('sketch-tools-css')) return;
+  const st = document.createElement('style');
+  st.id = 'sketch-tools-css';
+  st.textContent =
+    '#sketchToolsBar{position:absolute;top:8px;left:8px;right:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;z-index:7;pointer-events:none;}'
+  + '#modal-sketchTool .sk-tb{pointer-events:auto;background:rgba(26,18,6,.86);color:#f5ede3;border:1.5px solid rgba(200,134,43,.75);border-radius:9px;padding:7px 10px;font-size:12.5px;font-weight:800;line-height:1;cursor:pointer;}'
+  + '#modal-sketchTool .sk-tb.on{background:#C8862B;color:#1a0d00;border-color:#C8862B;}'
+  + '#modal-sketchTool .sk-tb.sk-save{background:#3ACF7D;color:#06240f;border-color:#3ACF7D;}'
+  + '@media (max-width:440px){#modal-sketchTool.sk-full .sk-lbl{display:none;}}'
+  + '#modal-sketchTool .sk-full-only{display:none;}'
+  + '#modal-sketchTool.sk-full .sk-full-only{display:inline-block;}'
+  + '#modal-sketchTool.sk-full .modal-header,#modal-sketchTool.sk-full #sketchStepHint,#modal-sketchTool.sk-full #sketchPliageTypeRow,#modal-sketchTool.sk-full #sketchMarkerRow,#modal-sketchTool.sk-full #sketchActionsRow{display:none !important;}'
+  + '#modal-sketchTool.sk-full > .modal{padding:0 !important;}'
+  + '#modal-sketchTool.sk-full #sketchCanvasWrap{border-radius:0 !important;border:none !important;}'
+  + '#modal-sketchTool.sk-full #sketchToolsBar{top:calc(8px + env(safe-area-inset-top,0px));}'
+  + '#modal-sketchTool.sk-full #sketchZoomControls{bottom:calc(10px + env(safe-area-inset-bottom,0px)) !important;}';
+  document.head.appendChild(st);
+}
+
+function _sketchUpdateTools(){
+  if(!_sketch) return;
+  const has = !!(_sketch.segments && _sketch.segments.length);
+  document.querySelectorAll('#modal-sketchTool .sk-need-seg').forEach(b => { b.style.display = has ? '' : 'none'; });
+  const set = (id, on) => { const b = document.getElementById(id); if(b) b.classList.toggle('on', !!on); };
+  set('sketchSplitBtn', _sketch.tool === 'split');
+  set('sketchAngleBtn', _sketch.tool === 'angle');
+  set('sketchClosedBtn', has ? _sketch.closed : _sketch.forceClose);
+  const m = document.getElementById('modal-sketchTool');
+  const fb = document.getElementById('sketchFullBtn');
+  if(fb && m) fb.textContent = m.classList.contains('sk-full') ? '⤡' : '⛶';
+}
+
+/* Plein écran ↔ affichage complet : le canevas change de taille, on garde le dessin (même échelle, recentré). */
+function _sketchToggleFull(){
+  const m = document.getElementById('modal-sketchTool');
+  if(!m || !_sketch) return;
+  m.classList.toggle('sk-full');
+  try{ localStorage.setItem('rw-sketch-full', m.classList.contains('sk-full') ? '1' : '0'); }catch(_){}
+  _sketchCloseSegmentMenu();
+  requestAnimationFrame(() => requestAnimationFrame(_sketchResizeCanvas));
+  _sketchUpdateTools();
+}
+function _sketchResizeCanvas(){
+  if(!_sketch) return;
+  const { canvas, dpr } = _sketch;
+  const wrap = document.getElementById('sketchCanvasWrap');
+  if(!wrap) return;
+  _sketchZoomReset();
+  const r = wrap.getBoundingClientRect();
+  const newW = Math.round(r.width * dpr), newH = Math.round(r.height * dpr);
+  if(!newW || !newH || (newW === canvas.width && newH === canvas.height)) return;
+  const oldW = canvas.width, oldH = canvas.height;
+  const k = Math.min(newW / oldW, newH / oldH);
+  const ox = (newW - oldW * k) / 2, oy = (newH - oldH * k) / 2;
+  const map = q => ({ x: q.x * k + ox, y: q.y * k + oy });
+  (_sketch.segments || []).forEach(sg => { sg.p1 = map(sg.p1); sg.p2 = map(sg.p2); });
+  if(_sketch.bgRect){ const b = _sketch.bgRect; _sketch.bgRect = { dx: b.dx * k + ox, dy: b.dy * k + oy, dw: b.dw * k, dh: b.dh * k }; }
+  canvas.width = newW; canvas.height = newH;
+  if(_sketch.step === 'label' && _sketch.segments.length) _sketchRenderLabelStep();
+  else {
+    const ctx = _sketch.ctx;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, newW, newH);
+    if(_sketch.bgImg && _sketch.bgRect){ const b = _sketch.bgRect; ctx.drawImage(_sketch.bgImg, b.dx, b.dy, b.dw, b.dh); }
+  }
+}
+
+/* Forme fermée : le dernier segment s'accroche au point de départ du croquis. Le choix est retenu pour les prochains croquis. */
+function _sketchToggleClosed(){
+  if(!_sketch) return;
+  const segs = _sketch.segments || [];
+  if(!segs.length){
+    _sketch.forceClose = !_sketch.forceClose;
+    try{ localStorage.setItem('rw-sketch-closed', _sketch.forceClose ? '1' : '0'); }catch(_){}
+    showToast(_sketch.forceClose ? '⬡ Forme fermée : le dernier trait s\'accrochera au début' : 'Forme ouverte');
+    _sketchUpdateTools();
+    return;
+  }
+  if(_sketch.closed){
+    _sketch.closed = false;
+    showToast('Forme ouverte');
+  } else {
+    if(segs.length < 2){ showToast('Il faut au moins 2 segments pour fermer la forme'); return; }
+    _sketchCloseNow();
+    showToast('⬡ Forme fermée : le dernier segment est accroché au début');
+  }
+  _sketch.forceClose = _sketch.closed;
+  try{ localStorage.setItem('rw-sketch-closed', _sketch.closed ? '1' : '0'); }catch(_){}
+  _sketchRenderLabelStep();
+}
+function _sketchCloseNow(){
+  const segs = _sketch.segments;
+  const first = segs[0].p1, lastSeg = segs[segs.length - 1], last = lastSeg.p2;
+  const xs = [], ys = [];
+  segs.forEach(sg => { xs.push(sg.p1.x, sg.p2.x); ys.push(sg.p1.y, sg.p2.y); });
+  const diag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+  const gap = Math.hypot(last.x - first.x, last.y - first.y);
+  if(gap < 1){ /* déjà pile dessus */ }
+  else if(gap < diag * 0.25){ lastSeg.p2 = { x: first.x, y: first.y }; }   // le dernier segment s'allonge / pivote jusqu'au départ
+  else segs.push({ p1: { x: last.x, y: last.y }, p2: { x: first.x, y: first.y }, color: SKETCH_COLORS[segs.length % SKETCH_COLORS.length], text: '', angle: null }); // trop loin : segment de fermeture
+  _sketch.closed = true;
+}
+
+function _sketchArmTool(t){
+  if(!_sketch) return;
+  _sketch.tool = _sketch.tool === t ? null : t;
+  _sketch.angleFirst = -1;
+  _sketch.markerArm = null; _sketchUpdateMarkerToolbar();
+  _sketchCloseSegmentMenu();
+  if(_sketch.tool === 'split') showToast('✂️ Touche un segment à l\'endroit où le couper');
+  else if(_sketch.tool === 'angle') showToast('∠ Touche le 1er segment, puis le 2e');
+  _sketchUpdateTools();
+  if(_sketch.step === 'label') _sketchRedrawShape();
+}
+function _sketchToolTap(p){
+  const { segments, dpr } = _sketch;
+  const idx = _sketchNearestSegment(p, segments, dpr);
+  if(idx < 0){ showToast('Touche une ligne du croquis'); _sketchRedrawShape(); return; }
+  if(_sketch.tool === 'split'){
+    _sketchSplitSegment(idx, p);
+    _sketch.tool = null;
+    _sketchRenderLabelStep();
+    showToast('✂️ Segment coupé en deux');
+    return;
+  }
+  if(_sketch.tool === 'angle'){
+    if(_sketch.angleFirst < 0 || _sketch.angleFirst === idx){
+      _sketch.angleFirst = idx;
+      _sketchRedrawShape();
+      showToast('Maintenant, touche le 2e segment');
+      return;
+    }
+    const a = _sketch.angleFirst, b = idx;
+    const cur = Math.round(_sketchAngleBetween(segments[a], segments[b]));
+    const v = prompt('Angle relevé entre ces 2 segments (en degrés, pour mémoire) :', String(cur));
+    _sketch.angleFirst = -1;
+    _sketch.tool = null;
+    if(v != null && String(v).trim() !== ''){
+      const deg = parseFloat(String(v).replace(',', '.'));
+      if(Number.isFinite(deg) && deg > 0 && deg < 360){
+        _sketch.angleNotes = (_sketch.angleNotes || []).filter(n => !((n.a === a && n.b === b) || (n.a === b && n.b === a)));
+        _sketch.angleNotes.push({ a, b, deg: Math.round(deg * 10) / 10 });
+      } else showToast('Angle invalide');
+    }
+    _sketchRenderLabelStep();
+  }
+}
+
+/* Coupe le segment i au point le plus proche de p : 2 segments bout à bout, le 2e prend une nouvelle couleur. */
+function _sketchSplitSegment(i, p){
+  const segs = _sketch.segments, sg = segs[i];
+  const dx = sg.p2.x - sg.p1.x, dy = sg.p2.y - sg.p1.y;
+  const lenSq = dx * dx + dy * dy;
+  if(lenSq < 4) return;
+  let t = ((p.x - sg.p1.x) * dx + (p.y - sg.p1.y) * dy) / lenSq;
+  t = Math.max(0.08, Math.min(0.92, t));
+  const P = { x: sg.p1.x + t * dx, y: sg.p1.y + t * dy };
+  const used = new Set(segs.map(x => x.color));
+  const color = SKETCH_COLORS.find(c => !used.has(c)) || SKETCH_COLORS[(segs.length) % SKETCH_COLORS.length];
+  const b = { p1: { x: P.x, y: P.y }, p2: sg.p2, color, text: '', dash: sg.dash || null, angle: null };
+  sg.p2 = { x: P.x, y: P.y };
+  segs.splice(i + 1, 0, b);
+  // repères : ceux du segment coupé suivent leur moitié, ceux d'après décalent d'un cran
+  _sketch.markers = (_sketch.markers || []).map(m => {
+    if(m.segIndex > i) return Object.assign({}, m, { segIndex: m.segIndex + 1 });
+    if(m.segIndex === i) return m.t <= t ? Object.assign({}, m, { t: m.t / t }) : Object.assign({}, m, { segIndex: i + 1, t: (m.t - t) / (1 - t) });
+    return m;
+  });
+  _sketch.angleNotes = (_sketch.angleNotes || []).map(n => ({ a: n.a > i ? n.a + 1 : n.a, b: n.b > i ? n.b + 1 : n.b, deg: n.deg }));
+  _sketch.templateMarkSegments = undefined;
+}
+
+/* Angle (0-180°) entre 2 segments, mesuré à leur sommet commun (ou au croisement de leurs prolongements). */
+function _sketchAngleBetween(s1, s2){
+  const g = _sketchAngleNoteGeom(s1, s2);
+  if(g){ let d = Math.abs(g.a2 - g.a1) * 180 / Math.PI; if(d > 180) d = 360 - d; return d; }
+  const u = Math.atan2(s1.p2.y - s1.p1.y, s1.p2.x - s1.p1.x), v = Math.atan2(s2.p2.y - s2.p1.y, s2.p2.x - s2.p1.x);
+  let d = Math.abs(u - v) * 180 / Math.PI % 180;
+  return d;
+}
+/* Sommet de l'angle : point commun des 2 segments, sinon croisement de leurs prolongements (si raisonnable). */
+function _sketchAngleNoteGeom(s1, s2){
+  const dpr = _sketch.dpr || 1, near = 8 * dpr;
+  const e1 = [s1.p1, s1.p2], e2 = [s2.p1, s2.p2];
+  for(let i = 0; i < 2; i++) for(let j = 0; j < 2; j++){
+    if(Math.hypot(e1[i].x - e2[j].x, e1[i].y - e2[j].y) <= near){
+      const V = e1[i], o1 = e1[1 - i], o2 = e2[1 - j];
+      return { V, a1: Math.atan2(o1.y - V.y, o1.x - V.x), a2: Math.atan2(o2.y - V.y, o2.x - V.x), ext: null };
+    }
+  }
+  const d1x = s1.p2.x - s1.p1.x, d1y = s1.p2.y - s1.p1.y, d2x = s2.p2.x - s2.p1.x, d2y = s2.p2.y - s2.p1.y;
+  const den = d1x * d2y - d1y * d2x;
+  if(Math.abs(den) < 1e-6) return null; // parallèles
+  const t = ((s2.p1.x - s1.p1.x) * d2y - (s2.p1.y - s1.p1.y) * d2x) / den;
+  const V = { x: s1.p1.x + t * d1x, y: s1.p1.y + t * d1y };
+  const c = _sketch.canvas;
+  if(V.x < -c.width * 0.3 || V.x > c.width * 1.3 || V.y < -c.height * 0.3 || V.y > c.height * 1.3) return null;
+  const far = (sg) => Math.hypot(sg.p1.x - V.x, sg.p1.y - V.y) > Math.hypot(sg.p2.x - V.x, sg.p2.y - V.y) ? sg.p1 : sg.p2;
+  const nearE = (sg) => far(sg) === sg.p1 ? sg.p2 : sg.p1;
+  const o1 = far(s1), o2 = far(s2);
+  return { V, a1: Math.atan2(o1.y - V.y, o1.x - V.x), a2: Math.atan2(o2.y - V.y, o2.x - V.x), ext: [nearE(s1), nearE(s2)] };
+}
+function _sketchRenderAngleNotes(){
+  const { ctx, segments, dpr } = _sketch;
+  _sketch.angleNoteHitboxes = [];
+  // 1er segment choisi avec l'outil « Angle » : surligné
+  if(_sketch.tool === 'angle' && _sketch.angleFirst >= 0 && segments[_sketch.angleFirst]){
+    const sg = segments[_sketch.angleFirst];
+    ctx.save(); ctx.beginPath(); ctx.moveTo(sg.p1.x, sg.p1.y); ctx.lineTo(sg.p2.x, sg.p2.y);
+    ctx.strokeStyle = 'rgba(11,95,165,0.35)'; ctx.lineWidth = 16 * dpr; ctx.lineCap = 'round'; ctx.stroke(); ctx.restore();
+  }
+  (_sketch.angleNotes || []).forEach((n, ni) => {
+    const s1 = segments[n.a], s2 = segments[n.b];
+    if(!s1 || !s2) return;
+    const g = _sketchAngleNoteGeom(s1, s2);
+    const label = String(n.deg).replace('.', ',') + '°';
+    let lx, ly;
+    ctx.save();
+    ctx.strokeStyle = '#0B5FA5'; ctx.lineWidth = 2 * dpr;
+    if(g){
+      if(g.ext){ // prolongements en pointillés jusqu'au sommet
+        ctx.setLineDash([4 * dpr, 4 * dpr]);
+        g.ext.forEach(e => { ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(g.V.x, g.V.y); ctx.stroke(); });
+        ctx.setLineDash([]);
+      }
+      let diff = g.a2 - g.a1;
+      while(diff > Math.PI) diff -= 2 * Math.PI;
+      while(diff < -Math.PI) diff += 2 * Math.PI;
+      const r = 30 * dpr;
+      ctx.setLineDash([5 * dpr, 3 * dpr]);
+      ctx.beginPath(); ctx.arc(g.V.x, g.V.y, r, g.a1, g.a1 + diff, diff < 0); ctx.stroke();
+      ctx.setLineDash([]);
+      const mid = g.a1 + diff / 2;
+      lx = g.V.x + Math.cos(mid) * (r + 16 * dpr); ly = g.V.y + Math.sin(mid) * (r + 16 * dpr);
+    } else {
+      lx = ((s1.p1.x + s1.p2.x) / 2 + (s2.p1.x + s2.p2.x) / 2) / 2;
+      ly = ((s1.p1.y + s1.p2.y) / 2 + (s2.p1.y + s2.p2.y) / 2) / 2;
+    }
+    ctx.font = `bold ${12.5 * dpr}px -apple-system, Arial, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const w = ctx.measureText(label).width + 10 * dpr, h = 18 * dpr;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.strokeStyle = '#0B5FA5'; ctx.lineWidth = 1.5 * dpr;
+    ctx.beginPath();
+    if(ctx.roundRect) ctx.roundRect(lx - w / 2, ly - h / 2, w, h, 6 * dpr); else ctx.rect(lx - w / 2, ly - h / 2, w, h);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#0B5FA5';
+    ctx.fillText(label, lx, ly + 0.5 * dpr);
+    ctx.restore();
+    _sketch.angleNoteHitboxes.push({ index: ni, x: lx, y: ly });
+  });
+}
+function _sketchNearestAngleNote(p){
+  const boxes = _sketch && _sketch.angleNoteHitboxes;
+  if(!boxes || !boxes.length) return -1;
+  let best = -1, bestD = Infinity;
+  boxes.forEach(hb => { const d = Math.hypot(p.x - hb.x, p.y - hb.y); if(d < bestD){ bestD = d; best = hb.index; } });
+  return bestD <= 24 * (_sketch.dpr || 1) ? best : -1;
+}
+function _sketchEditAngleNote(i){
+  const n = _sketch.angleNotes[i];
+  if(!n) return;
+  const v = prompt('Angle relevé (en degrés, pour mémoire) — laisse vide pour le supprimer :', String(n.deg));
+  if(v == null) return;
+  if(String(v).trim() === ''){ _sketch.angleNotes.splice(i, 1); showToast('🗑️ Angle supprimé'); }
+  else {
+    const deg = parseFloat(String(v).replace(',', '.'));
+    if(Number.isFinite(deg) && deg > 0 && deg < 360) n.deg = Math.round(deg * 10) / 10;
+    else { showToast('Angle invalide'); return; }
+  }
+  _sketchRenderLabelStep();
 }
 
 function _sketchClose(){
@@ -54670,7 +54980,16 @@ function _sketchSimplifyStroke(raw, dpr){
 
 function _sketchSimplifyAndShow(){
   const { raw, dpr } = _sketch;
-  const { pts, closed, angles } = _sketchSimplifyStroke(raw, dpr);
+  let { pts, closed, angles } = _sketchSimplifyStroke(raw, dpr);
+  // v5.41.262 — « Forme fermée » activée : le dernier segment s'accroche au point de départ,
+  // même s'il ne le touchait pas pile (ex : un rectangle dessiné vite).
+  if(!closed && _sketch.forceClose && pts.length >= 3){
+    const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+    const diag = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) || 1;
+    const first = pts[0], last = pts[pts.length - 1];
+    if(Math.hypot(last.x - first.x, last.y - first.y) < diag * 0.25){ pts = pts.slice(0, -1); angles = angles.slice(0, -1); }
+    closed = true;
+  }
 
   if(pts.length < 2){ showToast('Trait trop court — recommence'); _sketchRedo(); return; }
 
@@ -54832,6 +55151,7 @@ function _sketchRedrawShape(){
   // v5.41.90 — sur demande de Rémi, ces arcs d'angle ne s'affichent (et ne
   // sont tapables) qu'en mode pliage (_sketch.mmMode) : dans « Croquis avec
   // côtes » des listes à faire, on reste sur le rendu simple sans angle.
+  _sketchRenderAngleNotes();
   _sketch.angleHitboxes = [];
   if(!_sketch.mmMode) return;
   segments.forEach((seg, i) => {
@@ -54999,6 +55319,7 @@ function _sketchRenderLabelStep(){
   const markerRow = document.getElementById('sketchMarkerRow');
   if(markerRow) markerRow.style.display = _sketch.segments.length ? 'flex' : 'none';
   _sketchUpdateMarkerToolbar();
+  _sketchUpdateTools();
 
   // v5.41.87 — bouton "Mettre à l'échelle" (mode pliage uniquement) : n'a de
   // sens qu'une fois qu'au moins DEUX cotes en mm sont saisies (sinon rien à
@@ -55125,6 +55446,10 @@ function _sketchDeleteSegment(i){
     _sketch.markers = _sketch.markers
       .filter(m => m.segIndex !== i)
       .map(m => m.segIndex > i ? Object.assign({}, m, { segIndex: m.segIndex - 1 }) : m);
+  }
+  if(_sketch.angleNotes && _sketch.angleNotes.length){
+    _sketch.angleNotes = _sketch.angleNotes.filter(n => n.a !== i && n.b !== i)
+      .map(n => ({ a: n.a > i ? n.a - 1 : n.a, b: n.b > i ? n.b - 1 : n.b, deg: n.deg }));
   }
   if(!_sketch.segments.length){ _sketchRedo(); return; }
   _sketchRenderLabelStep();
@@ -55356,6 +55681,8 @@ function _sketchRedo(){
   // l'outil de repère en cours, sinon il resterait armé sur un dessin vide.
   _sketch.markers = [];
   _sketch.markerArm = null;
+  _sketch.angleNotes = []; _sketch.tool = null; _sketch.angleFirst = -1; _sketch.closed = false;
+  _sketchUpdateTools();
   const hint = document.getElementById('sketchStepHint');
   if(hint) hint.textContent = 'Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.';
   const saveBtn = document.getElementById('sketchSaveBtn');
@@ -55379,6 +55706,8 @@ function _sketchFinish(){
     // v5.41.148 — repères posés (épaisseur/axe/rameneret), voir leur
     // description dans l'init de _sketch plus haut.
     markers: (_sketch.markers || []).map(m => ({ segIndex:m.segIndex, t:m.t, type:m.type, side:m.side||1 })),
+    closed: !!_sketch.closed,                                                     // v5.41.262
+    angleNotes: (_sketch.angleNotes || []).map(n => ({ a:n.a, b:n.b, deg:n.deg })), // v5.41.262
     canvasWidth: canvas.width,
     canvasHeight: canvas.height,
     pliageType: _sketch.pliageType || undefined,
