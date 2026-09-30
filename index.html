@@ -3548,16 +3548,18 @@
     background:var(--card); border-top:1px solid var(--line); box-shadow:0 -4px 16px rgba(0,0,0,.25);
   }
   .galerie-actionbar-count{ font-size:14px; font-weight:700; }
+  /* v5.41.268 — envoi des photos en ARRIÈRE-PLAN : petite pastille en bas de l'écran, qui ne bloque plus rien */
   #mediaUploadOverlay{
-    position:fixed; inset:0; z-index:1100; background:rgba(0,0,0,.6);
-    display:none; align-items:center; justify-content:center; padding:24px;
+    position:fixed; left:50%; transform:translateX(-50%); bottom:calc(84px + env(safe-area-inset-bottom,0px)); z-index:1100;
+    display:none; pointer-events:none; width:auto; max-width:calc(100vw - 32px);
   }
   #mediaUploadOverlay .mup-box{
-    background:var(--card); border-radius:14px; padding:22px; width:100%; max-width:320px; text-align:center;
+    background:rgba(20,15,10,.92); color:#fff; border:1px solid rgba(232,172,61,.45); border-radius:999px;
+    padding:8px 16px 9px; min-width:220px; text-align:center; box-shadow:0 6px 18px rgba(0,0,0,.35);
   }
-  #mediaUploadOverlay .mup-title{ font-weight:800; font-size:15px; margin-bottom:6px; }
-  #mediaUploadOverlay .mup-count{ font-size:13px; color:var(--ink-soft); margin-bottom:12px; }
-  #mediaUploadOverlay .mup-track{ height:8px; background:var(--bg-elev); border-radius:8px; overflow:hidden; }
+  #mediaUploadOverlay .mup-title{ font-weight:800; font-size:12.5px; margin-bottom:2px; }
+  #mediaUploadOverlay .mup-count{ font-size:11.5px; color:rgba(255,255,255,.75); margin-bottom:5px; }
+  #mediaUploadOverlay .mup-track{ height:4px; background:rgba(255,255,255,.18); border-radius:4px; overflow:hidden; }
   #mediaUploadOverlay .mup-fill{ height:100%; width:0%; background:var(--wood); transition:width .2s; }
   /* MODULE — Galerie : dossiers par chantier */
   .galerie-folders{
@@ -10955,6 +10957,7 @@ function _galerieRenderFolder(root, siteId){
       <button class="btn btn-outline btn-sm" onclick="galerieCloseFolder()">← Voir tous les dossiers</button>
       <span class="galerie-folder-title">🏗️ ${escapeHtml(site.name)}</span>
       <span style="margin-left:auto;font-size:12px;color:var(--ink-soft);font-weight:700;">${photos.length} photo${photos.length>1?'s':''}</span>
+      <button class="btn btn-primary btn-sm" style="font-size:20px;font-weight:900;line-height:1;padding:6px 14px;margin-left:8px;" onclick="galerieAddPhotos('${site.id}')" title="Ajouter des photos à ce chantier">+</button>
     </div>`;
 
   if(!photos.length){
@@ -11432,6 +11435,8 @@ function _galerieRenderLightbox(){
   `;
   _resetGalerieLbZoom();
   _setupGalerieLbZoom();
+  // v5.41.267 — la photo suivante et la précédente sont chargées d'avance (glisser sans attente)
+  [_galerieLbIndex - 1, _galerieLbIndex + 1].forEach(j => { const q = photos[j]; if(q && q.url){ const im = new Image(); im.decoding = 'async'; im.src = q.url; } });
   // v5.41.265 — glisser le doigt ← → pour changer de photo
   _rwSwipeNav(lb, () => document.getElementById('galerieLbImg'),
     () => _galerieLbZoom.scale <= 1.01 && (_galerieCurrentPhotos || []).length > 1,
@@ -12163,6 +12168,8 @@ function openPhotoFullscreen(src, caption, logId){
 
   openModal('photoFullscreen');
   _rwPhotoSwipeSetup();
+  // v5.41.267 — précharge les photos voisines (documents / tâches) pour un glisser sans attente
+  try{ if(_pfsNavKind === 'cloud' && _pfsNavIndex >= 0) [_pfsNavIndex - 1, _pfsNavIndex + 1].forEach(j => { const q = _pfsNavList[j]; if(q && (q.url || q.thumbUrl)){ const im = new Image(); im.src = q.url || q.thumbUrl; } }); }catch(_){}
 }
 
 /* ═══ v5.41.265 — photos / croquis en VRAI plein écran + glisser le doigt ← → pour la photo suivante / précédente ═══
@@ -16213,6 +16220,15 @@ function _canImportFromDropbox(){
    aperçu. L'original reste inchangé et sert au zoom/plein écran. */
 async function uploadThumbnailToSupabase(file, siteId){
   try{
+    // v5.41.267 — miniature fabriquée directement (createImageBitmap) : bien plus rapide que lire toute la photo en texte
+    try{
+      const small = await _rwShrinkPhoto(file, 480, 0.7);
+      if(small && small !== file && small.size < 400000){
+        const path = `sites/${siteId}/thumbs/${uid()}.jpg`;
+        const r = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, { method: 'POST', headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'image/jpeg', 'x-upsert': 'true', 'Cache-Control': 'public, max-age=31536000, immutable' }, body: small });
+        if(r.ok) return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
+      }
+    }catch(_){}
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = e => resolve(e.target.result);
@@ -16276,6 +16292,7 @@ async function _saveTilePhoto(dataUrl, tileId){
 /* Ajoute un fichier au chantier et le pousse en synchro */
 async function addSharedMediaToSite(siteId, file, opts){
   const silent = opts && opts.silent;
+  const batch = opts && opts.batch;   // v5.41.267 : envoi par lot → synchro et notification faites une seule fois à la fin
   const site = data.sites.find(s => s.id === siteId);
   if(!site) return;
 
@@ -16322,6 +16339,7 @@ async function addSharedMediaToSite(siteId, file, opts){
     saveData();
     if(!silent){ renderCloudMedia(siteId); showToast('✅ ' + file.name + ' ajouté'); }
 
+    if(batch) return;
     // Pousser immédiatement si synchro active (toujours, même en silencieux)
     if(site.syncLive) await pushSharedSite(site);
     else if(typeof syncAllSitesCycle === 'function') { try{ await syncAllSitesPushAll(); }catch(e){} }
@@ -17369,6 +17387,143 @@ async function _runMediaExport(siteId, ids){
    ═══════════════════════════════════════════════════════════════════ */
 
 /* Déclenche un input fichier ciblé (accept + capture + multiple optionnels) puis upload */
+/* ═══ v5.41.267 — Photos d'un chantier : rafale (2 à 20 photos d'affilée), import rapide, envoi accéléré ═══ */
+const RW_BURST_MAX = 20;
+
+/* Réduit une photo avant envoi (2560 px, JPEG 85 %) : 5 à 10× plus légère, envoi bien plus rapide, qualité intacte à l'écran. */
+async function _rwShrinkPhoto(file, maxDim, q){
+  try{
+    if(!file || !String(file.type || '').startsWith('image/') || /gif|svg/i.test(file.type)) return file;
+    if(typeof _isHeicFile === 'function' && _isHeicFile(file)) return file;
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const md = maxDim || 2560;
+    const k = Math.min(1, md / Math.max(bmp.width, bmp.height));
+    if(k >= 1 && file.size < 1.6 * 1024 * 1024){ if(bmp.close) bmp.close(); return file; }
+    const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+    let blob;
+    if(typeof OffscreenCanvas !== 'undefined'){
+      const oc = new OffscreenCanvas(w, h); oc.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      blob = await oc.convertToBlob({ type: 'image/jpeg', quality: q || 0.85 });
+    } else {
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', q || 0.85));
+    }
+    if(bmp.close) bmp.close();
+    if(!blob || blob.size >= file.size) return file;
+    return new File([blob], String(file.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + '.jpg', { type: 'image/jpeg' });
+  }catch(_){ return file; }
+}
+
+/* Envoie un lot de photos sur un chantier : réduites, 3 à la fois, une seule synchro et une seule notification à la fin. */
+async function _rwUploadSitePhotos(siteId, files){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site || !files || !files.length) return;
+  if(files.length > RW_BURST_MAX){ showToast('📸 ' + RW_BURST_MAX + ' photos maxi par envoi : les ' + RW_BURST_MAX + ' premières sont envoyées'); files = files.slice(0, RW_BURST_MAX); }
+  const total = files.length;
+  let done = 0, failed = 0, next = 0;
+  showToast('⬆️ ' + total + ' photo' + (total > 1 ? 's' : '') + ' en cours d\'envoi en arrière-plan — tu peux continuer');
+  _mediaUploadShowProgress(0, total);
+  const worker = async () => {
+    while(next < total){
+      const f = files[next++];
+      try{ await addSharedMediaToSite(siteId, await _rwShrinkPhoto(f), { silent: true, batch: true }); }
+      catch(e){ failed++; }
+      done++;
+      _mediaUploadShowProgress(done, total);
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  _mediaUploadHideProgress();
+  // une seule synchro + une seule notification pour tout le lot
+  try{
+    if(site.syncLive) await pushSharedSite(site);
+    else if(typeof syncAllSitesPushAll === 'function') await syncAllSitesPushAll();
+  }catch(_){}
+  try{
+    const ok = done - failed;
+    const myAuthId = getSupaUserId();
+    const chefIds = _getChefAuthIdsForSite(site).filter(id => id !== myAuthId);
+    if(ok && chefIds.length){
+      const pr = data.settings.myProfile || {};
+      const who = ((pr.firstName || '') + ' ' + (pr.lastName || '')).trim() || 'Quelqu\'un';
+      const txt = who + ' a ajouté ' + ok + ' photo' + (ok > 1 ? 's' : '') + ' sur le chantier ' + site.name;
+      chefIds.forEach(id => { sendConductorAlertToChef(id, site.name, txt, true); notifyPush([id], 'RWOOD — Nouvelles photos', ok + ' photo' + (ok > 1 ? 's' : '') + ' — ' + site.name, 'media-lot-' + Date.now(), 'site:' + site.id); });
+    }
+  }catch(_){}
+  showToast(failed ? `⚠️ ${done - failed}/${total} photos importées sur ${site.name} (${failed} échec)` : `✅ ${total} photo${total > 1 ? 's' : ''} bien importée${total > 1 ? 's' : ''} sur ${site.name}`);
+  _rwAfterSitePhotos(siteId);
+}
+function _rwAfterSitePhotos(siteId){
+  try{ if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId); }catch(_){}
+  try{ if(typeof _galerieOpenSiteId !== 'undefined' && _galerieOpenSiteId === siteId){ const root = document.getElementById('galerieContent'); if(root) _galerieRenderFolder(root, siteId); } }catch(_){}
+  try{ if(typeof _rwPushSites === 'function') _rwPushSites(); }catch(_){}
+}
+/* Sélecteur de photos (galerie du téléphone), plusieurs à la fois. */
+function _rwPickImages(multiple, cb){
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; if(multiple) input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = () => { const files = Array.from(input.files || []); input.remove(); if(files.length) cb(files); };
+  input.click();
+}
+
+/* Rafale : prendre 2 à 20 photos d'affilée pour un chantier, puis tout est envoyé d'un coup. */
+async function rwSitePhotoBurst(siteId){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site){ showToast('Choisis d\'abord un chantier'); return; }
+  // App Android : appareil photo complet du téléphone (grand angle, zoom…) — on prend toutes les photos, on revient
+  try{
+    const R = (typeof RWOOD_NATIVE !== 'undefined' && RWOOD_NATIVE && typeof _rnPlug === 'function') ? _rnPlug('RwoodNative') : null;
+    if(R && typeof R.openCameraApp === 'function' && localStorage.getItem('rw-cam-mode') !== 'simple'){
+      const o = await R.openCameraApp();
+      if(o && o.since){
+        _rwCamPending = { since: o.since, siteId };
+        showToast('📸 Prends tes photos (jusqu\'à ' + RW_BURST_MAX + '), puis reviens dans RWOOD : elles iront sur « ' + site.name + ' »');
+        return;
+      }
+    }
+  }catch(_){}
+  // Sinon : appareil photo intégré en mode rafale (la caméra reste ouverte entre les photos)
+  openCameraCapture(null, { burst: files => _rwUploadSitePhotos(siteId, files), max: RW_BURST_MAX });
+}
+/* Retour de l'appareil photo complet : toutes les photos prises depuis l'ouverture vont sur le chantier. */
+async function _rwCamCollectSite(p){
+  if(Date.now() - p.since > 45 * 60 * 1000){ _rwCamPending = null; return; }
+  const R = _rnPlug('RwoodNative'); if(!R) return;
+  let r; try{ r = await R.newPhotos({ since: p.since, ask: !p.asked }); }catch(_){ return; }
+  if(r && r.needPerm){ p.asked = true; showToast('📷 Autorise l\'accès aux photos (« Tout autoriser ») pour récupérer tes photos'); return; }
+  _rwCamPending = null;
+  let paths = (r && r.paths) || [];
+  if(!paths.length){ showToast('Aucune photo prise'); return; }
+  if(paths.length > RW_BURST_MAX){ showToast('📸 ' + RW_BURST_MAX + ' photos maxi : les ' + RW_BURST_MAX + ' dernières sont gardées'); paths = paths.slice(-RW_BURST_MAX); }
+  const files = [];
+  for(const pth of paths){ try{ files.push(await _rwPhotoFileFromPath(pth)); }catch(e){ console.warn('photo', e); } }
+  await _rwUploadSitePhotos(p.siteId, files);
+}
+
+/* Galerie d'un chantier : bouton « + » → rafale ou import depuis la galerie du téléphone. */
+function galerieAddPhotos(siteId){
+  const ex = document.getElementById('mediaFabSheet'); if(ex) ex.remove();
+  const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+  const sheet = document.createElement('div');
+  sheet.id = 'mediaFabSheet';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  sheet.innerHTML = `
+    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter des photos à 🏗️ ${escapeHtml(site.name)}</div>
+      <button class="action-sheet-item" data-act="burst"><span class="ico">📸</span>Prendre des photos (rafale, jusqu'à ${RW_BURST_MAX})</button>
+      <button class="action-sheet-item" data-act="pick"><span class="ico">🖼️</span>Choisir dans la galerie du téléphone</button>
+      <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
+    </div>`;
+  const close = () => sheet.remove();
+  sheet.onclick = e => { if(e.target === sheet) close(); };
+  sheet.querySelector('[data-act="burst"]').onclick = () => { close(); rwSitePhotoBurst(siteId); };
+  sheet.querySelector('[data-act="pick"]').onclick = () => { close(); _rwPickImages(true, files => _rwUploadSitePhotos(siteId, files)); };
+  sheet.querySelector('[data-act="cancel"]').onclick = close;
+  document.body.appendChild(sheet);
+}
+
 function _mediaFabPickFile(siteId, { accept, capture, multiple }){
   const input = document.createElement('input');
   input.type = 'file';
@@ -17382,10 +17537,13 @@ function _mediaFabPickFile(siteId, { accept, capture, multiple }){
     if(!files.length){ input.remove(); return; }
     // Un seul fichier → comportement direct
     if(files.length === 1){
-      await addSharedMediaToSite(siteId, files[0]);
+      await addSharedMediaToSite(siteId, await _rwShrinkPhoto(files[0]));
       input.remove();
+      _rwAfterSitePhotos(siteId);
       return;
     }
+    // v5.41.267 — plusieurs photos → envoi rapide (réduites, 3 à la fois, une seule synchro)
+    if(files.every(f => String(f.type || '').startsWith('image/'))){ input.remove(); await _rwUploadSitePhotos(siteId, files); return; }
     // Plusieurs → upload séquentiel + barre de progression
     _mediaUploadShowProgress(0, files.length);
     let done = 0, failed = 0;
@@ -17421,7 +17579,7 @@ function openMediaFabSheet(siteId){
 
       <button class="action-sheet-item" data-act="photo">
         <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></span>
-        Prendre une photo
+        Prendre des photos (1 à 20 d'affilée)
       </button>
 
       <button class="action-sheet-item" data-act="gallery">
@@ -17449,7 +17607,7 @@ function openMediaFabSheet(siteId){
     close(); _mediaFabPickFile(siteId, { accept: 'application/pdf,image/*', multiple: true });
   };
   sheet.querySelector('[data-act="photo"]').onclick = () => {
-    close(); _mediaFabPickFile(siteId, { accept: 'image/*', capture: 'environment' });
+    close(); rwSitePhotoBurst(siteId);   // v5.41.267 : une ou plusieurs photos d'affilée (rafale)
   };
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
     close(); _mediaFabPickFile(siteId, { accept: 'image/*', multiple: true });
@@ -17654,7 +17812,7 @@ function _mediaUploadShowProgress(done, total){
     ov.id = 'mediaUploadOverlay';
     ov.innerHTML = `
       <div class="mup-box">
-        <div class="mup-title">Envoi des photos…</div>
+        <div class="mup-title">⬆️ Envoi des photos en arrière-plan</div>
         <div class="mup-count" id="mupCount"></div>
         <div class="mup-track"><div class="mup-fill" id="mupFill"></div></div>
       </div>`;
@@ -17665,7 +17823,7 @@ function _mediaUploadShowProgress(done, total){
   const fill = document.getElementById('mupFill');
   const cnt  = document.getElementById('mupCount');
   if(fill) fill.style.width = pct + '%';
-  if(cnt)  cnt.textContent = done < total ? `Envoi de la photo ${done+1} sur ${total}…` : `${total}/${total} terminé`;
+  if(cnt)  cnt.textContent = done < total ? `${done} / ${total} envoyée${done > 1 ? 's' : ''} · tu peux continuer à utiliser RWOOD` : `${total}/${total} terminé`;
 }
 function _mediaUploadHideProgress(){
   const ov = document.getElementById('mediaUploadOverlay');
@@ -17744,7 +17902,14 @@ function camLensBase(label){
 
 /* Sonde rapidement chaque caméra détectée pour connaître sa plage de zoom natif,
    afin de construire une échelle de zoom unifiée (ex: 0.6x grand-angle -> 1x standard -> 2x+ téléobjectif) */
+let _camLensCache = null; // v5.41.267 : objectifs déjà testés → pas besoin de rouvrir chaque caméra à chaque fois
 async function probeCamLenses(){
+  const key = camDevices.map(d => d.deviceId + '|' + d.label).join(',');
+  if(_camLensCache && _camLensCache.key === key){
+    camLensInfo = _camLensCache.info.map(l => Object.assign({}, l));
+    camZoomMin = _camLensCache.min; camZoomMax = _camLensCache.max;
+    return;
+  }
   camLensInfo = [];
   for(let i=0; i<camDevices.length; i++){
     const d = camDevices[i];
@@ -17765,6 +17930,7 @@ async function probeCamLenses(){
   }
   camZoomMin = camLensInfo.length ? Math.min(...camLensInfo.map(l=>l.base)) : 1;
   camZoomMax = camLensInfo.length ? Math.max(...camLensInfo.map(l=>l.capMax)) : 1;
+  if(key) _camLensCache = { key, info: camLensInfo.map(l => Object.assign({}, l)), min: camZoomMin, max: camZoomMax };
 }
 
 /* Choisit l'objectif le plus adapté pour un niveau de zoom visé (le plus "élevé" en base
@@ -17782,15 +17948,19 @@ function camLensIndexForZoom(targetZoom){
 /* Essaie d'ouvrir l'appareil photo intégré (avec choix d'objectif/flash/filigrane).
    En cas d'échec (permission refusée, API absente, contexte non sécurisé...), se replie
    sur l'input natif <input type="file" capture> qui ouvre l'appli caméra du téléphone. */
-async function openCameraCapture(targetInputId){
+let _camBurst = null; // v5.41.267 — rafale : { files:[], max, onDone } (la caméra reste ouverte entre les photos)
+async function openCameraCapture(targetInputId, opts){
   camTargetInputId = targetInputId;
+  _camBurst = (opts && typeof opts.burst === 'function') ? { files: [], max: opts.max || 20, onDone: opts.burst } : null;
+  _camBurstUi();
 
   // v5.41.250 — App Android : appareil photo D'ORIGINE du téléphone (pleine qualité,
   // grand angle, zoom, fluidité). Repli sur l'appareil photo intégré ci-dessous si
   // l'autorisation caméra n'est pas encore donnée ou en cas de souci.
-  if(typeof _rwNativePhoto === 'function' && await _rwNativePhoto(targetInputId)) return;
+  if(!_camBurst && typeof _rwNativePhoto === 'function' && await _rwNativePhoto(targetInputId)) return;
 
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    if(_camBurst){ const b = _camBurst; _camBurst = null; _rwPickImages(true, files => b.onDone(files)); return; }
     document.getElementById(targetInputId).click();
     return;
   }
@@ -17801,6 +17971,7 @@ async function openCameraCapture(targetInputId){
     const devices = await navigator.mediaDevices.enumerateDevices();
     camDevices = devices.filter(d=>d.kind === 'videoinput');
   } catch(err){
+    if(_camBurst){ const b = _camBurst; _camBurst = null; _rwPickImages(true, files => b.onDone(files)); return; }
     document.getElementById(targetInputId).click();
     return;
   }
@@ -17871,6 +18042,7 @@ function _rwFeedInput(targetInputId, file){
 }
 async function _rwCamCollect(){
   const p = _rwCamPending; if(!p) return;
+  if(p.siteId) return _rwCamCollectSite(p);
   if(Date.now() - p.since > 45 * 60 * 1000){ _rwCamPending = null; return; }
   const R = _rnPlug('RwoodNative'); if(!R) return;
   let r; try{ r = await R.newPhotos({ since: p.since, ask: !p.asked }); }catch(_){ return; }
@@ -17965,13 +18137,13 @@ async function startCameraStream(){
     // L'utilisateur a explicitement choisi une lentille → utiliser son deviceId
     constraints = { video: {
       deviceId: { exact: camDevices[camDeviceIndex].deviceId },
-      width: { ideal: 4096 }, height: { ideal: 2160 }
+      width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }   // v5.41.267 : aperçu fluide ; la photo est prise en pleine qualité (ImageCapture)
     }};
   } else {
     // Par défaut : toujours caméra arrière via facingMode (ignore les deviceId ambigus)
     constraints = { video: {
       facingMode: { exact: 'environment' },
-      width: { ideal: 4096 }, height: { ideal: 2160 }
+      width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }
     }};
   }
 
@@ -18119,6 +18291,35 @@ function updateCamWatermarkChip(){
 function closeCameraCapture(){
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream = null; }
   closeModal('cameraCapture');
+  // rafale : fermer la caméra = envoyer les photos déjà prises
+  if(_camBurst){ const b = _camBurst; _camBurst = null; _camBurstUi(); if(b.files.length) b.onDone(b.files); }
+}
+function _camBurstUi(){
+  const stage = document.getElementById('cameraCaptureStage');
+  if(!stage) return;
+  let bar = document.getElementById('camBurstBar');
+  if(!_camBurst){ if(bar) bar.remove(); return; }
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'camBurstBar';
+    bar.style.cssText = 'position:absolute;left:0;right:0;top:calc(64px + env(safe-area-inset-top,0px));display:flex;justify-content:center;align-items:center;gap:10px;z-index:6;pointer-events:none;';
+    stage.appendChild(bar);
+  }
+  const n = _camBurst.files.length;
+  bar.innerHTML = `<div style="background:rgba(0,0,0,.6);color:#fff;border-radius:999px;padding:7px 14px;font-weight:800;font-size:14px;">📸 Rafale : ${n} / ${_camBurst.max}</div>`
+    + (n ? `<button type="button" onclick="closeCameraCapture()" style="pointer-events:auto;background:#3ACF7D;color:#06240f;border:none;border-radius:999px;padding:8px 16px;font-weight:900;font-size:14px;">✓ Terminer (${n})</button>` : '');
+}
+/* Photo en pleine qualité si le téléphone le permet (ImageCapture), sinon image de l'aperçu. */
+async function _camGrabBlob(video){
+  try{
+    const track = camStream && camStream.getVideoTracks()[0];
+    if(track && typeof ImageCapture !== 'undefined'){
+      const ic = new ImageCapture(track);
+      const blob = await Promise.race([ic.takePhoto(), new Promise((_, rej) => setTimeout(() => rej(new Error('lent')), 2500))]);
+      if(blob && blob.size > 20000) return blob;
+    }
+  }catch(_){}
+  return null;
 }
 
 function drawCamWatermark(ctx, w, h){
@@ -18144,11 +18345,24 @@ function drawCamWatermark(ctx, w, h){
 async function capturePhoto(){
   const video = document.getElementById('cameraVideo');
   if(!video.videoWidth){ return; }
+  // petit flash blanc : la photo est prise
+  try{ const st = document.getElementById('cameraCaptureStage'); const f = document.createElement('div'); f.style.cssText = 'position:absolute;inset:0;background:#fff;opacity:.7;z-index:9;pointer-events:none;transition:opacity .25s;'; st.appendChild(f); requestAnimationFrame(() => { f.style.opacity = '0'; }); setTimeout(() => f.remove(), 300); }catch(_){}
   const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  let ctx;
+  const full = await _camGrabBlob(video);
+  let bmp = null;
+  if(full){ try{ bmp = await createImageBitmap(full, { imageOrientation: 'from-image' }); }catch(_){ bmp = null; } }
+  if(bmp){
+    const k = Math.min(1, 3000 / Math.max(bmp.width, bmp.height));
+    canvas.width = Math.round(bmp.width * k); canvas.height = Math.round(bmp.height * k);
+    ctx = canvas.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  } else {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
 
   if(camWatermarkEnabled){
     await drawCamWatermark(ctx, canvas.width, canvas.height);
@@ -18157,6 +18371,13 @@ async function capturePhoto(){
   canvas.toBlob(blob=>{
     const file = new File([blob], 'photo-rwood.jpg', { type: 'image/jpeg' });
 
+    // rafale : la caméra reste ouverte, on garde la photo et on continue
+    if(_camBurst){
+      _camBurst.files.push(new File([blob], 'photo-rwood-' + Date.now() + '.jpg', { type: 'image/jpeg' }));
+      _camBurstUi();
+      if(_camBurst.files.length >= _camBurst.max){ showToast('📸 ' + _camBurst.max + ' photos : envoi…'); closeCameraCapture(); }
+      return;
+    }
     const targetInput = document.getElementById(camTargetInputId);
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -37202,9 +37423,34 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.265';
+const APP_VERSION = '5.41.268';
 
 const CHANGELOG = [
+  {
+    version: '5.41.268',
+    date: '30/09/2026',
+    entries: [
+      { icon: '⬆️', text: "Import de photos en arrière-plan : plus de fenêtre qui bloque l'écran pendant l'envoi. Une petite pastille en bas indique l'avancement (ex : 4 / 12) pendant que tu continues à utiliser RWOOD, puis un message « ✅ 12 photos bien importées sur … » s'affiche à la fin." },
+    ],
+  },
+  {
+    version: '5.41.267',
+    date: '30/09/2026',
+    entries: [
+      { icon: '➕', text: "Galerie : dans le dossier d'un chantier, nouveau bouton « + » pour y ajouter directement des photos (rafale ou choix dans la galerie du téléphone)." },
+      { icon: '📸', text: "Photos de chantier en rafale : prends de 1 à 20 photos d'affilée sans relancer l'appareil photo — elles sont toutes envoyées d'un coup sur le chantier choisi (galerie « + », fiche chantier « Prendre des photos », widget Galerie « 📷 Ajouter »). Dans l'appareil photo intégré, compteur et bouton « ✓ Terminer »." },
+      { icon: '⚡', text: "Photos plus rapides : réduites avant l'envoi (≈ 5 à 10× plus légères, qualité intacte à l'écran), 3 envois en même temps, une seule synchro et une seule notification par lot, miniatures fabriquées bien plus vite, photos voisines préchargées dans la visionneuse. Appareil photo intégré : ouverture plus rapide et aperçu plus fluide, photo toujours en pleine qualité." },
+      { icon: '✅', text: "Bulle « À faire » : cocher une tâche ne ferme plus la bulle." },
+    ],
+  },
+  {
+    version: '5.41.266',
+    date: '30/09/2026',
+    entries: [
+      { icon: '🎧', text: "Talkie : « Micro du casque Bluetooth » refait — le casque passe en mode appel seulement pendant que tu parles (sa voix est alors prise par le micro du casque, téléphone dans la poche), puis revient tout seul en son normal pour écouter les autres. Conseillé dès qu'on porte un casque." },
+      { icon: '⏱', text: "Talkie : nouveau réglage « Fermer le micro tout seul quand je me tais » (Non / 3 s / 5 s / 8 s) — plus de micro resté ouvert par oubli. 4 s par défaut avec le micro du casque." },
+    ],
+  },
   {
     version: '5.41.265',
     date: '30/09/2026',
@@ -44523,6 +44769,12 @@ function closePinnedNotePopup(){
 function _closePinnedOnOutside(e){
   const popup  = document.getElementById('pinnedNotePopup');
   const bubble = document.getElementById('pinnedNoteBubble');
+  // v5.41.267 — cocher une tâche redessine la liste : l'élément touché n'est plus dans la page quand
+  // ce clic arrive ici, et la bulle se croyait « touchée à l'extérieur » → elle se fermait. On regarde
+  // le chemin d'origine du clic (même si l'élément a été retiré entre-temps).
+  const path = (e.composedPath && e.composedPath()) || [];
+  if(path.includes(popup) || path.includes(bubble)) return;
+  if(e.target && e.target.isConnected === false) return;
   if(!popup.contains(e.target) && !bubble.contains(e.target)) closePinnedNotePopup();
   else if(!popup.contains(e.target)){} // Clic sur bubble → toggle gère
 }
@@ -64170,6 +64422,7 @@ if(RWOOD_NATIVE){
       if(hasSite) setActiveSiteId(siteId);
       if(act === 'site'){ if(hasSite) goTo('detail', siteId); else goTo('chantiers'); }
       else if(act === 'media'){ if(hasSite) openMediaFabSheet(siteId); }
+      else if(act === 'burst'){ if(hasSite) rwSitePhotoBurst(siteId); }   // v5.41.267 : widget Galerie « 📷 Ajouter » → rafale directe
       else if(act === 'waze'){ if(hasSite) openWaze(siteId); }
       else if(act === 'notes'){ if(hasSite) openSiteNotesModal(siteId); }
       else if(act === 'keybox'){ if(hasSite) openKeyboxModal(siteId); }
