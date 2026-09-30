@@ -17387,6 +17387,420 @@ async function _runMediaExport(siteId, ids){
    ═══════════════════════════════════════════════════════════════════ */
 
 /* Déclenche un input fichier ciblé (accept + capture + multiple optionnels) puis upload */
+/* ═══════════════════════════════════════════════════════════════════
+   MODULE — Annoter une photo (v5.41.269, demande Rémi)
+   Avant d'importer des photos sur un chantier ou d'en envoyer une par message :
+   flèches, texte, cercles, rectangles, traits à la règle, cotes (flèche d'un
+   point à un autre avec sa mesure), dessin libre. Pensé pour le doigt :
+   gros boutons, poignées à tirer pour modifier, pincer pour zoomer.
+   rwAnnotatePhoto(src, opts) → Promise<{ file, changed } | null>
+   rwReviewPhotos(files, title) → Promise<files | null>  (relire / annoter / retirer avant l'envoi)
+   ═══════════════════════════════════════════════════════════════════ */
+const RW_AN_COLORS = ['#FF3B30', '#FFCC00', '#34C759', '#0A84FF', '#FFFFFF', '#111111'];
+const RW_AN_TOOLS = [
+  { id: 'arrow', ico: '➡️', lbl: 'Flèche' },
+  { id: 'dim', ico: '↔️', lbl: 'Cote' },
+  { id: 'line', ico: '📏', lbl: 'Règle' },
+  { id: 'circle', ico: '⭕', lbl: 'Cercle' },
+  { id: 'rect', ico: '▭', lbl: 'Cadre' },
+  { id: 'text', ico: '🔤', lbl: 'Texte' },
+  { id: 'free', ico: '✏️', lbl: 'Libre' },
+  { id: 'move', ico: '✋', lbl: 'Bouger' },
+];
+let _rwAn = null;
+
+function _rwAnCSS(){
+  if(document.getElementById('rw-annot-css')) return;
+  const st = document.createElement('style');
+  st.id = 'rw-annot-css';
+  st.textContent =
+    '#rwAnnot,#rwReview{position:fixed;inset:0;z-index:3000;background:#000;display:flex;flex-direction:column;color:#fff;font-family:inherit;}'
+  + '#rwAnnot .an-top,#rwReview .rv-top{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top,0px)) 10px 8px;background:#111;flex-shrink:0;}'
+  + '#rwAnnot .an-b,#rwReview .rv-b{min-width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:#222;color:#fff;font-size:18px;font-weight:800;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:6px;}'
+  + '#rwAnnot .an-ok,#rwReview .rv-ok{background:#3ACF7D;color:#06240f;border-color:#3ACF7D;font-size:15px;}'
+  + '#rwAnnot .an-stage{flex:1;min-height:0;position:relative;touch-action:none;overflow:hidden;}'
+  + '#rwAnnot canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;}'
+  + '#rwAnnot .an-tools{display:flex;gap:6px;overflow-x:auto;padding:8px 8px 4px;background:#111;flex-shrink:0;-webkit-overflow-scrolling:touch;}'
+  + '#rwAnnot .an-tool{flex-shrink:0;min-width:58px;height:54px;border-radius:12px;border:1.5px solid rgba(255,255,255,.14);background:#1e1e1e;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:20px;line-height:1;}'
+  + '#rwAnnot .an-tool span{font-size:10.5px;font-weight:700;margin-top:3px;opacity:.85;}'
+  + '#rwAnnot .an-tool.on{background:#C8862B;border-color:#C8862B;color:#1a0d00;}'
+  + '#rwAnnot .an-colors{display:flex;align-items:center;gap:8px;padding:6px 10px calc(10px + env(safe-area-inset-bottom,0px));background:#111;flex-shrink:0;}'
+  + '#rwAnnot .an-sw{width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.25);flex-shrink:0;}'
+  + '#rwAnnot .an-sw.on{border-color:#fff;box-shadow:0 0 0 2px #C8862B;}'
+  + '#rwAnnot .an-sz{width:40px;height:34px;border-radius:10px;border:1.5px solid rgba(255,255,255,.2);background:#1e1e1e;display:flex;align-items:center;justify-content:center;flex-shrink:0;}'
+  + '#rwAnnot .an-sz.on{border-color:#C8862B;background:#2c2416;}'
+  + '#rwAnnot .an-hint{position:absolute;left:50%;transform:translateX(-50%);top:10px;background:rgba(0,0,0,.65);padding:6px 12px;border-radius:999px;font-size:12px;pointer-events:none;white-space:nowrap;max-width:94%;overflow:hidden;text-overflow:ellipsis;}'
+  + '#rwReview .rv-grid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px;align-content:start;}'
+  + '#rwReview .rv-cell{position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:#1e1e1e;}'
+  + '#rwReview .rv-cell img{width:100%;height:100%;object-fit:cover;display:block;}'
+  + '#rwReview .rv-x{position:absolute;top:4px;right:4px;width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;border:none;font-size:15px;font-weight:900;}'
+  + '#rwReview .rv-pen{position:absolute;left:4px;bottom:4px;height:30px;border-radius:15px;background:rgba(200,134,43,.95);color:#1a0d00;border:none;font-size:12.5px;font-weight:900;padding:0 10px;}'
+  + '#rwReview .rv-done{position:absolute;left:4px;top:4px;background:#3ACF7D;color:#06240f;border-radius:10px;font-size:11px;font-weight:900;padding:2px 7px;}'
+  + '#rwReview .rv-bottom{padding:10px 10px calc(12px + env(safe-area-inset-bottom,0px));background:#111;flex-shrink:0;}';
+  document.head.appendChild(st);
+}
+
+async function _rwAnLoadImage(src){
+  if(typeof src === 'string'){
+    try{ const r = await fetch(src, { mode: 'cors' }); if(r.ok) src = await r.blob(); }catch(_){}
+  }
+  if(src instanceof Blob){
+    try{ return await createImageBitmap(src, { imageOrientation: 'from-image' }); }catch(_){}
+    const url = URL.createObjectURL(src);
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    return im;
+  }
+  return await new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = src; });
+}
+
+function rwAnnotatePhoto(src, opts){
+  opts = opts || {};
+  return new Promise(async resolve => {
+    _rwAnCSS();
+    let img;
+    try{ img = await _rwAnLoadImage(src); }catch(e){ showToast('❌ Photo illisible'); resolve(null); return; }
+    const W = img.width, H = img.height;
+    const ex = document.getElementById('rwAnnot'); if(ex) ex.remove();
+    const root = document.createElement('div');
+    root.id = 'rwAnnot';
+    root.innerHTML = `
+      <div class="an-top">
+        <button class="an-b" data-a="cancel" title="Annuler">✕</button>
+        <button class="an-b" data-a="undo" title="Revenir en arrière">↶</button>
+        <button class="an-b" data-a="edit" style="display:none;" title="Changer le texte">✏️</button>
+        <button class="an-b" data-a="del" style="display:none;" title="Supprimer l'élément choisi">🗑️</button>
+        <span style="flex:1"></span>
+        <button class="an-b an-ok" data-a="ok">✓ ${escapeHtml(opts.okLabel || 'Valider')}</button>
+      </div>
+      <div class="an-stage"><canvas></canvas><div class="an-hint"></div></div>
+      <div class="an-tools">${RW_AN_TOOLS.map(t => `<button class="an-tool" data-t="${t.id}">${t.ico}<span>${t.lbl}</span></button>`).join('')}</div>
+      <div class="an-colors">
+        ${RW_AN_COLORS.map(c => `<button class="an-sw" data-c="${c}" style="background:${c}"></button>`).join('')}
+        <span style="flex:1"></span>
+        ${[1, 2, 3].map(z => `<button class="an-sz" data-z="${z}"><span style="display:block;width:22px;height:${z * 2 + 1}px;border-radius:3px;background:#fff;"></span></button>`).join('')}
+      </div>`;
+    document.body.appendChild(root);
+    const stage = root.querySelector('.an-stage'), cv = root.querySelector('canvas'), hint = root.querySelector('.an-hint');
+    const ctx = cv.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const U = Math.max(W, H) / 150;                    // unité : épaisseurs et tailles proportionnelles à la photo
+    const S = _rwAn = { objs: [], hist: [], tool: 'arrow', color: RW_AN_COLORS[0], size: 2, sel: -1, k: 1, ox: 0, oy: 0, changed: false };
+    try{ const lt = localStorage.getItem('rw-annot-tool'), lc = localStorage.getItem('rw-annot-color'); if(lt && RW_AN_TOOLS.some(t => t.id === lt)) S.tool = lt; if(lc) S.color = lc; }catch(_){}
+
+    const lw = z => U * [0, 0.8, 1.3, 2.2][z || 2];
+    const fontPx = z => U * [0, 4, 5.5, 8][z || 2];
+    const fit = () => {
+      const r = stage.getBoundingClientRect();
+      cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+      S.cw = r.width; S.ch = r.height;
+      S.k = Math.min(r.width / W, r.height / H) * 0.98;
+      S.ox = (r.width - W * S.k) / 2; S.oy = (r.height - H * S.k) / 2;
+      S.fitK = S.k;
+      render();
+    };
+    const toImg = (sx, sy) => ({ x: (sx - S.ox) / S.k, y: (sy - S.oy) / S.k });
+    const toScr = p => ({ x: S.ox + p.x * S.k, y: S.oy + p.y * S.k });
+    const snap = () => JSON.stringify(S.objs);
+    const pushHist = () => { S.hist.push(snap()); if(S.hist.length > 60) S.hist.shift(); };
+
+    // ── dessin d'un élément (coordonnées de la photo)
+    const drawArrowHead = (c, a, b, w, fill) => {
+      const ang = Math.atan2(b.y - a.y, b.x - a.x), L = w * 4.2, A = 0.45;
+      c.beginPath();
+      c.moveTo(b.x, b.y);
+      c.lineTo(b.x - L * Math.cos(ang - A), b.y - L * Math.sin(ang - A));
+      c.lineTo(b.x - L * Math.cos(ang + A), b.y - L * Math.sin(ang + A));
+      c.closePath(); c.fillStyle = fill; c.fill();
+    };
+    const light = col => /^#(fff|ffffff|ffcc00|34c759)$/i.test(col);
+    const drawObj = (c, o) => {
+      const w = lw(o.z);
+      c.save();
+      c.strokeStyle = o.c; c.fillStyle = o.c; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
+      // léger contour sombre / clair : reste lisible sur n'importe quelle photo
+      c.shadowColor = light(o.c) ? 'rgba(0,0,0,.55)' : 'rgba(255,255,255,.45)'; c.shadowBlur = w * 0.9;
+      if(o.t === 'free'){
+        c.beginPath(); o.p.forEach((q, i) => i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y)); c.stroke();
+      } else if(o.t === 'line' || o.t === 'arrow' || o.t === 'dim'){
+        const a = o.a, b = o.b;
+        const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        const hl = (o.t === 'arrow' ? w * 4.2 : o.t === 'dim' ? w * 3.4 : 0) * Math.cos(0.45);
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        const cut = Math.min(hl * 0.9, len / 2);
+        const a2 = o.t === 'dim' ? { x: a.x + Math.cos(ang) * cut, y: a.y + Math.sin(ang) * cut } : a;
+        const b2 = (o.t === 'arrow' || o.t === 'dim') ? { x: b.x - Math.cos(ang) * cut, y: b.y - Math.sin(ang) * cut } : b;
+        c.beginPath(); c.moveTo(a2.x, a2.y); c.lineTo(b2.x, b2.y); c.stroke();
+        if(o.t === 'arrow') drawArrowHead(c, a, b, w, o.c);
+        if(o.t === 'dim'){
+          const ww = w * 0.8;
+          drawArrowHead(c, b, a, ww, o.c); drawArrowHead(c, a, b, ww, o.c);
+          const nx = -Math.sin(ang), ny = Math.cos(ang), tk = w * 4;   // petits traits de bout (comme sur un plan)
+          c.lineWidth = w * 0.7;
+          [a, b].forEach(q => { c.beginPath(); c.moveTo(q.x + nx * tk, q.y + ny * tk); c.lineTo(q.x - nx * tk, q.y - ny * tk); c.stroke(); });
+          if(o.s){
+            const fs = fontPx(o.z) * 0.9;
+            c.save();
+            c.translate((a.x + b.x) / 2, (a.y + b.y) / 2);
+            let r = ang; if(r > Math.PI / 2 || r < -Math.PI / 2) r += Math.PI;   // texte toujours à l'endroit
+            c.rotate(r);
+            c.font = `800 ${fs}px -apple-system, Arial, sans-serif`;
+            c.textAlign = 'center'; c.textBaseline = 'middle';
+            const tw = c.measureText(o.s).width + fs * 0.7, th = fs * 1.35;
+            c.shadowBlur = 0;
+            c.fillStyle = 'rgba(255,255,255,.92)';
+            c.beginPath(); if(c.roundRect) c.roundRect(-tw / 2, -th - w, tw, th, th / 3); else c.rect(-tw / 2, -th - w, tw, th); c.fill();
+            c.fillStyle = light(o.c) ? '#111' : o.c;
+            c.fillText(o.s, 0, -th / 2 - w);
+            c.restore();
+          }
+        }
+      } else if(o.t === 'circle'){
+        const cx = (o.a.x + o.b.x) / 2, cy = (o.a.y + o.b.y) / 2, rx = Math.abs(o.b.x - o.a.x) / 2, ry = Math.abs(o.b.y - o.a.y) / 2;
+        c.beginPath(); c.ellipse(cx, cy, Math.max(rx, 1), Math.max(ry, 1), 0, 0, Math.PI * 2); c.stroke();
+      } else if(o.t === 'rect'){
+        c.strokeRect(Math.min(o.a.x, o.b.x), Math.min(o.a.y, o.b.y), Math.abs(o.b.x - o.a.x), Math.abs(o.b.y - o.a.y));
+      } else if(o.t === 'text'){
+        const fs = fontPx(o.z);
+        c.font = `800 ${fs}px -apple-system, Arial, sans-serif`;
+        c.textAlign = 'left'; c.textBaseline = 'top';
+        c.shadowBlur = 0;
+        const lines = String(o.s || '').split('\n');
+        lines.forEach((ln, i) => {
+          c.lineWidth = fs * 0.22; c.strokeStyle = light(o.c) ? 'rgba(0,0,0,.85)' : 'rgba(255,255,255,.9)';
+          c.strokeText(ln, o.a.x, o.a.y + i * fs * 1.15);
+          c.fillStyle = o.c; c.fillText(ln, o.a.x, o.a.y + i * fs * 1.15);
+        });
+      }
+      c.restore();
+    };
+    const textBox = o => {
+      const fs = fontPx(o.z); ctx.save(); ctx.font = `800 ${fs}px -apple-system, Arial, sans-serif`;
+      const lines = String(o.s || '').split('\n'); const w = Math.max(...lines.map(l => ctx.measureText(l).width)); ctx.restore();
+      return { x: o.a.x, y: o.a.y, w, h: fs * 1.15 * lines.length };
+    };
+    const handles = o => (o && (o.t === 'line' || o.t === 'arrow' || o.t === 'dim' || o.t === 'circle' || o.t === 'rect')) ? ['a', 'b'] : [];
+
+    function render(){
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, S.cw, S.ch);
+      ctx.save(); ctx.translate(S.ox, S.oy); ctx.scale(S.k, S.k);
+      ctx.drawImage(img, 0, 0, W, H);
+      S.objs.forEach(o => drawObj(ctx, o));
+      if(S.tmp) drawObj(ctx, S.tmp);
+      ctx.restore();
+      const o = S.objs[S.sel];
+      if(o){   // élément choisi : cadre pointillé + poignées rondes à tirer
+        ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = '#C8862B'; ctx.lineWidth = 2;
+        const bb = bbox(o), p1 = toScr({ x: bb.x, y: bb.y });
+        ctx.strokeRect(p1.x - 8, p1.y - 8, bb.w * S.k + 16, bb.h * S.k + 16);
+        ctx.setLineDash([]);
+        handles(o).forEach(hk => { const q = toScr(o[hk]); ctx.beginPath(); ctx.arc(q.x, q.y, 13, 0, Math.PI * 2); ctx.fillStyle = 'rgba(200,134,43,.9)'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke(); });
+        ctx.restore();
+      }
+      ui();
+    }
+    function bbox(o){
+      if(o.t === 'text') return textBox(o);
+      const pts = o.t === 'free' ? o.p : [o.a, o.b];
+      const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+      const x = Math.min(...xs), y = Math.min(...ys);
+      return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+    }
+    const segDist = (p, a, b) => { const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy; let t = l2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy); };
+    function hit(p){   // élément sous le doigt (le plus récent d'abord), tolérance ≈ 22 px à l'écran
+      const tol = 22 / S.k;
+      for(let i = S.objs.length - 1; i >= 0; i--){
+        const o = S.objs[i];
+        if(o.t === 'text'){ const b = textBox(o); if(p.x > b.x - tol && p.x < b.x + b.w + tol && p.y > b.y - tol && p.y < b.y + b.h + tol) return i; continue; }
+        if(o.t === 'free'){ for(let j = 1; j < o.p.length; j++) if(segDist(p, o.p[j - 1], o.p[j]) < tol) return i; continue; }
+        if(o.t === 'rect'){ const b = bbox(o); const c = [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }]; for(let j = 0; j < 4; j++) if(segDist(p, c[j], c[(j + 1) % 4]) < tol) return i; continue; }
+        if(o.t === 'circle'){ const cx = (o.a.x + o.b.x) / 2, cy = (o.a.y + o.b.y) / 2, rx = Math.max(Math.abs(o.b.x - o.a.x) / 2, 1), ry = Math.max(Math.abs(o.b.y - o.a.y) / 2, 1); const d = Math.hypot((p.x - cx) / rx, (p.y - cy) / ry); if(Math.abs(d - 1) * Math.min(rx, ry) < tol) return i; continue; }
+        if(segDist(p, o.a, o.b) < tol) return i;
+        if(o.t === 'dim' && o.s && Math.hypot(p.x - (o.a.x + o.b.x) / 2, p.y - (o.a.y + o.b.y) / 2) < tol * 2) return i;
+      }
+      return -1;
+    }
+    function ui(){
+      root.querySelectorAll('.an-tool').forEach(b => b.classList.toggle('on', b.dataset.t === S.tool));
+      root.querySelectorAll('.an-sw').forEach(b => b.classList.toggle('on', b.dataset.c.toLowerCase() === S.color.toLowerCase()));
+      root.querySelectorAll('.an-sz').forEach(b => b.classList.toggle('on', +b.dataset.z === S.size));
+      const o = S.objs[S.sel];
+      root.querySelector('[data-a="del"]').style.display = o ? '' : 'none';
+      root.querySelector('[data-a="edit"]').style.display = (o && (o.t === 'text' || o.t === 'dim')) ? '' : 'none';
+      root.querySelector('[data-a="undo"]').style.opacity = S.hist.length ? '1' : '.35';
+      const HINTS = { arrow: 'Tire du point de départ vers la pointe', dim: 'Tire d\'un point à l\'autre, puis tape la mesure', line: 'Trait droit (à la règle) : tire d\'un point à l\'autre', circle: 'Entoure la zone en tirant en diagonale', rect: 'Encadre la zone en tirant en diagonale', text: 'Touche l\'endroit où écrire', free: 'Dessine librement au doigt', move: 'Touche un élément pour le déplacer · 2 doigts pour zoomer' };
+      hint.textContent = o ? 'Tire les ronds pour modifier · glisse l\'élément pour le déplacer' : (HINTS[S.tool] || '');
+    }
+    const askText = (msg, def) => { const v = prompt(msg, def || ''); return v == null ? null : String(v).trim(); };
+
+    // ── gestes : 1 doigt = dessiner / modifier, 2 doigts = zoomer / déplacer la vue
+    const ptrs = new Map();
+    let g = null;   // geste en cours
+    const scrPt = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const snapAngle = (a, b) => {   // règle : accroche horizontale / verticale / 45°
+      const d = Math.hypot(b.x - a.x, b.y - a.y); if(d < 1) return b;
+      const ang = Math.atan2(b.y - a.y, b.x - a.x), step = Math.PI / 4, near = Math.round(ang / step) * step;
+      return Math.abs(ang - near) < 0.12 ? { x: a.x + Math.cos(near) * d, y: a.y + Math.sin(near) * d } : b;
+    };
+    cv.addEventListener('pointerdown', e => {
+      e.preventDefault(); cv.setPointerCapture(e.pointerId);
+      ptrs.set(e.pointerId, scrPt(e));
+      if(ptrs.size === 2){   // pincer : on annule le trait commencé
+        S.tmp = null;
+        if(g && g.hist){ S.objs = JSON.parse(g.hist); }
+        const [p1, p2] = [...ptrs.values()];
+        g = { kind: 'pinch', d0: Math.hypot(p2.x - p1.x, p2.y - p1.y), k0: S.k, m0: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, ox0: S.ox, oy0: S.oy };
+        render(); return;
+      }
+      if(ptrs.size > 2) return;
+      const sp = scrPt(e), p = toImg(sp.x, sp.y);
+      const o = S.objs[S.sel];
+      // poignée de l'élément choisi ?
+      for(const hk of handles(o)){ const q = toScr(o[hk]); if(Math.hypot(q.x - sp.x, q.y - sp.y) < 26){ g = { kind: 'handle', hk, hist: snap(), sp }; return; } }
+      const h = hit(p);
+      if(o && h === S.sel && S.tool !== 'free'){ g = { kind: 'move', last: p, hist: snap(), sp }; return; }
+      if(S.tool === 'move'){
+        if(h >= 0){ S.sel = h; g = { kind: 'move', last: p, hist: snap(), sp }; render(); }
+        else { g = { kind: 'pan', sp, ox0: S.ox, oy0: S.oy }; S.sel = -1; render(); }
+        return;
+      }
+      if(S.tool === 'text'){ g = { kind: 'textTap', p, sp, h }; return; }
+      const base = { c: S.color, z: S.size };
+      S.tmp = S.tool === 'free' ? Object.assign(base, { t: 'free', p: [p] }) : Object.assign(base, { t: S.tool, a: p, b: { x: p.x, y: p.y } });
+      g = { kind: 'draw', sp, h };
+    });
+    cv.addEventListener('pointermove', e => {
+      if(!ptrs.has(e.pointerId)) return;
+      ptrs.set(e.pointerId, scrPt(e));
+      if(!g) return;
+      if(g.kind === 'pinch' && ptrs.size >= 2){
+        const [p1, p2] = [...ptrs.values()];
+        const d = Math.hypot(p2.x - p1.x, p2.y - p1.y), m = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+        const k = Math.max(S.fitK * 0.8, Math.min(S.fitK * 8, g.k0 * d / (g.d0 || 1)));
+        const ix = (g.m0.x - g.ox0) / g.k0, iy = (g.m0.y - g.oy0) / g.k0;   // point de la photo sous les doigts au départ
+        S.k = k; S.ox = m.x - ix * k; S.oy = m.y - iy * k;
+        render(); return;
+      }
+      const sp = scrPt(e), p = toImg(sp.x, sp.y);
+      if(g.kind === 'pan'){ S.ox = g.ox0 + sp.x - g.sp.x; S.oy = g.oy0 + sp.y - g.sp.y; render(); return; }
+      if(g.kind === 'handle'){ const o = S.objs[S.sel]; const other = o[g.hk === 'a' ? 'b' : 'a']; o[g.hk] = (o.t === 'line' || o.t === 'arrow' || o.t === 'dim') ? snapAngle(other, p) : p; S.changed = true; render(); return; }
+      if(g.kind === 'move'){
+        const o = S.objs[S.sel], dx = p.x - g.last.x, dy = p.y - g.last.y; g.last = p;
+        if(o.t === 'free') o.p = o.p.map(q => ({ x: q.x + dx, y: q.y + dy }));
+        else { o.a = { x: o.a.x + dx, y: o.a.y + dy }; if(o.b) o.b = { x: o.b.x + dx, y: o.b.y + dy }; }
+        S.changed = true; render(); return;
+      }
+      if(g.kind === 'draw' && S.tmp){
+        if(S.tmp.t === 'free') S.tmp.p.push(p);
+        else S.tmp.b = (S.tmp.t === 'line' || S.tmp.t === 'arrow' || S.tmp.t === 'dim') ? snapAngle(S.tmp.a, p) : p;
+        render();
+      }
+    });
+    const end = e => {
+      ptrs.delete(e.pointerId);
+      if(!g) return;
+      if(g.kind === 'pinch'){ if(ptrs.size === 0) g = null; return; }
+      const sp = scrPt(e), moved = Math.hypot(sp.x - g.sp.x, sp.y - g.sp.y);
+      if(g.kind === 'handle' || g.kind === 'move'){
+        if(moved > 3) { S.hist.push(g.hist); }
+        else if(g.kind === 'move'){ const o = S.objs[S.sel]; if(o && (o.t === 'text' || o.t === 'dim') && S.tool !== 'move'){ /* appui simple sur l'élément choisi */ } }
+        g = null; render(); return;
+      }
+      if(g.kind === 'pan'){ g = null; return; }
+      if(g.kind === 'textTap'){
+        g = null;
+        if(moved > 12) return;
+        if(g_h_text(sp)) return;
+        const s = askText('Texte à écrire sur la photo :');
+        if(s){ pushHist(); S.objs.push({ t: 'text', a: toImg(sp.x, sp.y), s, c: S.color, z: S.size }); S.sel = S.objs.length - 1; S.changed = true; }
+        render(); return;
+      }
+      if(g.kind === 'draw'){
+        const t = S.tmp; S.tmp = null;
+        const h = g.h; g = null;
+        const small = t.t === 'free' ? t.p.length < 3 : Math.hypot((t.b.x - t.a.x) * S.k, (t.b.y - t.a.y) * S.k) < 14;
+        if(small){ S.sel = h; render(); return; }   // simple appui : choisir l'élément touché (ou rien)
+        if(t.t === 'dim'){ const s = askText('Cote (ex : 120 cm, 2,50 m) :'); if(s === null){ render(); return; } t.s = s; }
+        pushHist(); S.objs.push(t); S.changed = true;
+        S.sel = t.t === 'free' ? -1 : S.objs.length - 1;
+        render();
+      }
+    };
+    // Outil Texte : appui sur un texte déjà posé = le choisir (pour le déplacer / le modifier)
+    function g_h_text(sp){ const h = hit(toImg(sp.x, sp.y)); if(h >= 0){ S.sel = h; render(); return true; } return false; }
+    cv.addEventListener('pointerup', end);
+    cv.addEventListener('pointercancel', end);
+
+    root.querySelectorAll('.an-tool').forEach(b => b.onclick = () => { S.tool = b.dataset.t; S.sel = -1; try{ localStorage.setItem('rw-annot-tool', S.tool); }catch(_){} render(); });
+    root.querySelectorAll('.an-sw').forEach(b => b.onclick = () => { S.color = b.dataset.c; try{ localStorage.setItem('rw-annot-color', S.color); }catch(_){} const o = S.objs[S.sel]; if(o){ pushHist(); o.c = S.color; S.changed = true; } render(); });
+    root.querySelectorAll('.an-sz').forEach(b => b.onclick = () => { S.size = +b.dataset.z; const o = S.objs[S.sel]; if(o){ pushHist(); o.z = S.size; S.changed = true; } render(); });
+    const finish = async ok => {
+      window.removeEventListener('resize', fit);
+      if(!ok){ root.remove(); _rwAn = null; resolve(null); return; }
+      if(!S.objs.length){ root.remove(); _rwAn = null; resolve({ file: null, changed: false }); return; }
+      // image finale en pleine taille (3000 px maxi)
+      const e = Math.min(1, 3000 / Math.max(W, H));
+      const out = document.createElement('canvas'); out.width = Math.round(W * e); out.height = Math.round(H * e);
+      const oc = out.getContext('2d'); oc.scale(e, e); oc.drawImage(img, 0, 0, W, H); S.objs.forEach(o => drawObj(oc, o));
+      const blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.9));
+      root.remove(); _rwAn = null;
+      resolve(blob ? { file: new File([blob], 'photo-annotee-' + Date.now() + '.jpg', { type: 'image/jpeg' }), changed: true } : null);
+    };
+    root.querySelector('[data-a="cancel"]').onclick = () => { if(S.objs.length && !confirm('Abandonner les annotations ?')) return; finish(false); };
+    root.querySelector('[data-a="ok"]').onclick = () => finish(true);
+    root.querySelector('[data-a="undo"]').onclick = () => { if(!S.hist.length) return; S.objs = JSON.parse(S.hist.pop()); S.sel = -1; render(); };
+    root.querySelector('[data-a="del"]').onclick = () => { if(S.sel < 0) return; pushHist(); S.objs.splice(S.sel, 1); S.sel = -1; render(); };
+    root.querySelector('[data-a="edit"]').onclick = () => {
+      const o = S.objs[S.sel]; if(!o) return;
+      const s = askText(o.t === 'dim' ? 'Cote :' : 'Texte :', o.s);
+      if(s === null) return;
+      pushHist();
+      if(o.t === 'text' && !s){ S.objs.splice(S.sel, 1); S.sel = -1; } else o.s = s;
+      render();
+    };
+    window.addEventListener('resize', fit);
+    requestAnimationFrame(fit);
+  });
+}
+
+/* Relire les photos avant l'envoi : ✏️ annoter, ✕ retirer, puis « Envoyer ». */
+function rwReviewPhotos(files, title){
+  return new Promise(resolve => {
+    _rwAnCSS();
+    let list = files.map(f => ({ f, url: URL.createObjectURL(f), edited: false }));
+    const ex = document.getElementById('rwReview'); if(ex) ex.remove();
+    const root = document.createElement('div');
+    root.id = 'rwReview';
+    document.body.appendChild(root);
+    const close = val => { list.forEach(x => URL.revokeObjectURL(x.url)); root.remove(); resolve(val); };
+    const draw = () => {
+      root.innerHTML = `
+        <div class="rv-top">
+          <button class="rv-b" data-a="cancel">✕</button>
+          <div style="flex:1;min-width:0;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📸 ${list.length} photo${list.length > 1 ? 's' : ''}${title ? ' · ' + escapeHtml(title) : ''}</div>
+        </div>
+        <div style="padding:8px 12px 0;font-size:12.5px;color:rgba(255,255,255,.7);">Touche une photo pour l'annoter (flèches, cotes, texte…) · ✕ pour la retirer</div>
+        <div class="rv-grid">${list.map((x, i) => `
+          <div class="rv-cell" data-i="${i}">
+            <img src="${x.url}" alt="">
+            ${x.edited ? '<span class="rv-done">✏️ annotée</span>' : ''}
+            <button class="rv-x" data-x="${i}">✕</button>
+            <button class="rv-pen" data-i="${i}">✏️ Annoter</button>
+          </div>`).join('')}</div>
+        <div class="rv-bottom"><button class="rv-b rv-ok" data-a="send" style="width:100%;height:52px;font-size:16px;" ${list.length ? '' : 'disabled'}>⬆️ Envoyer ${list.length} photo${list.length > 1 ? 's' : ''}</button></div>`;
+      root.querySelector('[data-a="cancel"]').onclick = () => { if(confirm('Annuler l\'envoi de ces photos ?')) close(null); };
+      root.querySelector('[data-a="send"]').onclick = () => close(list.map(x => x.f));
+      root.querySelectorAll('.rv-x').forEach(b => b.onclick = ev => { ev.stopPropagation(); const i = +b.dataset.x; URL.revokeObjectURL(list[i].url); list.splice(i, 1); draw(); });
+      root.querySelectorAll('.rv-cell').forEach(c => c.onclick = async () => {
+        const i = +c.dataset.i, x = list[i];
+        const r = await rwAnnotatePhoto(x.f, { okLabel: 'OK' });
+        if(r && r.file){ URL.revokeObjectURL(x.url); x.f = r.file; x.url = URL.createObjectURL(r.file); x.edited = true; draw(); }
+      });
+    };
+    draw();
+  });
+}
+
 /* ═══ v5.41.267 — Photos d'un chantier : rafale (2 à 20 photos d'affilée), import rapide, envoi accéléré ═══ */
 const RW_BURST_MAX = 20;
 
@@ -17419,6 +17833,12 @@ async function _rwUploadSitePhotos(siteId, files){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site || !files || !files.length) return;
   if(files.length > RW_BURST_MAX){ showToast('📸 ' + RW_BURST_MAX + ' photos maxi par envoi : les ' + RW_BURST_MAX + ' premières sont envoyées'); files = files.slice(0, RW_BURST_MAX); }
+  // v5.41.269 — relire avant l'envoi : annoter (flèches, cotes, texte…) ou retirer des photos
+  if(!(files.length && files.every(f => /pdf/i.test(f.type || '')))){
+    const rv = await rwReviewPhotos(files, site.name);
+    if(!rv || !rv.length){ showToast('Envoi annulé'); return; }
+    files = rv;
+  }
   const total = files.length;
   let done = 0, failed = 0, next = 0;
   showToast('⬆️ ' + total + ' photo' + (total > 1 ? 's' : '') + ' en cours d\'envoi en arrière-plan — tu peux continuer');
@@ -17537,8 +17957,9 @@ function _mediaFabPickFile(siteId, { accept, capture, multiple }){
     if(!files.length){ input.remove(); return; }
     // Un seul fichier → comportement direct
     if(files.length === 1){
-      await addSharedMediaToSite(siteId, await _rwShrinkPhoto(files[0]));
       input.remove();
+      if(String(files[0].type || '').startsWith('image/')){ await _rwUploadSitePhotos(siteId, files); return; }   // v5.41.269 : relecture / annotation
+      await addSharedMediaToSite(siteId, files[0]);
       _rwAfterSitePhotos(siteId);
       return;
     }
@@ -37423,9 +37844,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.268';
+const APP_VERSION = '5.41.269';
 
 const CHANGELOG = [
+  {
+    version: '5.41.269',
+    date: '30/09/2026',
+    entries: [
+      { icon: '✏️', text: "Annoter les photos avant de les envoyer : ➡️ flèches, ↔️ cotes (flèche d'un point à un autre avec la mesure), 📏 traits à la règle (s'accrochent à l'horizontale, la verticale et 45°), ⭕ cercles pour entourer, ▭ cadres, 🔤 texte, ✏️ dessin libre — 6 couleurs, 3 épaisseurs. Tout reste modifiable au doigt : touche un élément puis tire ses ronds, glisse-le pour le déplacer, 🗑️ pour le supprimer, ↶ pour revenir en arrière, 2 doigts pour zoomer." },
+      { icon: '📸', text: "Import de photos sur un chantier : un écran de relecture s'ouvre avant l'envoi — touche une photo pour l'annoter, ✕ pour la retirer, puis « Envoyer »." },
+      { icon: '💬', text: "Messages : la photo (depuis l'appareil ou la galerie de l'app) s'ouvre dans l'outil d'annotation avant l'envoi. « Envoyer » sans rien dessiner = la photo telle quelle." },
+    ],
+  },
   {
     version: '5.41.268',
     date: '30/09/2026',
@@ -59766,12 +60196,16 @@ function _chatAttachFromDevice(){
   input.type = 'file'; input.accept = 'image/*'; input.style.display = 'none';
   document.body.appendChild(input);
   input.onchange = async () => {
-    const file = input.files && input.files[0]; input.remove();
+    let file = input.files && input.files[0]; input.remove();
     if(!file || !_chatAttachTarget) return;
+    // v5.41.269 — annoter la photo (flèches, cotes, texte…) avant de l'envoyer
+    const an = await rwAnnotatePhoto(file, { okLabel: 'Envoyer' });
+    if(!an){ showToast('Envoi annulé'); return; }
+    if(an.file) file = an.file;
     showToast('⏳ Envoi en cours…');
     try{
-      const jpeg = await _photoToJpegFile(file);
-      const up = jpeg || file;
+      const jpeg = an.file ? null : await _photoToJpegFile(file);
+      const up = await _rwShrinkPhoto(jpeg || file);
       const siteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage';
       const url = await uploadFileToSupabase(up, siteId, { skipDropbox:true });
       const ok = await _chatSendPhotoAlert(url, null, 'photo');
@@ -59816,7 +60250,14 @@ function _chatAttachOpenPhotoFolder(siteId){
 async function _chatAttachPickPhoto(url){
   _closeChatAttachMenu();
   if(!_chatAttachTarget) return;
+  // v5.41.269 — possibilité d'annoter la photo de la galerie avant de l'envoyer
+  const an = await rwAnnotatePhoto(url, { okLabel: 'Envoyer' });
+  if(!an){ showToast('Envoi annulé'); return; }
   showToast('⏳ Envoi en cours…');
+  if(an.file){
+    try{ const siteId = (data.sites && data.sites[0] && data.sites[0].id) || 'depannage'; url = await uploadFileToSupabase(an.file, siteId, { skipDropbox: true }); }
+    catch(e){ showToast('❌ Échec de l\'envoi'); return; }
+  }
   const ok = await _chatSendPhotoAlert(url, null, 'photo');
   if(ok){ showToast('✅ Photo envoyée'); await _refreshOpenChatThread(); }
   else showToast('❌ Échec de l\'envoi');
