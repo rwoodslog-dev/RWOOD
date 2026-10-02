@@ -8746,17 +8746,71 @@ function mergeAttendanceGranular(localAtt, remoteAtt){
   const remote = remoteAtt || {};
   const dateKeys = new Set([...Object.keys(local), ...Object.keys(remote)]);
   const merged = {};
+  // v5.41.287 — chaque fiche (jour × ouvrier) porte la date de sa dernière
+  // modification (_ts, posée par _attStamp au moment de saveData). À la
+  // fusion, la version la PLUS RÉCENTE gagne. Avant, la copie locale
+  // gagnait toujours : si le téléphone avait perdu la correction (appli
+  // fermée juste après, copie locale pas encore écrite) ou si la correction
+  // avait été faite sur un autre appareil, l'ancienne valeur locale
+  // revenait à la réouverture et écrasait la correction sur le serveur.
+  const newer = (a, b) => (+(a && a._ts) || 0) > (+(b && b._ts) || 0);
   dateKeys.forEach(dateKey => {
     const l = local[dateKey];
     const r = remote[dateKey];
     if(!l){ merged[dateKey] = r; return; }
     if(!r){ merged[dateKey] = l; return; }
-    merged[dateKey] = {
-      siteId: l.siteId != null ? l.siteId : r.siteId,
-      workers: Object.assign({}, r.workers, l.workers)
-    };
+    const dayBase = newer(r, l) ? r : l, dayOther = dayBase === r ? l : r;
+    const day = Object.assign({}, dayOther, dayBase);
+    delete day.workers;
+    if(day.siteId == null) day.siteId = dayOther.siteId != null ? dayOther.siteId : null;
+    const lw = l.workers || {}, rw = r.workers || {};
+    const workers = {};
+    new Set([...Object.keys(rw), ...Object.keys(lw)]).forEach(wid => {
+      const le = lw[wid], re = rw[wid];
+      if(!le){ workers[wid] = re; return; }
+      if(!re){ workers[wid] = le; return; }
+      workers[wid] = newer(re, le) ? re : le;   // égalité / pas de date : le local garde la main (comme avant)
+    });
+    day.workers = workers;
+    merged[dateKey] = day;
   });
   return merged;
+}
+
+/* v5.41.287 — horodatage des fiches d'heures modifiées (voir mergeAttendanceGranular). */
+let _attSnap = null;
+function _attSig(o, isDay){
+  try{
+    const c = Object.assign({}, o || {}); delete c._ts;
+    if(isDay) delete c.workers;
+    return JSON.stringify(c);
+  }catch(e){ return ''; }
+}
+function _attSnapshot(){
+  const att = data && data.attendance;
+  _attSnap = {};
+  if(!att || Array.isArray(att)) return;
+  Object.keys(att).forEach(k => {
+    const d = att[k]; if(!d) return;
+    _attSnap[k] = _attSig(d, true);
+    Object.keys(d.workers || {}).forEach(w => { _attSnap[k + '|' + w] = _attSig(d.workers[w]); });
+  });
+}
+function _attStamp(){
+  const att = data && data.attendance;
+  if(!att || Array.isArray(att)) return;
+  if(!_attSnap){ _attSnapshot(); return; }
+  const now = Date.now();
+  Object.keys(att).forEach(k => {
+    const d = att[k]; if(!d) return;
+    const ds = _attSig(d, true);
+    if(_attSnap[k] !== ds){ d._ts = now; _attSnap[k] = ds; }
+    Object.keys(d.workers || {}).forEach(w => {
+      const e = d.workers[w]; if(!e || typeof e !== 'object') return;
+      const sig = _attSig(e);
+      if(_attSnap[k + '|' + w] !== sig){ e._ts = now; _attSnap[k + '|' + w] = sig; }
+    });
+  });
 }
 
 function mergeSyncedData(local, remote){
@@ -9710,7 +9764,9 @@ async function syncPull(){
     const remoteData = rows[0].data;
     if(!remoteData) return false;
     // Fusion : préserve les photos locales (non synchronisées via le cloud)
+    try{ _attStamp(); }catch(e){}            // modifs locales pas encore horodatées : on les date AVANT de fusionner
     data = mergeSyncedData(data, remoteData);
+    try{ _attSnapshot(); }catch(e){}         // ce qui vient du serveur n'est pas une modif locale
     localStorage.setItem('rwood-data', JSON.stringify(prepareDataForLocalStorage(data)));
     showSyncStatus('ok');
     return true;
@@ -10012,6 +10068,8 @@ async function loadData(){
     }catch(e){ /* migration best-effort, ne bloque jamais le boot */ }
     localStorage.setItem('rwood-sync-migration-done', '1');
   }
+
+  try{ _attSnapshot(); }catch(e){}   // v5.41.287 : état de référence des fiches d'heures
 
   await initRwoodStorage();
 
@@ -10561,6 +10619,7 @@ function debouncedSyncPush(){
 }
 
 async function saveData(skipSync){
+  try{ _attStamp(); }catch(e){}
   try{
     localStorage.setItem('rwood-data', JSON.stringify(prepareDataForLocalStorage(data)));
     if(!skipSync) debouncedSyncPush();
@@ -38501,9 +38560,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.286';
+const APP_VERSION = '5.41.287';
 
 const CHANGELOG = [
+  {
+    version: '5.41.287',
+    date: '02/10/2026',
+    entries: [
+      { icon: '🛠️', text: "Fiches d'heures : une correction faite dans le tableau de la semaine n'est plus remplacée par l'ancienne valeur à la réouverture de l'appli (la version la plus récente gagne toujours, sur tous tes appareils)." },
+    ],
+  },
   {
     version: '5.41.286',
     date: '01/10/2026',
@@ -47228,8 +47294,18 @@ function flushPointageSync(){
   _pointageSyncTimer = null;
   try{ pushPointageToSupabase(); }catch(e){}
 }
-document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') flushPointageSync(); });
-window.addEventListener('pagehide', flushPointageSync);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden'){ flushPointageSync(); _flushSyncPush(); } });
+/* v5.41.287 — l'appli passe en arrière-plan : on envoie tout de suite la
+   sauvegarde en attente (sinon une correction faite juste avant de fermer
+   l'appli pouvait ne jamais partir). */
+function _flushSyncPush(){
+  try{
+    if(!_syncPushTimer) return;
+    clearTimeout(_syncPushTimer); _syncPushTimer = null;
+    if(navigator.onLine && getSupaUserId()) syncPush().then(() => { localStorage.setItem('rwood-last-sync-ts', Date.now().toString()); });
+  }catch(e){}
+}
+window.addEventListener('pagehide', () => { flushPointageSync(); _flushSyncPush(); });
 
 /* Identifiant unique de cet appareil/utilisateur pour ne pas ecraser les autres */
 function getDeviceSyncId(){
