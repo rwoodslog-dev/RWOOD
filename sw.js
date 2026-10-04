@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v862';
+const CACHE_NAME = 'rwood-cache-v854';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -33,8 +33,6 @@ const ASSETS = [
   './icons/montre.png',
   './icons/motif-outils.jpg',
   './icons/motif-outils-pc.jpg',
-  './icons/fond-charpente.jpg',
-  './icons/fond-charpente-pc.jpg',
   './icons/engrenage.png',
   './icons/monnaie.png',
   './icons/ordinateur.png',
@@ -181,6 +179,6 @@ self.addEventListener('notificationclick', (event) => {
         return;
       }
     }
-    if(clients.openWindow) return clients.openWindow(view ? './index.html#' + encodeURIComponent(view) : './index.html');
+    if(clients.openWindow) return clients.openWindow(view ? './index.html#' + view : './index.html');
   }));
 });
