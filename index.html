@@ -6357,6 +6357,18 @@
     <section class="view" id="view-dev">
       <div class="view-heading">🛠️ Dev</div>
 
+      <!-- v5.41.305 — Multi-entreprise (étape B) : test de la porte d'entrée -->
+      <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);" id="rwGwCard">
+        <div style="font-weight:700; margin-bottom:6px;">🏢 Multi-entreprise · porte d'entrée</div>
+        <div class="hint" style="margin-bottom:10px;">Fait passer les données de CET appareil par la porte d'entrée « rwood-gateway ». En cas de problème, l'appli revient toute seule à l'accès direct.</div>
+        <div style="display:flex; align-items:center; gap:12px; cursor:pointer;" onclick="rwGwToggle()">
+          <div id="rwGwSwitch" class="rw-sw"><i></i></div>
+          <div style="flex:1; font-size:14px; font-weight:600;">Passer par la porte d'entrée (cet appareil)</div>
+        </div>
+        <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwGwTest()">🔎 Tester la porte d'entrée</button>
+        <div id="rwGwStatus" class="hint" style="margin-top:8px;"></div>
+      </div>
+
       <!-- Actions rapides -->
             <div class="card" style="margin-bottom:14px; border:1.5px solid var(--wood);">
         <div style="font-weight:700; margin-bottom:6px;">🧊 Atelier 3D <span style="font-size:10px;font-weight:800;background:#E8AC3D;color:#1a0d00;border-radius:6px;padding:1px 6px;">BÊTA · PC</span></div>
@@ -8986,7 +8998,45 @@ function getSupaUserId(){
     : null;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   MODULE — Porte d'entrée multi-entreprise « rwood-gateway » (v5.41.305, étape B)
+   Quand elle est activée, toutes les requêtes vers rwood_sync passent par
+   l'Edge Function rwood-gateway, qui range chaque donnée dans l'entreprise
+   de la personne (ton entreprise d'origine RWOOD : clés inchangées).
+   Interrupteur : DEV › Multi-entreprise (par appareil), sinon RW_GW_DEFAULT.
+   Repli automatique sur l'accès direct si la porte ne répond pas, tant
+   qu'on est dans l'entreprise d'origine (jamais pour une autre entreprise).
+   ══════════════════════════════════════════════════════════════════════ */
+const RW_GW_DEFAULT = 'off';   // 'on' quand l'étape B est validée pour tout le monde
+window._rwGwStats = { ok:0, fallback:0, last:'' };
+function _rwGwMode(){ try{ const v = localStorage.getItem('rwood-gw'); if(v === 'on' || v === 'off') return v; }catch(e){} return RW_GW_DEFAULT; }
+function _rwGwCompany(){ return (typeof data !== 'undefined' && data && data.settings && data.settings.companyCode) || ''; }
+async function _rwGwCall(payload){
+  return fetch(SUPA_URL + '/functions/v1/rwood-gateway', {
+    method:'POST',
+    headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
+    body: JSON.stringify(Object.assign({
+      company: _rwGwCompany() || undefined,
+      rwoodId: (typeof data !== 'undefined' && data && data.settings && data.settings.auth && data.settings.auth.authId) || undefined,
+      asCompany: window._rwDevAsCompany || undefined
+    }, payload))
+  });
+}
 async function supaFetch(path, options={}){
+  if(path.indexOf('/rest/v1/rwood_sync') === 0 && _rwGwMode() === 'on'){
+    const h = Object.assign({ 'Prefer':'return=minimal' }, options.headers || {});
+    let body; if(options.body != null){ try{ body = JSON.parse(options.body); }catch(e){ body = options.body; } }
+    const qi = path.indexOf('?');
+    try{
+      const r = await _rwGwCall({ method:(options.method || 'GET').toUpperCase(), query: qi >= 0 ? path.slice(qi + 1) : '', body, prefer: h['Prefer'] || '' });
+      if(r.status !== 404 && r.status < 500){ window._rwGwStats.ok++; return r; }
+      window._rwGwStats.last = 'HTTP ' + r.status;
+    }catch(e){ window._rwGwStats.last = String(e && e.message || e); }
+    // Repli sur l'accès direct : seulement pour l'entreprise d'origine
+    if(_rwGwCompany() && !window._rwGwLegacy){ return new Response('[]', { status:503 }); }
+    window._rwGwStats.fallback++;
+    console.warn('[gateway] repli accès direct :', window._rwGwStats.last);
+  }
   const res = await fetch(SUPA_URL + path, {
     ...options,
     headers: {
@@ -10736,6 +10786,7 @@ function toggleParametres(){
 function goTo(viewName, siteId){
   try{ history.pushState({rwoodView:viewName, siteId:siteId||null}, ''); }catch(e){}
   try{ if(typeof rhOnView === 'function') rhOnView(viewName); }catch(e){} // MODULE — Aide des onglets « ? »
+  if(viewName === 'dev') setTimeout(() => { try{ rwGwRender(); }catch(e){} }, 50); // MODULE — Porte d'entrée multi-entreprise
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
   // Paramètres n'est plus une .view classique mais une pop-up (voir
@@ -30671,6 +30722,40 @@ function _paramApplyRoles(){
   try{ if(sessionStorage.getItem('rwood-param-adv')) _paramAdvToggle(true); }catch(e){}
 }
 
+/* DEV › Multi-entreprise : interrupteur + test de la porte d'entrée */
+function rwGwRender(){
+  const sw = document.getElementById('rwGwSwitch'); if(sw) sw.classList.toggle('on', _rwGwMode() === 'on');
+  const st = document.getElementById('rwGwStatus');
+  if(st && !st.dataset.busy){ const S = window._rwGwStats; st.innerHTML = 'Mode : <b>' + (_rwGwMode() === 'on' ? 'porte d\'entrée' : 'accès direct') + '</b> · requêtes OK : ' + S.ok + ' · replis : ' + S.fallback + (S.last ? ' · dernier souci : ' + escapeHtml(S.last) : ''); }
+}
+function rwGwToggle(){
+  try{ localStorage.setItem('rwood-gw', _rwGwMode() === 'on' ? 'off' : 'on'); }catch(e){}
+  rwGwRender(); showToast(_rwGwMode() === 'on' ? '🏢 Porte d\'entrée activée sur cet appareil' : 'Accès direct (porte d\'entrée désactivée)');
+}
+async function rwGwTest(){
+  const st = document.getElementById('rwGwStatus'); if(!st) return;
+  st.dataset.busy = '1'; st.textContent = '⏳ Test en cours…';
+  try{
+    const r = await _rwGwCall({ op:'whoami' });
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    // Lecture réelle de ma ligne via la porte, comparée à l'accès direct
+    const id = data.settings && data.settings.auth && data.settings.auth.authId;
+    let same = '—';
+    if(id){
+      const q = 'user_id=eq.' + encodeURIComponent(id) + '&select=updated_at';
+      const a = await (await _rwGwCall({ method:'GET', query:q, prefer:'' })).json().catch(() => null);
+      const b = await (await fetch(SUPA_URL + '/rest/v1/rwood_sync?' + q, { headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } })).json().catch(() => null);
+      same = (JSON.stringify(a) === JSON.stringify(b) && Array.isArray(a)) ? '✅ identique à l\'accès direct' : '⚠️ différent (' + JSON.stringify(a).slice(0, 80) + ')';
+    }
+    st.innerHTML = '✅ Porte d\'entrée OK · entreprise <b>' + escapeHtml(j.company) + '</b>' + (j.legacy ? ' (origine)' : '') + ' · identifié par <b>' + (j.via === 'google' ? 'compte Google' : 'code') + '</b>' + (j.isDev ? ' · DEV' : '') + '<br>Ma fiche : ' + same;
+    window._rwGwLegacy = !!j.legacy;
+  }catch(e){
+    st.innerHTML = '❌ Porte d\'entrée injoignable : ' + escapeHtml(String(e.message || e)) + '<br><small>Elle est peut-être pas encore déployée (Supabase › Edge Functions › rwood-gateway).</small>';
+  }
+  delete st.dataset.busy;
+}
+
 function updateTeamName(value){
   if(!data.settings) data.settings = {};
   data.settings.teamName = value.trim();
@@ -38128,9 +38213,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.304';
+const APP_VERSION = '5.41.305';
 
 const CHANGELOG = [
+  {
+    version: '5.41.305',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🔧', text: "Préparation du multi-entreprise (en test, rien ne change pour toi)." },
+    ],
+  },
   {
     version: '5.41.304',
     date: '04/10/2026',
