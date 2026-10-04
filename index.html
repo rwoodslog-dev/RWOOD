@@ -34908,14 +34908,27 @@ function renderCalcHistoryList(tool){
        - maximum : on prend le plus petit nombre de solives qui respecte
          l'entraxe maxi, réparties régulièrement.
    ═══════════════════════════════════════════════════════════════════════ */
-const R3_STEPS = ['ouvrage','mode','L','section','first','last','qty','result'];
-let r3 = null;
-function _r3Def(){
-  let sv = {}; try{ sv = JSON.parse(localStorage.getItem('rwood-r3') || '{}') || {}; }catch(e){}
-  return { step:'ouvrage', ouvrage:'solivage', mode: sv.mode || 'count', L: sv.L || '', w: sv.w || '', h: sv.h || '',
-    first: sv.first !== false, last: sv.last !== false, n: sv.n || '', e: sv.e || '', eKind: sv.eKind || 'exact' };
+const R3_STEPS_SOL = ['ouvrage','mode','L','section','first','last','qty','result'];
+function _r3Steps(){
+  const s = r3 && r3.s; if(!s || s.ouvrage !== 'chevrons') return R3_STEPS_SOL;
+  const a = ['ouvrage','mode','L','section','echelle'];
+  if(s.ech && _r3n(s.D) > 0){ a.push('echRep'); if(s.echRep) a.push('onP'); else a.push('first','last'); }
+  else a.push('first','last');
+  return a.concat(['qty','result']);
 }
-function _r3Save(){ try{ const s = r3.s; localStorage.setItem('rwood-r3', JSON.stringify({ mode:s.mode, L:s.L, w:s.w, h:s.h, first:s.first, last:s.last, n:s.n, e:s.e, eKind:s.eKind })); }catch(e){} }
+let r3 = null;
+const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP'];
+function _r3Store(){ let sv = {}; try{ sv = JSON.parse(localStorage.getItem('rwood-r3') || '{}') || {}; }catch(e){} if(!sv.solivage && !sv.chevrons && sv.L !== undefined) sv = { solivage: sv }; return sv; }
+function _r3Def(ouv){
+  ouv = ouv || 'solivage';
+  const sv = _r3Store()[ouv] || {};
+  return { step:'ouvrage', ouvrage: ouv, mode: sv.mode || 'count', L: sv.L || '', w: sv.w || '', h: sv.h || '',
+    first: sv.first !== false, last: sv.last !== false, n: sv.n || '', e: sv.e || '', eKind: sv.eKind || (ouv === 'chevrons' ? 'max' : 'exact'),
+    T: sv.T || '200', ech: !!sv.ech, D: sv.D || '', echRep: sv.echRep !== false, onP: sv.onP !== false };
+}
+function _r3Save(){ try{ const s = r3.s, all = _r3Store(), o = {}; _R3_KEYS.forEach(k => o[k] = s[k]); all[s.ouvrage || 'solivage'] = o; localStorage.setItem('rwood-r3', JSON.stringify(all)); }catch(e){} }
+function r3PickOuvrage(o){ const keep = r3.s.step; r3.s = _r3Def(o); r3.s.step = keep; r3Go('mode'); }
+const _r3Word = (n) => { const ch = r3 && r3.s.ouvrage === 'chevrons'; return ch ? (n > 1 ? 'chevrons' : 'chevron') : (n > 1 ? 'solives' : 'solive'); };
 const _r3f = v => (Math.round(v * 10) / 10).toLocaleString('fr-FR') + ' mm';
 const _r3n = v => { const x = parseFloat(String(v).replace(',', '.')); return isFinite(x) ? x : NaN; };
 
@@ -34923,10 +34936,10 @@ const _r3n = v => { const x = parseFloat(String(v).replace(',', '.')); return is
 function _r3Count(L, w, N, first, last){
   if(!(N >= 1)) return null;
   let v;
-  if(first && last){ if(N < 2) return { err:'Il faut au moins 2 solives quand elles sont contre les deux murs.' }; v = (L - N * w) / (N - 1); }
+  if(first && last){ if(N < 2) return { err:'Il faut au moins 2 ' + _r3Word(2) + ' quand ils sont en appui des deux côtés.'.replace('ils', r3 && r3.s.ouvrage === 'chevrons' ? 'ils' : 'elles') }; v = (L - N * w) / (N - 1); }
   else if(first || last) v = (L - N * w) / N;
   else v = (L - N * w) / (N + 1);
-  if(v < 0) return { err:'Trop de solives : elles ne rentrent pas entre les murs.' };
+  if(v < 0) return { err:'Trop de ' + _r3Word(2) + ' : ça ne rentre pas dans cette longueur.' };
   const xs = [];
   for(let i = 0; i < N; i++){
     if(first) xs.push(w / 2 + i * (w + v));
@@ -34935,7 +34948,7 @@ function _r3Count(L, w, N, first, last){
   }
   return { xs, entraxe: w + v, vide: v };
 }
-function r3Layout(s){
+function _r3LayoutSpan(s){
   const L = _r3n(s.L), w = _r3n(s.w);
   if(!(L > 0) || !(w > 0)) return null;
   if(w * 2 > L) return { err:'La section est trop large pour cette distance.' };
@@ -34962,17 +34975,61 @@ function r3Layout(s){
         if(xs.length > (s.first ? 1 : 0) && lc > w && (L - w) - (lc + w / 2) < w){ xs.pop(); note = 'Une solive de la trame tombait à ' + _r3f((L - w) - (lc + w / 2)) + ' de la solive du mur B : elle est retirée.'; }
         xs.push(L - w / 2);
       }
-      const pans = [2500, 2440, 2400, 1250, 1220].filter(P => Math.abs(P / E - Math.round(P / E)) < 0.001 && P / E >= 1).map(P => P + ' (' + Math.round(P / E) + ' entraxes)');
-      res = { xs, entraxe: E, vide: E - w, exact: true, note, pans };
+      const pans = s.ouvrage === 'chevrons' ? null : [2500, 2440, 2400, 1250, 1220].filter(P => Math.abs(P / E - Math.round(P / E)) < 0.001 && P / E >= 1).map(P => P + ' (' + Math.round(P / E) + ' entraxes)');
+      res = { xs, entraxe: E, vide: E - w, exact: true, note: s.ouvrage === 'chevrons' ? note.replace(/solive/g, 'chevron').replace('mur B', 'pignon B') : note, pans };
     }
   }
+  if(res && !res.err){ res.z0 = 0; res.z1 = L; }
+  return res;
+}
+/* Chevrons : entre pignons, ou sur toute la longueur des pannes avec l'échelle de toit */
+function _r3LayoutChev(s){
+  const L = _r3n(s.L), w = _r3n(s.w), T = _r3n(s.T) > 0 ? _r3n(s.T) : 200, D = s.ech ? (_r3n(s.D) || 0) : 0;
+  if(!(L > 0) || !(w > 0)) return null;
+  const rep = s.ech && D > 0 && s.echRep, onP = rep && s.onP;
+  if(!rep){ const r = _r3LayoutSpan(s); if(r && !r.err) r.org = 'nu intérieur du pignon A'; return r; }
+  const x0 = -(T + D), x1 = L + T + D;
+  if(!onP){
+    const r = _r3LayoutSpan(Object.assign({}, s, { L: x1 - x0, first:true, last:true }));
+    if(r && !r.err){ r.xs = r.xs.map(x => x + x0); r.z0 = x0; r.z1 = x1; r.org = 'bout de panne côté A'; r.pans = null; }
+    return r;
+  }
+  // chevron de rive au bout des pannes + chevron au droit de chaque pignon : on harmonise l'échelle et l'entre-pignons
+  const a0 = x0 + w / 2, pA = -T / 2, pB = L + T / 2;
+  const S1 = pA - a0, S2 = pB - pA;
+  if(S1 < w * 1.5) return { err:'L\'échelle de toit est trop courte pour un chevron de rive en plus de celui du pignon.' };
+  const ok = (k1, k2) => { const e1 = S1 / k1, e2 = S2 / k2; return (e1 - w >= w * 0.2 && e2 - w >= w * 0.2) ? { k1, k2, e1, e2 } : null; };
+  let best = null;
+  if(s.mode === 'count'){
+    const N = parseInt(s.n, 10); if(!(N >= 1)) return null;
+    if(N < 4) return { err:'Avec l\'échelle de toit et un chevron sur chaque pignon, il faut au moins 4 chevrons.' };
+    for(let k1 = 1; k1 <= N; k1++){ const k2 = N - 1 - 2 * k1; if(k2 < 1) break; const c = ok(k1, k2); if(!c) continue; c.sc = Math.abs(c.e1 - c.e2); if(!best || c.sc < best.sc) best = c; }
+    if(!best) return { err:'Trop de chevrons pour cette longueur.' };
+  } else {
+    const E = _r3n(s.e); if(!(E > w)) return E > 0 ? { err:'L\'entraxe doit être plus grand que la largeur du bois.' } : null;
+    const m1 = Math.max(1, Math.ceil(S1 / E - 1e-9)), m2 = Math.max(1, Math.ceil(S2 / E - 1e-9));
+    for(let k1 = m1; k1 <= m1 + 2; k1++) for(let k2 = m2; k2 <= m2 + 3; k2++){
+      const c = ok(k1, k2); if(!c) continue;
+      c.sc = Math.abs(c.e1 - c.e2) + ((k1 - m1) * 2 + (k2 - m2)) * E * 0.15;
+      if(!best || c.sc < best.sc) best = c;
+    }
+    if(!best) return { err:'Entraxe impossible à respecter avec cette échelle de toit.' };
+  }
+  const xs = [];
+  for(let i = 0; i < best.k1; i++) xs.push(a0 + i * best.e1);
+  for(let i = 0; i < best.k2; i++) xs.push(pA + i * best.e2);
+  for(let i = 0; i <= best.k1; i++) xs.push(pB + i * best.e1);
+  return { xs, entraxe: best.e2, vide: best.e2 - w, harm: best, z0: x0, z1: x1, org:'bout de panne côté A', pA, pB };
+}
+function r3Layout(s){
+  const res = s.ouvrage === 'chevrons' ? _r3LayoutChev(s) : _r3LayoutSpan(s);
   if(!res || res.err) return res;
-  const xs = res.xs, gaps = [];
+  const w = _r3n(s.w), xs = res.xs, gaps = [];
   for(let i = 0; i + 1 < xs.length; i++) gaps.push(xs[i + 1] - xs[i] - w);
   res.gaps = gaps;
-  res.gapStart = xs.length ? xs[0] - w / 2 : L;
-  res.gapEnd = xs.length ? L - (xs[xs.length - 1] + w / 2) : 0;
-  res.L = L; res.w = w; res.h = _r3n(s.h) > 0 ? _r3n(s.h) : Math.max(w * 2.5, 150);
+  res.gapStart = xs.length ? xs[0] - w / 2 - res.z0 : res.z1 - res.z0;
+  res.gapEnd = xs.length ? res.z1 - (xs[xs.length - 1] + w / 2) : 0;
+  res.L = _r3n(s.L); res.w = w; res.h = _r3n(s.h) > 0 ? _r3n(s.h) : Math.max(w * 2.5, 150);
   return res;
 }
 
@@ -35011,17 +35068,20 @@ function _r3Draw(){
   }
   const L = [0.35, 0.8, 0.48], ll = Math.hypot(...L); const Ln = L.map(v => v / ll);
   const faces = [];
-  sc.boxes.forEach(b => {
-    const [x0, x1, y0, y1, z0, z1] = b.b;
-    const V = [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
-    const F = [[[0,1,2,3],[0,0,-1]],[[5,4,7,6],[0,0,1]],[[4,0,3,7],[-1,0,0]],[[1,5,6,2],[1,0,0]],[[3,2,6,7],[0,1,0]],[[4,5,1,0],[0,-1,0]]];
-    F.forEach(([idx, n]) => {
-      const pts3 = idx.map(i => V[i]);
-      const cx = pts3.reduce((a, p) => a + p[0], 0) / 4, cy = pts3.reduce((a, p) => a + p[1], 0) / 4, cz = pts3.reduce((a, p) => a + p[2], 0) / 4;
+  const objs = (sc.objs || []).concat((sc.boxes || []).map(_r3BoxObj));
+  objs.forEach(ob => {
+    const V = ob.V, oc = V.reduce((a, p) => [a[0] + p[0], a[1] + p[1], a[2] + p[2]], [0, 0, 0]).map(v => v / V.length);
+    ob.F.forEach(idx => {
+      const pts3 = idx.map(i => V[i]), m = pts3.length;
+      let n = [0, 0, 0];
+      for(let i = 0; i < m; i++){ const p = pts3[i], q = pts3[(i + 1) % m]; n[0] += (p[1] - q[1]) * (p[2] + q[2]); n[1] += (p[2] - q[2]) * (p[0] + q[0]); n[2] += (p[0] - q[0]) * (p[1] + q[1]); }
+      const nl = Math.hypot(...n); if(!nl) return; n = n.map(v => v / nl);
+      const cx = pts3.reduce((a, p) => a + p[0], 0) / m, cy = pts3.reduce((a, p) => a + p[1], 0) / m, cz = pts3.reduce((a, p) => a + p[2], 0) / m;
+      if((cx - oc[0]) * n[0] + (cy - oc[1]) * n[1] + (cz - oc[2]) * n[2] < 0) n = n.map(v => -v);
       if(r3.cam.ortho ? (n[0] * C.f[0] + n[1] * C.f[1] + n[2] * C.f[2] >= -0.001) : ((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] <= 0)) return;
       const pr = pts3.map(p => _r3P(p, C)); if(pr.some(p => !p)) return;
       const d = (cx - C.eye[0]) * C.f[0] + (cy - C.eye[1]) * C.f[1] + (cz - C.eye[2]) * C.f[2];
-      faces.push({ pr, d, n, b });
+      faces.push({ pr, d, n, b: ob });
     });
   });
   faces.sort((a, b) => b.d - a.d);
@@ -35073,6 +35133,25 @@ function _r3Draw(){
     ctx.fillStyle = tg.fg || '#1a0d00'; ctx.fillText(tg.t, p[0], p[1] + .5);
   });
 }
+function _r3BoxObj(b){
+  const [x0, x1, y0, y1, z0, z1] = b.b;
+  return { V:[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],
+    F:[[0,1,2,3],[5,4,7,6],[4,0,3,7],[1,5,6,2],[3,2,6,7],[4,5,1,0]], c:b.c, hl:b.hl, a:b.a };
+}
+/* prisme convexe : polygone (z,y) extrudé entre x0 et x1 */
+function _r3Prism(x0, x1, poly, c, hl, a){
+  const n = poly.length, V = poly.map(([z, y]) => [x0, y, z]).concat(poly.map(([z, y]) => [x1, y, z]));
+  const F = [poly.map((_, i) => i), poly.map((_, i) => n + i)];
+  for(let i = 0; i < n; i++){ const j = (i + 1) % n; F.push([i, j, n + j, n + i]); }
+  return { V, F, c, hl, a };
+}
+/* pièce inclinée (chevron) : dessous de p0 à p1 dans le plan (z,y), hauteur h perpendiculaire, largeur w en x */
+function _r3Beam(xc, w, p0, p1, h, c, hl){
+  const dz = p1[0] - p0[0], dy = p1[1] - p0[1], l = Math.hypot(dz, dy) || 1;
+  let nz = -dy / l, ny = dz / l; if(ny < 0){ nz = -nz; ny = -ny; }
+  const poly = [p0, p1, [p1[0] + nz * h, p1[1] + ny * h], [p0[0] + nz * h, p0[1] + ny * h]];
+  return _r3Prism(xc - w / 2, xc + w / 2, poly, c, hl);
+}
 function _r3RR(ctx, x, y, w, h, r){ ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 function _r3Loop(){
   if(!r3) return;
@@ -35123,7 +35202,8 @@ function _r3BindTouch(cv){
 }
 
 /* ── Scène selon l'étape ── */
-function _r3Build(){
+function _r3Build(){ return (r3.s.ouvrage === 'chevrons') ? _r3BuildChev() : _r3BuildSol(); }
+function _r3BuildSol(){
   // Repère : mur A en x=0 (à gauche), mur B en x=L ; solives le long de z ; on regarde depuis z>Lz (bout des solives devant).
   const s = r3.s, st = s.step;
   const Lv = _r3n(s.L) > 0 ? _r3n(s.L) : 4000, w = _r3n(s.w) > 0 ? _r3n(s.w) : 75, h = _r3n(s.h) > 0 ? _r3n(s.h) : 220;
@@ -35192,10 +35272,89 @@ function _r3Build(){
   return cam;
 }
 
+/* ── Scène chevrons : 2 pignons, sablières, pannes intermédiaires, faîtage ──
+   x le long du faîtage (pignon A à gauche), z en travers (égout devant, z>0), y vers le haut. */
+function _r3BuildChev(){
+  const s = r3.s, st = s.step;
+  const Lv = _r3n(s.L) > 0 ? _r3n(s.L) : 6000, w = _r3n(s.w) > 0 ? _r3n(s.w) : 63, h = _r3n(s.h) > 0 ? _r3n(s.h) : 175;
+  const T = _r3n(s.T) > 0 ? _r3n(s.T) : 200, D = s.ech ? (_r3n(s.D) > 0 ? _r3n(s.D) : 600) : 0;
+  const Wd = 3000, R = 1900, Hw = 2300, EO = 450, PB = 120, PH = 200;
+  const yr = z => Hw + R * (1 - Math.abs(z) / Wd);
+  const zE = Wd + EO, yE = yr(zE);
+  const WALL = '#8d8a84', WOOD = '#c9934f', PANNE = '#a8743a', HL = '#f0a93a';
+  const gable = [[-Wd, 0], [Wd, 0], [Wd, yr(Wd) - PH], [0, yr(0) - PH], [-Wd, yr(-Wd) - PH]];
+  const objs = [_r3Prism(-T, 0, gable, WALL), _r3Prism(Lv, Lv + T, gable, WALL)];
+  const px0 = -T - D, px1 = Lv + T + D;
+  [-(Wd - 60), -Wd / 2, 0, Wd / 2, Wd - 60].forEach(z => objs.push(_r3BoxObj({ b:[px0, px1, yr(z) - PH, yr(z), z - PB / 2, z + PB / 2], c: PANNE })));
+  const chev = (c, hl) => { objs.push(_r3Beam(c, w, [0, yr(0)], [zE, yE], h, hl ? HL : WOOD, hl)); objs.push(_r3Beam(c, w, [0, yr(0)], [-zE, yE], h, hl ? HL : WOOD, hl)); };
+  const dims = [], tags = [{ p:[-T / 2, Hw * 0.45, Wd + 5], t:'Pignon A', bg:'#ece6dc', force:true }, { p:[Lv + T / 2, Hw * 0.45, Wd + 5], t:'Pignon B', bg:'#ece6dc', force:true }];
+  const Ltot = px1 - px0;
+  const ov = { tx: Lv / 2, ty: Hw, tz: Wd * 0.25, yaw: -0.35, pitch: 0.42, dist: Math.max(Ltot, 2 * Wd) * 1.55 };
+  let cam = ov;
+  r3.minDist = 150; r3.maxDist = Math.max(Ltot, 2 * Wd) * 4;
+  const nAt = [0, 1]; // ex. dessin d'une normale de pente (pour les cotes de hauteur)
+  { const dz = zE, dy = yE - yr(0), l = Math.hypot(dz, dy); nAt[0] = -dy / l; nAt[1] = dz / l; if(nAt[1] < 0){ nAt[0] = -nAt[0]; nAt[1] = -nAt[1]; } }
+  const sideA = { tx: -T, ty: Hw + R * 0.35, tz: Wd * 0.45, yaw: -0.95, pitch: 0.32, dist: Math.max(2600, D * 3.5 + 2200) };
+  const lay = (st === 'qty' || st === 'result') ? r3Layout(s) : null;
+  if(st === 'L'){
+    dims.push({ a:[0, Hw * 0.62, Wd + 5], b:[Lv, Hw * 0.62, Wd + 5], t: _r3n(s.L) > 0 ? _r3f(Lv) : '? mm' });
+    dims.push({ a:[-T, Hw * 0.25, Wd + 5], b:[0, Hw * 0.25, Wd + 5], t:'ép. ' + _r3f(T), c:'#8fd0ff' });
+    cam = Object.assign({}, ov, { pitch: 0.3, yaw: -0.25 });
+  } else if(st === 'section'){
+    const c = Lv / 2; chev(c, true);
+    dims.push({ a:[c - w / 2, yE - 40, zE + 2], b:[c + w / 2, yE - 40, zE + 2], t:'Largeur ' + (_r3n(s.w) > 0 ? _r3f(w) : '?') });
+    dims.push({ a:[c + w / 2 + 45, yE, zE + 2], b:[c + w / 2 + 45, yE + nAt[1] * h, zE + nAt[0] * h + 2], t:'Hauteur ' + (_r3n(s.h) > 0 ? _r3f(h) : '?'), c:'#8fd0ff' });
+    cam = { tx: c, ty: yE + h / 2, tz: zE, yaw: -0.45, pitch: 0.25, dist: Math.max(w, h) * 3.6 + 260 };
+    r3.minDist = 120;
+  } else if(st === 'echelle' || st === 'echRep' || st === 'onP'){
+    if(s.ech) dims.push({ a:[-T, yr(Wd - 60) + 90, Wd + 40], b:[px0, yr(Wd - 60) + 90, Wd + 40], t: _r3n(s.D) > 0 ? 'débord ' + _r3f(D) : 'débord ?', c:'#8fd0ff' });
+    if(st !== 'echelle' && s.echRep) { chev(px0 + w / 2, true); tags.push({ p:[px0 + w / 2, yr(0) + h + 200, 0], t:'chevron de rive', bg:'#5aa96b', fg:'#fff' }); }
+    if(st === 'onP' && s.onP){ chev(-T / 2, true); tags.push({ p:[-T / 2, yr(0) + h + 420, 0], t:'sur le pignon', bg:'#5aa96b', fg:'#fff' }); }
+    cam = sideA;
+  } else if(st === 'first' || st === 'last'){
+    const isF = st === 'first', on = isF ? s.first : s.last;
+    const gap = Math.max(w * 1.6, Math.min(450, Lv * 0.08));
+    const c = isF ? (on ? w / 2 : gap + w / 2) : (on ? Lv - w / 2 : Lv - gap - w / 2);
+    chev(c, true);
+    if(!on) dims.push({ a:[isF ? 0 : c + w / 2, yE - 60, zE], b:[isF ? c - w / 2 : Lv, yE - 60, zE], t:'vide', c:'#8fd0ff' });
+    else tags.push({ p:[c, yr(Wd / 2) + h + 160, Wd / 2], t:'contre le pignon', bg:'#5aa96b', fg:'#fff' });
+    cam = { tx: isF ? 0 : Lv, ty: Hw + R * 0.4, tz: Wd * 0.5, yaw: isF ? 0.6 : -0.6, pitch: 0.4, dist: Math.max(2600, Math.min(Lv, 4000) * 0.9) };
+  } else if(lay && !lay.err){
+    const xs = lay.xs, axe = (r3.dimMode || 'axe') === 'axe';
+    xs.forEach(c => chev(c, false));
+    const rg = Math.max(260, Ltot * 0.075);
+    const row = i => ({ y: yE - rg * (0.8 + (i % 2)), z: zE + 120 + rg * (0.5 + (i % 2)) });
+    const z0 = lay.z0, z1 = lay.z1, seg = [];
+    if(axe){
+      seg.push([z0, xs[0]]); for(let i = 0; i + 1 < xs.length; i++) seg.push([xs[i], xs[i + 1]]); seg.push([xs[xs.length - 1], z1]);
+      xs.forEach(x => dims.push({ a:[x, yE, zE], b:[x, yE - rg * 1.8, zE + 120 + rg * 1.5], t:'', c:'rgba(255,207,107,.35)', thin:true }));
+    } else {
+      if(xs[0] - w / 2 - z0 > 0.5) seg.push([z0, xs[0] - w / 2]);
+      for(let i = 0; i + 1 < xs.length; i++) seg.push([xs[i] + w / 2, xs[i + 1] - w / 2]);
+      if(z1 - (xs[xs.length - 1] + w / 2) > 0.5) seg.push([xs[xs.length - 1] + w / 2, z1]);
+    }
+    seg.forEach(([a, b], i) => { const r = row(i); dims.push({ a:[a, r.y, r.z], b:[b, r.y, r.z], t: (Math.round((b - a) * 10) / 10).toLocaleString('fr-FR'), c: axe ? '#ffcf6b' : '#8fd0ff', fit:true }); });
+    dims.push({ a:[0, yE - rg * 3, zE + 120 + rg * 2.8], b:[Lv, yE - rg * 3, zE + 120 + rg * 2.8], t:'entre pignons ' + _r3f(Lv), c:'#ece6dc' });
+    if(z0 < -1) dims.push({ a:[z0, yE - rg * 3.9, zE + 120 + rg * 3.6], b:[z1, yE - rg * 3.9, zE + 120 + rg * 3.6], t:'pannes ' + _r3f(z1 - z0), c:'#ece6dc' });
+    const hi = lay.harm ? -1 : 0;
+    const up = (() => { const dz = -zE, dy = yr(0) - yE, l = Math.hypot(dz, dy); return [dz / l * rg * 0.9, dy / l * rg * 0.9]; })();
+    xs.forEach((c, i) => tags.push({ p:[c, yE + h + 60 + (i % 2) * up[1], zE - 80 + (i % 2) * up[0]], t: String(i + 1), num:true, bg: (lay.harm && (Math.abs(c - lay.pA) < 1 || Math.abs(c - lay.pB) < 1)) ? '#8fd0ff' : (i === hi || i === hi + 1 ? '#f0a93a' : '#ffffff') }));
+    const v = r3.view || '3d';
+    if(v === 'plan'){ cam = { tx: Lv / 2, ty: Hw, tz: Wd * 0.75, yaw: 0, pitch: 1.55, dist: Math.max(Ltot * 1.45, Wd * 2.4), ortho:true }; tags[0].p = [-T / 2, yr(0), 0]; tags[1].p = [Lv + T / 2, yr(0), 0]; }
+    else if(v === 'face'){ cam = { tx: Lv / 2, ty: yE - rg, tz: zE, yaw: 0, pitch: 0.02, dist: Ltot * 1.45, ortho:true }; tags[0].p = [-T / 2, yr(0) + 250, Wd]; tags[1].p = [Lv + T / 2, yr(0) + 250, Wd]; }
+    else if(v === 'cote'){
+      cam = { tx: Lv / 2, ty: Hw + R * 0.4, tz: 0, yaw: Math.PI / 2, pitch: 0.02, dist: Wd * 2.6, ortho:true };
+      objs[1].a = 0.15; tags.splice(0, 2);
+    }
+  }
+  r3.scene = { objs, boxes:[], dims, tags, floor:[px0 - 300, px1 + 300, -Wd - 900, Wd + 900] };
+  return cam;
+}
+
 /* ── Interface ── */
 function r3Mount(){
   const root = document.getElementById('r3Root'); if(!root) return;
-  if(!r3){ let dm = 'axe'; try{ dm = localStorage.getItem('rwood-r3-dim') || 'axe'; }catch(e){} r3 = { s: _r3Def(), view:'3d', dimMode: dm, cam:{ tx:2000, ty:500, tz:1500, yaw:-0.3, pitch:0.62, dist:7000 } }; }
+  if(!r3){ let dm = 'axe'; try{ dm = localStorage.getItem('rwood-r3-dim') || 'axe'; }catch(e){} r3 = { s: _r3Def('solivage'), view:'3d', dimMode: dm, cam:{ tx:2000, ty:500, tz:1500, yaw:-0.3, pitch:0.62, dist:7000 } }; }
   if(!root.dataset.built){
     root.dataset.built = '1';
     root.innerHTML = `<div class="r3-top"><button class="r3-back" id="r3Back" onclick="r3Back()">‹</button><div class="r3-dots" id="r3Dots"></div></div>
@@ -35215,9 +35374,10 @@ function r3Mount(){
 function r3Go(step, instant){
   r3.s.step = step;
   const s = r3.s, q = document.getElementById('r3Q'), wrap = document.getElementById('r3Wrap');
-  const i = R3_STEPS.indexOf(step);
+  const STEPS = _r3Steps(), i = STEPS.indexOf(step);
   document.getElementById('r3Back').style.visibility = i > 0 ? 'visible' : 'hidden';
-  document.getElementById('r3Dots').innerHTML = R3_STEPS.slice(2).map((k, j) => `<i class="${R3_STEPS.indexOf(k) <= i ? 'on' : ''}"></i>`).join('');
+  document.getElementById('r3Dots').innerHTML = STEPS.slice(2).map(k => `<i class="${STEPS.indexOf(k) <= i ? 'on' : ''}"></i>`).join('');
+  const CH = s.ouvrage === 'chevrons', MUR = CH ? 'pignon' : 'mur', P1 = CH ? 'chevron' : 'solive', P2 = CH ? 'chevrons' : 'solives';
   const show3d = i >= 2; wrap.style.display = show3d ? '' : 'none';
   const qty = s.mode === 'count';
   const inp = (id, val, ph, onin) => `<input id="${id}" class="r3-in" type="text" inputmode="decimal" value="${val}" placeholder="${ph}" oninput="${onin}" onkeydown="if(event.key==='Enter'){event.preventDefault();r3Next();}">`;
@@ -35225,31 +35385,43 @@ function r3Go(step, instant){
   let h = '';
   if(step === 'ouvrage'){
     h = `<div class="r3-t">Quel ouvrage ?</div>
-      <div class="r3-big"><button onclick="r3.s.ouvrage='solivage';r3Go('mode')"><b>🪵</b>Solivage<small>Solives entre deux murs</small></button>
-      <button class="off" onclick="showToast('Chevrons : bientôt disponible')"><b>🏠</b>Chevrons<small>Bientôt</small></button></div>`;
+      <div class="r3-big"><button onclick="r3PickOuvrage('solivage')"><b>🪵</b>Solivage<small>Solives entre deux murs</small></button>
+      <button onclick="r3PickOuvrage('chevrons')"><b>🏠</b>Chevrons<small>Sur pannes, entre pignons</small></button></div>`;
   } else if(step === 'mode'){
     h = `<div class="r3-t">Qu'est-ce que tu connais ?</div>
-      <div class="r3-big"><button onclick="r3.s.mode='count';r3Go('L')"><b>🔢</b>Le nombre<small>de solives à poser</small></button>
-      <button onclick="r3.s.mode='entraxe';r3Go('L')"><b>↔️</b>L'entraxe<small>ex : panneaux OSB</small></button></div>`;
+      <div class="r3-big"><button onclick="r3.s.mode='count';r3Go('L')"><b>🔢</b>Le nombre<small>de ${P2} à poser</small></button>
+      <button onclick="r3.s.mode='entraxe';r3Go('L')"><b>↔️</b>L'entraxe<small>${CH ? 'ex : 600 maxi' : 'ex : panneaux OSB'}</small></button></div>`;
   } else if(step === 'L'){
-    h = `<div class="r3-t">Distance entre le mur A et le mur B</div><div class="r3-s">Nu à nu, en mm</div>${inp('r3L', s.L, 'Ex : 4500', "r3.s.L=this.value;r3Refresh()")}${next()}`;
+    h = CH ? `<div class="r3-t">Distance entre le pignon A et le pignon B</div><div class="r3-s">Nu intérieur à nu intérieur, en mm</div>${inp('r3L', s.L, 'Ex : 8000', "r3.s.L=this.value;r3Refresh()")}
+        <div class="r3-row"><div><label>Épaisseur des pignons (mm)</label>${inp('r3T', s.T, 'Ex : 200', "r3.s.T=this.value;r3Refresh()")}</div></div>${next()}`
+      : `<div class="r3-t">Distance entre le mur A et le mur B</div><div class="r3-s">Nu à nu, en mm</div>${inp('r3L', s.L, 'Ex : 4500', "r3.s.L=this.value;r3Refresh()")}${next()}`;
   } else if(step === 'section'){
-    h = `<div class="r3-t">Section de tes solives</div><div class="r3-row"><div><label>Largeur (mm)</label>${inp('r3W', s.w, 'Ex : 75', "r3.s.w=this.value;r3Refresh()")}</div>
-      <div><label>Hauteur (mm)</label>${inp('r3H', s.h, 'Ex : 225', "r3.s.h=this.value;r3Refresh()")}</div></div>${next()}`;
+    h = `<div class="r3-t">Section de tes ${P2}</div><div class="r3-row"><div><label>Largeur (mm)</label>${inp('r3W', s.w, CH ? 'Ex : 63' : 'Ex : 75', "r3.s.w=this.value;r3Refresh()")}</div>
+      <div><label>Hauteur (mm)</label>${inp('r3H', s.h, CH ? 'Ex : 175' : 'Ex : 225', "r3.s.h=this.value;r3Refresh()")}</div></div>${next()}`;
+  } else if(step === 'echelle'){
+    h = `<div class="r3-t">Échelle de toit ?</div><div class="r3-s">Les pannes dépassent des pignons de chaque côté</div>
+      <div class="r3-yn"><button class="${s.ech ? 'on' : ''}" onclick="r3SetB('ech',true)">Oui</button><button class="${!s.ech ? 'on' : ''}" onclick="r3SetB('ech',false)">Non</button></div>
+      ${s.ech ? `<label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Débord depuis le nu extérieur du pignon (mm)</label>${inp('r3D', s.D, 'Ex : 600', "r3.s.D=this.value;r3Refresh()")}` : ''}${next()}`;
+  } else if(step === 'echRep'){
+    h = `<div class="r3-t">Répartir des chevrons sur l'échelle de toit ?</div><div class="r3-s">Oui : un chevron de rive au bout des pannes, et des chevrons sur le débord si besoin</div>
+      <div class="r3-yn"><button class="${s.echRep ? 'on' : ''}" onclick="r3SetB('echRep',true)">Oui</button><button class="${!s.echRep ? 'on' : ''}" onclick="r3SetB('echRep',false)">Non<small>seulement entre pignons</small></button></div>${next()}`;
+  } else if(step === 'onP'){
+    h = `<div class="r3-t">Un chevron au droit de chaque pignon ?</div><div class="r3-s">Axé sur le mur. L'appli harmonise alors au mieux l'entraxe de l'échelle de toit et celui entre pignons.</div>
+      <div class="r3-yn"><button class="${s.onP ? 'on' : ''}" onclick="r3SetB('onP',true)">Oui</button><button class="${!s.onP ? 'on' : ''}" onclick="r3SetB('onP',false)">Non<small>répartition régulière rive à rive</small></button></div>${next()}`;
   } else if(step === 'first' || step === 'last'){
     const isF = step === 'first', on = isF ? s.first : s.last;
-    h = `<div class="r3-t">${isF ? 'La 1<sup>re</sup> solive est en appui contre le mur A ?' : 'La dernière solive est en appui contre le mur B ?'}</div>
+    h = `<div class="r3-t">${CH ? (isF ? 'Le 1<sup>er</sup> chevron est contre le pignon A ?' : 'Le dernier chevron est contre le pignon B ?') : (isF ? 'La 1<sup>re</sup> solive est en appui contre le mur A ?' : 'La dernière solive est en appui contre le mur B ?')}</div>
       <div class="r3-yn"><button class="${on ? 'on' : ''}" onclick="r3YN(${isF},true)">Oui</button><button class="${!on ? 'on' : ''}" onclick="r3YN(${isF},false)">Non</button></div>${next()}`;
   } else if(step === 'qty'){
     if(qty){
-      h = `<div class="r3-t">Combien de solives entre A et B ?</div>
+      h = `<div class="r3-t">Combien de ${P2} ${CH && s.ech && s.echRep ? 'au total (rive à rive)' : 'entre A et B'} ?</div>
         <div class="r3-step"><button onclick="r3Inc(-1)">−</button>${inp('r3N', s.n, 'Ex : 8', "r3.s.n=this.value;r3Refresh()")}<button onclick="r3Inc(1)">＋</button></div>
         <div id="r3Live" class="r3-live"></div>${next('Voir le résultat')}`;
     } else {
       h = `<div class="r3-t">Entraxe souhaité</div>
         <div class="r3-chips">${[400, 500, 600, 610, 625].map(v => `<button class="${_r3n(s.e) === v ? 'on' : ''}" onclick="r3SetE(${v})">${v}</button>`).join('')}</div>
         ${inp('r3E', s.e, 'Entraxe en mm', "r3.s.e=this.value;r3Refresh();_r3ChipSync()")}
-        <div class="r3-yn r3-ek"><button class="${s.eKind === 'exact' ? 'on' : ''}" onclick="r3EK('exact')">Exact<small>jonctions de panneaux sur un axe</small></button><button class="${s.eKind === 'max' ? 'on' : ''}" onclick="r3EK('max')">Maximum<small>répartition régulière</small></button></div>
+        ${CH && s.ech && _r3n(s.D) > 0 && s.echRep && s.onP ? '<div class="r3-s" style="margin-top:8px;">Entraxe maximum : l\'appli harmonise l\'échelle de toit et l\'entre-pignons.</div>' : `<div class="r3-yn r3-ek"><button class="${s.eKind === 'exact' ? 'on' : ''}" onclick="r3EK('exact')">Exact<small>${CH ? 'axes comptés depuis le départ' : 'jonctions de panneaux sur un axe'}</small></button><button class="${s.eKind === 'max' ? 'on' : ''}" onclick="r3EK('max')">Maximum<small>répartition régulière</small></button></div>`}
         <div id="r3Live" class="r3-live"></div>${next('Voir le résultat')}`;
     }
   } else if(step === 'result'){
@@ -35261,7 +35433,7 @@ function r3Go(step, instant){
   _r3BarSync();
   if(show3d){
     const cam = _r3Build();
-    if(instant){ Object.assign(r3.cam, cam); r3.cam.ortho = !!cam.ortho; r3.camHome = cam; _r3Kick(); } else _r3Fly(cam, step === 'section' || R3_STEPS[i - 1] === 'section' ? 900 : 650);
+    if(instant){ Object.assign(r3.cam, cam); r3.cam.ortho = !!cam.ortho; r3.camHome = cam; _r3Kick(); } else _r3Fly(cam, step === 'section' || STEPS[i - 1] === 'section' ? 900 : 650);
   }
   _r3LiveTxt();
   const first = q.querySelector('.r3-in'); if(first && !instant && !first.value) setTimeout(() => { try{ first.focus(); }catch(e){} }, 350);
@@ -35282,8 +35454,9 @@ function _r3LiveTxt(){
   const lay = r3Layout(r3.s);
   if(!lay){ el.textContent = ''; return; }
   if(lay.err){ el.innerHTML = `<span style="color:#ff8a7a;">⚠️ ${escapeHtml(lay.err)}</span>`; return; }
-  el.innerHTML = `${lay.xs.length} solive${lay.xs.length > 1 ? 's' : ''} · entraxe <b>${_r3f(lay.entraxe)}</b> · vide <b>${_r3f(lay.vide)}</b>`;
+  el.innerHTML = `${lay.xs.length} ${_r3Word(lay.xs.length)} · entraxe <b>${_r3f(lay.entraxe)}</b>${lay.harm ? ` · échelle <b>${_r3f(lay.harm.e1)}</b>` : ''} · vide <b>${_r3f(lay.vide)}</b>`;
 }
+function r3SetB(k, v){ r3.s[k] = v; r3Go(r3.s.step, false); }
 function r3YN(isF, v){ if(isF) r3.s.first = v; else r3.s.last = v; r3Go(isF ? 'first' : 'last', false); }
 function r3Inc(d){ const n = Math.max(1, (parseInt(r3.s.n, 10) || 0) + d); r3.s.n = String(n); const i = document.getElementById('r3N'); if(i) i.value = n; r3Refresh(); }
 function r3SetE(v){ r3.s.e = String(v); const i = document.getElementById('r3E'); if(i) i.value = v; _r3ChipSync(); r3Refresh(); }
@@ -35291,34 +35464,49 @@ function _r3ChipSync(){ document.querySelectorAll('#r3Q .r3-chips button').forEa
 function r3EK(k){ r3.s.eKind = k; document.querySelectorAll('#r3Q .r3-ek button').forEach((b, i) => b.classList.toggle('on', (i === 0) === (k === 'exact'))); r3Refresh(); }
 function r3Next(){
   const s = r3.s, st = s.step;
-  if(st === 'L' && !(_r3n(s.L) > 0)){ showToast('Indique la distance entre les murs'); return; }
-  if(st === 'section' && !(_r3n(s.w) > 0)){ showToast('Indique la largeur de la solive'); return; }
-  if(st === 'qty'){ const lay = r3Layout(s); if(!lay){ showToast(s.mode === 'count' ? 'Indique le nombre de solives' : 'Indique l\'entraxe'); return; } if(lay.err){ showToast('⚠️ ' + lay.err); return; } }
-  const i = R3_STEPS.indexOf(st); if(i < R3_STEPS.length - 1) r3Go(R3_STEPS[i + 1]);
+  if(st === 'L' && !(_r3n(s.L) > 0)){ showToast(s.ouvrage === 'chevrons' ? 'Indique la distance entre les pignons' : 'Indique la distance entre les murs'); return; }
+  if(st === 'section' && !(_r3n(s.w) > 0)){ showToast('Indique la largeur du bois'); return; }
+  if(st === 'echelle' && s.ech && !(_r3n(s.D) > 0)){ showToast('Indique le débord de l\'échelle de toit'); return; }
+  if(st === 'qty'){ const lay = r3Layout(s); if(!lay){ showToast(s.mode === 'count' ? 'Indique le nombre de ' + _r3Word(2) : 'Indique l\'entraxe'); return; } if(lay.err){ showToast('⚠️ ' + lay.err); return; } }
+  const S = _r3Steps(), i = S.indexOf(st); if(i < S.length - 1) r3Go(S[i + 1]);
 }
-function r3Back(){ const i = R3_STEPS.indexOf(r3.s.step); if(i > 0) r3Go(R3_STEPS[i - 1]); }
+function r3Back(){ const S = _r3Steps(), i = S.indexOf(r3.s.step); if(i > 0) r3Go(S[i - 1]); }
 function _r3Result(){
   const s = r3.s, lay = r3Layout(s), el = document.getElementById('r3Res'); if(!el) return;
   if(!lay || lay.err){ el.innerHTML = `<div class="hint">${lay ? escapeHtml(lay.err) : 'Données incomplètes.'}</div>`; return; }
   const n = lay.xs.length;
   const sameEnds = lay.gapStart < 0.5 && lay.gapEnd < 0.5;
-  const rows = [
-    ['Solives', n + ''],
+  const CH = s.ouvrage === 'chevrons', MUR = CH ? 'pignon' : 'mur';
+  const rows = lay.harm ? [
+    ['Chevrons', n + ''],
+    ['Entraxe entre pignons', _r3f(lay.harm.e2)],
+    ['Vide entre pignons', _r3f(lay.harm.e2 - lay.w)],
+    ['Entraxe sur l\'échelle de toit', _r3f(lay.harm.e1)],
+    ['Vide sur l\'échelle de toit', _r3f(lay.harm.e1 - lay.w)],
+    ['Écart entre les deux entraxes', _r3f(Math.abs(lay.harm.e1 - lay.harm.e2))]
+  ] : [
+    [CH ? 'Chevrons' : 'Solives', n + ''],
     ['Entraxe', _r3f(lay.entraxe)],
-    ['Vide entre solives', _r3f(lay.vide)]
+    ['Vide entre ' + _r3Word(2), _r3f(lay.vide)]
   ];
-  if(lay.exact && s.first && lay.gaps.length && Math.abs(lay.gaps[0] - lay.vide) > 0.5) rows.push(['1er vide (mur A → solive 2)', _r3f(lay.gaps[0])]);
-  if(!sameEnds){
-    if(lay.gapStart > 0.5) rows.push(['Vide côté mur A', _r3f(lay.gapStart)]);
-    if(lay.gapEnd > 0.5) rows.push(['Vide côté mur B', _r3f(lay.gapEnd)]);
+  if(!lay.harm){
+    const first = lay.z0 < -1 ? true : s.first, last = lay.z0 < -1 ? true : s.last;
+    if(lay.exact && first && lay.gaps.length && Math.abs(lay.gaps[0] - lay.vide) > 0.5) rows.push(['1er vide (' + MUR + ' A → ' + _r3Word(1) + ' 2)', _r3f(lay.gaps[0])]);
+    if(!sameEnds){
+      if(lay.gapStart > 0.5) rows.push(['Vide côté ' + MUR + ' A', _r3f(lay.gapStart)]);
+      if(lay.gapEnd > 0.5) rows.push(['Vide côté ' + MUR + ' B', _r3f(lay.gapEnd)]);
+    }
+    if(lay.exact && lay.gaps.length && last){ const gl = lay.gaps[lay.gaps.length - 1]; if(Math.abs(gl - lay.vide) > 0.5) rows.push(['Dernier vide (→ ' + _r3Word(1) + ' contre B)', _r3f(gl)]); }
   }
-  if(lay.exact && lay.gaps.length && s.last){ const gl = lay.gaps[lay.gaps.length - 1]; if(Math.abs(gl - lay.vide) > 0.5) rows.push(['Dernier vide (→ solive contre B)', _r3f(gl)]); }
-  const axes = lay.xs.map((c, i) => `<span><i>${i + 1}</i>${(Math.round(c * 10) / 10).toLocaleString('fr-FR')}</span>`).join('');
+  if(lay.z0 < -1) rows.push(['Longueur des pannes', _r3f(lay.z1 - lay.z0)]);
+  const axes = lay.xs.map((c, i) => `<span><i>${i + 1}</i>${(Math.round((c - lay.z0) * 10) / 10).toLocaleString('fr-FR')}</span>`).join('');
+  const org = lay.org || 'mur A';
   el.innerHTML = `<div class="r3-res">${rows.map(([a, b]) => `<div><span>${a}</span><b>${b}</b></div>`).join('')}</div>
-    ${lay.exact ? `<div class="hint" style="margin:6px 2px 0;">Axes comptés depuis le nu du mur A.${lay.pans.length ? ' Jonctions sur un axe avec des panneaux de ' + lay.pans.join(', ') + '.' : ' ⚠️ Aucune longueur de panneau courante (2500, 2440, 2400, 1250, 1220) n\'est un multiple de cet entraxe.'}</div>` : ''}
+    ${lay.exact && lay.pans ? `<div class="hint" style="margin:6px 2px 0;">Axes comptés depuis le nu du mur A.${lay.pans.length ? ' Jonctions sur un axe avec des panneaux de ' + lay.pans.join(', ') + '.' : ' ⚠️ Aucune longueur de panneau courante (2500, 2440, 2400, 1250, 1220) n\'est un multiple de cet entraxe.'}</div>` : ''}
     ${lay.note ? `<div class="hint" style="margin:6px 2px 0;color:var(--wood);">ℹ️ ${escapeHtml(lay.note)}</div>` : ''}
-    <div class="r3-axh">📍 Axes depuis le mur A (mm)</div><div class="r3-axes">${axes}</div>
-    <div class="r3-edit"><button onclick="r3Go('L')">Distance</button><button onclick="r3Go('section')">Section</button><button onclick="r3Go('first')">Appuis</button><button onclick="r3Go('qty')">${s.mode === 'count' ? 'Nombre' : 'Entraxe'}</button></div>
+    ${lay.harm ? `<div class="hint" style="margin:6px 2px 0;">Les chevrons ${lay.xs.findIndex(x => Math.abs(x - lay.pA) < 1) + 1} et ${lay.xs.findIndex(x => Math.abs(x - lay.pB) < 1) + 1} (en bleu) sont au droit des pignons.</div>` : ''}
+    <div class="r3-axh">📍 Axes depuis le ${org} (mm)</div><div class="r3-axes">${axes}</div>
+    <div class="r3-edit"><button onclick="r3Go('L')">Distance</button><button onclick="r3Go('section')">Section</button><button onclick="r3Go('${CH ? 'echelle' : 'first'}')">${CH ? 'Échelle' : 'Appuis'}</button><button onclick="r3Go('qty')">${s.mode === 'count' ? 'Nombre' : 'Entraxe'}</button></div>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="r3Go('mode')">↺ Nouveau calcul</button>`;
 }
 /* ═══ MODULE — Répartition 3D (fin) ═══ */
@@ -39900,9 +40088,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.336';
+const APP_VERSION = '5.41.337';
 
 const CHANGELOG = [
+  {
+    version: '5.41.337',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🏠', text: "Répartition 3D : les chevrons sont là ! Deux pignons, sablières, pannes intermédiaires et faîtage, avec le même pas à pas que le solivage." },
+      { icon: '↔️', text: "Échelle de toit : indique le débord des pannes au-delà des pignons, choisis de répartir des chevrons dessus (chevron de rive au bout) et d'en mettre un au droit de chaque pignon." },
+      { icon: '⚖️', text: "L'appli harmonise au mieux l'entraxe de l'échelle de toit et celui entre pignons, et affiche l'écart entre les deux. Cotes des axes depuis le bout de panne." },
+    ],
+  },
   {
     version: '5.41.336',
     date: '04/10/2026',
