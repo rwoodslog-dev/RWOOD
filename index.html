@@ -38881,9 +38881,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.316';
+const APP_VERSION = '5.41.317';
 
 const CHANGELOG = [
+  {
+    version: '5.41.317',
+    date: '04/10/2026',
+    entries: [
+      { icon: '📈', text: "Suivi patron / conducteur plus précis : heures restantes pour le reste à faire, et projection « à ce rythme : ~280 h au total (+30 h) »." },
+      { icon: '👷', text: "Suivi chef / ouvrier encore plus simple : « Il reste 60 h · 20 jours », une barre et une phrase. La vue suit le rôle choisi (un compte DEV en rôle chef voit bien la vue chef)." },
+    ],
+  },
   {
     version: '5.41.316',
     date: '04/10/2026',
@@ -59048,6 +59056,9 @@ const SUIVI_TASK_MAP = [
   + '#view-suivi .suivi-worker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,.03);border-radius:9px;padding:8px 10px;}'
   + '#view-suivi .suivi-worker-name{font-size:13px;font-weight:600;color:var(--ink,#f0e6d2);}'
   + '#view-suivi .suivi-worker-hours{font-size:12px;font-weight:700;color:var(--wood,#C8862B);flex-shrink:0;}'
+  + '#view-suivi .sv-pr{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;margin-top:7px;padding:6px 9px;border-radius:9px;background:rgba(255,255,255,.04);}'
+  + '#view-suivi .sv-pr.bad{background:rgba(229,72,77,.12);color:#ff9a9d;}#view-suivi .sv-pr.good{background:rgba(76,175,121,.10);color:#8fe0b2;}'
+  + '#view-suivi .sv-tbig{font-size:24px;font-weight:900;margin-top:8px;}#view-suivi .sv-tbig .sv-sub{font-size:15px;}'
   + '#view-suivi .sv-phrase{font-size:17px;margin:2px 2px 10px;}'
   + '#view-suivi .sv-pills{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;}'
   + '#view-suivi .sv-pill{background:var(--card,#211a12);border:1.5px solid var(--line);border-radius:14px;padding:9px 4px;text-align:center;color:var(--ink);font-family:inherit;cursor:pointer;}'
@@ -59430,10 +59441,29 @@ function suiviRender(){
   if(!listEl) return;
   if(emptyEl) emptyEl.style.display = 'none';
   _suiviBuildDetails();
-  if(_suiviIsGlobalRole()) _suiviRenderBoss(listEl); else _suiviRenderTeam(listEl);
+  if(_suiviBossView()) _suiviRenderBoss(listEl); else _suiviRenderTeam(listEl);
+}
+/* v5.41.317 — la VUE dépend du rôle choisi (un compte DEV en rôle chef voit la vue chef) */
+function _suiviBossView(){
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  if(r === 'patron' || r === 'conducteur') return true;
+  if(r) return false;
+  return !!window._devRoleUnlocked;
 }
 let _suiviFilter = null;
 function suiviSetFilter(k){ _suiviFilter = (k && _suiviFilter !== k) ? k : null; suiviRender(); }
+/* v5.41.317 — précision patron/conducteur : reste dispo + projection au rythme actuel */
+function _suiviPrecise(used, budget, progress){
+  if(!budget) return '';
+  const p = Math.max(0, Math.min(100, +progress || 0)) / 100;
+  const left = budget - used;
+  let html = `<div class="sv-pr"><span>${left >= 0 ? '⏳ Reste <b>' + _suiviH(left) + '</b> pour ' + Math.round((1 - p) * 100) + ' % à faire' : '⛔ <b>' + _suiviH(-left) + '</b> au-delà du devis'}</span></div>`;
+  if(p > 0.05 && p < 1 && used > 0){
+    const proj = used / p, diff = proj - budget;
+    html += `<div class="sv-pr ${diff > budget * 0.03 ? 'bad' : 'good'}"><span>📈 À ce rythme : <b>~${_suiviH(Math.round(proj))}</b> au total</span><span>${Math.abs(diff) < 1 ? 'pile le devis' : (diff > 0 ? '+' : '−') + _suiviH(Math.round(Math.abs(diff)))}</span></div>`;
+  }
+  return html;
+}
 function _suiviRenderBoss(listEl){
   const kp = document.getElementById('suiviKpis');
   const rows = _suiviActiveSites().map(site => {
@@ -59468,6 +59498,7 @@ function _suiviRenderBoss(listEl){
         <div class="sv-t"><span class="sv-name">${escapeHtml(site.name)}</span>${light.k !== 'n' ? `<span class="sv-chip">${lab}</span>` : `<span class="sv-h0">${_suiviH(used)}</span>`}</div>
         ${budget ? `<div class="sv-bl"><span>⏱ Heures</span><span><b>${_suiviH(used)}</b> / ${_suiviH(budget)}</span></div><div class="sv-bar sv-hb"><i style="width:${hp}%"></i></div>` : ''}
         ${light.k !== 'n' ? `<div class="sv-bl"><span>🏗 Avancement</span><span>${p} %</span></div><div class="sv-bar sv-pb"><i style="width:${p}%"></i></div>` : ''}
+        ${_suiviPrecise(used, budget, site.progress)}
         ${site.dueDate ? `<div class="sv-m">${_suiviDue(site.dueDate)}</div>` : ''}
         ${(!budget || !site.dueDate) ? `<button class="sv-set" onclick="event.stopPropagation();suiviOpenObjective('${site.id}')">＋ ${!budget && !site.dueDate ? 'Fixer les heures prévues et la date de fin' : !budget ? 'Fixer les heures prévues' : 'Fixer la date de fin'}</button>` : ''}
       </div>
@@ -59501,19 +59532,16 @@ async function _suiviRenderTeam(listEl){
       ? `${_suiviH(left)}${days !== null ? ` <span class="sv-sub">· ${days < 0 ? 'délai dépassé' : days + ' jour' + (days > 1 ? 's' : '')}</span>` : ''}`
       : `${days < 0 ? 'Délai dépassé' : days + ' jour' + (days > 1 ? 's' : '')}`;
     return `<div class="sv-card sv-${light.k}">
-      <div class="sv-t"><span class="sv-name">${escapeHtml(site.name)}</span><span class="sv-chip">${chip[light.k]}</span></div>
-      <div class="sv-big"><div class="sv-bh">${budget && used > budget ? 'Dépassement' : 'Il reste'}</div><div class="sv-bv">${budget && used > budget ? '+' + _suiviH(used - budget) + (days !== null ? ` <span class="sv-sub">· ${days < 0 ? 'délai dépassé' : days + ' jour' + (days > 1 ? 's' : '')}</span>` : '') : big}</div>
-        ${budget ? `<div class="sv-bar sv-hb" style="margin-top:8px;"><i style="width:${Math.min(100, Math.round(used / budget * 100))}%"></i></div>
-        <div class="sv-bl"><span>${_suiviH(used)} faites sur ${_suiviH(budget)} prévues</span><span>avancement ${p} %</span></div>` : `<div class="sv-bl"><span>${site.dueDate ? _suiviDue(site.dueDate).replace('📅 ', '') : ''}</span><span>avancement ${p} %</span></div>`}
-      </div>
+      <div class="sv-t"><span class="sv-name">${escapeHtml(site.name)}</span><span class="sv-chip">${light.k === 'r' && light.why === 'hours' ? '🔴 Dépassé' : chip[light.k]}</span></div>
+      <div class="sv-tbig">${budget && used > budget ? '+' + _suiviH(used - budget) + ' de plus que prévu' : 'Il reste ' + big}</div>
+      ${budget ? `<div class="sv-bar sv-hb" style="margin-top:8px;height:10px;"><i style="width:${Math.min(100, Math.round(used / budget * 100))}%"></i></div>` : ''}
       <div class="sv-msg">${msg(light)}</div>
-      ${o.usedAt ? `<div class="sv-m">Heures mises à jour ${_suiviAgo(o.usedAt)}</div>` : ''}
     </div>`;
   }).join('');
 }
 /* Patron/conducteur : envoie les heures pointées dans la clé partagée */
 async function _suiviPushUsed(){
-  if(!_suiviIsGlobalRole() || !_suiviCache) return;
+  if(!_suiviIsGlobalRole() || !_suiviBossView() || !_suiviCache) return;
   const now = Date.now(), upd = {};
   _suiviActiveSites().forEach(site => {
     const used = Math.round(_suiviUsedFor(site) * 10) / 10;
