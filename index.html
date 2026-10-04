@@ -171,6 +171,20 @@
   .pts-sitew > span{ font-size:20px; } .pts-sitew .pts-site{ border:none; background:transparent; padding:16px 10px 16px 0; }
   .pts-wide{ width:100%; flex:none; }
   .pts-row .pts-tog{ white-space:nowrap; font-size:15px; padding:0 8px; }
+  .pts-seg{ display:flex; background:var(--bg-elev); border-radius:14px; padding:4px; gap:4px; }
+  .pts-seg button{ flex:1; border:none; background:transparent; color:var(--ink-soft); font-size:14.5px; font-weight:800; padding:11px 6px; border-radius:11px; cursor:pointer; }
+  .pts-seg button.on{ background:var(--wood); color:#1a0f00; }
+  .pts-mrow{ background:var(--bg-elev); border-radius:16px; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  .pts-mrow-h{ display:flex; align-items:center; gap:8px; }
+  .pts-mrow-h .pts-site{ flex:1; padding:12px 10px; font-size:15.5px; background:var(--card); }
+  .pts-num{ width:28px; height:28px; border-radius:50%; background:var(--wood); color:#1a0f00; font-weight:900; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .pts-x{ width:36px; height:36px; border:none; background:none; color:var(--ink-soft); font-size:24px; cursor:pointer; }
+  .pts-mnote{ font-size:11.5px; color:var(--ink-soft); margin:-4px 0 0 36px; }
+  .pts-pm.sm{ width:48px; height:48px; font-size:24px; background:var(--card); }
+  .pts-h.sm{ min-width:56px; flex:0 0 64px; font-size:21px; }
+  .pts-in{ flex:1; min-width:0; padding:10px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font-size:14.5px; }
+  .pts-add{ width:100%; padding:13px; border-radius:14px; border:1.5px dashed var(--wood); background:transparent; color:var(--wood); font-size:15px; font-weight:800; cursor:pointer; }
+  .pts-total{ text-align:center; font-size:15px; color:var(--ink-soft); } .pts-total b{ color:var(--ink); font-size:18px; }
   .pts-abs-sel{ margin-top:2px; }
   .pts-date{ display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
   .pts-date-c{ flex:1; text-align:center; display:flex; flex-direction:column; line-height:1.2; }
@@ -38146,9 +38160,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.301';
+const APP_VERSION = '5.41.302';
 
 const CHANGELOG = [
+  {
+    version: '5.41.302',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🏗️', text: "Pointage : « 1 chantier / Plusieurs chantiers » en haut de la fiche. En multi-chantier, chaque chantier a sa ligne (heures − / +, tâche), « + Ajouter un chantier », et le total de la journée." },
+    ],
+  },
   {
     version: '5.41.301',
     date: '04/10/2026',
@@ -66413,10 +66434,7 @@ function _ptsMe(){ return (data.settings && data.settings.myProfile) || {}; }
 function _ptsActive(){
   // v5.41.301 — une seule fiche par personne, pour TOUS les rôles (plus de fiches d'équipe)
   const p = _ptsMe();
-  if(!p.workerId) return true;   // pas encore de fiche : la carte propose de la créer
-  const day = data.attendance && data.attendance[currentPointageDate];
-  const e = day && day.workers && day.workers[p.workerId];
-  return !(e && e.mode === 'multi');
+  return true;   // v5.41.302 — y compris en multi-chantier : l'ancien écran n'est plus utilisé
 }
 function _ptsGo(k){ setPointageDate(_ptsShiftKey(currentPointageDate, k)); }
 function _ptsFmtH(h){ return (Math.round(h * 2) / 2).toLocaleString('fr-FR') + ' h'; }
@@ -66453,14 +66471,79 @@ function _ptsTaskPicked(){
     _ptsApply();
   }, 60);
 }
-function _ptsMulti(){ setPointageWorkerMode(currentPointageDate, _ptsMe().workerId, 'multi'); }
+/* v5.41.302 — multi-chantier dans la même carte simplifiée */
+function _ptsEntry(){ const dk = currentPointageDate, wid = _ptsMe().workerId; const day = data.attendance[dk];
+  if(!day.workers) day.workers = {}; if(!day.workers[wid]) day.workers[wid] = { hours:'', panier:false, task:'' }; return day.workers[wid]; }
+function _ptsMulti(on){
+  const dk = currentPointageDate, wid = _ptsMe().workerId; if(!wid) return;
+  const e = _ptsEntry(), day = data.attendance[dk];
+  if(on === false){ setPointageWorkerMode(dk, wid, 'single'); return; }
+  if(!Array.isArray(e.sites)) e.sites = [];
+  if(!e.sites.length){
+    const first = (!day.customSite && day.siteId) || ((data.sites || [])[0] || {}).id;
+    if(first) e.sites.push({ siteId:first, hours:'', task:e.task || '' });
+    const second = (data.sites || []).find(s => s.id !== first);
+    e.sites.push({ siteId: second ? second.id : '__custom__', hours:'', task:'' });
+  }
+  setPointageWorkerMode(dk, wid, 'multi');
+}
+function _ptsRowAdd(){
+  const e = _ptsEntry(); if(!Array.isArray(e.sites)) e.sites = [];
+  const used = e.sites.map(r => r.siteId);
+  const next = (data.sites || []).find(s => !used.includes(s.id));
+  e.sites.push({ siteId: next ? next.id : '__custom__', hours:'', task:'' });
+  saveData(); schedulePointageSync(); _ptsApply();
+}
+function _ptsRowDel(i){ removePointageSiteRow(currentPointageDate, _ptsMe().workerId, i); }
+function _ptsRowSite(i, v){
+  const e = _ptsEntry(); const r = e.sites && e.sites[i]; if(!r) return;
+  r.siteId = v; if(v !== '__custom__'){ delete r.customName; delete r.customZone; delete r.customAddr; delete r.customKm; }
+  saveData(); schedulePointageSync(); _ptsApply();
+}
+function _ptsRowHours(i, d){
+  const e = _ptsEntry(); const r = e.sites && e.sites[i]; if(!r) return;
+  const cur = parseFloat(String(r.hours == null ? '' : r.hours).replace(',', '.')) || 0;
+  const n = Math.max(0, Math.min(14, cur + d));
+  updatePointageSiteRow(currentPointageDate, _ptsMe().workerId, i, 'hours', n);
+  const el = document.getElementById('ptsRowH' + i); if(el) el.textContent = _ptsFmtH(n);
+  const t = document.getElementById('ptsMultiTotal'); if(t) t.textContent = _ptsFmtH(_entryTotalHours(e));
+}
+function _ptsMultiHtml(dk, wid, e){
+  const rows = Array.isArray(e.sites) ? e.sites : [];
+  const opts = cur => (data.sites || []).map(s => `<option value="${s.id}"${s.id === cur ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')
+    + `<option value="__custom__"${cur === '__custom__' ? ' selected' : ''}>✏️ Dépannage (chantier hors liste)…</option>`;
+  return rows.map((r, i) => {
+    const h = parseFloat(String(r.hours == null ? '' : r.hours).replace(',', '.')) || 0;
+    const cust = r.siteId === '__custom__';
+    return `<div class="pts-mrow">
+      <div class="pts-mrow-h"><span class="pts-num">${i + 1}</span><select class="pts-site" onchange="_ptsRowSite(${i}, this.value)">${opts(r.siteId)}</select>
+        <button class="pts-x" onclick="_ptsRowDel(${i})" aria-label="Retirer ce chantier">×</button></div>
+      ${i === 0 ? '<div class="pts-mnote">1er chantier de la journée : il compte pour la prime de trajet</div>' : ''}
+      ${cust ? `<div class="pts-row"><input class="pts-in" placeholder="Nom du client / chantier" value="${escapeHtml(r.customName || '')}" onchange="updatePointageSiteRow('${dk}','${wid}',${i},'customName',this.value)">
+        <select class="pts-in" style="flex:0 0 38%;" onchange="updatePointageSiteRow('${dk}','${wid}',${i},'customZone',this.value)"><option value="">Zone…</option>${ZONES_TRAJET.map(z => `<option value="${z}"${r.customZone === z ? ' selected' : ''}>Zone ${z}</option>`).join('')}</select></div>` : ''}
+      <div class="pts-row">
+        <button class="pts-pm sm" onclick="_ptsRowHours(${i},-0.5)">−</button>
+        <div class="pts-h sm" id="ptsRowH${i}">${_ptsFmtH(h)}</div>
+        <button class="pts-pm sm" onclick="_ptsRowHours(${i},0.5)">+</button>
+        <select class="pts-in" onchange="updatePointageSiteRow('${dk}','${wid}',${i},'task',this.value)"><option value="">🔨 Tâche…</option>${TRANCHES.map(t => `<option value="${t.label}"${r.task === t.label ? ' selected' : ''}>${t.label}</option>`).join('')}</select>
+      </div>
+    </div>`;
+  }).join('') + `<button class="pts-add" onclick="_ptsRowAdd()">＋ Ajouter un chantier</button>
+    <div class="pts-total">Total de la journée : <b id="ptsMultiTotal">${_ptsFmtH(_entryTotalHours(e))}</b></div>`;
+}
 /* Valider : heures par défaut si on n'y a pas touché, puis signature
    (enregistrée = 1 appui ; sinon fenêtre de signature habituelle). */
 function _ptsValidate(drawNew){
   const dk = currentPointageDate, wid = _ptsMe().workerId, day = data.attendance[dk];
   const e = (day.workers || {})[wid] || {};
-  if(!typeJourneeIsAbsence(e.typeJournee) && (e.hours === '' || e.hours == null)) updateAttendance(dk, wid, 'hours', _ptsDefaultHours(dk));
-  if(day.customSite && !day.siteId){
+  const isMulti = e.mode === 'multi';
+  if(isMulti && !typeJourneeIsAbsence(e.typeJournee)){
+    const rows = (e.sites || []).filter(r => r && r.siteId);
+    if(!rows.length || !_entryTotalHours(e)){ showToast('⚠️ Mets les heures de chaque chantier'); return; }
+    if(rows.some(r => r.siteId === '__custom__' && !(r.customName || '').trim())){ showToast('⚠️ Donne un nom au chantier de dépannage'); return; }
+  }
+  if(!isMulti && !typeJourneeIsAbsence(e.typeJournee) && (e.hours === '' || e.hours == null)) updateAttendance(dk, wid, 'hours', _ptsDefaultHours(dk));
+  if(!isMulti && day.customSite && !day.siteId){
     const cs = day.customSite;
     if(!(cs.name || '').trim()){ showToast('⚠️ Renseigne le nom du chantier / client (dépannage)'); return; }
     if(!(cs.zone || '').trim() && !(cs.address || '').trim()){ showToast('⚠️ Renseigne la zone OU l\'adresse du dépannage'); return; }
@@ -66476,7 +66559,7 @@ function _ptsSig(){
 function _ptsSave(){
   const dk = currentPointageDate, wid = _ptsMe().workerId; if(!wid) return;
   const e = (data.attendance[dk].workers || {})[wid] || {};
-  if(!typeJourneeIsAbsence(e.typeJournee) && (e.hours === '' || e.hours == null)) updateAttendance(dk, wid, 'hours', _ptsDefaultHours(dk));
+  if(e.mode !== 'multi' && !typeJourneeIsAbsence(e.typeJournee) && (e.hours === '' || e.hours == null)) updateAttendance(dk, wid, 'hours', _ptsDefaultHours(dk));
   saveData(); try{ schedulePointageSync(); }catch(_){}
   showToast('💾 Fiche enregistrée (pas encore validée)');
 }
@@ -66503,6 +66586,7 @@ function _ptsApply(){
   const hasCustom = !!(day.customSite);
   const siteOpts = (data.sites || []).map(s => `<option value="${s.id}" ${(!hasCustom && s.id === day.siteId) ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')
     + `<option value="__custom__"${hasCustom ? ' selected' : ''}>✏️ Dépannage (chantier hors liste)…</option>`;
+  const multi = e.mode === 'multi';
   const tv = parseTacheValue(e.task || '');
   const taskLbl = tv.tranche ? (tv.tranche + (tv.sousTranche ? ' · ' + tv.sousTranche : '')) : 'Choisir la tâche';
   const sig = _ptsSig();
@@ -66515,11 +66599,17 @@ function _ptsApply(){
         <button class="pts-arrow" onclick="_ptsGo(1)" aria-label="Jour suivant">▶</button>
       </div>
       ${day.validated ? `<div class="pts-ok">✅ Fiche validée. Tu peux encore la modifier et la revalider.</div>` : ''}
-      <div class="pts-sitew"><span>📍</span><select class="pts-site" onchange="_ptsSite(this.value)">${siteOpts}</select></div>
+      ${abs ? '' : `<div class="pts-seg"><button class="${multi ? '' : 'on'}" onclick="_ptsMulti(false)">1 chantier</button><button class="${multi ? 'on' : ''}" onclick="_ptsMulti(true)">Plusieurs chantiers</button></div>`}
+      ${multi && !abs ? '' : `<div class="pts-sitew"><span>📍</span><select class="pts-site" onchange="_ptsSite(this.value)">${siteOpts}</select></div>`}
       <div id="ptsCustomSlot"></div>
       ${abs ? `
         <div class="pts-abs" style="border-color:${tji.color || 'var(--line)'};"><span>${tji.emoji}</span><b>${escapeHtml(tji.label)}</b></div>
         <button class="pts-link" onclick="_ptsAbsence('normal')">↩ Revenir à une journée de travail</button>`
+      : multi ? `${_ptsMultiHtml(dk, wid, e)}
+        <div class="pts-row">
+          <button class="pts-tog${e.panier ? ' on' : ''}" onclick="_ptsPanier()">🍽️ Panier${e.panier ? ' ✓' : ''}</button>
+          <button class="pts-tog${day.voiturePerso ? ' on' : ''}" onclick="_ptsVoiture()">🚗 Voiture perso${day.voiturePerso ? ' ✓' : ''}</button>
+        </div>`
       : `
         <div class="pts-row">
           <button class="pts-pm" onclick="_ptsHours(-0.5)" aria-label="Moins">−</button>
@@ -66534,12 +66624,11 @@ function _ptsApply(){
       ${sig ? `<div class="pts-sig"><div class="pts-lbl">✍️ Ta signature enregistrée</div><img src="${sig}" alt="Signature"><button class="pts-link" onclick="_ptsValidate(true)">Signer autrement</button></div>` : ''}
       ${abs ? '' : `<div class="pts-links">
         <button class="pts-link" onclick="_ptsAbsOpen=!_ptsAbsOpen;_ptsApply()">Absent ? (congé, maladie…)</button>
-        <button class="pts-link" onclick="_ptsMulti()">Plusieurs chantiers ?</button>
       </div>`}
     </div>
     <div class="pts-bar"><button class="btn btn-outline" onclick="_ptsSave()">Enregistrer</button><button class="btn btn-primary" onclick="_ptsValidate(false)">✓ ${day.validated ? 'Revalider' : 'Valider'} et signer</button></div>`;
   const slot = document.getElementById('ptsCustomSlot');
-  if(slot && cb) slot.appendChild(cb);
+  if(slot && cb && !multi) slot.appendChild(cb);
 }
 /* renderPointage = écran complet (chef, conducteur…) + carte simplifiée pour l'ouvrier */
 function renderPointage(){
