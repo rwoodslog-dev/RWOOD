@@ -6373,7 +6373,10 @@
          ═══════════════════════════════════════════════════════════════ -->
     <section class="view" id="view-magasin">
       <div class="magasin-wrap">
-        <div class="magasin-toolbar">
+        <!-- v5.41.329 — Magasin simplifié : onglets Dispo / Sortis / SAV, « Je prends » / « Je rends » en 1 appui -->
+        <div class="calc-seg" id="magTabs" style="margin-bottom:10px;"></div>
+        <input type="search" id="magSearch" placeholder="🔍 Rechercher une machine" style="display:none;" oninput="window._magQ=this.value;magasinRender()">
+        <div class="magasin-toolbar" style="display:none;">
           <div class="magasin-count" id="magasinCount">—</div>
           <button class="btn btn-outline btn-sm" id="magasinAddBtn" style="display:none;" onclick="magasinOpenAdd()">
             <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -6381,6 +6384,7 @@
           </button>
         </div>
         <div id="magasinList" class="magasin-list"></div>
+        <button class="msg-fab" id="magFab" onclick="magasinOpenAdd()" title="Ajouter une machine">＋</button>
         <div id="magasinEmpty" class="empty" style="display:none;">
           <div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9h16l-1-4H5z"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/></svg></div>
           <h3>Magasin vide</h3>
@@ -39199,9 +39203,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.327';
+const APP_VERSION = '5.41.329';
 
 const CHANGELOG = [
+  {
+    version: '5.41.329',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🧰', text: "Magasin simplifié : onglets 🟢 Dispo · 🚛 Sortis · ⚠️ SAV. « Je prends » met la machine dans ton camion (ou celui de ton chef) en 1 appui, « Je rends » en 1 appui." },
+      { icon: '⚠️', text: "Appui long sur une machine pour la signaler en SAV, « ✓ Réparée » pour l'en sortir. Recherche au-delà de 8 machines, ＋ en bas pour en ajouter." },
+    ],
+  },
+  {
+    version: '5.41.328',
+    date: '04/10/2026',
+    entries: [
+      { icon: '⏱', text: "Suivi chef d'équipe : même sans objectif, il voit le temps passé par toute l'équipe sur ses chantiers, au total et tâche par tâche." },
+    ],
+  },
   {
     version: '5.41.327',
     date: '04/10/2026',
@@ -54106,6 +54125,12 @@ let _magasinEditId = null;
   + '#view-magasin .magasin-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 2px 12px;}'
   + '#view-magasin .magasin-count{font-size:13px;color:var(--ink-soft);font-weight:600;}'
   + '#view-magasin .magasin-list{display:flex;flex-direction:column;gap:10px;}'
+  + '#view-magasin .mag-act{flex-shrink:0;padding:10px 12px;border-radius:11px;border:none;font-weight:800;font-size:13px;font-family:inherit;cursor:pointer;}'
+  + '#view-magasin .mag-act.take{background:var(--wood,#C8862B);color:#1a0d00;}'
+  + '#view-magasin .mag-act.ret{background:#4CAF79;color:#0b1a10;}#view-magasin .mag-act.ret2{background:none;border:1.5px solid #4CAF79;color:#6fd39b;}'
+  + '#view-magasin .mag-act.fix{background:none;border:1.5px solid #4CAF79;color:#6fd39b;}'
+  + '#view-magasin .mag-row{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}'
+  + '#view-magasin #magSearch{width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;color:var(--ink);font-size:14px;margin-bottom:10px;}'
   + '#view-magasin .magasin-card{display:flex;align-items:center;gap:12px;background:var(--card,#211a12);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:10px 12px;cursor:pointer;transition:background .15s;}'
   + '#view-magasin .magasin-card:active{background:rgba(255,255,255,.04);}'
   + '#view-magasin .magasin-thumb{width:54px;height:54px;border-radius:11px;object-fit:cover;flex-shrink:0;background:#0d0a06;}'
@@ -54152,48 +54177,82 @@ function _magasinCanEdit(){
 }
 
 /* ── Rendu liste ─────────────────────────────────────────────────── */
+let _magTab = 'dispo';
+function _magMe(){ return (data.settings && data.settings.auth && data.settings.auth.authId) || ''; }
+function _magMyName(){ const p = (data.settings && data.settings.myProfile) || {}; return ((p.firstName||'') + ' ' + (p.lastName||'')).trim() || p.name || 'Moi'; }
+function _magSince(ts){ if(!ts) return ''; const n = Math.floor((Date.now() - ts) / 86400000); return n <= 0 ? "aujourd'hui" : n === 1 ? 'depuis hier' : 'depuis ' + n + ' j'; }
+function magasinSetTab(t){ _magTab = t; magasinRender(); }
 function magasinRender(){
   _magasinEnsure();
   const list  = document.getElementById('magasinList');
   const empty = document.getElementById('magasinEmpty');
   const count = document.getElementById('magasinCount');
-  const addBtn= document.getElementById('magasinAddBtn');
   if(!list) return;
-
-  if(addBtn) addBtn.style.display = ''; // ajout ouvert à tous
-
   const machines = data.magasinMachines || [];
-  if(count){
-    const nDispo = machines.filter(m => !m.borrow && !m.sav).length;
-    count.textContent = machines.length
-      ? machines.length + ' machine' + (machines.length>1?'s':'') + ' · ' + nDispo + ' dispo'
-      : '';
-  }
-
+  const me = _magMe();
+  const dispo = machines.filter(m => !m.borrow && !m.sav), sortis = machines.filter(m => m.borrow && !m.sav), sav = machines.filter(m => m.sav);
+  if(count) count.textContent = machines.length + ' machines';
+  const tabs = document.getElementById('magTabs');
+  if(tabs) tabs.innerHTML = [['dispo','🟢 Dispo', dispo.length], ['sortis','🚛 Sortis', sortis.length], ['sav','⚠️ SAV', sav.length]]
+    .map(([k, l, n]) => `<button type="button" class="chip ${_magTab === k ? 'selected' : ''}" onclick="magasinSetTab('${k}')">${l} · ${n}</button>`).join('');
+  const se = document.getElementById('magSearch'); if(se) se.style.display = machines.length > 8 ? '' : 'none';
+  const q = machines.length > 8 ? (typeof _suiviNormalize === 'function' ? _suiviNormalize(window._magQ || '') : String(window._magQ || '').toLowerCase()).trim() : '';
+  let items = _magTab === 'sortis' ? sortis : _magTab === 'sav' ? sav : dispo;
+  if(q) items = items.filter(m => _suiviNormalize([m.name, m.ref, (m.tools || []).map(t => t.name).join(' ')].join(' ')).includes(q));
+  if(_magTab === 'sortis') items = items.slice().sort((a, b) => {
+    const am = a.borrow.borrowerId === me || a.borrow.chefId === me ? 0 : 1, bm = b.borrow.borrowerId === me || b.borrow.chefId === me ? 0 : 1;
+    return (am - bm) || ((a.borrow.borrowedAt || 0) - (b.borrow.borrowedAt || 0));
+  });
   if(!machines.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
   if(empty) empty.style.display='none';
-
-  list.innerHTML = machines.map(m => {
-    const pris = !!m.borrow;
+  if(!items.length){ list.innerHTML = `<div class="hint" style="text-align:center;padding:24px 0;">${_magTab === 'dispo' ? 'Aucune machine dispo pour le moment.' : _magTab === 'sortis' ? 'Rien de sorti : tout est au magasin 👍' : 'Aucune machine en SAV 👍'}</div>`; return; }
+  list.innerHTML = items.map(m => {
     const thumb = m.photo
       ? '<img class="magasin-thumb" src="'+escapeHtml(m.photo)+'" alt="">'
       : '<div class="magasin-thumb-ph"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9h16l-1-4H5z"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/></svg></div>';
-    const badge = m.sav
-      ? '<div class="magasin-badge sav">⚠️ SAV</div>'
-      : pris
-      ? '<div class="magasin-badge pris">Emprunté</div>'
-      : '<div class="magasin-badge dispo">Dispo</div>';
     const nTools = Array.isArray(m.tools) ? m.tools.length : 0;
-    const refLine = [m.ref, nTools ? ('🧰 ' + nTools + ' outil' + (nTools>1?'s':'')) : ''].filter(Boolean).join(' · ') || '—';
-    return '<div class="magasin-card'+(m.sav?' sav':'')+'" onclick="magasinOpenDetail(\''+m.id+'\')">'
-      + thumb
-      + '<div class="magasin-info">'
-      +   '<div class="magasin-name">'+escapeHtml(m.name||'Sans nom')+'</div>'
-      +   '<div class="magasin-ref">'+escapeHtml(refLine)+'</div>'
-      + '</div>'
-      + badge
-      + '</div>';
-  }).join('');
+    let sub = [m.ref, nTools ? ('🧰 ' + nTools + ' outil' + (nTools>1?'s':'')) : ''].filter(Boolean).join(' · ');
+    let act = '';
+    if(_magTab === 'dispo') act = `<button class="mag-act take" onclick="event.stopPropagation();magasinQuickTake('${m.id}')">Je prends</button>`;
+    else if(_magTab === 'sortis'){
+      const mine = m.borrow.borrowerId === me || m.borrow.chefId === me;
+      sub = (mine ? '🚛 dans ton camion' : '🚛 chez ' + (m.borrow.chefName || m.borrow.borrowerName || '—')) + ' · ' + _magSince(m.borrow.borrowedAt);
+      act = `<button class="mag-act ${mine ? 'ret' : 'ret2'}" onclick="event.stopPropagation();magasinReturn('${m.id}')">Je rends</button>`;
+    } else {
+      sub = '⚠️ ' + (m.sav.note ? '« ' + m.sav.note + ' »' : 'en SAV') + ' · ' + _magSince(m.sav.at);
+      act = `<button class="mag-act fix" onclick="event.stopPropagation();magasinEndSav('${m.id}')">✓ Réparée</button>`;
+    }
+    return `<div class="magasin-card mag-row" data-mag-id="${m.id}" onclick="magasinOpenDetail('${m.id}')">${thumb}
+      <div class="magasin-info"><div class="magasin-name">${escapeHtml(m.name || 'Sans nom')}</div><div class="magasin-ref">${escapeHtml(sub || '—')}</div></div>${act}</div>`;
+  }).join('') + (_magTab === 'dispo' ? '<div class="hint" style="text-align:center;margin-top:10px;">Appui long sur une machine pour la signaler en SAV</div>' : '');
+  // appui long = SAV
+  list.querySelectorAll('.mag-row').forEach(row => {
+    let t = null, lp = false;
+    const start = () => { lp = false; clearTimeout(t); t = setTimeout(() => { lp = true; try{ navigator.vibrate && navigator.vibrate(30); }catch(_){}
+      const mm = (data.magasinMachines || []).find(x => x.id === row.dataset.magId); if(mm && !mm.sav) magasinPromptSav(mm.id); }, 650); };
+    const stop = () => clearTimeout(t);
+    row.addEventListener('touchstart', start, { passive:true }); row.addEventListener('touchend', stop); row.addEventListener('touchmove', stop, { passive:true });
+    row.addEventListener('mousedown', start); row.addEventListener('mouseup', stop); row.addEventListener('mouseleave', stop);
+    row.addEventListener('contextmenu', e => e.preventDefault());
+    row.addEventListener('click', e => { if(lp){ lp = false; e.stopPropagation(); e.preventDefault(); } }, true);
+  });
+}
+/* v5.41.329 — « Je prends » : dans MON camion (chef), celui de mon chef (ouvrier), sinon choix */
+async function magasinQuickTake(machineId){
+  _magasinEnsure();
+  const m = (data.magasinMachines || []).find(x => x.id === machineId); if(!m || m.borrow) return;
+  const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  let chefId = null, chefName = '';
+  if(role === 'chef'){ chefId = _magMe(); chefName = _magMyName(); }
+  else if(role === 'ouvrier'){
+    const f = (typeof _getFollowedChefId === 'function') ? _getFollowedChefId() : null;
+    if(f){ chefId = f; try{ const u = ((await _fetchUsersRegistry()) || []).find(x => x.authId === f); chefName = (u && u.name) || f; }catch(e){ chefName = f; } }
+  }
+  if(!chefId){ magasinPromptBorrow(machineId); return; }
+  m.borrow = { borrowerId: _magMe() || uid(), borrowerName: _magMyName(), borrowedAt: Date.now(), chefId, chefName };
+  saveData(); magasinRender(); magasinPush();
+  showToast('✓ ' + (m.name || 'Machine') + ' — camion de ' + chefName);
+  _magasinNotifyToolEvent(m, _magMyName(), 'pris');
 }
 
 /* ── Détail machine ──────────────────────────────────────────────── */
@@ -59909,9 +59968,9 @@ function _suiviTaskList(){ return SUIVI_TASK_MAP.map(c => ({ label:c.label, icon
 function _suiviUsedTasks(site, o){
   const goals = (o && o.tasks) || {};
   const labels = Object.keys(goals).filter(k => +goals[k] > 0);
-  if(!labels.length) return {};
   const a = _suiviAggFor(site), done = {};
-  ((a && a.tasks) || []).forEach(t => { const k = labels.includes(t.label) ? t.label : 'Autre'; done[k] = Math.round(((done[k] || 0) + t.hours) * 10) / 10; });
+  // v5.41.328 — sans objectif : heures par tâche telles quelles (pour que le chef les voie quand même)
+  ((a && a.tasks) || []).forEach(t => { const k = !labels.length ? t.label : (labels.includes(t.label) ? t.label : 'Autre'); done[k] = Math.round(((done[k] || 0) + t.hours) * 10) / 10; });
   return done;
 }
 /* Bloc « objectifs par tâche » (patron/conducteur, chantier ouvert) */
@@ -60019,13 +60078,26 @@ function _suiviRenderBoss(listEl){
 async function _suiviRenderTeam(listEl){
   const kp = document.getElementById('suiviKpis'); if(kp) kp.innerHTML = '';
   await _suiviObjFetch();
-  const rows = _suiviActiveSites().map(site => {
-    const o = (_suiviObj.sites || {})[site.id] || {};
+  // v5.41.328 — chantiers où je suis assigné (si l'info existe), avec ou sans objectif
+  const me = data.settings && data.settings.auth && data.settings.auth.authId;
+  let mine = _suiviActiveSites();
+  try{ const withAssign = mine.filter(s => (typeof _getChefAuthIdsForSite === 'function') && _getChefAuthIdsForSite(s).length);
+    if(me && withAssign.length){ const a = mine.filter(s => _getChefAuthIdsForSite(s).includes(me)); if(a.length) mine = a; } }catch(e){}
+  // heures locales (fiches pointées sur ce téléphone, ex. le chef qui pointe son équipe) en secours
+  let local = []; try{ local = _suiviAggregate(_suiviLocalSource()); }catch(e){}
+  const rows = mine.map(site => {
+    const o0 = (_suiviObj.sites || {})[site.id] || {};
+    const lo = local.find(x => x.siteId === site.id) || local.find(x => _suiviNormalize(x.name) === _suiviNormalize(site.name));
+    let o = o0;
+    if(lo && lo.total > (+o0.used || 0)){
+      const ut = {}; lo.tasks.forEach(t => { ut[t.label] = Math.round(t.hours * 10) / 10; });
+      o = Object.assign({}, o0, { used: Math.round(lo.total * 10) / 10, usedTasks: Object.keys(o0.tasks || {}).length ? o0.usedTasks || {} : ut });
+    }
     const used = +o.used || 0, budget = _suiviBudget(o);
     return { site, o, used, budget, light: _suiviLight(used, budget, _suiviProgressOf(site, o), site.dueDate) };
-  }).filter(r => r.light.k !== 'n').sort((a, b) => _SV_ORDER[a.light.k] - _SV_ORDER[b.light.k]);
+  }).filter(r => r.light.k !== 'n' || r.used > 0).sort((a, b) => (_SV_ORDER[a.light.k] - _SV_ORDER[b.light.k]) || (b.used - a.used));
   if(!rows.length){
-    listEl.innerHTML = `<div class="empty"><div class="icon">🎯</div><h3>Pas encore d'objectif</h3><p>Dès que le conducteur fixe les heures prévues ou la date de fin d'un de tes chantiers, tu verras ici si c'est dans les temps.</p></div>`;
+    listEl.innerHTML = `<div class="empty"><div class="icon">⏱</div><h3>Pas encore d'heures</h3><p>Le temps passé par l'équipe sur tes chantiers apparaîtra ici, tâche par tâche.</p></div>`;
     return;
   }
   // v5.41.321 — ton calme pour les équipes : des repères, pas de pression (pas de rouge ni d'alerte)
@@ -60037,7 +60109,9 @@ async function _suiviRenderTeam(listEl){
       ? `${_suiviH(left)}${days !== null ? ` <span class="sv-sub">· ${days < 0 ? 'délai dépassé' : days + ' jour' + (days > 1 ? 's' : '')}</span>` : ''}`
       : `${days < 0 ? 'Délai dépassé' : days + ' jour' + (days > 1 ? 's' : '')}`;
     const dueTxt = days === null ? '' : days < 0 ? 'fin prévue passée' : days === 0 ? "fin prévue aujourd'hui" : 'fin prévue dans ' + days + ' j';
-    const head = budget
+    const head = !budget && !site.dueDate
+      ? `<div class="sv-tbig">⏱ ${_suiviH(used)} <span class="sv-sub">au total, toute l'équipe</span></div>`
+      : budget
       ? `<div class="sv-tbig">🎯 ${_suiviH(budget)} <span class="sv-sub">prévues</span></div>
          <div class="sv-bl"><span>${_suiviH(used)} faites${used <= budget ? ' · environ ' + _suiviH(budget - used) + ' restantes' : ''}</span><span>${dueTxt}</span></div>
          <div class="sv-bar" style="margin-top:6px;height:10px;"><i style="width:${Math.min(100, Math.round(used / budget * 100))}%;background:#7DB3E8;"></i></div>`
@@ -60045,9 +60119,19 @@ async function _suiviRenderTeam(listEl){
     return `<div class="sv-card sv-calm">
       <div class="sv-t"><span class="sv-name">${escapeHtml(site.name)}</span>${light.k === 'g' ? '<span class="sv-chip sv-chip-calm">👍 Ça avance bien</span>' : ''}</div>
       ${head}
-      ${_suiviTeamTasksHtml(o, site.id)}
+      ${_suiviTeamTasksHtml(o, site.id) || _suiviTeamHoursHtml(o)}
     </div>`;
   }).join('');
+}
+/* v5.41.328 — sans objectif : heures de toute l'équipe par tâche (totaux, jamais par personne) */
+function _suiviTeamHoursHtml(o){
+  const ut = (o && o.usedTasks) || {};
+  const ks = Object.keys(ut).filter(k => +ut[k] > 0).sort((a, b) => ut[b] - ut[a]);
+  if(!ks.length) return '';
+  const max = +ut[ks[0]] || 1;
+  const icon = l => ((_suiviTaskList().find(x => x.label === l) || {}).icon || '📋');
+  return '<div class="sv-goals" style="margin:10px 0 0;"><div class="sv-gh">⏱ Temps passé par tâche (toute l\'équipe)</div>' + ks.map(l =>
+    `<div class="sv-goal"><div class="sv-bl" style="margin-top:0;"><span>${icon(l)} <b style="color:var(--ink);">${escapeHtml(l)}</b></span><span><b style="color:var(--ink);">${_suiviH(ut[l])}</b></span></div><div class="sv-bar"><i style="width:${Math.round(ut[l] / max * 100)}%;background:#7DB3E8;"></i></div></div>`).join('') + '</div>';
 }
 /* v5.41.319 — chef/ouvrier : temps passé par l'équipe sur chaque tâche, face à l'objectif */
 function _suiviTeamTasksHtml(o, siteId){
@@ -68309,9 +68393,9 @@ const RH_HELP = {
     { i:'🧮', x:"<b>Cumul de cotes</b>, <b>Pythagore</b> (entre 2 cotes, la 3e se calcule toute seule), <b>Répartition</b>, <b>Découpe</b> et calculatrice." }
   ]},
   magasin: { t:'Magasin', l:[
-    { i:'🛒', x:"Les machines du dépôt. Touche une machine, puis <b>J'emprunte</b> et choisis ton camion : tout le monde sait où elle est." },
-    { i:'↩️', x:"Au retour : <b>Je rends</b>." },
-    { i:'🔧', x:"En panne ? Passe-la en <b>SAV</b>." }
+    { i:'🟢', x:"<b>Dispo</b> : touche <b>Je prends</b>, la machine va dans ton camion (ou celui de ton chef)." },
+    { i:'🚛', x:"<b>Sortis</b> : qui l'a et depuis quand. Au retour : <b>Je rends</b>." },
+    { i:'⚠️', x:"En panne ? <b>Appui long</b> sur la machine pour la passer en SAV." }
   ]},
   'zone-chantier': { t:'Zone', l:[
     { i:'🗾', x:"La zone de trajet de ton chantier et le tarif qui va avec. La prime de trajet est ajoutée toute seule sur ta fiche {heures}." },
