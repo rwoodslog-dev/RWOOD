@@ -168,7 +168,9 @@
   .pts-head-t b{ font-weight:800; } .pts-head-t small{ font-size:12.5px; color:var(--ink-soft); text-transform:capitalize; }
   .pts-head-t .pts-datein{ position:absolute; inset:0; opacity:0; width:100%; cursor:pointer; }
   .pts-sitew{ display:flex; align-items:center; gap:8px; background:var(--bg-elev); border-radius:16px; padding:0 0 0 14px; }
-  .pts-sitew > span{ font-size:20px; } .pts-sitew .pts-site{ border:none; background:transparent; padding:16px 10px 16px 0; }
+  .pts-sitew > span{ font-size:20px; }
+  .pts-locate{ flex-shrink:0; width:48px; height:48px; margin-right:6px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); font-size:20px; cursor:pointer; }
+  .pts-geo-list{ display:flex; flex-direction:column; gap:8px; margin-top:12px; font-size:13.5px; line-height:1.4; background:var(--bg-elev); border-radius:12px; padding:12px; } .pts-sitew .pts-site{ border:none; background:transparent; padding:16px 10px 16px 0; }
   .pts-wide{ width:100%; flex:none; }
   .pts-row .pts-tog{ white-space:nowrap; font-size:15px; padding:0 8px; }
   .pts-seg{ display:flex; background:var(--bg-elev); border-radius:14px; padding:4px; gap:4px; }
@@ -5279,7 +5281,7 @@
 
       <!-- v5.41.300 — Paramètres : 3 parties visibles + « Avancé » replié -->
       <div class="accordion-section" id="parametresMode-compte">
-        <div class="accordion-header" onclick="toggleParametresSection('compte'); rwGoogleRenderStatus()">
+        <div class="accordion-header" onclick="toggleParametresSection('compte'); rwGoogleRenderStatus(); try{_ptsGeoParamPaint()}catch(e){}">
           <span>👤 Mon compte</span><span class="accordion-arrow">▾</span>
         </div>
         <div class="accordion-body">
@@ -5304,6 +5306,11 @@
               </div>
             </div>
             <div class="hint" style="margin-top:8px;" id="myProfileExplain"></div>
+          </div>
+          <div class="section-title">Pointage</div>
+          <div class="card" style="display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="ptsGeoParamToggle()">
+            <div style="flex:1;"><div style="font-weight:700;">🎯 Chantier automatique</div><div class="hint" style="margin-top:2px;">Remplit le chantier quand tu es sur place. Ta position n'est ni enregistrée ni envoyée.</div></div>
+            <div id="ptsGeoSwitch" class="rw-sw"><i></i></div>
           </div>
           <div class="section-title">Connexion Google</div>
           <div class="card" id="rwGCard">
@@ -15947,6 +15954,7 @@ const GO_DEFAULT_PLACES = [
   { id:'p_mplus', name:'M+ Matériaux', icon:'🧱', query:'M+ Matériaux Mérignac', near:false, note:'Mérignac' },
   { id:'p_leroy', name:'Leroy Merlin', icon:'🏬', query:'Leroy Merlin', near:true, note:'si pas le choix' }
 ];
+const GO_DEFAULT_TILES = ['depot', 'pl:p_total', 'pl:p_foussier', 'pl:p_veolia'];
 let _goPlaces = (function(){ try{ const c = JSON.parse(localStorage.getItem('rwood-places') || 'null'); if(Array.isArray(c)) return c; }catch(e){} return GO_DEFAULT_PLACES.slice(); })();
 async function _goPlacesFetch(){
   try{
@@ -16057,7 +16065,7 @@ function goPinTile(key){
 function goAddMenu(){
   const ex = document.getElementById('modal-goAddMenu'); if(ex) ex.remove();
   const hid = _goList('rwood-go-hidden'), pins = _goList('rwood-go-pins');
-  const inTiles = x => (x.kind !== 'chantier' || pins.includes(x.key)) && !hid.includes(x.key);
+  const inTiles = x => (GO_DEFAULT_TILES.includes(x.key) || pins.includes(x.key)) && !hid.includes(x.key);
   const avail = _goAll().filter(x => !inTiles(x));
   const tag = { entreprise:'Entreprise', chantier:'Chantier', adresse:'Mon adresse' };
   const d = document.createElement('div'); d.className = 'modal-overlay open'; d.id = 'modal-goAddMenu';
@@ -16065,7 +16073,7 @@ function goAddMenu(){
     <button class="btn btn-primary btn-block" style="height:50px;font-weight:800;" onclick="document.getElementById('modal-goAddMenu').remove();goAddHere()">📍 Enregistrer l'endroit où je suis</button>
     <div class="go-sec" style="margin-top:16px;">Ou choisis une adresse</div>
     ${avail.length ? '<div class="go-res">' + avail.map(x => `<div class="go-row" onclick="goPinTile('${x.key}')"><span class="ic">${x.icon}</span><div class="b"><b>${escapeHtml(x.name)}</b> <span class="go-tag">${tag[x.kind]}</span><div class="m">${escapeHtml(x.sub || '')}</div></div><span class="go-mini">⭐</span></div>`).join('') + '</div>' : '<div class="hint">Toutes tes adresses sont déjà en raccourci.</div>'}
-    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="document.getElementById('modal-goAddMenu').remove();openItineraryModal()">✏️ Taper une nouvelle adresse</button></div>`;
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="document.getElementById('modal-goAddMenu').remove();window._goPinNext=true;openItineraryModal()">✏️ Taper une nouvelle adresse</button></div>`;
   d.addEventListener('click', e => { if(e.target === d) d.remove(); });
   document.body.appendChild(d);
 }
@@ -16098,7 +16106,8 @@ function _goRender(){
   const score = x => ((st[x.key] && st[x.key].n) || 0) * 10 + (x.kind === 'entreprise' ? 3 : 0) + (x.kind === 'adresse' ? 2 : 0);
   // v5.41.323 — tuiles = entreprise + mes adresses + raccourcis épinglés, sauf celles retirées (appui long)
   const hid = _goList('rwood-go-hidden'), pins = _goList('rwood-go-pins');
-  const pool = all.filter(x => (x.kind !== 'chantier' || pins.includes(x.key)) && !hid.includes(x.key));
+  // v5.41.326 — par défaut : Dépôt, Total, Foussier, Veolia ; le reste, chacun l'ajoute
+  const pool = all.filter(x => (GO_DEFAULT_TILES.includes(x.key) || pins.includes(x.key)) && !hid.includes(x.key));
   const tiles = pool.slice().sort((a, b) => score(b) - score(a));
   document.getElementById('goTiles').innerHTML = tiles.map(x => `<button class="go-tile" data-go-key="${x.key}"><i>${x.icon}</i><b>${escapeHtml(x.name)}</b><span>${escapeHtml(x.near ? '📍 le + proche' : (x.sub || '').split(',')[0].slice(0, 22))}</span></button>`).join('')
     + `<button class="go-tile add" onclick="goAddMenu()"><i>＋</i><b>Ajouter</b><span>un raccourci</span></button>`;
@@ -16160,6 +16169,7 @@ function goAddSave(){
   const it = { id: uid(), name, address: addr, icon, color: siteColors[0] };
   if(window._goHere){ it.lat = window._goHere.lat; it.lng = window._goHere.lng; }
   data.itineraries.push(it); saveData();
+  { const pins = _goList('rwood-go-pins'); pins.push('it:' + it.id); _goSetList('rwood-go-pins', pins); }
   const m = document.getElementById('modal-goAdd'); if(m) m.remove();
   showToast('📍 ' + name + ' enregistré'); renderItineraries();
 }
@@ -16552,16 +16562,18 @@ function saveItinerary(){
   } else {
     const newItineraryId = uid();
     data.itineraries.push({id: newItineraryId, name, address, color});
+    if(window._goPinNext && typeof _goList === 'function'){ const pins = _goList('rwood-go-pins'); pins.push('it:' + newItineraryId); _goSetList('rwood-go-pins', pins); } // v5.41.326
     if(journalPendingLinkSiteId){
       data.logs.push({id: uid(), siteId: journalPendingLinkSiteId, text: `<img src="icons/boussole.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;display:inline-block;flex-shrink:0;"> Itinéraire ajouté : ${name}`, time: formatDateTime(new Date()), type: 'link', linkType: 'itinerary', linkId: newItineraryId});
       journalPendingLinkSiteId = null;
     }
   }
 
+  window._goPinNext = false;
   saveData();
   closeModal('itinerary');
   renderItineraries();
-  showToast('Itinéraire enregistré');
+  showToast('Adresse enregistrée');
 }
 
 function deleteItinerary(){
@@ -39187,9 +39199,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.325';
+const APP_VERSION = '5.41.327';
 
 const CHANGELOG = [
+  {
+    version: '5.41.327',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🎯', text: "Pointage : chantier automatique. Si tu es d'accord, RWOOD regarde ta position une seule fois à l'ouverture du pointage et remplit le chantier où tu te trouves. La position reste sur ton téléphone : ni enregistrée, ni envoyée, aucun suivi." },
+      { icon: '🎯', text: "Bouton 🎯 à côté du chantier pour le retrouver à tout moment, et réglage dans Paramètres › Mon compte." },
+    ],
+  },
+  {
+    version: '5.41.326',
+    date: '04/10/2026',
+    entries: [
+      { icon: '⭐', text: "Où vas-tu ? : au départ, seulement Dépôt, Station Total, Foussier et Veolia (les plus proches). Chacun ajoute le reste avec « ＋ Ajouter »." },
+    ],
+  },
   {
     version: '5.41.325',
     date: '04/10/2026',
@@ -67958,8 +67985,85 @@ function _ptsVoiture(){ toggleVoiturePerso(); _ptsApply(); }
 function _ptsSite(v){
   const day = data.attendance[currentPointageDate];
   if(v === '__custom__'){ _pointageToggleCustom(true); if(!day.customSite) day.customSite = { name:'' }; saveData(); }
-  else { _pointageToggleCustom(false); day.siteId = v; delete day.customSite; saveData(); schedulePointageSync(); }
+  else { _pointageToggleCustom(false); day.siteId = v; delete day.customSite; day._sitePicked = true; saveData(); schedulePointageSync(); }
   const sel = document.getElementById('pointageSite'); if(sel) sel.value = v;
+}
+/* ═══ v5.41.327 — Chantier automatique par la position (avec accord) ═══
+   La position est lue UNE fois, sur le téléphone, juste pour comparer avec
+   les adresses des chantiers. Elle n'est ni enregistrée ni envoyée. */
+const PTS_GEO_KEY = 'rwood-pts-geo';      // 'yes' | 'no'
+const PTS_GEO_RADIUS_KM = 0.4;
+let _ptsGeoTried = {};
+function _ptsGeoConsent(){ try{ return localStorage.getItem(PTS_GEO_KEY) || ''; }catch(e){ return ''; } }
+function ptsGeoAsk(then){
+  const ex = document.getElementById('modal-ptsGeo'); if(ex) ex.remove();
+  const d = document.createElement('div'); d.className = 'modal-overlay open'; d.id = 'modal-ptsGeo';
+  d.innerHTML = `<div class="modal"><div class="modal-header"><h2>🎯 Chantier automatique</h2><button class="modal-close" onclick="ptsGeoAnswer('no')">×</button></div>
+    <div style="font-size:15px;line-height:1.5;">RWOOD peut remplir <b>tout seul le chantier</b> de ta fiche quand tu es sur place.</div>
+    <div class="pts-geo-list">
+      <div>📍 Ta position est lue <b>une seule fois</b>, quand tu ouvres le pointage.</div>
+      <div>📱 Elle reste <b>sur ton téléphone</b> : elle sert juste à comparer avec les adresses des chantiers.</div>
+      <div>🚫 Elle n'est <b>ni enregistrée, ni envoyée</b> à personne : ni au patron, ni au conducteur.</div>
+      <div>🙅 Tu n'es <b>pas suivi</b> : rien ne tourne en fond.</div>
+      <div>⚙️ Tu peux <b>arrêter quand tu veux</b> dans Paramètres.</div>
+    </div>
+    <button class="btn btn-primary btn-block" style="height:50px;font-weight:800;margin-top:12px;" onclick="ptsGeoAnswer('yes')">Oui, ça me va</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="ptsGeoAnswer('no')">Non merci</button></div>`;
+  document.body.appendChild(d);
+  window._ptsGeoThen = then || null;
+}
+function ptsGeoAnswer(v){
+  try{ localStorage.setItem(PTS_GEO_KEY, v); }catch(e){}
+  const m = document.getElementById('modal-ptsGeo'); if(m) m.remove();
+  const t = window._ptsGeoThen; window._ptsGeoThen = null;
+  if(v === 'yes' && t) t(); else if(v === 'no') showToast('OK, tu choisis le chantier toi-même 👍');
+  try{ _ptsGeoParamPaint(); }catch(e){}
+}
+function _ptsHerePos(){
+  return new Promise(res => {
+    if(!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(p => res({ lat:p.coords.latitude, lng:p.coords.longitude }), () => res(null), { enableHighAccuracy:true, timeout:12000, maximumAge:120000 });
+  });
+}
+async function ptsLocate(manual){
+  if(_ptsGeoConsent() !== 'yes'){ if(manual || !_ptsGeoConsent()) ptsGeoAsk(() => ptsLocate(true)); return; }
+  const dk = currentPointageDate;
+  if(manual) showToast('🎯 Recherche du chantier…');
+  const here = await _ptsHerePos();
+  if(!here){ if(manual) showToast('📍 Position indisponible (GPS désactivé ou refusé)'); return; }
+  let best = null;
+  for(const site of (data.sites || []).filter(s => s && s.address && s.status !== 'termine')){
+    let g = site._geo || null;
+    if(!g){ try{ g = await geocodeAddress(site.address); if(g){ site._geo = g; } }catch(e){} }
+    if(!g) continue;
+    const km = haversineKm(here.lat, here.lng, g.lat, g.lng);
+    if(km <= PTS_GEO_RADIUS_KM && (!best || km < best.km)) best = { site, km };
+  }
+  try{ saveData(); }catch(e){}
+  // la position (here) n'est conservée nulle part : variable locale, oubliée ici
+  if(!best){ if(manual) showToast('Aucun chantier enregistré tout près d\'ici'); return; }
+  if(currentPointageDate !== dk) return;
+  const day = data.attendance[dk];
+  if(day && day.siteId === best.site.id && !day.customSite){ if(manual) showToast('📍 Tu es bien sur ' + best.site.name); return; }
+  _ptsSite(best.site.id);
+  try{ _ptsApply(); }catch(e){}
+  showToast('📍 Chantier trouvé : ' + best.site.name);
+}
+/* appelé après l'affichage du pointage : auto une fois par jour si accord, propose l'accord une fois */
+function _ptsAutoLocate(){
+  const dk = currentPointageDate; if(dk !== _ptsTodayKey()) return;
+  const day = data.attendance[dk]; if(!day || day._sitePicked || day.validated || day.customSite) return;
+  if(_ptsGeoTried[dk]) return; _ptsGeoTried[dk] = true;
+  const c = _ptsGeoConsent();
+  if(c === 'yes') ptsLocate(false);
+  else if(!c && (data.sites || []).some(s => s && s.address)) setTimeout(() => ptsGeoAsk(() => ptsLocate(true)), 600);
+}
+function _ptsGeoParamPaint(){
+  const sw = document.getElementById('ptsGeoSwitch'); if(sw) sw.classList.toggle('on', _ptsGeoConsent() === 'yes');
+}
+function ptsGeoParamToggle(){
+  if(_ptsGeoConsent() === 'yes'){ try{ localStorage.setItem(PTS_GEO_KEY, 'no'); }catch(e){} showToast('Chantier automatique désactivé'); _ptsGeoParamPaint(); }
+  else ptsGeoAsk(null);
 }
 function _ptsAbsence(v){
   const dk = currentPointageDate, wid = _ptsMe().workerId;
@@ -68103,7 +68207,7 @@ function _ptsApply(){
       </div>
       ${day.validated ? `<div class="pts-ok">✅ Fiche validée. Tu peux encore la modifier et la revalider.</div>` : ''}
       ${abs ? '' : `<div class="pts-seg"><button class="${multi ? '' : 'on'}" onclick="_ptsMulti(false)">1 chantier</button><button class="${multi ? 'on' : ''}" onclick="_ptsMulti(true)">Plusieurs chantiers</button></div>`}
-      ${multi && !abs ? '' : `<div class="pts-sitew"><span>📍</span><select class="pts-site" onchange="_ptsSite(this.value)">${siteOpts}</select></div>`}
+      ${multi && !abs ? '' : `<div class="pts-sitew"><span>📍</span><select class="pts-site" onchange="_ptsSite(this.value)">${siteOpts}</select>${isToday ? `<button type="button" class="pts-locate" onclick="ptsLocate(true)" title="Trouver mon chantier avec ma position">🎯</button>` : ''}</div>`}
       <div id="ptsCustomSlot"></div>
       ${abs ? `
         <div class="pts-abs" style="border-color:${tji.color || 'var(--line)'};"><span>${tji.emoji}</span><b>${escapeHtml(tji.label)}</b></div>
@@ -68138,6 +68242,7 @@ function _ptsApply(){
 function renderPointage(){
   _renderPointageBase();
   try{ _ptsApply(); }catch(err){ console.warn('[pointage simple]', err); const c = document.getElementById('pointageClassic'); if(c) c.style.display = ''; }
+  try{ if(document.querySelector('#view-heures.active')) _ptsAutoLocate(); }catch(e){} // v5.41.327
 }
 /* ═════════════════════ fin MODULE — Pointage simplifié ═════════════════════ */
 
