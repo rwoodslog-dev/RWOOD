@@ -1979,6 +1979,10 @@
   .r3-step{ display:flex; gap:8px; align-items:center; }
   .r3-step button{ width:54px; height:54px; flex-shrink:0; border-radius:14px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:26px; font-weight:800; cursor:pointer; }
   .r3-step .r3-in{ margin:6px 0; }
+  .r3-ppos{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:6px 0 10px; }
+  .r3-ppos button{ display:flex; flex-direction:column; gap:2px; text-align:left; padding:9px 10px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font:inherit; cursor:pointer; }
+  .r3-ppos button b{ font-size:13px; } .r3-ppos button small{ font-size:11px; color:var(--ink-soft); }
+  .r3-ppos button.on{ background:var(--wood); border-color:var(--wood); color:#1a0d00; } .r3-ppos button.on small{ color:#3a2600; }
   .r3-chips{ display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
   .r3-chips button{ padding:8px 14px; border-radius:999px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font:inherit; font-size:14px; font-weight:800; cursor:pointer; }
   .r3-chips button.on{ background:var(--wood); border-color:var(--wood); color:#1a0d00; }
@@ -34929,14 +34933,14 @@ function _r3Steps(){
   return a.concat(['qty','result']);
 }
 let r3 = null;
-const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP','p1','u1','p2','u2','same'];
+const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP','p1','u1','p2','u2','same','pPos','pCote'];
 function _r3Store(){ let sv = {}; try{ sv = JSON.parse(localStorage.getItem('rwood-r3') || '{}') || {}; }catch(e){} if(!sv.solivage && !sv.chevrons && sv.L !== undefined) sv = { solivage: sv }; return sv; }
 function _r3Def(ouv){
   ouv = ouv || 'solivage';
   const sv = _r3Store()[ouv] || {};
   return { step:'ouvrage', ouvrage: ouv, mode: sv.mode || 'count', L: sv.L || '', w: sv.w || '', h: sv.h || '',
     first: sv.first !== false, last: sv.last !== false, n: sv.n || '', e: sv.e || '', eKind: sv.eKind || (ouv === 'chevrons' ? 'max' : 'exact'),
-    T: sv.T || '200', ech: !!sv.ech, D: sv.D || '', echRep: sv.echRep !== false, onP: sv.onP !== false };
+    T: sv.T || '200', ech: !!sv.ech, D: sv.D || '', echRep: sv.echRep !== false, onP: sv.onP !== false, pPos: sv.pPos || 'axe_mur', pCote: sv.pCote || '' };
 }
 function _r3Save(){ try{ const s = r3.s, all = _r3Store(), o = {}; _R3_KEYS.forEach(k => o[k] = s[k]); all[s.ouvrage || 'solivage'] = o; localStorage.setItem('rwood-r3', JSON.stringify(all)); }catch(e){} }
 function r3PickOuvrage(o){ const keep = r3.s.step; r3.s = _r3Def(o); r3.s.step = keep; r3Go('mode'); }
@@ -34995,6 +34999,19 @@ function _r3LayoutSpan(s){
   return res;
 }
 /* Chevrons : entre pignons, ou sur toute la longueur des pannes avec l'échelle de toit */
+/* v5.41.339 — placement du chevron sur le pignon (4 choix). dout = sortie de la face extérieure du chevron
+   au-delà du nu extérieur du pignon (positif vers l'extérieur). */
+const R3_PPOS = [
+  ['axe_ext', 'Axe sur le nu extérieur', 'sortie de chevron axée au mur'],
+  ['face_ext', 'Face alignée au nu extérieur', 'chevron entièrement à l\'extérieur'],
+  ['axe_mur', 'À l\'axe du mur', 'centré sur l\'épaisseur du pignon'],
+  ['cote', 'Cote au choix', 'face du chevron → nu extérieur du mur']
+];
+function _r3PCenter(s, T, w, L){
+  const k = s.pPos || 'axe_mur';
+  const dout = k === 'axe_ext' ? w / 2 : k === 'face_ext' ? w : k === 'cote' ? (_r3n(s.pCote) || 0) : w / 2 - T / 2;
+  return { dout, pA: -T - dout + w / 2, pB: L + T + dout - w / 2 };
+}
 function _r3LayoutChev(s){
   const L = _r3n(s.L), w = _r3n(s.w), T = _r3n(s.T) > 0 ? _r3n(s.T) : 200, D = s.ech ? (_r3n(s.D) || 0) : 0;
   if(!(L > 0) || !(w > 0)) return null;
@@ -35007,7 +35024,8 @@ function _r3LayoutChev(s){
     return r;
   }
   // chevron de rive au bout des pannes + chevron au droit de chaque pignon : on harmonise l'échelle et l'entre-pignons
-  const a0 = x0 + w / 2, pA = -T / 2, pB = L + T / 2;
+  const { pA, pB } = _r3PCenter(s, T, w, L), a0 = x0 + w / 2;
+  if(pA - w / 2 < x0 + w * 0.5) return { err:'Le chevron du pignon dépasse le bout des pannes : réduis la sortie ou allonge l\'échelle de toit.' };
   const S1 = pA - a0, S2 = pB - pA;
   if(S1 < w * 1.5) return { err:'L\'échelle de toit est trop courte pour un chevron de rive en plus de celui du pignon.' };
   const ok = (k1, k2) => { const e1 = S1 / k1, e2 = S2 / k2; return (e1 - w >= w * 0.2 && e2 - w >= w * 0.2) ? { k1, k2, e1, e2 } : null; };
@@ -35323,8 +35341,18 @@ function _r3BuildChev(){
   } else if(st === 'echelle' || st === 'echRep' || st === 'onP'){
     if(s.ech) dims.push({ a:[-T, yr(Wd - 60) + 90, Wd + 40], b:[px0, yr(Wd - 60) + 90, Wd + 40], t: _r3n(s.D) > 0 ? 'débord ' + _r3f(D) : 'débord ?', c:'#8fd0ff' });
     if(st !== 'echelle' && s.echRep) { chev(px0 + w / 2, true); tags.push({ p:[px0 + w / 2, yr(0) + h + 200, 0], t:'chevron de rive', bg:'#5aa96b', fg:'#fff' }); }
-    if(st === 'onP' && s.onP){ chev(-T / 2, true); tags.push({ p:[-T / 2, yr(0) + h + 420, 0], t:'sur le pignon', bg:'#5aa96b', fg:'#fff' }); }
-    cam = sideA;
+    let camP = null;
+    if(st === 'onP' && s.onP){
+      for(let k = 2; k <= 6; k++) if(objs[k]) objs[k].a = 0.22;
+      const pc = _r3PCenter(s, T, w, Lv), cA = pc.pA, yg = yr(Wd) - PH;
+      chev(cA, true);
+      // cote du placement : face extérieure du chevron → nu extérieur du pignon, juste au-dessus du mur
+      dims.push({ a:[cA - w / 2, yg + 30, Wd + 5], b:[-T, yg + 30, Wd + 5], t: (s.pPos === 'cote' ? (_r3n(s.pCote) > 0 || s.pCote === '0' ? _r3f(pc.dout) : '?') : _r3f(Math.abs(pc.dout))) + (pc.dout < 0 ? ' (dedans)' : ''), c:'#8fd0ff' });
+      dims.push({ a:[cA, yg - 20, Wd + 5], b:[cA, yr(Wd) + h + 120, Wd + 5], t:'', c:'rgba(255,207,107,.7)', thin:true });
+      tags.push({ p:[-T / 2, yg - 260, Wd + 5], t:'pignon', bg:'#ece6dc' });
+      camP = { tx: -T / 2, ty: yg, tz: Wd, yaw: -0.15, pitch: 0.12, dist: Math.max(1100, T * 5 + w * 6) };
+    }
+    cam = camP || sideA;
   } else if(st === 'first' || st === 'last'){
     const isF = st === 'first', on = isF ? s.first : s.last;
     const gap = Math.max(w * 1.6, Math.min(450, Lv * 0.08));
@@ -35435,8 +35463,11 @@ function r3Go(step, instant){
     h = `<div class="r3-t">Répartir des chevrons sur l'échelle de toit ?</div><div class="r3-s">Oui : un chevron de rive au bout des pannes, et des chevrons sur le débord si besoin</div>
       <div class="r3-yn"><button class="${s.echRep ? 'on' : ''}" onclick="r3SetB('echRep',true)">Oui</button><button class="${!s.echRep ? 'on' : ''}" onclick="r3SetB('echRep',false)">Non<small>seulement entre pignons</small></button></div>${next()}`;
   } else if(step === 'onP'){
-    h = `<div class="r3-t">Un chevron au droit de chaque pignon ?</div><div class="r3-s">Axé sur le mur. L'appli harmonise alors au mieux l'entraxe de l'échelle de toit et celui entre pignons.</div>
-      <div class="r3-yn"><button class="${s.onP ? 'on' : ''}" onclick="r3SetB('onP',true)">Oui</button><button class="${!s.onP ? 'on' : ''}" onclick="r3SetB('onP',false)">Non<small>répartition régulière rive à rive</small></button></div>${next()}`;
+    h = `<div class="r3-t">Un chevron au droit de chaque pignon ?</div><div class="r3-s">L'appli harmonise alors au mieux l'entraxe de l'échelle de toit et celui entre pignons.</div>
+      <div class="r3-yn"><button class="${s.onP ? 'on' : ''}" onclick="r3SetB('onP',true)">Oui</button><button class="${!s.onP ? 'on' : ''}" onclick="r3SetB('onP',false)">Non<small>répartition régulière rive à rive</small></button></div>
+      ${s.onP ? `<div class="r3-s" style="margin-top:2px;font-weight:700;color:var(--ink);">Placement du chevron sur le pignon</div>
+      <div class="r3-ppos">${R3_PPOS.map(([k, l, d]) => `<button class="${(s.pPos || 'axe_mur') === k ? 'on' : ''}" onclick="r3.s.pPos='${k}';r3Go('onP',false)"><b>${l}</b><small>${d}</small></button>`).join('')}</div>
+      ${s.pPos === 'cote' ? `<label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Face extérieure du chevron → nu extérieur du mur (mm)</label>${inp('r3PC', s.pCote, 'Ex : 30', "r3.s.pCote=this.value;r3Refresh()")}<div class="r3-s">Positif : le chevron sort du mur. Négatif : il rentre sur le mur.</div>` : ''}` : ''}${next()}`;
   } else if(step === 'first' || step === 'last'){
     const isF = step === 'first', on = isF ? s.first : s.last;
     h = `<div class="r3-t">${CH ? (isF ? 'Le 1<sup>er</sup> chevron est contre le pignon A ?' : 'Le dernier chevron est contre le pignon B ?') : (isF ? 'La 1<sup>re</sup> solive est en appui contre le mur A ?' : 'La dernière solive est en appui contre le mur B ?')}</div>
@@ -35509,6 +35540,7 @@ function r3Next(){
   if(st === 'section' && !(_r3n(s.w) > 0)){ showToast('Indique la largeur du bois'); return; }
   if(st === 'e_pente' && !(_r3Ang(s.p1, s.u1) > 0 && _r3Ang(s.p1, s.u1) < Math.PI / 2)){ showToast('Indique la pente de l\'empanon'); return; }
   if(st === 'e_voisin' && !s.same && !(_r3Ang(s.p2, s.u2) > 0 && _r3Ang(s.p2, s.u2) < Math.PI / 2)){ showToast('Indique la pente du versant voisin'); return; }
+  if(st === 'onP' && s.onP && s.pPos === 'cote' && !isFinite(_r3n(s.pCote))){ showToast('Indique la cote face du chevron → mur'); return; }
   if(st === 'echelle' && s.ech && !(_r3n(s.D) > 0)){ showToast('Indique le débord de l\'échelle de toit'); return; }
   if(st === 'qty'){ const lay = r3Layout(s); if(!lay){ showToast(s.mode === 'count' ? 'Indique le nombre de ' + _r3Word(2) : 'Indique l\'entraxe'); return; } if(lay.err){ showToast('⚠️ ' + lay.err); return; } }
   const S = _r3Steps(), i = S.indexOf(st); if(i < S.length - 1) r3Go(S[i + 1]);
@@ -35547,7 +35579,7 @@ function _r3Result(){
   el.innerHTML = `<div class="r3-res">${rows.map(([a, b]) => `<div><span>${a}</span><b>${b}</b></div>`).join('')}</div>
     ${lay.exact && lay.pans ? `<div class="hint" style="margin:6px 2px 0;">Axes comptés depuis le nu du mur A.${lay.pans.length ? ' Jonctions sur un axe avec des panneaux de ' + lay.pans.join(', ') + '.' : ' ⚠️ Aucune longueur de panneau courante (2500, 2440, 2400, 1250, 1220) n\'est un multiple de cet entraxe.'}</div>` : ''}
     ${lay.note ? `<div class="hint" style="margin:6px 2px 0;color:var(--wood);">ℹ️ ${escapeHtml(lay.note)}</div>` : ''}
-    ${lay.harm ? `<div class="hint" style="margin:6px 2px 0;">Les chevrons ${lay.xs.findIndex(x => Math.abs(x - lay.pA) < 1) + 1} et ${lay.xs.findIndex(x => Math.abs(x - lay.pB) < 1) + 1} (en bleu) sont au droit des pignons.</div>` : ''}
+    ${lay.harm ? `<div class="hint" style="margin:6px 2px 0;">Les chevrons ${lay.xs.findIndex(x => Math.abs(x - lay.pA) < 1) + 1} et ${lay.xs.findIndex(x => Math.abs(x - lay.pB) < 1) + 1} (en bleu) sont au droit des pignons · ${(R3_PPOS.find(p => p[0] === (s.pPos || 'axe_mur')) || R3_PPOS[2])[1].toLowerCase()}${s.pPos === 'cote' ? ' (' + _r3f(_r3n(s.pCote) || 0) + ')' : ''}.</div>` : ''}
     <div class="r3-axh">📍 Axes depuis le ${org} (mm)</div><div class="r3-axes">${axes}</div>
     <div class="r3-edit"><button onclick="r3Go('L')">Distance</button><button onclick="r3Go('section')">Section</button><button onclick="r3Go('${CH ? 'echelle' : 'first'}')">${CH ? 'Échelle' : 'Appuis'}</button><button onclick="r3Go('qty')">${s.mode === 'count' ? 'Nombre' : 'Entraxe'}</button></div>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="r3Go('mode')">↺ Nouveau calcul</button>`;
@@ -40272,9 +40304,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.338';
+const APP_VERSION = '5.41.339';
 
 const CHANGELOG = [
+  {
+    version: '5.41.339',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🏠', text: "Répartition chevrons : 4 placements du chevron sur le pignon — axe sur le nu extérieur, face alignée au nu extérieur, à l'axe du mur, ou cote au choix entre la face du chevron et le mur. La 3D montre la cote." },
+    ],
+  },
   {
     version: '5.41.338',
     date: '04/10/2026',
