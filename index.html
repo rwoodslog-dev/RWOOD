@@ -1947,6 +1947,10 @@
   .r3-wrap{ position:relative; border-radius:16px; overflow:hidden; border:1.5px solid var(--line); margin-bottom:10px; }
   .r3-wrap canvas{ display:block; width:100%; height:min(46vh,420px); min-height:250px; touch-action:none; }
   .r3-hint{ position:absolute; left:10px; bottom:8px; font-size:11px; color:rgba(255,255,255,.6); pointer-events:none; }
+  .r3-bar{ position:absolute; left:8px; right:52px; top:8px; display:flex; flex-wrap:wrap; gap:6px; }
+  .r3-seg{ display:flex; background:rgba(15,11,8,.78); border-radius:10px; padding:2px; }
+  .r3-seg button{ border:none; background:transparent; color:#e8dfd2; font:inherit; font-size:12px; font-weight:800; padding:6px 9px; border-radius:8px; cursor:pointer; }
+  .r3-seg button.on{ background:var(--wood); color:#1a0d00; }
   .r3-home{ position:absolute; right:8px; top:8px; width:36px; height:36px; border-radius:50%; border:none; background:rgba(15,11,8,.75); color:#fff; font-size:18px; cursor:pointer; }
   .r3-q{ background:var(--card); border:1.5px solid var(--line); border-radius:16px; padding:14px; }
   .r3-t{ font-weight:800; font-size:16.5px; color:var(--ink); margin-bottom:4px; }
@@ -34987,8 +34991,8 @@ function _r3P(p, C){
   const v = [p[0] - C.eye[0], p[1] - C.eye[1], p[2] - C.eye[2]];
   const z = v[0] * C.f[0] + v[1] * C.f[1] + v[2] * C.f[2]; if(z < 10) return null;
   const x = v[0] * C.r[0] + v[1] * C.r[1] + v[2] * C.r[2], y = v[0] * C.u[0] + v[1] * C.u[1] + v[2] * C.u[2];
-  const F = Math.min(r3.W, r3.H) * 1.25;
-  return [r3.W / 2 + x * F / z, r3.H / 2 - y * F / z, z];
+  const F = Math.min(r3.W, r3.H) * 1.25, zz = r3.cam.ortho ? r3.cam.dist : z;
+  return [r3.W / 2 + x * F / zz, r3.H / 2 - y * F / zz, z];
 }
 function _r3Draw(){
   if(!r3 || !r3.cv) return;
@@ -35014,9 +35018,9 @@ function _r3Draw(){
     F.forEach(([idx, n]) => {
       const pts3 = idx.map(i => V[i]);
       const cx = pts3.reduce((a, p) => a + p[0], 0) / 4, cy = pts3.reduce((a, p) => a + p[1], 0) / 4, cz = pts3.reduce((a, p) => a + p[2], 0) / 4;
-      if((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] <= 0) return;
+      if(r3.cam.ortho ? (n[0] * C.f[0] + n[1] * C.f[1] + n[2] * C.f[2] >= -0.001) : ((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] <= 0)) return;
       const pr = pts3.map(p => _r3P(p, C)); if(pr.some(p => !p)) return;
-      const d = Math.hypot(C.eye[0] - cx, C.eye[1] - cy, C.eye[2] - cz);
+      const d = (cx - C.eye[0]) * C.f[0] + (cy - C.eye[1]) * C.f[1] + (cz - C.eye[2]) * C.f[2];
       faces.push({ pr, d, n, b });
     });
   });
@@ -35029,6 +35033,7 @@ function _r3Draw(){
   });
   // cotes
   ctx.font = '700 12.5px -apple-system,Segoe UI,Roboto,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const dimRects = [];
   sc.dims.slice().sort((x, y) => (y.thin ? 1 : 0) - (x.thin ? 1 : 0)).forEach(dm => {
     const a = _r3P(dm.a, C), b = _r3P(dm.b, C); if(!a || !b) return;
     const col = dm.c || '#ffcf6b';
@@ -35040,15 +35045,31 @@ function _r3Draw(){
       ctx.fillStyle = col;
       [[a, 1], [b, -1]].forEach(([p, s]) => { ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(p[0] + s * ux + nx * .5, p[1] + s * uy + ny * .5); ctx.lineTo(p[0] + s * ux - nx * .5, p[1] + s * uy - ny * .5); ctx.closePath(); ctx.fill(); }); }
     const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, t = dm.t, tw = ctx.measureText(t).width + 12;
+    if(!t) return;
+    const lr = [mx - tw / 2, my - 11, mx + tw / 2, my + 11];
+    if(dm.fit && dimRects.some(q => lr[0] < q[2] && lr[2] > q[0] && lr[1] < q[3] && lr[3] > q[1])) return;
+    dimRects.push(lr);
     ctx.fillStyle = 'rgba(15,11,8,.88)'; _r3RR(ctx, mx - tw / 2, my - 11, tw, 22, 7); ctx.fill();
     ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
     ctx.fillStyle = col; ctx.fillText(t, mx, my + .5);
   });
-  ctx.font = '800 11px -apple-system,Segoe UI,Roboto,sans-serif';
-  (sc.tags || []).forEach(tg => {
+  // étiquettes : numéros plus gros, contour sombre, et jamais les unes sur les autres
+  const rects = [], hit = r => rects.some(q => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+  const tgs = (sc.tags || []).slice().sort((a, b) => (b.force ? 1 : 0) - (a.force ? 1 : 0));
+  const nums = tgs.filter(t => t.num), N = nums.length;
+  tgs.forEach(tg => {
     const p = _r3P(tg.p, C); if(!p) return;
-    const tw = ctx.measureText(tg.t).width + 10;
-    ctx.fillStyle = tg.bg || 'rgba(232,172,61,.92)'; _r3RR(ctx, p[0] - tw / 2, p[1] - 9, tw, 18, 9); ctx.fill();
+    let hh, tw, r, ok = false;
+    for(const sz of (tg.num ? [13.5, 11, 9] : [11.5])){
+      ctx.font = (tg.num ? '900 ' : '800 ') + sz + 'px -apple-system,Segoe UI,Roboto,sans-serif';
+      hh = tg.num ? Math.round(sz * 1.75) : 20; tw = Math.max(hh, ctx.measureText(tg.t).width + (sz > 10 ? 12 : 6));
+      r = [p[0] - tw / 2, p[1] - hh / 2, p[0] + tw / 2, p[1] + hh / 2];
+      if(tg.force || !hit(r)){ ok = true; break; }
+    }
+    if(!ok) return;
+    rects.push(r);
+    ctx.fillStyle = tg.bg || 'rgba(232,172,61,.92)'; _r3RR(ctx, p[0] - tw / 2, p[1] - hh / 2, tw, hh, hh / 2); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.stroke();
     ctx.fillStyle = tg.fg || '#1a0d00'; ctx.fillText(tg.t, p[0], p[1] + .5);
   });
 }
@@ -35067,10 +35088,17 @@ function _r3Kick(){ if(r3 && !r3.raf){ r3.raf = true; requestAnimationFrame(_r3L
 function _r3Fly(to, dur){
   let dy = to.yaw - r3.cam.yaw; while(dy > Math.PI) dy -= 2 * Math.PI; while(dy < -Math.PI) dy += 2 * Math.PI;
   to = Object.assign({}, to, { yaw: r3.cam.yaw + dy });
-  r3.anim = { from: Object.assign({}, r3.cam), to, t0: performance.now(), dur: dur || 700 }; r3.camHome = to; _r3Kick();
+  r3.cam.ortho = !!to.ortho;
+  const nums = {}; ['tx','ty','tz','yaw','pitch','dist'].forEach(k => { if(typeof to[k] === 'number') nums[k] = to[k]; });
+  r3.anim = { from: Object.assign({}, r3.cam), to: nums, t0: performance.now(), dur: dur || 700 }; r3.camHome = to; _r3Kick();
 }
 function r3ResetView(){ if(r3 && r3.camHome) _r3Fly(r3.camHome, 500); }
+function _r3Pan(dx, dy){
+  const C = _r3Cam(), F = Math.min(r3.W || 300, r3.H || 300) * 1.25, k = r3.cam.dist / F;
+  r3.cam.tx -= (C.r[0] * dx - C.u[0] * dy) * k; r3.cam.ty -= (C.r[1] * dx - C.u[1] * dy) * k; r3.cam.tz -= (C.r[2] * dx - C.u[2] * dy) * k;
+}
 function _r3BindTouch(cv){
+  cv.addEventListener('contextmenu', e => e.preventDefault());
   const pts = new Map(); let pinch0 = 0, dist0 = 0;
   cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); r3.anim = null;
     if(pts.size === 2){ const [p, q] = [...pts.values()]; pinch0 = Math.hypot(p[0] - q[0], p[1] - q[1]); dist0 = r3.cam.dist; } });
@@ -35078,11 +35106,14 @@ function _r3BindTouch(cv){
     if(!pts.has(e.pointerId)) return;
     const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
     if(pts.size === 1){
-      r3.cam.yaw -= (e.clientX - prev[0]) * 0.008;
-      r3.cam.pitch = Math.max(0.05, Math.min(1.45, r3.cam.pitch + (e.clientY - prev[1]) * 0.006));
+      if(r3.cam.ortho || e.shiftKey || e.buttons === 2){ _r3Pan(e.clientX - prev[0], e.clientY - prev[1]); }
+      else { r3.cam.yaw -= (e.clientX - prev[0]) * 0.008;
+      r3.cam.pitch = Math.max(0.02, Math.min(1.55, r3.cam.pitch + (e.clientY - prev[1]) * 0.006)); }
     } else if(pts.size === 2 && pinch0){
       const [p, q] = [...pts.values()], d = Math.hypot(p[0] - q[0], p[1] - q[1]);
       r3.cam.dist = Math.max(r3.minDist || 150, Math.min(r3.maxDist || 60000, dist0 * pinch0 / Math.max(d, 1)));
+      // déplacement à deux doigts : le milieu des doigts fait glisser la vue (moitié du mouvement de ce doigt)
+      _r3Pan((e.clientX - prev[0]) / 2, (e.clientY - prev[1]) / 2);
     }
     _r3Kick();
   });
@@ -35102,7 +35133,7 @@ function _r3Build(){
   const boxes = [
     { b:[-T, 0, 0, Hw, 0, Lz], c: WALL }, { b:[Lv, Lv + T, 0, Hw, 0, Lz], c: WALL }
   ];
-  const dims = [], tags = [{ p:[-T / 2, Hw + 120, Lz * 0.85], t:'Mur A', bg:'#ece6dc' }, { p:[Lv + T / 2, Hw + 120, Lz * 0.85], t:'Mur B', bg:'#ece6dc' }];
+  const dims = [], tags = [{ p:[-T / 2, Hw + 10, Lz * 0.45], t:'Mur A', bg:'#ece6dc', force:true }, { p:[Lv + T / 2, Hw + 10, Lz * 0.45], t:'Mur B', bg:'#ece6dc', force:true }];
   const joist = (c, hl) => boxes.push({ b:[c - w / 2, c + w / 2, base, top, 0, Lz], c: hl ? HL : WOOD, hl });
   const ov = { tx: Lv / 2, ty: base, tz: Lz * 0.5, yaw: -0.3, pitch: 0.62, dist: Math.max(Lv, Lz) * 1.8 };
   let cam = ov;
@@ -35127,17 +35158,35 @@ function _r3Build(){
     cam = { tx: isF ? 0 : Lv, ty: base + h / 2, tz: Lz * 0.8, yaw: isF ? 0.62 : -0.62, pitch: 0.38, dist: Math.max(1300, Math.min(Lv, 3000) * 0.8) };
   } else if(lay && !lay.err){
     const hi = lay.exact && s.first && lay.xs.length > 2 ? 1 : 0;
-    lay.xs.forEach((c, i) => joist(c, i === hi || i === hi + 1));
-    dims.push({ a:[0, 30, Lz + 380], b:[Lv, 30, Lz + 380], t: _r3f(Lv), c:'#ece6dc' });
-    if(lay.xs.length >= 2){
-      const i0 = lay.exact && s.first && lay.xs.length > 2 ? 1 : 0, a = lay.xs[i0], b = lay.xs[i0 + 1];
-      dims.push({ a:[a, top + 330, ZF], b:[b, top + 330, ZF], t:'Entraxe ' + _r3f(b - a) });
-      dims.push({ a:[a + w / 2, base + h * 0.5, Lz + 5], b:[b - w / 2, base + h * 0.5, Lz + 5], t:'Vide ' + _r3f(b - a - w), c:'#8fd0ff' });
-      [a, b].forEach(x => dims.push({ a:[x, top, Lz + 5], b:[x, top + 330, ZF], t:'', c:'rgba(255,207,107,.5)', thin:true }));
+    lay.xs.forEach((c, i) => joist(c, false));
+    // v5.41.336 — une cote entre chaque pièce, en axes ou en vides (au choix), sur deux rangs alternés
+    const axe = (r3.dimMode || 'axe') === 'axe', xs = lay.xs;
+    const rg = Math.max(220, Lv * 0.1);
+    const row = i => ({ y: top + rg * (0.9 + (i % 2)), z: ZF + (i % 2) * rg });
+    dims.push({ a:[0, 30, ZF + rg * 2.4], b:[Lv, 30, ZF + rg * 2.4], t: _r3f(Lv), c:'#ece6dc' });
+    const seg = [];
+    if(axe){
+      seg.push([0, xs[0]]);
+      for(let i = 0; i + 1 < xs.length; i++) seg.push([xs[i], xs[i + 1]]);
+      seg.push([xs[xs.length - 1], Lv]);
+      xs.forEach(x => dims.push({ a:[x, top, Lz], b:[x, top + rg * 1.9, ZF + rg], t:'', c:'rgba(255,207,107,.35)', thin:true }));
+    } else {
+      if(xs[0] - w / 2 > 0.5) seg.push([0, xs[0] - w / 2]);
+      for(let i = 0; i + 1 < xs.length; i++) seg.push([xs[i] + w / 2, xs[i + 1] - w / 2]);
+      if(Lv - (xs[xs.length - 1] + w / 2) > 0.5) seg.push([xs[xs.length - 1] + w / 2, Lv]);
     }
-    if(lay.gapStart > 0.5) dims.push({ a:[0, base + h * 0.5, Lz + 5], b:[lay.xs[0] - w / 2, base + h * 0.5, Lz + 5], t: _r3f(lay.gapStart), c:'#8fd0ff' });
-    if(lay.gapEnd > 0.5 && lay.xs.length) dims.push({ a:[lay.xs[lay.xs.length - 1] + w / 2, base + h * 0.5, Lz + 5], b:[Lv, base + h * 0.5, Lz + 5], t: _r3f(lay.gapEnd), c:'#8fd0ff' });
-    if(lay.xs.length <= 40) lay.xs.forEach((c, i) => tags.push({ p:[c, top + 40, -20], t: String(i + 1), bg:'rgba(236,230,220,.9)' }));
+    seg.forEach(([x0, x1], i) => { const r = row(i); dims.push({ a:[x0, r.y, r.z], b:[x1, r.y, r.z], t: (Math.round((x1 - x0) * 10) / 10).toLocaleString('fr-FR'), c: axe ? '#ffcf6b' : '#8fd0ff', fit:true }); });
+    xs.forEach((c, i) => tags.push({ p:[c, top + 25, Lz - Math.min(250, Lz * 0.08)], t: String(i + 1), num:true, bg: i === hi || i === hi + 1 ? '#f0a93a' : '#ffffff' }));
+    const v = r3.view || '3d';
+    if(v === 'plan') cam = { tx: Lv / 2, ty: top, tz: Lz * 0.75, yaw: 0, pitch: 1.55, dist: Math.max(Lv * 1.5, Lz * 1.1), ortho:true };
+    if(v === 'face'){ tags[0].p = [-T / 2, base * 0.4, Lz + 5]; tags[1].p = [Lv + T / 2, base * 0.4, Lz + 5]; }
+    if(v === 'face') cam = { tx: Lv / 2, ty: top + rg / 2, tz: Lz, yaw: 0, pitch: 0.02, dist: Lv * 1.5, ortho:true }; if(v === 'face') cam.ty = top + rg * 0.8;
+    else if(v === 'cote'){
+      cam = { tx: Lv / 2, ty: base + h / 2, tz: Lz / 2, yaw: Math.PI / 2, pitch: 0.02, dist: Lz * 1.5, ortho:true };
+      boxes[1].a = 0.15; // mur B transparent pour voir la solive en coupe longitudinale
+      tags.splice(0, 2);
+      dims.push({ a:[Lv - w / 2, base, Lz + 120], b:[Lv - w / 2, top, Lz + 120], t:'h ' + _r3f(h), c:'#8fd0ff' });
+    }
   }
   r3.scene = { boxes, dims, tags, floor:[-T, Lv + T, -300, Lz + 500] };
   return cam;
@@ -35146,12 +35195,16 @@ function _r3Build(){
 /* ── Interface ── */
 function r3Mount(){
   const root = document.getElementById('r3Root'); if(!root) return;
-  if(!r3){ r3 = { s: _r3Def(), cam:{ tx:2000, ty:500, tz:1500, yaw:Math.PI + 0.55, pitch:0.62, dist:7000 } }; }
+  if(!r3){ let dm = 'axe'; try{ dm = localStorage.getItem('rwood-r3-dim') || 'axe'; }catch(e){} r3 = { s: _r3Def(), view:'3d', dimMode: dm, cam:{ tx:2000, ty:500, tz:1500, yaw:-0.3, pitch:0.62, dist:7000 } }; }
   if(!root.dataset.built){
     root.dataset.built = '1';
     root.innerHTML = `<div class="r3-top"><button class="r3-back" id="r3Back" onclick="r3Back()">‹</button><div class="r3-dots" id="r3Dots"></div></div>
       <div class="r3-wrap" id="r3Wrap"><canvas id="r3Cv"></canvas>
-        <div class="r3-hint">☝️ tourner · 🤏 zoomer</div><button class="r3-home" onclick="r3ResetView()" title="Recentrer">⟲</button></div>
+        <div class="r3-hint" id="r3Hint">☝️ tourner · ✌️ zoomer / déplacer</div><button class="r3-home" onclick="r3ResetView()" title="Recentrer">⟲</button>
+        <div class="r3-bar" id="r3Bar" style="display:none;">
+          <div class="r3-seg" id="r3Views">${[['3d','3D'],['plan','Dessus'],['face','Face'],['cote','Côté']].map(([k, l]) => `<button data-v="${k}" onclick="r3SetView('${k}')">${l}</button>`).join('')}</div>
+          <div class="r3-seg" id="r3DimSel"><button data-d="axe" onclick="r3SetDim('axe')">Axes</button><button data-d="vide" onclick="r3SetDim('vide')">Vides</button></div>
+        </div></div>
       <div id="r3Q" class="r3-q"></div>`;
     r3.cv = document.getElementById('r3Cv'); r3.ctx = r3.cv.getContext('2d');
     _r3BindTouch(r3.cv);
@@ -35204,13 +35257,24 @@ function r3Go(step, instant){
   }
   q.innerHTML = h;
   if(step === 'result') _r3Result();
+  if(step !== 'qty' && step !== 'result') r3.view = '3d';
+  _r3BarSync();
   if(show3d){
     const cam = _r3Build();
-    if(instant){ Object.assign(r3.cam, cam); r3.camHome = cam; _r3Kick(); } else _r3Fly(cam, step === 'section' || R3_STEPS[i - 1] === 'section' ? 900 : 650);
+    if(instant){ Object.assign(r3.cam, cam); r3.cam.ortho = !!cam.ortho; r3.camHome = cam; _r3Kick(); } else _r3Fly(cam, step === 'section' || R3_STEPS[i - 1] === 'section' ? 900 : 650);
   }
   _r3LiveTxt();
   const first = q.querySelector('.r3-in'); if(first && !instant && !first.value) setTimeout(() => { try{ first.focus(); }catch(e){} }, 350);
   _r3Save();
+}
+function r3SetView(v){ r3.view = v; _r3BarSync(); const cam = _r3Build(); _r3Fly(cam, 650); }
+function r3SetDim(d){ r3.dimMode = d; try{ localStorage.setItem('rwood-r3-dim', d); }catch(e){} _r3BarSync(); const cam = _r3Build(); r3.camHome = cam; _r3Kick(); }
+function _r3BarSync(){
+  const st = r3.s.step, bar = document.getElementById('r3Bar'); if(!bar) return;
+  bar.style.display = (st === 'qty' || st === 'result') ? '' : 'none';
+  bar.querySelectorAll('[data-v]').forEach(b => b.classList.toggle('on', b.dataset.v === (r3.view || '3d')));
+  bar.querySelectorAll('[data-d]').forEach(b => b.classList.toggle('on', b.dataset.d === (r3.dimMode || 'axe')));
+  const hn = document.getElementById('r3Hint'); if(hn) hn.textContent = (r3.view && r3.view !== '3d' && (st === 'qty' || st === 'result')) ? '☝️ déplacer · 🤏 zoomer' : '☝️ tourner · ✌️ zoomer / déplacer';
 }
 function r3Refresh(){ const cam = _r3Build(); r3.camHome = cam; _r3LiveTxt(); _r3Kick(); }
 function _r3LiveTxt(){
@@ -39836,9 +39900,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.335';
+const APP_VERSION = '5.41.336';
 
 const CHANGELOG = [
+  {
+    version: '5.41.336',
+    date: '04/10/2026',
+    entries: [
+      { icon: '📏', text: "Répartition 3D : choisis « Axes » ou « Vides » sur le visuel, une cote s'affiche entre chaque pièce en plus des numéros." },
+      { icon: '👁', text: "Vues Dessus, Face et Côté en plus de la 3D. Déplace la vue à deux doigts (ou à un doigt en vue Dessus / Face / Côté)." },
+      { icon: '🔢', text: "Numéros des solives plus gros et lisibles, posés sur chaque solive, sans se chevaucher." },
+    ],
+  },
   {
     version: '5.41.335',
     date: '04/10/2026',
