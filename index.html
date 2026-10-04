@@ -3716,6 +3716,7 @@
   .go-tile b{ display:block; font-size:12.5px; margin-top:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .go-tile span{ display:block; font-size:10.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .go-tile.add{ border-style:dashed; color:var(--ink-soft); }
+  .go-tile{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .go-tile:active, .go-row:active{ transform:scale(.97); }
   .go-small{ font-size:12px; color:var(--ink-soft); margin:8px 2px 0; }
   .go-small a{ color:var(--wood); font-weight:800; text-decoration:none; }
@@ -5653,7 +5654,7 @@
         <div id="goManage"></div>
         <div id="goRecents"></div>
         <details class="calc-hist" style="margin-top:14px;">
-          <summary>📒 Mes adresses enregistrées</summary>
+          <summary>📒 Gérer mes adresses enregistrées</summary>
           <div id="itinerariesList"></div>
           <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="openItineraryModal()">+ Ajouter une adresse</button>
         </details>
@@ -16025,6 +16026,49 @@ function _goSmart(raw){
   if(words.length){ const all = _goAll(); dest = all.find(x => words.every(w => _suiviNormalize(x.name + ' ' + (x.sub || '')).includes(w))) || all.find(x => words.some(w => _suiviNormalize(x.name).includes(w))); }
   return { o, dest };
 }
+function _goList(k){ try{ const v = JSON.parse(localStorage.getItem(k + ':' + (getSupaUserId ? (getSupaUserId() || 'local') : 'local')) || '[]'); return Array.isArray(v) ? v : []; }catch(e){ return []; } }
+function _goSetList(k, v){ try{ localStorage.setItem(k + ':' + (getSupaUserId ? (getSupaUserId() || 'local') : 'local'), JSON.stringify(v)); }catch(e){} }
+/* appui court = Waze ; appui long = retirer la tuile */
+function _goBindTiles(){
+  document.querySelectorAll('#goTiles [data-go-key]').forEach(b => {
+    let t = null, lp = false;
+    const start = () => { lp = false; clearTimeout(t); t = setTimeout(() => { lp = true; try{ navigator.vibrate && navigator.vibrate(30); }catch(_){} goRemoveTile(b.dataset.goKey); }, 600); };
+    const stop = () => clearTimeout(t);
+    b.addEventListener('touchstart', start, { passive:true }); b.addEventListener('touchend', stop); b.addEventListener('touchmove', stop, { passive:true });
+    b.addEventListener('mousedown', start); b.addEventListener('mouseup', stop); b.addEventListener('mouseleave', stop);
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('click', e => { if(lp){ lp = false; e.preventDefault(); return; } goLaunch(b.dataset.goKey); });
+  });
+}
+function goRemoveTile(key){
+  const x = _goAll().find(y => y.key === key); if(!x) return;
+  if(!confirm('Retirer « ' + x.name + ' » de tes raccourcis ?\n\nTu pourras le remettre avec « ＋ Ajouter ».')) return;
+  const hid = _goList('rwood-go-hidden'); if(!hid.includes(key)) hid.push(key); _goSetList('rwood-go-hidden', hid);
+  _goSetList('rwood-go-pins', _goList('rwood-go-pins').filter(k => k !== key));
+  showToast('Raccourci retiré'); _goRender();
+}
+function goPinTile(key){
+  _goSetList('rwood-go-hidden', _goList('rwood-go-hidden').filter(k => k !== key));
+  const pins = _goList('rwood-go-pins'); if(!pins.includes(key)) pins.push(key); _goSetList('rwood-go-pins', pins);
+  const m = document.getElementById('modal-goAddMenu'); if(m) m.remove();
+  showToast('⭐ Raccourci ajouté'); _goRender();
+}
+/* ＋ Ajouter : enregistrer l'endroit où je suis, ou épingler une adresse / un chantier existant */
+function goAddMenu(){
+  const ex = document.getElementById('modal-goAddMenu'); if(ex) ex.remove();
+  const hid = _goList('rwood-go-hidden'), pins = _goList('rwood-go-pins');
+  const inTiles = x => (x.kind !== 'chantier' || pins.includes(x.key)) && !hid.includes(x.key);
+  const avail = _goAll().filter(x => !inTiles(x));
+  const tag = { entreprise:'Entreprise', chantier:'Chantier', adresse:'Mon adresse' };
+  const d = document.createElement('div'); d.className = 'modal-overlay open'; d.id = 'modal-goAddMenu';
+  d.innerHTML = `<div class="modal" style="max-height:88vh;overflow:auto;"><div class="modal-header"><h2>＋ Ajouter un raccourci</h2><button class="modal-close" onclick="document.getElementById('modal-goAddMenu').remove()">×</button></div>
+    <button class="btn btn-primary btn-block" style="height:50px;font-weight:800;" onclick="document.getElementById('modal-goAddMenu').remove();goAddHere()">📍 Enregistrer l'endroit où je suis</button>
+    <div class="go-sec" style="margin-top:16px;">Ou choisis une adresse</div>
+    ${avail.length ? '<div class="go-res">' + avail.map(x => `<div class="go-row" onclick="goPinTile('${x.key}')"><span class="ic">${x.icon}</span><div class="b"><b>${escapeHtml(x.name)}</b> <span class="go-tag">${tag[x.kind]}</span><div class="m">${escapeHtml(x.sub || '')}</div></div><span class="go-mini">⭐</span></div>`).join('') + '</div>' : '<div class="hint">Toutes tes adresses sont déjà en raccourci.</div>'}
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="document.getElementById('modal-goAddMenu').remove();openItineraryModal()">✏️ Taper une nouvelle adresse</button></div>`;
+  d.addEventListener('click', e => { if(e.target === d) d.remove(); });
+  document.body.appendChild(d);
+}
 function goLaunchFree(q){ if(!q) return; window.location.href = `https://waze.com/ul?q=${encodeURIComponent(q)}&navigate=yes`; }
 /* Suggestion du moment */
 function _goSuggest(){
@@ -16046,20 +16090,25 @@ function _goRender(){
   const all = _goAll(), st = _goStats();
   const sug = _goSuggest(), d = sug && all.find(x => x.key === sug.key);
   const hero = document.getElementById('goHero');
-  if(hero) hero.innerHTML = d ? `<div class="go-hero"><div class="s">${sug.why}</div><div class="n">${d.icon} ${escapeHtml(d.name)}</div><div class="a">${escapeHtml(d.sub || '')}</div>
+  if(hero) hero.innerHTML = ''; // v5.41.323 — plus de suggestion en haut
+  if(false) hero.innerHTML = d ? `<div class="go-hero"><div class="s">${sug.why}</div><div class="n">${d.icon} ${escapeHtml(d.name)}</div><div class="a">${escapeHtml(d.sub || '')}</div>
     <button class="go-btn" onclick="goLaunch('${d.key}')">🚗 Y aller</button>
     ${_goOnWayChips(d.key)}</div>` : '';
   // tuiles : adresses entreprise + mes adresses + chantiers déjà utilisés, triées par usage
   const score = x => ((st[x.key] && st[x.key].n) || 0) * 10 + (x.kind === 'entreprise' ? 3 : 0) + (x.kind === 'adresse' ? 2 : 0);
-  const pool = all.filter(x => x.kind !== 'chantier' || st[x.key]).filter(x => !d || x.key !== d.key);
-  const tiles = pool.slice().sort((a, b) => score(b) - score(a)).slice(0, 8);
-  document.getElementById('goTiles').innerHTML = tiles.map(x => `<button class="go-tile" onclick="goLaunch('${x.key}')"><i>${x.icon}</i><b>${escapeHtml(x.name)}</b><span>${escapeHtml(x.near ? '📍 le + proche' : (x.sub || '').split(',')[0].slice(0, 22))}</span></button>`).join('')
-    + `<button class="go-tile add" onclick="goAddHere()"><i>＋</i><b>Ajouter</b><span>ici même 📍</span></button>`;
+  // v5.41.323 — tuiles = entreprise + mes adresses + raccourcis épinglés, sauf celles retirées (appui long)
+  const hid = _goList('rwood-go-hidden'), pins = _goList('rwood-go-pins');
+  const pool = all.filter(x => (x.kind !== 'chantier' || pins.includes(x.key)) && !hid.includes(x.key));
+  const tiles = pool.slice().sort((a, b) => score(b) - score(a));
+  document.getElementById('goTiles').innerHTML = tiles.map(x => `<button class="go-tile" data-go-key="${x.key}"><i>${x.icon}</i><b>${escapeHtml(x.name)}</b><span>${escapeHtml(x.near ? '📍 le + proche' : (x.sub || '').split(',')[0].slice(0, 22))}</span></button>`).join('')
+    + `<button class="go-tile add" onclick="goAddMenu()"><i>＋</i><b>Ajouter</b><span>un raccourci</span></button>`;
+  _goBindTiles();
   const mg = document.getElementById('goManage');
   if(mg) mg.innerHTML = _goCanManage() ? `<div class="go-small"><a href="#" onclick="goManagePlaces();return false;">✏️ Gérer les adresses de l'entreprise</a> (Total, fournisseurs… pour toute l'équipe)</div>` : '';
   const rec = Object.keys(st).filter(k => all.some(x => x.key === k)).sort((a, b) => st[b].last - st[a].last).slice(0, 4);
   const re = document.getElementById('goRecents');
-  if(re) re.innerHTML = rec.length ? '<div class="go-sec">🕘 Récents</div>' + rec.map(k => { const x = all.find(y => y.key === k);
+  if(re) re.innerHTML = ''; // v5.41.323 — récents retirés
+  if(false) re.innerHTML = rec.length ? '<div class="go-sec">🕘 Récents</div>' + rec.map(k => { const x = all.find(y => y.key === k);
     const dt = new Date(st[k].last), dd = Math.floor((Date.now() - dt) / 86400000);
     return `<div class="go-row" onclick="goLaunch('${k}')"><span class="ic">${x.icon}</span><div class="b"><b>${escapeHtml(x.name)}</b><div class="m">${dd < 1 ? "aujourd'hui " + dt.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }) : dd === 1 ? 'hier' : dt.toLocaleDateString('fr-FR', { weekday:'long' })}</div></div><span class="go-mini">🚗</span></div>`; }).join('') : '';
 }
@@ -16075,12 +16124,12 @@ function _goRenderResults(){
   if(main) main.style.display = 'none'; if(hero) hero.style.display = 'none';
   const tag = { entreprise:'ENTREPRISE', chantier:'CHANTIER', adresse:'MON ADRESSE' };
   const m = _goMatches();
-  const sm = _goSmart(raw);
+  const sm = null; // v5.41.323 — « sur le chemin » retiré
   const smart = sm ? `<div class="go-row go-smart" onclick="goOnWay('${sm.o.k}',${sm.dest ? `'${sm.dest.key}'` : 'null'})"><span class="ic">${sm.o.icon}</span><div class="b"><b>${sm.o.label} ${sm.dest ? 'sur le chemin de ' + escapeHtml(sm.dest.name) : 'autour de toi'}</b><div class="m">avec les horaires d'ouverture</div></div><span class="go-mini">🔎</span></div>` : '';
   box.innerHTML = '<div class="go-res">' + smart + m.map(x => `<div class="go-row" onclick="goLaunch('${x.key}')"><span class="ic">${x.icon}</span><div class="b"><b>${escapeHtml(x.name)}</b> <span class="go-tag">${tag[x.kind]}</span><div class="m">${escapeHtml(x.sub || '')}</div></div><span class="go-mini">🚗</span></div>`).join('')
     + `<div class="go-row" onclick="goLaunchFree(${JSON.stringify(raw).replace(/"/g,'&quot;')})"><span class="ic">📍</span><div class="b"><b>« ${escapeHtml(raw)} » dans Waze</b><div class="m">chercher cette adresse</div></div><span class="go-mini">🚗</span></div></div>`;
 }
-function _goFirstResult(){ const raw = ((document.getElementById('goSearch') || {}).value || '').trim(); const sm = _goSmart(raw); if(sm){ goOnWay(sm.o.k, sm.dest ? sm.dest.key : null); return; } const m = _goMatches(); if(m.length) goLaunch(m[0].key); else goLaunchFree(((document.getElementById('goSearch') || {}).value || '').trim()); }
+function _goFirstResult(){ const raw = ((document.getElementById('goSearch') || {}).value || '').trim(); const m = _goMatches(); if(m.length) goLaunch(m[0].key); else goLaunchFree(((document.getElementById('goSearch') || {}).value || '').trim()); }
 /* ＋ Ajouter ici même : position GPS → nom + icône */
 function goAddHere(){
   const ex = document.getElementById('modal-goAdd'); if(ex) ex.remove();
@@ -39138,9 +39187,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.322';
+const APP_VERSION = '5.41.323';
 
 const CHANGELOG = [
+  {
+    version: '5.41.323',
+    date: '04/10/2026',
+    entries: [
+      { icon: '⭐', text: "Où vas-tu ? encore plus simple : seulement tes raccourcis « En un appui » (et la recherche). Appui long sur une tuile pour la retirer ; « ＋ Ajouter » enregistre l'endroit où tu es ou remet une adresse enregistrée / un chantier en raccourci." },
+    ],
+  },
   {
     version: '5.41.322',
     date: '04/10/2026',
@@ -68150,9 +68206,8 @@ const RH_HELP = {
     { i:'⏱', x:"Tes heures sur chaque chantier, tâche par tâche.", r:['ouvrier'] }
   ]},
   itineraires: { t:'Où vas-tu ?', l:[
-    { i:'🚗', x:"En haut, l'endroit où tu vas sûrement : un appui sur <b>Y aller</b> ouvre Waze." },
-    { i:'🥖', x:"<b>Sur le chemin</b> : boulangerie, café, Total ou resto à mi-chemin, avec les horaires. Tu peux aussi taper ou dicter « boulangerie Marchal »." },
-    { i:'⭐', x:"<b>En un appui</b> : Total la plus proche, fournisseurs, tes adresses. <b>＋ Ajouter ici même</b> enregistre l'endroit où tu es." }
+    { i:'⭐', x:"<b>En un appui</b> : touche une tuile, Waze s'ouvre (Total et fournisseurs : le plus proche)." },
+    { i:'👆', x:"<b>Appui long</b> sur une tuile pour la retirer. <b>＋ Ajouter</b> : l'endroit où tu es, ou une adresse / un chantier en raccourci." }
   ]},
   stock: { t:'Stock camion', l:[
     { i:'🔧', x:"<b>Outillage</b> : tes outils. Touche un outil pour ✏️ Modifier, 🤝 Prêter ou 🗑 Supprimer. Le <b>＋</b> en bas ajoute un outil." },
