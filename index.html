@@ -1903,7 +1903,7 @@
   #view-agenda .calendar-day-dot{ width:7px; height:7px; }
 
   /* v5.41.311 — Calcul simplifié */
-  .calc-tools{ display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-bottom:12px; }
+  .calc-tools{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:12px; }
   .calc-tools .chip{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:10px 2px; border-radius:14px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font-size:11px; font-weight:800; font-family:inherit; text-transform:none; letter-spacing:0; cursor:pointer; min-width:0; }
   .calc-tools .chip .ci{ font-size:24px; line-height:1; }
   .calc-tools .chip.selected{ border-color:var(--wood); background:rgba(232,172,61,.14); color:var(--wood); }
@@ -1951,6 +1951,14 @@
   .r3-seg{ display:flex; background:rgba(15,11,8,.78); border-radius:10px; padding:2px; }
   .r3-seg button{ border:none; background:transparent; color:#e8dfd2; font:inherit; font-size:12px; font-weight:800; padding:6px 9px; border-radius:8px; cursor:pointer; }
   .r3-seg button.on{ background:var(--wood); color:#1a0d00; }
+  .em-u{ display:inline-flex; margin:6px 0 2px; background:var(--bg-elev); border:1.5px solid var(--line); }
+  .em-u button{ color:var(--ink); }
+  .em-t{ font-weight:800; font-size:15px; margin-bottom:8px; color:var(--ink); }
+  .em-row{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px; }
+  .em-big{ background:var(--bg-elev); border:1.5px solid var(--line); border-radius:14px; padding:10px; display:flex; flex-direction:column; gap:2px; }
+  .em-big span{ font-size:12px; font-weight:700; color:var(--ink-soft); }
+  .em-big b{ font-size:26px; font-weight:900; color:var(--wood); line-height:1.1; }
+  .em-big small{ font-size:11px; color:var(--ink-soft); }
   .r3-home{ position:absolute; right:8px; top:8px; width:36px; height:36px; border-radius:50%; border:none; background:rgba(15,11,8,.75); color:#fff; font-size:18px; cursor:pointer; }
   .r3-q{ background:var(--card); border:1.5px solid var(--line); border-radius:16px; padding:14px; }
   .r3-t{ font-weight:800; font-size:16.5px; color:var(--ink); margin-bottom:4px; }
@@ -5759,6 +5767,7 @@
         <button type="button" class="chip" data-mode="repartition" onclick="setCalcMode('repartition')"><span class="ci">📏</span><span>Répartition</span></button>
         <button type="button" class="chip" data-mode="simple" onclick="setCalcMode('simple')"><span class="ci">🧮</span><span>Calculette</span></button>
         <button type="button" class="chip" data-mode="decoupe" onclick="setCalcMode('decoupe')"><span class="ci">✂️</span><span>Découpe</span></button>
+        <button type="button" class="chip" data-mode="empanon" onclick="setCalcMode('empanon')"><span class="ci">🪚</span><span>Empanon</span></button>
       </div>
 
       <div class="calc-unit" id="calcUnitTabs">
@@ -5820,6 +5829,7 @@
       </div>
 
       <!-- RÉPARTITION -->
+      <div class="calc-mode" id="calcMode-empanon" style="display:none;"></div>
       <div class="calc-mode" id="calcMode-repartition" style="display:none;">
         <div id="r3Root"></div>
         <div id="repLegacy" style="display:none;">
@@ -34409,7 +34419,7 @@ async function downloadMonthlyRecapPDF(){
 
 /* ============ CALCULATRICE ============ */
 let cumulValues = [];
-let currentCalcMode = (function(){ try{ const m = localStorage.getItem('rwood-calc-mode'); return ['cumul','pythagore','repartition','simple','decoupe'].includes(m) ? m : 'cumul'; }catch(e){ return 'cumul'; } })(); // v5.41.311 — dernier outil retenu
+let currentCalcMode = (function(){ try{ const m = localStorage.getItem('rwood-calc-mode'); return ['cumul','pythagore','repartition','simple','decoupe','empanon'].includes(m) ? m : 'cumul'; }catch(e){ return 'cumul'; } })(); // v5.41.311 — dernier outil retenu
 let currentCalcUnit = 'mm';
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -34589,8 +34599,8 @@ function setCalcMode(mode){
   });
   // La barre d'unité mm/cm ne concerne pas l'outil Découpe (qui travaille en mètres)
   const unitTabs = document.getElementById('calcUnitTabs');
-  if(unitTabs) unitTabs.style.display = (mode === 'decoupe' || mode === 'simple' || mode === 'repartition') ? 'none' : 'flex';
-  if(mode === 'repartition' && typeof r3Mount === 'function') setTimeout(r3Mount, 0); // v5.41.335 — assistant 3D
+  if(unitTabs) unitTabs.style.display = (mode === 'decoupe' || mode === 'simple' || mode === 'repartition' || mode === 'empanon') ? 'none' : 'flex';
+  if((mode === 'repartition' || mode === 'empanon') && typeof r3MountKind === 'function') setTimeout(() => r3MountKind(mode === 'empanon' ? 'emp' : 'rep'), 0); // v5.41.335/338 — assistants 3D
   // [Point calcul] Rafraîchit l'historique de l'outil qu'on vient d'ouvrir.
   if(mode === 'cumul' || mode === 'pythagore') renderCalcHistoryList(mode);
 }
@@ -34910,14 +34920,16 @@ function renderCalcHistoryList(tool){
    ═══════════════════════════════════════════════════════════════════════ */
 const R3_STEPS_SOL = ['ouvrage','mode','L','section','first','last','qty','result'];
 function _r3Steps(){
-  const s = r3 && r3.s; if(!s || s.ouvrage !== 'chevrons') return R3_STEPS_SOL;
+  const s = r3 && r3.s;
+  if(s && s.ouvrage === 'empanon') return ['e_pente','e_voisin','e_section','e_result'];
+  if(!s || s.ouvrage !== 'chevrons') return R3_STEPS_SOL;
   const a = ['ouvrage','mode','L','section','echelle'];
   if(s.ech && _r3n(s.D) > 0){ a.push('echRep'); if(s.echRep) a.push('onP'); else a.push('first','last'); }
   else a.push('first','last');
   return a.concat(['qty','result']);
 }
 let r3 = null;
-const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP'];
+const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP','p1','u1','p2','u2','same'];
 function _r3Store(){ let sv = {}; try{ sv = JSON.parse(localStorage.getItem('rwood-r3') || '{}') || {}; }catch(e){} if(!sv.solivage && !sv.chevrons && sv.L !== undefined) sv = { solivage: sv }; return sv; }
 function _r3Def(ouv){
   ouv = ouv || 'solivage';
@@ -35078,9 +35090,10 @@ function _r3Draw(){
       const nl = Math.hypot(...n); if(!nl) return; n = n.map(v => v / nl);
       const cx = pts3.reduce((a, p) => a + p[0], 0) / m, cy = pts3.reduce((a, p) => a + p[1], 0) / m, cz = pts3.reduce((a, p) => a + p[2], 0) / m;
       if((cx - oc[0]) * n[0] + (cy - oc[1]) * n[1] + (cz - oc[2]) * n[2] < 0) n = n.map(v => -v);
-      if(r3.cam.ortho ? (n[0] * C.f[0] + n[1] * C.f[1] + n[2] * C.f[2] >= -0.001) : ((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] <= 0)) return;
+      if(ob.two){ if((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] < 0) n = n.map(v => -v); }
+      else if(r3.cam.ortho ? (n[0] * C.f[0] + n[1] * C.f[1] + n[2] * C.f[2] >= -0.001) : ((C.eye[0] - cx) * n[0] + (C.eye[1] - cy) * n[1] + (C.eye[2] - cz) * n[2] <= 0)) return;
       const pr = pts3.map(p => _r3P(p, C)); if(pr.some(p => !p)) return;
-      const d = (cx - C.eye[0]) * C.f[0] + (cy - C.eye[1]) * C.f[1] + (cz - C.eye[2]) * C.f[2];
+      const d = (cx - C.eye[0]) * C.f[0] + (cy - C.eye[1]) * C.f[1] + (cz - C.eye[2]) * C.f[2] - (ob.two ? 5 : 0);
       faces.push({ pr, d, n, b: ob });
     });
   });
@@ -35097,6 +35110,7 @@ function _r3Draw(){
   sc.dims.slice().sort((x, y) => (y.thin ? 1 : 0) - (x.thin ? 1 : 0)).forEach(dm => {
     const a = _r3P(dm.a, C), b = _r3P(dm.b, C); if(!a || !b) return;
     const col = dm.c || '#ffcf6b';
+    if(dm.trace){ ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.lineCap = 'butt'; return; }
     if(dm.thin){ ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]); return; }
     ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
     const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l * 6, ny = dx / l * 6;
@@ -35202,7 +35216,7 @@ function _r3BindTouch(cv){
 }
 
 /* ── Scène selon l'étape ── */
-function _r3Build(){ return (r3.s.ouvrage === 'chevrons') ? _r3BuildChev() : _r3BuildSol(); }
+function _r3Build(){ return r3.s.ouvrage === 'empanon' ? _r3BuildEmp() : (r3.s.ouvrage === 'chevrons') ? _r3BuildChev() : _r3BuildSol(); }
 function _r3BuildSol(){
   // Repère : mur A en x=0 (à gauche), mur B en x=L ; solives le long de z ; on regarde depuis z>Lz (bout des solives devant).
   const s = r3.s, st = s.step;
@@ -35369,6 +35383,7 @@ function r3Mount(){
     _r3BindTouch(r3.cv);
     window.addEventListener('resize', () => _r3Kick());
   }
+  if(!r3.cv){ r3.cv = document.getElementById('r3Cv'); r3.ctx = r3.cv.getContext('2d'); }
   r3Go(r3.s.step, true);
 }
 function r3Go(step, instant){
@@ -35376,14 +35391,28 @@ function r3Go(step, instant){
   const s = r3.s, q = document.getElementById('r3Q'), wrap = document.getElementById('r3Wrap');
   const STEPS = _r3Steps(), i = STEPS.indexOf(step);
   document.getElementById('r3Back').style.visibility = i > 0 ? 'visible' : 'hidden';
-  document.getElementById('r3Dots').innerHTML = STEPS.slice(2).map(k => `<i class="${STEPS.indexOf(k) <= i ? 'on' : ''}"></i>`).join('');
+  const EMP = s.ouvrage === 'empanon';
+  document.getElementById('r3Dots').innerHTML = STEPS.slice(EMP ? 0 : 2).map(k => `<i class="${STEPS.indexOf(k) <= i ? 'on' : ''}"></i>`).join('');
   const CH = s.ouvrage === 'chevrons', MUR = CH ? 'pignon' : 'mur', P1 = CH ? 'chevron' : 'solive', P2 = CH ? 'chevrons' : 'solives';
-  const show3d = i >= 2; wrap.style.display = show3d ? '' : 'none';
+  const show3d = EMP || i >= 2; wrap.style.display = show3d ? '' : 'none';
   const qty = s.mode === 'count';
   const inp = (id, val, ph, onin) => `<input id="${id}" class="r3-in" type="text" inputmode="decimal" value="${val}" placeholder="${ph}" oninput="${onin}" onkeydown="if(event.key==='Enter'){event.preventDefault();r3Next();}">`;
   const next = (lbl) => `<button class="btn btn-primary btn-block r3-next" onclick="r3Next()">${lbl || 'Suivant'}</button>`;
   let h = '';
-  if(step === 'ouvrage'){
+  const uch = (k, cur) => `<div class="r3-seg em-u"><button class="${cur === '%' ? 'on' : ''}" onclick="r3.s.${k}='%';r3Go(r3.s.step,false)">%</button><button class="${cur === '°' ? 'on' : ''}" onclick="r3.s.${k}='°';r3Go(r3.s.step,false)">degrés</button></div>`;
+  if(step === 'e_pente'){
+    h = `<div class="r3-t">Pente du versant de l'empanon</div>${uch('u1', s.u1)}${inp('r3P1', s.p1, s.u1 === '°' ? 'Ex : 35' : 'Ex : 75', "r3.s.p1=this.value;r3Refresh()")}
+      <div class="r3-chips">${(s.u1 === '°' ? [30, 35, 40, 45] : [45, 60, 75, 100]).map(v => `<button class="${_r3n(s.p1) === v ? 'on' : ''}" onclick="r3.s.p1='${v}';r3Go('e_pente',false)">${v}${s.u1 === '°' ? '°' : ' %'}</button>`).join('')}</div>${next()}`;
+  } else if(step === 'e_voisin'){
+    h = `<div class="r3-t">Pente du versant voisin</div><div class="r3-s">De l'autre côté de l'arêtier</div>
+      <div class="r3-yn"><button class="${s.same ? 'on' : ''}" onclick="r3SetB('same',true)">Même pente</button><button class="${!s.same ? 'on' : ''}" onclick="r3SetB('same',false)">Pente différente</button></div>
+      ${s.same ? '' : uch('u2', s.u2) + inp('r3P2', s.p2, s.u2 === '°' ? 'Ex : 45' : 'Ex : 100', "r3.s.p2=this.value;r3Refresh()")}${next()}`;
+  } else if(step === 'e_section'){
+    h = `<div class="r3-t">Section de ton chevron</div><div class="r3-s">Pour les décalages de traçage</div><div class="r3-row"><div><label>Largeur (mm)</label>${inp('r3W', s.w, 'Ex : 63', "r3.s.w=this.value;r3Refresh()")}</div>
+      <div><label>Hauteur (mm)</label>${inp('r3H', s.h, 'Ex : 175', "r3.s.h=this.value;r3Refresh()")}</div></div>${next('Voir les angles')}`;
+  } else if(step === 'e_result'){
+    h = `<div id="r3Res"></div>`;
+  } else if(step === 'ouvrage'){
     h = `<div class="r3-t">Quel ouvrage ?</div>
       <div class="r3-big"><button onclick="r3PickOuvrage('solivage')"><b>🪵</b>Solivage<small>Solives entre deux murs</small></button>
       <button onclick="r3PickOuvrage('chevrons')"><b>🏠</b>Chevrons<small>Sur pannes, entre pignons</small></button></div>`;
@@ -35429,7 +35458,9 @@ function r3Go(step, instant){
   }
   q.innerHTML = h;
   if(step === 'result') _r3Result();
-  if(step !== 'qty' && step !== 'result') r3.view = '3d';
+  if(step === 'e_result') _r3EmpResult();
+  if(EMP){ if(step !== 'e_result') r3.view = 'zoom'; }
+  else if(step !== 'qty' && step !== 'result') r3.view = '3d';
   _r3BarSync();
   if(show3d){
     const cam = _r3Build();
@@ -35443,6 +35474,16 @@ function r3SetView(v){ r3.view = v; _r3BarSync(); const cam = _r3Build(); _r3Fly
 function r3SetDim(d){ r3.dimMode = d; try{ localStorage.setItem('rwood-r3-dim', d); }catch(e){} _r3BarSync(); const cam = _r3Build(); r3.camHome = cam; _r3Kick(); }
 function _r3BarSync(){
   const st = r3.s.step, bar = document.getElementById('r3Bar'); if(!bar) return;
+  let eb = document.getElementById('r3EmpBar');
+  if(!eb){ eb = document.createElement('div'); eb.id = 'r3EmpBar'; eb.className = 'r3-bar'; eb.innerHTML = `<div class="r3-seg"><button data-c="plat" onclick="r3SetCut('plat')">À plat</button><button data-c="chant" onclick="r3SetCut('chant')">À chant</button></div><div class="r3-seg"><button data-ev="zoom" onclick="r3SetEmpView('zoom')">Coupe</button><button data-ev="ens" onclick="r3SetEmpView('ens')">Ensemble</button></div>`; bar.parentNode.appendChild(eb); }
+  if(r3.s.ouvrage === 'empanon'){
+    bar.style.display = 'none'; eb.style.display = st === 'e_result' ? '' : 'none';
+    eb.querySelectorAll('[data-c]').forEach(b => b.classList.toggle('on', b.dataset.c === (r3.emCut || 'plat')));
+    eb.querySelectorAll('[data-ev]').forEach(b => b.classList.toggle('on', b.dataset.ev === (r3.view === 'ens' ? 'ens' : 'zoom')));
+    const hn = document.getElementById('r3Hint'); if(hn) hn.textContent = '☝️ tourner · ✌️ zoomer / déplacer';
+    return;
+  }
+  eb.style.display = 'none';
   bar.style.display = (st === 'qty' || st === 'result') ? '' : 'none';
   bar.querySelectorAll('[data-v]').forEach(b => b.classList.toggle('on', b.dataset.v === (r3.view || '3d')));
   bar.querySelectorAll('[data-d]').forEach(b => b.classList.toggle('on', b.dataset.d === (r3.dimMode || 'axe')));
@@ -35466,6 +35507,8 @@ function r3Next(){
   const s = r3.s, st = s.step;
   if(st === 'L' && !(_r3n(s.L) > 0)){ showToast(s.ouvrage === 'chevrons' ? 'Indique la distance entre les pignons' : 'Indique la distance entre les murs'); return; }
   if(st === 'section' && !(_r3n(s.w) > 0)){ showToast('Indique la largeur du bois'); return; }
+  if(st === 'e_pente' && !(_r3Ang(s.p1, s.u1) > 0 && _r3Ang(s.p1, s.u1) < Math.PI / 2)){ showToast('Indique la pente de l\'empanon'); return; }
+  if(st === 'e_voisin' && !s.same && !(_r3Ang(s.p2, s.u2) > 0 && _r3Ang(s.p2, s.u2) < Math.PI / 2)){ showToast('Indique la pente du versant voisin'); return; }
   if(st === 'echelle' && s.ech && !(_r3n(s.D) > 0)){ showToast('Indique le débord de l\'échelle de toit'); return; }
   if(st === 'qty'){ const lay = r3Layout(s); if(!lay){ showToast(s.mode === 'count' ? 'Indique le nombre de ' + _r3Word(2) : 'Indique l\'entraxe'); return; } if(lay.err){ showToast('⚠️ ' + lay.err); return; } }
   const S = _r3Steps(), i = S.indexOf(st); if(i < S.length - 1) r3Go(S[i + 1]);
@@ -35509,6 +35552,147 @@ function _r3Result(){
     <div class="r3-edit"><button onclick="r3Go('L')">Distance</button><button onclick="r3Go('section')">Section</button><button onclick="r3Go('${CH ? 'echelle' : 'first'}')">${CH ? 'Échelle' : 'Appuis'}</button><button onclick="r3Go('qty')">${s.mode === 'count' ? 'Nombre' : 'Entraxe'}</button></div>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="r3Go('mode')">↺ Nouveau calcul</button>`;
 }
+/* ═══ MODULE — Empanon 3D (v5.41.338) · coupe par rembarrement contre l'arêtier ═══
+   Repère : sablière du versant de l'empanon le long de x (z=0), versant voisin le long de z (x=0),
+   le coin en (0,0). Le versant 1 monte vers +z, le versant 2 vers +x. Arêtier : z·tanθ1 = x·tanθ2.
+   β = angle en plan entre l'empanon et l'arêtier : tanβ = tanθ1 / tanθ2. */
+function _r3Ang(v, u){ const n = _r3n(v); if(!(n > 0)) return NaN; return u === '°' ? n * Math.PI / 180 : Math.atan(n / 100); }
+const _r3d = r => (Math.round(r * 1800 / Math.PI) / 10).toLocaleString('fr-FR') + '°';
+function r3EmpCalc(s){
+  const t1 = _r3Ang(s.p1, s.u1), t2 = s.same ? t1 : _r3Ang(s.p2, s.u2);
+  if(!(t1 > 0) || !(t2 > 0) || t1 >= Math.PI / 2 || t2 >= Math.PI / 2) return null;
+  const beta = Math.atan(Math.tan(t1) / Math.tan(t2));
+  const b = _r3n(s.w) > 0 ? _r3n(s.w) : 63, h = _r3n(s.h) > 0 ? _r3n(s.h) : 175;
+  const platLame = Math.PI / 2 - beta;
+  const chantAxe = Math.atan(Math.tan(beta) * Math.cos(t1));
+  const chantLame = Math.asin(Math.sin(beta) * Math.sin(t1));
+  return { t1, t2, beta, b, h,
+    plat: { lame: platLame, trait: Math.PI / 2 - t1, dec: h * Math.tan(t1) },
+    chant: { lame: chantLame, axe: chantAxe, eq: Math.PI / 2 - chantAxe, dec: b / (Math.tan(beta) * Math.cos(t1)) } };
+}
+/* boîte quelconque : 8 sommets (4 près, 4 loin, même ordre) */
+function _r3Hexa(V, c, hl, a){ return { V, F:[[0,1,2,3],[5,4,7,6],[4,0,3,7],[1,5,6,2],[3,2,6,7],[4,5,1,0]], c, hl, a }; }
+function _r3BuildEmp(){
+  const s = r3.s, st = s.step, E = r3EmpCalc(s) || r3EmpCalc(Object.assign({}, s, { p1:'75', u1:'%', same:true }));
+  const t1 = E.t1, t2 = E.t2, b = E.b, h = E.h, _hz = 0, T1 = Math.tan(t1), T2 = Math.tan(t2);
+  const WOOD = '#c9934f', HIP = '#a8743a', SAB = '#8a6a48', HL = '#f0a93a', GREY = '#7d6a55';
+  const W = 3600, bh = Math.max(b * 1.8, 90), hh = h * 1.35;
+  const objs = [], dims = [], tags = [];
+  // sablières
+  objs.push(_r3BoxObj({ b:[-160, W, -220, 0, -160, 0], c: SAB }));
+  objs.push(_r3BoxObj({ b:[-160, 0, -220, 0, 0, W], c: SAB }));
+  // arêtier (dessus sur l'intersection des deux versants)
+  const dl = Math.hypot(T1, T2), dH = [T1 / dl, (T1 * T2) / dl, T2 / dl], Lh = W * 1.05;
+  { const dn = Math.hypot(...dH), a = dH.map(v => v / dn), sd = [a[2], 0, -a[0]], sl = Math.hypot(...sd), sx = sd.map(v => v / sl);
+    const up = [sx[1] * a[2] - sx[2] * a[1], sx[2] * a[0] - sx[0] * a[2], sx[0] * a[1] - sx[1] * a[0]], u = up[1] < 0 ? up.map(v => -v) : up;
+    const P = (t, sw, dv) => [a[0] * t + sx[0] * sw - u[0] * dv, a[1] * t + sx[1] * sw - u[1] * dv, a[2] * t + sx[2] * sw - u[2] * dv];
+    const near = [P(0, -bh / 2, hh), P(0, bh / 2, hh), P(0, bh / 2, 0), P(0, -bh / 2, 0)], far = near.map((_, i) => P(Lh, i === 0 || i === 3 ? -bh / 2 : bh / 2, i < 2 ? hh : 0));
+    objs.push(_r3Hexa(near.concat(far), HIP)); }
+  // empanons : dessus dans le plan du versant 1, coupés par la joue de l'arêtier (plan vertical m·(x,z) = bh/2)
+  const mn = Math.hypot(T2, T1), mx = T2 / mn, mz = -T1 / mn;
+  const n1 = [0, Math.cos(t1), -Math.sin(t1)], u1 = [0, Math.sin(t1), Math.cos(t1)];
+  const jack = (xe, hl) => {
+    const z0 = -260, P0 = [xe, z0 * T1, z0];
+    const cs = [[-b / 2, -1], [b / 2, -1], [b / 2, 0], [-b / 2, 0]].map(([dx, k]) => [P0[0] + dx + (k ? n1[0] * h * k : 0), P0[1] + (k ? n1[1] * h * k : 0), P0[2] + (k ? n1[2] * h * k : 0)]);
+    const far = cs.map(c => { const tt = (bh / 2 - mx * c[0] - mz * c[2]) / (mz * u1[2]); return [c[0] + u1[0] * tt, c[1] + u1[1] * tt, c[2] + u1[2] * tt]; });
+    objs.push(_r3Hexa(cs.concat(far), hl ? HL : GREY, hl));
+    return { near: cs, far };
+  };
+  const zoomRes = st === 'e_result' && r3.view !== 'ens';
+  const xe = W * 0.42, J = jack(xe, true); if(!zoomRes){ jack(W * 0.22, false); jack(W * 0.62, false); }
+  if(zoomRes){ objs[2].a = 0.22; objs.push({ V: J.far.slice(), F:[[0, 1, 2, 3]], c:'#ff5fd2', a:0.55, two:true }); }
+  const fc = J.far.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0]);
+  const look = (v, dist) => { const l = Math.hypot(...v); return { tx: fc[0], ty: fc[1], tz: fc[2], yaw: Math.atan2(v[0], v[2]), pitch: Math.asin(v[1] / l), dist }; };
+  let cam = { tx: W * 0.45, ty: W * 0.25, tz: W * 0.4, yaw: -2.4, pitch: 0.55, dist: W * 2.4 };
+  r3.minDist = 120; r3.maxDist = W * 6;
+  tags.push({ p:[W * 0.75, -120, -300], t:'Sablière', bg:'#ece6dc', force:true });
+  const hipTag = [dH[0] * Lh * 0.8, dH[1] * Lh * 0.8 + 250, dH[2] * Lh * 0.8];
+  tags.push({ p: hipTag, t:'Arêtier', bg:'#ece6dc', force:true });
+  if(st === 'e_pente'){
+    // profil du versant de l'empanon : vue de côté
+    dims.push({ a:[xe + b, 0, 0], b:[xe + b, 0, 1500], t:'1 m', c:'#ece6dc' });
+    dims.push({ a:[xe + b, 0, 1500], b:[xe + b, 1500 * T1, 1500], t: _r3n(s.p1) > 0 ? (s.u1 === '°' ? _r3d(t1) : (Math.round(T1 * 1000) / 10).toLocaleString('fr-FR') + ' %') : '?', c:'#8fd0ff' });
+    tags.push({ p:[xe, J.far[3][1] + 300, J.far[3][2] - 400], t:'Empanon', bg:'#f0a93a' });
+    cam = { tx: xe, ty: 700, tz: 900, yaw: Math.PI / 2 + 0.25, pitch: 0.12, dist: W * 1.3 };
+  } else if(st === 'e_voisin'){
+    dims.push({ a:[0, 0, xe + b], b:[1500, 0, xe + b], t:'1 m', c:'#ece6dc' });
+    dims.push({ a:[1500, 0, xe + b], b:[1500, 1500 * T2, xe + b], t: s.same ? 'même pente' : (_r3n(s.p2) > 0 ? (s.u2 === '°' ? _r3d(t2) : (Math.round(T2 * 1000) / 10).toLocaleString('fr-FR') + ' %') : '?'), c:'#8fd0ff' });
+    tags.push({ p:[1600, 1500 * T2 + 300, xe], t:'Versant voisin', bg:'#ece6dc' });
+    cam = { tx: 900, ty: 700, tz: xe, yaw: Math.PI - 0.25, pitch: 0.12, dist: W * 1.3 };
+  } else if(st === 'e_section'){
+    const n = J.near;
+    dims.push({ a:[n[0][0], n[0][1] - 40, n[0][2] - 5], b:[n[1][0], n[1][1] - 40, n[1][2] - 5], t:'Largeur ' + (_r3n(s.w) > 0 ? _r3f(b) : '?') });
+    dims.push({ a:[n[1][0] + 45, n[1][1], n[1][2] - 5], b:[n[2][0] + 45, n[2][1], n[2][2] - 5], t:'Hauteur ' + (_r3n(s.h) > 0 ? _r3f(h) : '?'), c:'#8fd0ff' });
+    const c = n.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0]);
+    cam = { tx: c[0], ty: c[1], tz: c[2], yaw: Math.PI + 0.45, pitch: 0.3, dist: Math.max(b, h) * 3.8 + 260 };
+  } else if(st === 'e_result'){
+    const cut = r3.emCut || 'plat', f = J.far;
+    // f : 0 = dessous gauche, 1 = dessous droite, 2 = dessus droite, 3 = dessus gauche
+    const sideR = mx < 0; // joue la plus longue (pointe de la coupe) : celle qui est vue
+    if(cut === 'plat'){
+      const a = sideR ? f[1] : f[0], bb = sideR ? f[2] : f[3];
+      dims.push({ a, b: bb, t:'', c:'#ff5fd2', trace:true });
+      tags.push({ p:[a[0], a[1] - h * 0.35, a[2] - h * 0.9], t:'trait d\'aplomb', bg:'#ff5fd2', fg:'#fff', force:true });
+      tags.push({ p:[fc[0], fc[1] + h * 1.3, fc[2] - h * 0.3], t:'Lame ' + _r3d(E.plat.lame), bg:'#f0a93a', force:true });
+      cam = look([sideR ? 1 : -1, 0.22, -0.18], Math.max(b, h) * 4.2 + 300);
+    } else {
+      dims.push({ a: f[3], b: f[2], t:'', c:'#ff5fd2', trace:true });
+      tags.push({ p:[(f[2][0] + f[3][0]) / 2, (f[2][1] + f[3][1]) / 2 + h * 0.4, (f[2][2] + f[3][2]) / 2 - h * 1.6], t:'trait sur le dessus', bg:'#ff5fd2', fg:'#fff', force:true });
+      tags.push({ p:[fc[0], fc[1] + h * 1.2, fc[2] + h * 0.5], t:'Lame ' + _r3d(E.chant.lame), bg:'#f0a93a', force:true });
+      cam = look([0.3 * (sideR ? 1 : -1), Math.cos(t1), -Math.sin(t1) - 0.2], Math.max(b, h) * 4.2 + 300);
+    }
+    if(r3.view === 'ens') cam = { tx: W * 0.45, ty: W * 0.25, tz: W * 0.4, yaw: -2.4, pitch: 0.55, dist: W * 2.4 };
+  }
+  r3.scene = { objs, boxes:[], dims, tags, floor:[-600, W + 300, -600, W + 300] };
+  return cam;
+}
+function r3SetCut(c){ r3.emCut = c; r3.view = 'zoom'; _r3BarSync(); _r3EmpResult(); const cam = _r3Build(); _r3Fly(cam, 650); }
+function r3SetEmpView(v){ r3.view = v; _r3BarSync(); const cam = _r3Build(); _r3Fly(cam, 650); }
+function _r3EmpResult(){
+  const el = document.getElementById('r3Res'); if(!el) return;
+  const s = r3.s, E = r3EmpCalc(s);
+  if(!E){ el.innerHTML = '<div class="hint">Pentes incomplètes.</div>'; return; }
+  const cut = r3.emCut || 'plat', f = v => (Math.round(v * 10) / 10).toLocaleString('fr-FR') + ' mm';
+  const big = (l, v, sub) => `<div class="em-big"><span>${l}</span><b>${v}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  let h;
+  if(cut === 'plat'){
+    const over = E.plat.lame > Math.PI / 4 + 0.001;
+    h = `<div class="em-t">🪚 Coupe à plat — scie posée sur la joue</div>
+      <div class="em-row">${big('Inclinaison lame', _r3d(E.plat.lame), '0° = lame d\'équerre')}${big('Trait', 'd\'aplomb', 'à ' + _r3d(E.plat.trait) + ' de l\'arête')}</div>
+      <div class="r3-res"><div><span>Décalage du trait sur la hauteur (${f(E.h)})</span><b>${f(E.plat.dec)}</b></div></div>
+      ${over ? `<div class="hint" style="color:#ff8a7a;margin-top:6px;">⚠️ Plus de 45° de lame : beaucoup de scies ne le font pas. Passe en coupe à chant (${_r3d(E.chant.lame)}).</div>` : ''}`;
+  } else {
+    h = `<div class="em-t">🪚 Coupe à chant — scie posée sur le dessus</div>
+      <div class="em-row">${big('Inclinaison lame', _r3d(E.chant.lame), '0° = lame d\'équerre')}${big('Trait sur le dessus', _r3d(E.chant.eq), 'depuis l\'équerre · ' + _r3d(E.chant.axe) + ' depuis l\'arête')}</div>
+      <div class="r3-res"><div><span>Décalage du trait sur la largeur (${f(E.b)})</span><b>${f(E.chant.dec)}</b></div></div>`;
+  }
+  el.innerHTML = h + `<div class="r3-res" style="margin-top:8px;">
+      <div><span>Pente de l'empanon</span><b>${_r3d(E.t1)} · ${(Math.round(Math.tan(E.t1) * 1000) / 10).toLocaleString('fr-FR')} %</b></div>
+      <div><span>Pente du versant voisin</span><b>${_r3d(E.t2)}</b></div>
+      <div><span>Angle en plan empanon / arêtier</span><b>${_r3d(E.beta)}</b></div></div>
+    <div class="hint" style="margin:8px 2px 0;">Le trait magenta sur la 3D montre où passer la lame. Tourne la vue pour voir la coupe sous tous les angles.</div>
+    <div class="r3-edit" style="grid-template-columns:repeat(3,1fr);"><button onclick="r3Go('e_pente')">Pente</button><button onclick="r3Go('e_voisin')">Voisin</button><button onclick="r3Go('e_section')">Section</button></div>`;
+}
+/* Montage : la même zone 3D sert à la Répartition et à l'Empanon (on la déplace dans l'outil actif) */
+const _r3Inst = {};
+function r3MountKind(kind){
+  const host = document.getElementById(kind === 'emp' ? 'calcMode-empanon' : 'calcMode-repartition');
+  const root = document.getElementById('r3Root'); if(!host || !root) return;
+  if(root.parentNode !== host) host.insertBefore(root, host.firstChild);
+  if(r3) _r3Inst[r3.kind || 'rep'] = r3;
+  if(!_r3Inst[kind] && kind === 'emp'){
+    const sv = _r3Store().empanon || {};
+    _r3Inst.emp = { kind:'emp', view:'zoom', emCut:'plat', cam:{ tx:1500, ty:800, tz:1500, yaw:-2.4, pitch:0.55, dist:8000 },
+      s:{ step:'e_pente', ouvrage:'empanon', p1: sv.p1 || '', u1: sv.u1 || '%', p2: sv.p2 || '', u2: sv.u2 || '%', same: sv.same !== false, w: sv.w || '', h: sv.h || '' } };
+  }
+  const cv = r3 && r3.cv, ctx = r3 && r3.ctx;
+  r3 = _r3Inst[kind] || null;
+  if(r3 && cv){ r3.cv = cv; r3.ctx = ctx; }
+  r3Mount();
+  r3.kind = kind;
+}
+/* ═══ MODULE — Empanon 3D (fin) ═══ */
+
 /* ═══ MODULE — Répartition 3D (fin) ═══ */
 
 /* --- Répartition --- */
@@ -40088,9 +40272,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.337';
+const APP_VERSION = '5.41.338';
 
 const CHANGELOG = [
+  {
+    version: '5.41.338',
+    date: '04/10/2026',
+    entries: [
+      { icon: '🪚', text: "Calcul › Empanon : rentre la pente de l'empanon, celle du versant voisin et la section du chevron, l'appli donne les angles machine pour la scie circulaire (coupe par rembarrement contre l'arêtier)." },
+      { icon: '📐', text: "Deux façons de couper : à plat (scie sur la joue, trait d'aplomb) ou à chant (scie sur le dessus), avec l'inclinaison de lame, l'angle du trait et le décalage de traçage." },
+      { icon: '🧊', text: "Vue 3D de l'arêtier et de l'empanon à chaque étape, avec la coupe en couleur et le trait à suivre. Alerte si la lame doit dépasser 45°." },
+    ],
+  },
   {
     version: '5.41.337',
     date: '04/10/2026',
