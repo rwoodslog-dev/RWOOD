@@ -5778,7 +5778,6 @@
         <button type="button" class="chip" data-mode="repartition" onclick="setCalcMode('repartition')"><span class="ci">📏</span><span>Répartition</span></button>
         <button type="button" class="chip" data-mode="simple" onclick="setCalcMode('simple')"><span class="ci">🧮</span><span>Calculette</span></button>
         <button type="button" class="chip" data-mode="decoupe" onclick="setCalcMode('decoupe')"><span class="ci">✂️</span><span>Découpe</span></button>
-        <button type="button" class="chip" data-mode="empanon" onclick="setCalcMode('empanon')"><span class="ci">🪚</span><span>Empanon</span></button>
       </div>
 
       <div class="calc-unit" id="calcUnitTabs">
@@ -5926,6 +5925,7 @@
       <!-- DÉCOUPE (optimisation de plan de coupe) -->
       <div class="calc-mode" id="calcMode-decoupe" style="display:none;">
         <div class="calc-kerf">Trait de scie <input type="number" id="decoupeKerf" value="3" min="0" step="1" inputmode="numeric"> mm · longueurs en mètres</div>
+        <div class="calc-kerf">Section du bois <input type="number" id="decoupeSecW" placeholder="63" min="1" step="1" inputmode="numeric"> × <input type="number" id="decoupeSecH" placeholder="175" min="1" step="1" inputmode="numeric"> mm <span style="opacity:.7;">(pour la 3D)</span></div>
 
         <!-- STOCK -->
         <div class="card">
@@ -34430,7 +34430,7 @@ async function downloadMonthlyRecapPDF(){
 
 /* ============ CALCULATRICE ============ */
 let cumulValues = [];
-let currentCalcMode = (function(){ try{ const m = localStorage.getItem('rwood-calc-mode'); return ['cumul','pythagore','repartition','simple','decoupe','empanon'].includes(m) ? m : 'cumul'; }catch(e){ return 'cumul'; } })(); // v5.41.311 — dernier outil retenu
+let currentCalcMode = (function(){ try{ const m = localStorage.getItem('rwood-calc-mode'); return ['cumul','pythagore','repartition','simple','decoupe'].includes(m) ? m : 'cumul'; }catch(e){ return 'cumul'; } })(); // v5.41.311 — dernier outil retenu
 let currentCalcUnit = 'mm';
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -34485,6 +34485,8 @@ function _decoupeRenderLists(){
   }
 }
 
+function _decoupeSecRestore(){ try{ const v = JSON.parse(localStorage.getItem('rwood-decoupe-sec') || 'null'); if(v){ const a = document.getElementById('decoupeSecW'), b = document.getElementById('decoupeSecH'); if(a && !a.value) a.value = v[0]; if(b && !b.value) b.value = v[1]; } }catch(e){} }
+document.addEventListener('DOMContentLoaded', () => setTimeout(_decoupeSecRestore, 500));
 function decoupeCompute(){
   const resEl = document.getElementById('decoupeResult');
   if(!_decoupeStock.length){ showToast('Ajoute au moins une barre en stock'); return; }
@@ -34576,13 +34578,123 @@ function decoupeCompute(){
   const chuteGlobalPct = totalBarsLen>0 ? (totalChute/totalBarsLen*100) : 0;
   const totalStock = _decoupeStock.reduce((a,s)=>a+s.qty,0);
 
+  // v5.41.345 — vue 3D du stock : chaque barre, les pièces à y couper, la chute
+  const _secW = parseFloat(document.getElementById('decoupeSecW').value) || 63, _secH = parseFloat(document.getElementById('decoupeSecH').value) || 175;
+  try{ localStorage.setItem('rwood-decoupe-sec', JSON.stringify([_secW, _secH])); }catch(e){}
+  _dcLast = { used: usedBars.filter(b => !b.overflow), rest: bars.slice(), kerf, secW: _secW, secH: _secH };
   resEl.innerHTML = `
+    <div class="r3-wrap" id="dcWrap" style="margin-bottom:10px;"><canvas id="dcCv"></canvas>
+      <div class="r3-hint">☝️ tourner · ✌️ zoomer / déplacer · touche une barre</div>
+      <button class="r3-home" onclick="dcView(_dcViewMode)" title="Recentrer">⟲</button>
+      <div class="r3-bar"><div class="r3-seg"><button data-dv="3d" onclick="dcView('3d')">3D</button><button data-dv="bout" onclick="dcView('bout')">Bout</button><button data-dv="plan" onclick="dcView('plan')">Dessus</button></div><div class="r3-seg"><button id="dcAllBtn" onclick="dcFocus(-1)">Tout</button></div></div>
+    </div>
     <div class="card calc-result-card" style="margin-bottom:10px;">
       <div class="calc-result-label">Barres utilisées</div>
       <div class="calc-result-value">${realBars.length} / ${totalStock}</div>
       <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute)} (${chuteGlobalPct.toFixed(1)}%)</div>
     </div>
     ${barsHtml}`;
+  // numéroter les cartes pour pouvoir les toucher
+  resEl.querySelectorAll('.card').forEach(c => { const m = (c.textContent || '').match(/^\s*Barre (\d+)/); if(m){ c.style.cursor = 'pointer'; c.onclick = () => { dcFocus(parseInt(m[1], 10) - 1); document.getElementById('dcWrap').scrollIntoView({ behavior:'smooth', block:'center' }); }; } });
+  setTimeout(dcMount, 0);
+}
+/* ── Découpe 3D : réutilise le moteur 3D de la Répartition avec son propre état ── */
+let _dcLast = null, _dc = null, _dcViewMode = '3d', _dcFocusIdx = -1;
+const _DC_PAL = ['#E8AC3D','#7FC6A4','#7DB3E8','#E89A7D','#C9A7E8','#E8D27D','#9FD3E8','#E8B4C9'];
+function _dcWith(fn){ const prev = r3; r3 = _dc; try{ return fn(); } finally{ r3 = prev; } }
+function _dcBuild(){
+  const L = _dcLast; if(!L) return;
+  const all = L.used.map(b => ({ b, used:true })).concat(L.rest.map(len => ({ b:{ len, cuts:[] }, used:false })));
+  const ML = Math.max(1000, ...all.map(it => it.b.len * 1000));
+  // v5.41.346 — sections réelles : largeur × hauteur saisies, barres posées côte à côte sur des lattes
+  // v5.41.347 — barres posées à plat : la plus grande cote en largeur, la plus petite en hauteur
+  const _sa = L.secW || 63, _sb = L.secH || 175, SW = Math.max(_sa, _sb), SH = Math.min(_sa, _sb), GAP = SW + 30, objs = [], tags = [], dims = [];
+  const lens = [...new Set(L.used.flatMap(b => b.cuts.map(c => c.toFixed(3))))].sort((a, b) => b - a);
+  let maxLen = 0;
+  all.forEach((it, i) => {
+    const z = i * GAP, b = it.b, Lmm = b.len * 1000; maxLen = Math.max(maxLen, Lmm);
+    const dim = _dcFocusIdx >= 0 && _dcFocusIdx !== i;
+    if(!it.used){
+      objs.push(_r3BoxObj({ b:[0, Lmm, 0, SH, z, z + SW], c:'#6b5640', a: dim ? 0.15 : 0.55 }));
+      tags.push({ p:[Lmm / 2, SH + 20, z + SW / 2], t:'non utilisée · ' + _fmtM(b.len), bg:'#4a4038', fg:'#ece6dc', force:true });
+      return;
+    }
+    let x = 0; const kerf = L.kerf * 1000;
+    b.cuts.slice().sort((p, q) => q - p).forEach((c, k) => {
+      const w = c * 1000, col = _DC_PAL[lens.indexOf(c.toFixed(3)) % _DC_PAL.length];
+      objs.push(_r3BoxObj({ b:[x, x + w, 0, SH, z, z + SW], c: col, a: dim ? 0.18 : 1 }));
+      if(!dim) tags.push({ p:[x + w / 2, SH + 20, z + SW / 2], t:(c).toFixed(2).replace('.', ','), bg: col, num:true });
+      if(!dim) objs.push(_r3BoxObj({ b:[x + w, x + w + Math.max(kerf, 6), -1, SH + 1, z - 1, z + SW + 1], c:'#111111' }));
+      x += w + kerf;
+    });
+    const used = x - kerf;
+    if(Lmm - used > 1) objs.push(_r3BoxObj({ b:[used + kerf * 0.5, Lmm, 0, SH * 0.98, z, z + SW], c:'#3a322b', a: dim ? 0.1 : 0.7 }));
+    tags.push({ p:[-SW * 0.9, SH / 2, z + SW / 2], t:'B' + (i + 1), bg: _dcFocusIdx === i ? '#f0a93a' : '#ece6dc', force:true });
+    if(!dim && Lmm - used > 60) tags.push({ p:[(used + Lmm) / 2, SH + 20, z + SW / 2], t:'chute ' + ((Lmm - used) / 1000).toFixed(2).replace('.', ','), bg:'#4a4038', fg:'#ece6dc' });
+  });
+  const depth = Math.max(1, all.length) * GAP;
+  for(let xx = 300; xx < ML; xx += 1200) objs.push(_r3BoxObj({ b:[xx, xx + 40, -25, 0, -30, depth], c:'#5a4c40', a:0.8 }));
+  _dc.scene = { objs, boxes:[], dims, tags, floor:[-300, maxLen + 300, -200, depth + 100] };
+  _dc.dims0 = { maxLen, depth, GAP, SW };
+  let cam;
+  const cw = (_dc.cv && _dc.cv.clientWidth) || 356, ch = (_dc.cv && _dc.cv.clientHeight) || 380, K = 1.25 * Math.min(cw, ch) / cw * 1.08;
+  if(_dcViewMode === 'bout'){
+    const zf = _dcFocusIdx >= 0 ? _dcFocusIdx * GAP + SW / 2 : depth / 2, wv = (_dcFocusIdx >= 0 ? GAP * 3 : depth) + SW * 2;
+    const z0b = _dcFocusIdx >= 0 ? _dcFocusIdx * GAP : 0;
+    dims.push({ a:[-5, -70, z0b], b:[-5, -70, z0b + SW], t: SW + ' mm', c:'#ffcf6b' });
+    dims.push({ a:[-5, 0, z0b - 60], b:[-5, SH, z0b - 60], t: SH + ' mm', c:'#8fd0ff' });
+    for(let i = tags.length - 1; i >= 0; i--){ const t = tags[i]; if(/^B\d/.test(t.t)) t.p = [t.p[0], SH + 45, t.p[2]]; else tags.splice(i, 1); }
+    cam = { tx: 0, ty: SH / 2, tz: zf - SW * 0.4, yaw: -Math.PI / 2, pitch: 0.12, dist: Math.max(wv, SH * 3) * K * 0.85 };
+    _dc.minDist = 50; _dc.maxDist = Math.max(maxLen, depth) * 5; return cam;
+  }
+  if(_dcFocusIdx >= 0){ const z = _dcFocusIdx * GAP + SW / 2, Lm = (all[_dcFocusIdx] ? all[_dcFocusIdx].b.len * 1000 : maxLen);
+    cam = _dcViewMode === 'plan' ? { tx: Lm / 2 - 120, ty: 0, tz: z, yaw: 0, pitch: 1.55, dist: (Lm + 600) * K, ortho:true } : { tx: Math.min(Lm * 0.35, 1400), ty: SH / 2, tz: z, yaw: -0.95, pitch: 0.5, dist: Math.max(2600, SH * 15, Lm * 0.55) }; }
+  else cam = _dcViewMode === 'plan' ? { tx: maxLen / 2 - 60, ty: 0, tz: depth / 2 - GAP / 2, yaw: 0, pitch: 1.55, dist: Math.max((maxLen + 600) * K, depth * 1.6), ortho:true }
+    : { tx: Math.min(maxLen * 0.35, 1500), ty: SH / 2, tz: depth / 2, yaw: -0.95, pitch: 0.5, dist: Math.max(2800, depth * 3.6, maxLen * 0.55) };
+  _dc.minDist = 200; _dc.maxDist = Math.max(maxLen, depth) * 5;
+  return cam;
+}
+function _dcDraw(){ if(_dc && _dc.cv && _dc.cv.isConnected) _dcWith(() => _r3Draw()); }
+function dcView(v){ _dcViewMode = v; const cam = _dcWith(_dcBuild); Object.assign(_dc.cam, cam); _dc.cam.ortho = !!cam.ortho; _dcSync(); _dcDraw(); }
+function dcFocus(i){ _dcFocusIdx = i; dcView(_dcViewMode); }
+function _dcSync(){ document.querySelectorAll('#dcWrap [data-dv]').forEach(b => b.classList.toggle('on', b.dataset.dv === _dcViewMode)); const a = document.getElementById('dcAllBtn'); if(a) a.classList.toggle('on', _dcFocusIdx < 0); }
+function dcMount(){
+  const cv = document.getElementById('dcCv'); if(!cv || !_dcLast) return;
+  _dc = { cv, ctx: cv.getContext('2d'), cam:{ tx:0, ty:0, tz:0, yaw:-0.35, pitch:0.6, dist:5000 }, s:{}, view:'3d' };
+  _dcFocusIdx = -1;
+  const pts = new Map(); let pinch0 = 0, dist0 = 0, moved = 0;
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+  cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); moved = 0;
+    if(pts.size === 2){ const [p, q] = [...pts.values()]; pinch0 = Math.hypot(p[0] - q[0], p[1] - q[1]); dist0 = _dc.cam.dist; } });
+  cv.addEventListener('pointermove', e => {
+    if(!pts.has(e.pointerId)) return;
+    const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); moved += Math.abs(e.clientX - prev[0]) + Math.abs(e.clientY - prev[1]);
+    _dcWith(() => {
+      if(pts.size === 1){
+        if(_dc.cam.ortho || e.buttons === 2) _r3Pan(e.clientX - prev[0], e.clientY - prev[1]);
+        else { _dc.cam.yaw -= (e.clientX - prev[0]) * 0.008; _dc.cam.pitch = Math.max(0.02, Math.min(1.55, _dc.cam.pitch + (e.clientY - prev[1]) * 0.006)); }
+      } else if(pts.size === 2 && pinch0){
+        const [p, q] = [...pts.values()], d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+        _dc.cam.dist = Math.max(_dc.minDist, Math.min(_dc.maxDist, dist0 * pinch0 / Math.max(d, 1)));
+        _r3Pan((e.clientX - prev[0]) / 2, (e.clientY - prev[1]) / 2);
+      }
+    });
+    _dcDraw();
+  });
+  const up = e => {
+    if(pts.size === 1 && moved < 8){ // toucher une barre : focus
+      const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+      const hit = _dcWith(() => { const C = _r3Cam(), n = _dcLast.used.length + _dcLast.rest.length; let best = -1, bd = 40;
+        for(let i = 0; i < n; i++){ const z = i * _dc.dims0.GAP + _dc.dims0.SW / 2; for(let k = 0; k <= 10; k++){ const L = (_dc.dims0.maxLen) * k / 10, P = _r3P([L, _dc.dims0.SW * 0.2, z], C); if(P){ const d = Math.hypot(P[0] - mx, P[1] - my); if(d < bd){ bd = d; best = i; } } } }
+        return best; });
+      if(hit >= 0) dcFocus(hit === _dcFocusIdx ? -1 : hit);
+    }
+    pts.delete(e.pointerId); if(pts.size < 2) pinch0 = 0;
+  };
+  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', e => { pts.delete(e.pointerId); });
+  cv.addEventListener('wheel', e => { e.preventDefault(); _dc.cam.dist = Math.max(_dc.minDist, Math.min(_dc.maxDist, _dc.cam.dist * (e.deltaY > 0 ? 1.12 : 0.89))); _dcDraw(); }, { passive:false });
+  window.addEventListener('resize', _dcDraw);
+  dcView(_dcViewMode);
 }
 
 function renderCalcul(){
@@ -34932,7 +35044,10 @@ function renderCalcHistoryList(tool){
 const R3_STEPS_SOL = ['ouvrage','mode','L','section','first','last','qty','result'];
 function _r3Steps(){
   const s = r3 && r3.s;
-  if(s && s.ouvrage === 'empanon') return ['e_pente','e_voisin','e_section','e_result'];
+  if(s && s.ouvrage === 'empanon'){
+    if(s.rel) return ['rel1','rel2','rel3','rel4'];
+    return (s.plan === 'arete') ? ['e_pente','e_plan','e_section','e_result'] : ['e_pente','e_plan','e_voisin','e_section','e_result'];
+  }
   if(!s || s.ouvrage !== 'chevrons') return R3_STEPS_SOL;
   const a = ['ouvrage','mode','L','section','echelle'];
   if(s.ech && _r3n(s.D) > 0){ a.push('echRep'); if(s.echRep) a.push('onP'); else a.push('first','last'); }
@@ -34940,7 +35055,7 @@ function _r3Steps(){
   return a.concat(['qty','result']);
 }
 let r3 = null;
-const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP','p1','u1','p2','u2','same','pPos','pCote'];
+const _R3_KEYS = ['mode','L','w','h','first','last','n','e','eKind','T','ech','D','echRep','onP','p1','u1','p2','u2','same','pPos','pCote','plan','om','phi'];
 function _r3Store(){ let sv = {}; try{ sv = JSON.parse(localStorage.getItem('rwood-r3') || '{}') || {}; }catch(e){} if(!sv.solivage && !sv.chevrons && sv.L !== undefined) sv = { solivage: sv }; return sv; }
 function _r3Def(ouv){
   ouv = ouv || 'solivage';
@@ -35446,7 +35561,7 @@ function r3Go(step, instant){
   r3.s.step = step;
   const s = r3.s, q = document.getElementById('r3Q'), wrap = document.getElementById('r3Wrap');
   const STEPS = _r3Steps(), i = STEPS.indexOf(step);
-  document.getElementById('r3Back').style.visibility = i > 0 ? 'visible' : 'hidden';
+  document.getElementById('r3Back').style.visibility = (i > 0 || s.rel) ? 'visible' : 'hidden';
   const EMP = s.ouvrage === 'empanon';
   document.getElementById('r3Dots').innerHTML = STEPS.slice(EMP ? 0 : 2).map(k => `<i class="${STEPS.indexOf(k) <= i ? 'on' : ''}"></i>`).join('');
   const CH = s.ouvrage === 'chevrons', MUR = CH ? 'pignon' : 'mur', P1 = CH ? 'chevron' : 'solive', P2 = CH ? 'chevrons' : 'solives';
@@ -35460,6 +35575,24 @@ function r3Go(step, instant){
     const U = s.u1 === '°' ? '°' : s.u1 === '%' ? ' cm' : ' mm';
     h = `<div class="r3-t">Pente du versant de l'empanon</div>${s.u1 !== '°' ? '<div class="r3-s">Hauteur sur 1 m à l\'horizontale, prise sur le dessus du chevron (lattis). Ex : 750 mm pour 1000 mm, ou 75 cm pour 100 cm.</div>' : ''}${uch('u1', s.u1)}${inp('r3P1', s.p1, s.u1 === '°' ? 'Ex : 35' : s.u1 === '%' ? 'Ex : 75' : 'Ex : 750', "r3.s.p1=this.value;r3Refresh()")}
       <div class="r3-chips">${(s.u1 === '°' ? [30, 35, 40, 45] : s.u1 === '%' ? [45, 60, 75, 100] : [450, 600, 750, 1000]).map(v => `<button class="${_r3n(s.p1) === v ? 'on' : ''}" onclick="r3.s.p1='${v}';r3Go('e_pente',false)">${v}${U}</button>`).join('')}</div>${next()}`;
+  } else if(/^rel/.test(step)){
+    const E = r3EmpCalc(s), cut = r3.emCut || 'plat', face = cut === 'plat' ? 'la joue' : 'le dessus';
+    const lame = E ? (cut === 'plat' ? E.plat.lame : E.chant.lame) : 0;
+    const th = Math.PI / 2 + lame;
+    const seg2 = `<div class="r3-yn" style="margin:0 0 8px;"><button class="${cut === 'plat' ? 'on' : ''}" onclick="r3.emCut='plat';r3Go(r3.s.step,false)">À plat<small>table sur la joue</small></button><button class="${cut === 'chant' ? 'on' : ''}" onclick="r3.emCut='chant';r3Go(r3.s.step,false)">À chant<small>table sur le dessus</small></button></div>`;
+    const nb = (l2) => `<button class="btn btn-primary btn-block r3-next" onclick="${step === 'rel4' ? 'r3RelEnd()' : 'r3Next()'}">${l2}</button>`;
+    if(step === 'rel1') h = `<div class="r3-t">1 · Repère la face et l'arête de coupe</div>${seg2}<div class="r3-s" style="font-size:13.5px;color:var(--ink);">Sur l'empanon déjà coupé (rembarré contre l'arêtier), repère <b style="color:#7fb3ea;">la face où posera la table de la scie</b> : ${face}. L'<b style="color:#ff7fdf;">arête de coupe</b> est la ligne où la coupe rencontre cette face.</div>${nb('Suivant')}`;
+    if(step === 'rel2') h = `<div class="r3-t">2 · Trace un trait d'équerre</div><div class="r3-s" style="font-size:13.5px;color:var(--ink);">Pose l'<b>équerre</b> à plat sur ${face}, une branche <b>le long de l'arête de coupe</b>. Trace le long de l'autre branche : tu obtiens un <b style="color:#7ee08a;">trait perpendiculaire à l'arête de coupe</b>.</div><div class="r3-s">C'est dans ce plan-là, perpendiculaire à l'arête de coupe, que l'angle de lame se mesure vraiment.</div>${nb('Suivant')}`;
+    if(step === 'rel3') h = `<div class="r3-t">3 · Pose la fausse équerre</div><div class="r3-s" style="font-size:13.5px;color:var(--ink);">Pose la <b>crosse</b> à plat sur ${face}, <b>sur le trait d'équerre</b>, bout contre l'arête de coupe. Plaque la <b>lame</b> de la fausse équerre contre la face coupée, puis serre la vis.</div>
+      <div class="em-row" style="margin-top:6px;"><div class="em-big"><span>Ouverture lue</span><b id="r3ThA">${_r3d(r3.relTheta || th)}</b><small>entre crosse et lame</small></div><div class="em-big"><span>Soit une lame à</span><b>${_r3d(lame)}</b><small id="r3ThB"></small></div></div>${nb('Suivant')}`;
+    if(step === 'rel4') h = `<div class="r3-t">4 · Reporte l'angle sur la scie</div><div class="em-saw">${_r3SawSvg(lame, true)}<div class="em-saw-t"><b>Scie débranchée</b><span>Inclinaison <em>${_r3d(lame)}</em></span><small>Crosse de la fausse équerre plaquée sous la semelle, lame contre la lame de scie (entre les dents). Incline la scie jusqu'à ce que les deux lames se touchent sur toute la hauteur, puis bloque.</small></div></div>
+      <div class="r3-s">Contrôle : le rapporteur de la scie doit indiquer environ ${_r3d(lame)}. Si ce n'est pas le cas, vérifie que la crosse était bien sur le trait d'équerre.</div>${nb('✓ Terminé')}`;
+  } else if(step === 'e_plan'){
+    const pb = (k, l, d) => `<button class="${(s.plan || 'equerre') === k ? 'on' : ''}" onclick="r3.s.plan='${k}';r3Go('e_plan',false)"><b>${l}</b><small>${d}</small></button>`;
+    h = `<div class="r3-t">L'arêtier en plan (vue de dessus)</div><div class="r3-s">L'arêtier n'est à 45° des murs que si les murs sont d'équerre et les deux pentes égales.</div>
+      <div class="r3-ppos">${pb('equerre', 'Murs d\'équerre', 'angle entre les murs 90°')}${pb('murs', 'Murs pas d\'équerre', 'je connais l\'angle entre les murs')}${pb('arete', 'J\'ai l\'angle de l\'arêtier', 'mesuré en plan, arêtier / mur')}</div>
+      ${s.plan === 'murs' ? `<label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Angle entre les deux sablières (°)</label>${inp('r3Om', s.om, 'Ex : 100', "r3.s.om=this.value;r3Refresh()")}<div class="r3-s">Mesuré à l'intérieur du bâtiment, au coin de l'arêtier.</div>` : ''}
+      ${s.plan === 'arete' ? `<label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Angle entre l'arêtier et la sablière de l'empanon (°)</label>${inp('r3Phi', s.phi, 'Ex : 40', "r3.s.phi=this.value;r3Refresh()")}<div class="r3-s">Mesuré en plan, au pied de l'arêtier. Pas besoin de la pente du versant voisin.</div>` : ''}${next()}`;
   } else if(step === 'e_voisin'){
     h = `<div class="r3-t">Pente du versant voisin</div><div class="r3-s">De l'autre côté de l'arêtier</div>
       <div class="r3-yn"><button class="${s.same ? 'on' : ''}" onclick="r3SetB('same',true)">Même pente</button><button class="${!s.same ? 'on' : ''}" onclick="r3SetB('same',false)">Pente différente</button></div>
@@ -35519,6 +35652,7 @@ function r3Go(step, instant){
   q.innerHTML = h;
   if(step === 'result') _r3Result();
   if(step === 'e_result') _r3EmpResult();
+  if(EMP && step !== 'e_result' && !/^rel/.test(step)) r3.s.rel = false;
   if(EMP){ if(step !== 'e_result') r3.view = 'zoom'; }
   else if(step !== 'qty' && step !== 'result') r3.view = '3d';
   _r3BarSync();
@@ -35569,13 +35703,15 @@ function r3Next(){
   if(st === 'L' && !(_r3n(s.L) > 0)){ showToast(s.ouvrage === 'chevrons' ? 'Indique la distance entre les pignons' : 'Indique la distance entre les murs'); return; }
   if(st === 'section' && !(_r3n(s.w) > 0)){ showToast('Indique la largeur du bois'); return; }
   if(st === 'e_pente' && !(_r3Ang(s.p1, s.u1) > 0 && _r3Ang(s.p1, s.u1) < Math.PI / 2)){ showToast('Indique la pente de l\'empanon'); return; }
+  if(st === 'e_plan' && s.plan === 'murs' && !(_r3n(s.om) > 20 && _r3n(s.om) < 160)){ showToast('Indique l\'angle entre les murs (entre 20° et 160°)'); return; }
+  if(st === 'e_plan' && s.plan === 'arete' && !(_r3n(s.phi) > 0 && _r3n(s.phi) < 90)){ showToast('Indique l\'angle de l\'arêtier (entre 0° et 90°)'); return; }
   if(st === 'e_voisin' && !s.same && !(_r3Ang(s.p2, s.u2) > 0 && _r3Ang(s.p2, s.u2) < Math.PI / 2)){ showToast('Indique la pente du versant voisin'); return; }
   if(st === 'onP' && s.onP && s.pPos === 'cote' && !isFinite(_r3n(s.pCote))){ showToast('Indique la cote face du chevron → mur'); return; }
   if(st === 'echelle' && s.ech && !(_r3n(s.D) > 0)){ showToast('Indique le débord de l\'échelle de toit'); return; }
   if(st === 'qty'){ const lay = r3Layout(s); if(!lay){ showToast(s.mode === 'count' ? 'Indique le nombre de ' + _r3Word(2) : 'Indique l\'entraxe'); return; } if(lay.err){ showToast('⚠️ ' + lay.err); return; } }
   const S = _r3Steps(), i = S.indexOf(st); if(i < S.length - 1) r3Go(S[i + 1]);
 }
-function r3Back(){ const S = _r3Steps(), i = S.indexOf(r3.s.step); if(i > 0) r3Go(S[i - 1]); }
+function r3Back(){ if(r3.s.rel && r3.s.step === 'rel1'){ r3RelEnd(); return; } const S = _r3Steps(), i = S.indexOf(r3.s.step); if(i > 0) r3Go(S[i - 1]); }
 function _r3Result(){
   const s = r3.s, lay = r3Layout(s), el = document.getElementById('r3Res'); if(!el) return;
   if(!lay || lay.err){ el.innerHTML = `<div class="hint">${lay ? escapeHtml(lay.err) : 'Données incomplètes.'}</div>`; return; }
@@ -35621,38 +35757,55 @@ function _r3Result(){
 function _r3Ang(v, u){ const n = _r3n(v); if(!(n > 0)) return NaN; return u === '°' ? n * Math.PI / 180 : u === 'mm' ? Math.atan(n / 1000) : Math.atan(n / 100); }
 const _r3PenteTxt = (n, u, t) => _r3n(n) > 0 ? (u === '°' ? _r3d(t) : u === 'mm' ? Math.round(Math.tan(t) * 1000).toLocaleString('fr-FR') + ' mm' : (Math.round(Math.tan(t) * 1000) / 10).toLocaleString('fr-FR') + ' cm') : '?';
 const _r3d = r => (Math.round(r * 1800 / Math.PI) / 10).toLocaleString('fr-FR') + '°';
+/* v5.41.344 — plan quelconque : φ = angle en plan entre l'arêtier et la sablière de l'empanon.
+   • murs d'équerre : tanφ = T2 / T1
+   • angle ω entre les murs : tanφ = T2·sinω / (T1 + T2·cosω)
+   • φ mesuré directement : on le prend tel quel (la pente voisine n'est pas utile).
+   β = 90° − φ = angle en plan entre l'empanon et l'arêtier. */
 function r3EmpCalc(s){
-  const t1 = _r3Ang(s.p1, s.u1), t2 = s.same ? t1 : _r3Ang(s.p2, s.u2);
-  if(!(t1 > 0) || !(t2 > 0) || t1 >= Math.PI / 2 || t2 >= Math.PI / 2) return null;
-  const beta = Math.atan(Math.tan(t1) / Math.tan(t2));
+  const t1 = _r3Ang(s.p1, s.u1); if(!(t1 > 0) || t1 >= Math.PI / 2) return null;
+  const plan = s.plan || 'equerre', T1 = Math.tan(t1);
+  let phi, om = Math.PI / 2, t2;
+  if(plan === 'arete'){
+    const pd = _r3n(s.phi); if(!(pd > 0 && pd < 90)) return null;
+    phi = pd * Math.PI / 180; t2 = Math.atan(T1 * Math.tan(phi));
+  } else {
+    t2 = s.same ? t1 : _r3Ang(s.p2, s.u2); if(!(t2 > 0) || t2 >= Math.PI / 2) return null;
+    if(plan === 'murs'){ const od = _r3n(s.om); if(!(od > 20 && od < 160)) return null; om = od * Math.PI / 180; }
+    const T2 = Math.tan(t2); phi = Math.atan2(T2 * Math.sin(om), T1 + T2 * Math.cos(om));
+  }
+  if(!(phi > 0.01 && phi < Math.PI / 2 - 0.01)) return null;
+  const beta = Math.PI / 2 - phi;
   const b = _r3n(s.w) > 0 ? _r3n(s.w) : 63, h = _r3n(s.h) > 0 ? _r3n(s.h) : 175;
   const platLame = Math.PI / 2 - beta;
   const chantAxe = Math.atan(Math.tan(beta) * Math.cos(t1));
   const chantLame = Math.asin(Math.sin(beta) * Math.sin(t1));
-  return { t1, t2, beta, b, h,
+  return { t1, t2, beta, phi, om, plan, b, h,
     plat: { lame: platLame, trait: Math.PI / 2 - t1, dec: h * Math.tan(t1) },
     chant: { lame: chantLame, axe: chantAxe, eq: Math.PI / 2 - chantAxe, dec: b / (Math.tan(beta) * Math.cos(t1)) } };
 }
 /* boîte quelconque : 8 sommets (4 près, 4 loin, même ordre) */
 function _r3Hexa(V, c, hl, a){ return { V, F:[[0,1,2,3],[5,4,7,6],[4,0,3,7],[1,5,6,2],[3,2,6,7],[4,5,1,0]], c, hl, a }; }
 function _r3BuildEmp(){
-  const s = r3.s, st = s.step, E = r3EmpCalc(s) || r3EmpCalc(Object.assign({}, s, { p1:'75', u1:'%', same:true }));
+  const s = r3.s, st = s.step, E = r3EmpCalc(s) || r3EmpCalc(Object.assign({}, s, { p1:'75', u1:'%', same:true })) || r3EmpCalc(Object.assign({}, s, { p1:'75', u1:'%', same:true, plan:'equerre' }));
   const t1 = E.t1, t2 = E.t2, b = E.b, h = E.h, _hz = 0, T1 = Math.tan(t1), T2 = Math.tan(t2);
   const WOOD = '#c9934f', HIP = '#a8743a', SAB = '#8a6a48', HL = '#f0a93a', GREY = '#7d6a55';
   const W = 3600, bh = Math.max(b * 1.8, 90), hh = h * 1.35;
   const objs = [], dims = [], tags = [];
   // sablières
   objs.push(_r3BoxObj({ b:[-160, W, -220, 0, -160, 0], c: SAB }));
-  objs.push(_r3BoxObj({ b:[-160, 0, -220, 0, 0, W], c: SAB }));
+  const om = E.om, phi = E.phi, w2 = [Math.cos(om), 0, Math.sin(om)], o2 = [-Math.sin(om), 0, Math.cos(om)];
+  { const Q = (a, k, y) => [w2[0] * a + o2[0] * k, y, w2[2] * a + o2[2] * k];
+    objs.push(_r3Hexa([Q(0, 0, -220), Q(W, 0, -220), Q(W, 0, 0), Q(0, 0, 0), Q(0, 160, -220), Q(W, 160, -220), Q(W, 160, 0), Q(0, 160, 0)], SAB)); }
   // arêtier (dessus sur l'intersection des deux versants)
-  const dl = Math.hypot(T1, T2), dH = [T1 / dl, (T1 * T2) / dl, T2 / dl], Lh = W * 1.05;
+  const dH = (() => { const v = [Math.cos(phi), Math.sin(phi) * T1, Math.sin(phi)], l = Math.hypot(...v); return v.map(x => x / l); })(), Lh = W * 1.05;
   { const dn = Math.hypot(...dH), a = dH.map(v => v / dn), sd = [a[2], 0, -a[0]], sl = Math.hypot(...sd), sx = sd.map(v => v / sl);
     const up = [sx[1] * a[2] - sx[2] * a[1], sx[2] * a[0] - sx[0] * a[2], sx[0] * a[1] - sx[1] * a[0]], u = up[1] < 0 ? up.map(v => -v) : up;
     const P = (t, sw, dv) => [a[0] * t + sx[0] * sw - u[0] * dv, a[1] * t + sx[1] * sw - u[1] * dv, a[2] * t + sx[2] * sw - u[2] * dv];
     const near = [P(0, -bh / 2, hh), P(0, bh / 2, hh), P(0, bh / 2, 0), P(0, -bh / 2, 0)], far = near.map((_, i) => P(Lh, i === 0 || i === 3 ? -bh / 2 : bh / 2, i < 2 ? hh : 0));
     objs.push(_r3Hexa(near.concat(far), HIP)); }
   // empanons : dessus dans le plan du versant 1, coupés par la joue de l'arêtier (plan vertical m·(x,z) = bh/2)
-  const mn = Math.hypot(T2, T1), mx = T2 / mn, mz = -T1 / mn;
+  const mx = Math.sin(phi), mz = -Math.cos(phi);
   const n1 = [0, Math.cos(t1), -Math.sin(t1)], u1 = [0, Math.sin(t1), Math.cos(t1)];
   const jack = (xe, hl) => {
     const z0 = -260, P0 = [xe, z0 * T1, z0];
@@ -35661,7 +35814,8 @@ function _r3BuildEmp(){
     objs.push(_r3Hexa(cs.concat(far), hl ? HL : GREY, hl));
     return { near: cs, far };
   };
-  const zoomRes = st === 'e_result' && r3.view !== 'ens';
+  const relSt = /^rel/.test(st);
+  const zoomRes = (st === 'e_result' && r3.view !== 'ens') || relSt;
   const xe = W * 0.42, J = jack(xe, true); if(!zoomRes){ jack(W * 0.22, false); jack(W * 0.62, false); }
   if(zoomRes){ objs[2].a = 0.22; objs.push({ V: J.far.slice(), F:[[0, 1, 2, 3]], c:'#ff5fd2', a:0.55, two:true }); }
   const fc = J.far.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0]);
@@ -35679,16 +35833,64 @@ function _r3BuildEmp(){
     tags.push({ p:[xe, J.far[3][1] + 300, J.far[3][2] - 400], t:'Empanon', bg:'#f0a93a' });
     cam = { tx: xe, ty: 700, tz: 900, yaw: Math.PI / 2 + 0.25, pitch: 0.12, dist: W * 1.3 };
   } else if(st === 'e_voisin'){
-    { const zd = xe + b, x0 = 400; dims.push({ a:[x0, x0 * T2, zd], b:[x0 + 1000, x0 * T2, zd], t: s.u2 === '%' ? '100 cm' : '1000 mm', c:'#ece6dc' });
-      dims.push({ a:[x0 + 1000, x0 * T2, zd], b:[x0 + 1000, (x0 + 1000) * T2, zd], t: s.same ? 'même pente' : _r3PenteTxt(s.p2, s.u2, t2), c:'#8fd0ff' }); }
-    tags.push({ p:[1600, 1500 * T2 + 300, xe], t:'Versant voisin', bg:'#ece6dc' });
-    cam = { tx: 900, ty: 700, tz: xe, yaw: Math.PI - 0.25, pitch: 0.12, dist: W * 1.3 };
+    { const n2 = [Math.sin(om), 0, -Math.cos(om)], B0 = [w2[0] * (xe + b), 0, w2[2] * (xe + b)];
+      const pt = (d, y) => [B0[0] + n2[0] * d, y, B0[2] + n2[2] * d];
+      dims.push({ a: pt(400, 400 * T2), b: pt(1400, 400 * T2), t: s.u2 === '%' ? '100 cm' : '1000 mm', c:'#ece6dc' });
+      dims.push({ a: pt(1400, 400 * T2), b: pt(1400, 1400 * T2), t: s.same ? 'même pente' : _r3PenteTxt(s.p2, s.u2, t2), c:'#8fd0ff' });
+      tags.push({ p: pt(1600, 1500 * T2 + 300), t:'Versant voisin', bg:'#ece6dc' });
+      const e = [-w2[0] + n2[0] * 0.25, -w2[2] + n2[2] * 0.25], c = pt(900, 700);
+      cam = { tx: c[0], ty: 700, tz: c[2], yaw: Math.atan2(e[0], e[1]), pitch: 0.12, dist: W * 1.3 }; }
+  } else if(st === 'e_plan'){
+    const L0 = W * 0.75;
+    dims.push({ a:[0, 30, 0], b:[L0, 30, 0], t:'', c:'#ece6dc', thin:true });
+    dims.push({ a:[0, 30, 0], b:[w2[0] * L0, 30, w2[2] * L0], t:'', c:'#ece6dc', thin:true });
+    const arc = (a0, a1, r, col) => { for(let i = 0; i < 12; i++){ const u = a0 + (a1 - a0) * i / 12, v = a0 + (a1 - a0) * (i + 1) / 12; dims.push({ a:[Math.cos(u) * r, 40, Math.sin(u) * r], b:[Math.cos(v) * r, 40, Math.sin(v) * r], t:'', c: col, trace:true }); } };
+    dims.push({ a:[0, 40, 0], b:[Math.cos(phi) * L0, 40, Math.sin(phi) * L0], t:'', c:'#ffcf6b', trace:true });
+    arc(0, phi, 700, '#ffcf6b'); if(E.plan !== 'arete') arc(phi, om, 950, '#8fd0ff');
+    tags.push({ p:[Math.cos(phi / 2) * 1050, 60, Math.sin(phi / 2) * 1050], t:'Arêtier / mur ' + _r3d(phi), bg:'#ffcf6b', force:true });
+    if(E.plan !== 'arete') tags.push({ p:[Math.cos((phi + om) / 2) * 1400, 60, Math.sin((phi + om) / 2) * 1400], t:'Entre les murs ' + _r3d(om), bg:'#8fd0ff', force:true });
+    cam = { tx: W * 0.3, ty: 0, tz: W * 0.3, yaw: 0, pitch: 1.5, dist: W * 1.5, ortho:true };
   } else if(st === 'e_section'){
     const n = J.near;
     dims.push({ a:[n[0][0], n[0][1] - 40, n[0][2] - 5], b:[n[1][0], n[1][1] - 40, n[1][2] - 5], t:'Largeur ' + (_r3n(s.w) > 0 ? _r3f(b) : '?') });
     dims.push({ a:[n[1][0] + 45, n[1][1], n[1][2] - 5], b:[n[2][0] + 45, n[2][1], n[2][2] - 5], t:'Hauteur ' + (_r3n(s.h) > 0 ? _r3f(h) : '?'), c:'#8fd0ff' });
     const c = n.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0]);
     cam = { tx: c[0], ty: c[1], tz: c[2], yaw: Math.PI + 0.45, pitch: 0.3, dist: Math.max(b, h) * 3.8 + 260 };
+  } else if(relSt){
+    // v5.41.344 — tutoriel : relever l'angle à l'équerre et à la fausse équerre sur une coupe déjà faite
+    const G = _r3RelGeom(J, n1, E), cut = r3.emCut || 'plat';
+    r3.relTheta = G.theta;
+    objs[0].a = 0.12; objs[1].a = 0.12; objs[2].a = 0.08;
+    for(let i = tags.length - 1; i >= 0; i--) if(tags[i].t === 'Sablière' || tags[i].t === 'Arêtier') tags.splice(i, 1);
+    setTimeout(() => { const a = document.getElementById('r3ThA'), b2 = document.getElementById('r3ThB'); if(a) a.textContent = _r3d(G.theta); if(b2) b2.textContent = G.theta >= Math.PI / 2 ? _r3d(G.theta) + ' − 90°' : '90° − ' + _r3d(G.theta); }, 0);
+    const add = (p, q, k) => [p[0] + q[0] * k, p[1] + q[1] * k, p[2] + q[2] * k];
+    const rect = (o, d1, l1, d2, l2, nrm, th, col, a) => { const P = (i, j, k) => add(add(add(o, d1, i * l1), d2, j * l2), nrm, k * th);
+      objs.push(_r3Hexa([P(0,0,0), P(1,0,0), P(1,1,0), P(0,1,0), P(0,0,1), P(1,0,1), P(1,1,1), P(0,1,1)], col, false, a == null ? 1 : a)); };
+    objs.push({ V: G.faceA.map(p => add(p, G.nA, 1.5)), F:[[0, 1, 2, 3]], c:'#4d8fd6', a: st === 'rel1' ? 0.85 : 0.45, two:true });
+    dims.push({ a: G.La, b: G.Lb, t:'', c:'#ff5fd2', trace:true });
+    if(st === 'rel1'){
+      tags.push({ p: add(G.P, G.nA, 60), t:'arête de coupe', bg:'#ff5fd2', fg:'#fff', force:true });
+      tags.push({ p: add(add(G.P, G.dA, G.Lg * 1.4), G.nA, 40), t: cut === 'plat' ? 'face : la joue' : 'face : le dessus', bg:'#4d8fd6', fg:'#fff', force:true });
+    }
+    if(st === 'rel2'){
+      const w = 22;
+      rect(add(G.P, G.dA, -w), G.l, 140, G.dA, w, G.nA, 4, '#e8eef3', 1);
+      rect(add(add(G.P, G.l, -w / 2), G.dA, 0), G.dA, G.Lg, G.l, w, G.nA, 4, '#e8eef3', 1);
+      dims.push({ a: add(G.P, G.nA, 4), b: add(add(G.P, G.dA, G.Lg), G.nA, 4), t:'', c:'#7ee08a', trace:true });
+      tags.push({ p: add(add(G.P, G.l, 150), G.nA, 40), t:'équerre', bg:'#cfd6dd', force:true });
+      tags.push({ p: add(add(G.P, G.dA, G.Lg * 1.1), G.nA, 50), t:'trait d\'équerre', bg:'#7ee08a', force:true });
+    }
+    if(st === 'rel3' || st === 'rel4'){
+      dims.push({ a: add(G.P, G.nA, 4), b: add(add(G.P, G.dA, G.Lg), G.nA, 4), t:'', c:'#7ee08a', trace:true });
+      rect(add(G.P, G.l, -16), G.dA, Math.max(G.Lg, 150), G.l, 32, G.nA, 22, '#8a5a2b', 1);
+      rect(add(add(G.P, G.l, -12), G.cnOut, 2), G.v, G.Lv * 1.1, G.l, 24, G.cnOut, 4, '#e8eef3', 1);
+      tags.push({ p: add(add(G.P, G.dA, G.Lg * 0.6), G.nA, 60), t:'crosse', bg:'#a8743a', fg:'#fff', force:true });
+      tags.push({ p: add(add(G.P, G.v, G.Lv * 0.8), G.cnOut, 40), t:'lame', bg:'#d9dee3', force:true });
+      tags.push({ p: add(add(G.P, G.nA, 90), G.dA, -30), t:'Fausse équerre ' + _r3d(G.theta), bg:'#f0a93a', force:true });
+    }
+    cam = (() => { const v = cut === 'plat' ? add(add(G.l.map(x => x * G.ls), G.nA, 0.45), G.dA, -0.3) : add(add(G.l.map(x => x * G.ls), G.nA, 0.55), G.cnOut, 0.7), l = Math.hypot(...v), c = add(add(G.P, G.v, G.Lv * 0.25), G.dA, 40);
+      return { tx: c[0], ty: c[1], tz: c[2], yaw: Math.atan2(v[0], v[2]), pitch: Math.asin(Math.max(-1, Math.min(1, v[1] / l))), dist: cut === 'plat' ? Math.max(b, h) * 3.2 + 260 : h * 2.4 + 200 }; })();
+    if(st === 'rel1') cam.dist *= 1.4;
   } else if(st === 'e_result'){
     const cut = r3.emCut || 'plat', f = J.far;
     // f : 0 = dessous gauche, 1 = dessous droite, 2 = dessus droite, 3 = dessus gauche
@@ -35813,10 +36015,33 @@ function _r3SawDyn(){
   return { objs, dims, logo:{ c: L0, x: L1, y: L2 } };
 }
 function r3SawToggle(){ r3.sawPlay = r3.sawPlay === false ? true : false; _r3BarSync(); _r3Kick(); }
+/* Géométrie du relevé : face A (table de la scie), arête de coupe L_A, trait d'équerre dA, fausse équerre */
+function _r3RelGeom(J, n1, E){
+  const cut = r3.emCut || 'plat', f = J.far, n = J.near;
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const nrm = v => { const l = Math.hypot(...v) || 1; return v.map(x => x / l); };
+  let faceA, nA, La, Lb;
+  if(cut === 'plat'){ faceA = [n[0], f[0], f[3], n[3]]; nA = [-1, 0, 0]; La = f[0]; Lb = f[3]; }
+  else { faceA = [n[3], f[3], f[2], n[2]]; nA = n1.slice(); La = f[3]; Lb = f[2]; }
+  const P = [(La[0] + Lb[0]) / 2, (La[1] + Lb[1]) / 2, (La[2] + Lb[2]) / 2];
+  const l = nrm(sub(Lb, La));
+  const nc = n.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0]);
+  let dA = nrm(crs(nA, l)); if(dot(dA, sub(nc, P)) < 0) dA = dA.map(x => -x);
+  let cn = nrm(crs(sub(f[1], f[0]), sub(f[3], f[0]))); if(dot(cn, sub(nc, P)) > 0) cn = cn.map(x => -x); // vers la chute
+  let v = nrm(crs(cn, l)); if(dot(v, nA) > 0) v = v.map(x => -x);
+  const theta = Math.acos(Math.max(-1, Math.min(1, dot(dA, v))));
+  const across = cut === 'plat' ? n1 : [1, 0, 0], half = cut === 'plat' ? E.h / 2 : E.b / 2;
+  const Lg = Math.min(160, 0.9 * half / Math.max(0.05, Math.abs(dot(dA, across))));
+  const Lv = (cut === 'plat' ? E.b : E.h) / Math.max(0.2, Math.abs(dot(v, nA)));
+  return { faceA, nA, La, Lb, P, l, dA, cnOut: cn, v, theta, Lg, Lv, ls: (r3.relLs != null ? r3.relLs : 1) };
+}
+function r3RelStart(){ r3.s.rel = true; r3.view = 'zoom'; r3Go('rel1'); }
+function r3RelEnd(){ r3.s.rel = false; r3Go('e_result'); }
 function r3SetCut(c){ r3.emCut = c; r3.view = 'zoom';  _r3BarSync(); _r3EmpResult(); const cam = _r3Build(); _r3Fly(cam, 650); }
 function r3SetEmpView(v){ r3.view = v; _r3BarSync(); const cam = _r3Build(); _r3Fly(cam, 650); }
 /* Schéma de la scie vue de face : table posée, lame inclinée, rapporteur 0–50° avec l'aiguille sur l'angle */
-function _r3SawSvg(a){
+function _r3SawSvg(a, fe){
   const deg = a * 180 / Math.PI, W = 170, H = 150, cx = 85, cy = 52, R = 78;
   const pt = (d, r) => [cx + Math.sin(d * Math.PI / 180) * r, cy + Math.cos(d * Math.PI / 180) * r];
   let ticks = '';
@@ -35831,6 +36056,10 @@ function _r3SawSvg(a){
     <line x1="${cx}" y1="${cy}" x2="${bx}" y2="${by}" stroke="#cfd6dd" stroke-width="5" stroke-linecap="round"/>
     <path d="${arc}" fill="none" stroke="#f0a93a" stroke-width="2"/>
     <circle cx="${bx}" cy="${by}" r="3.5" fill="#f0a93a"/>
+    ${fe ? `<rect x="${cx - 64}" y="${cy}" width="62" height="9" rx="2" fill="#a8743a" stroke="#5a3d1e"/>
+      <line x1="${cx + 3}" y1="${cy + 2}" x2="${cx + 3 + (bx - cx) * 0.8}" y2="${cy + 2 + (by - cy) * 0.8}" stroke="#7ee08a" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="${cx}" cy="${cy + 4}" r="3" fill="#ece6dc"/>
+      <text x="${cx - 33}" y="${cy + 22}" font-size="8.5" fill="#d9b27a" text-anchor="middle" font-weight="700">fausse équerre</text>` : ''}
     <text x="22" y="${H - 8}" font-size="15" font-weight="900" fill="#f0a93a">${_r3d(a)}</text>
   </svg>`;
 }
@@ -35861,9 +36090,11 @@ function _r3EmpResult(){
   const segc = `<div class="r3-yn" style="margin-top:0;"><button class="${cut === 'plat' ? 'on' : ''}" onclick="r3SetCut('plat')">À plat<small>scie sur la joue</small></button><button class="${cut === 'chant' ? 'on' : ''}" onclick="r3SetCut('chant')">À chant<small>scie sur le dessus</small></button></div>`;
   el.innerHTML = segc + h + `<div class="r3-res" style="margin-top:8px;">
       <div><span>Pente de l'empanon</span><b>${Math.round(Math.tan(E.t1) * 1000).toLocaleString('fr-FR')} mm/m · ${_r3d(E.t1)}</b></div>
-      <div><span>Pente du versant voisin</span><b>${Math.round(Math.tan(E.t2) * 1000).toLocaleString('fr-FR')} mm/m · ${_r3d(E.t2)}</b></div>
-      <div><span>Angle en plan empanon / arêtier</span><b>${_r3d(E.beta)}</b></div></div>
-    <div class="r3-edit" style="grid-template-columns:repeat(3,1fr);"><button onclick="r3Go('e_pente')">Pente</button><button onclick="r3Go('e_voisin')">Voisin</button><button onclick="r3Go('e_section')">Section</button></div>`;
+      ${E.plan === 'arete' ? '' : `<div><span>Pente du versant voisin</span><b>${Math.round(Math.tan(E.t2) * 1000).toLocaleString('fr-FR')} mm/m · ${_r3d(E.t2)}</b></div>`}
+      <div><span>Angle en plan arêtier / mur</span><b>${_r3d(E.phi)}</b></div>
+      <div><span>Angle en plan empanon / arêtier</span><b>${_r3d(E.beta)}</b></div>${E.plan === 'murs' ? `<div><span>Angle entre les murs</span><b>${_r3d(E.om)}</b></div>` : ''}</div>
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="r3RelStart()">📏 Relever l'angle à l'équerre et à la fausse équerre</button>
+    <div class="r3-edit" style="grid-template-columns:repeat(${s.plan === 'arete' ? 3 : 4},1fr);"><button onclick="r3Go('e_pente')">Pente</button><button onclick="r3Go('e_plan')">Plan</button>${s.plan === 'arete' ? '' : `<button onclick="r3Go('e_voisin')">Voisin</button>`}<button onclick="r3Go('e_section')">Section</button></div>`;
 }
 /* Montage : la même zone 3D sert à la Répartition et à l'Empanon (on la déplace dans l'outil actif) */
 const _r3Inst = {};
@@ -35875,7 +36106,7 @@ function r3MountKind(kind){
   if(!_r3Inst[kind] && kind === 'emp'){
     const sv = _r3Store().empanon || {};
     _r3Inst.emp = { kind:'emp', view:'zoom', emCut:'plat', cam:{ tx:1500, ty:800, tz:1500, yaw:-2.4, pitch:0.55, dist:8000 },
-      s:{ step:'e_pente', ouvrage:'empanon', p1: sv.u1 === '%' || !sv.u1 ? (sv.p1 ? String(Math.round(_r3n(sv.p1) * 10)) : '') : sv.p1, u1: sv.u1 === '%' || !sv.u1 ? 'mm' : sv.u1, p2: sv.u2 === '%' || !sv.u2 ? (sv.p2 ? String(Math.round(_r3n(sv.p2) * 10)) : '') : sv.p2, u2: sv.u2 === '%' || !sv.u2 ? 'mm' : sv.u2, same: sv.same !== false, w: sv.w || '', h: sv.h || '' } };
+      s:{ step:'e_pente', ouvrage:'empanon', p1: sv.u1 === '%' || !sv.u1 ? (sv.p1 ? String(Math.round(_r3n(sv.p1) * 10)) : '') : sv.p1, u1: sv.u1 === '%' || !sv.u1 ? 'mm' : sv.u1, p2: sv.u2 === '%' || !sv.u2 ? (sv.p2 ? String(Math.round(_r3n(sv.p2) * 10)) : '') : sv.p2, u2: sv.u2 === '%' || !sv.u2 ? 'mm' : sv.u2, plan: sv.plan || 'equerre', om: sv.om || '', phi: sv.phi || '', same: sv.same !== false, w: sv.w || '', h: sv.h || '' } };
   }
   const cv = r3 && r3.cv, ctx = r3 && r3.ctx;
   r3 = _r3Inst[kind] || null;
@@ -40464,9 +40695,39 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.343';
+const APP_VERSION = '5.41.347';
 
 const CHANGELOG = [
+  {
+    version: '5.41.347',
+    date: '05/10/2026',
+    entries: [
+      { icon: '🪵', text: "Découpe 3D : les barres sont maintenant posées à plat, plus lisible." },
+    ],
+  },
+  {
+    version: '5.41.346',
+    date: '05/10/2026',
+    entries: [
+      { icon: '🪵', text: "Découpe 3D : les barres sont dessinées avec leur vraie section (largeur × hauteur à saisir), posées sur des lattes, avec chaque trait de scie marqué. Nouvelle vue « Bout » pour voir les sections cotées." },
+    ],
+  },
+  {
+    version: '5.41.345',
+    date: '05/10/2026',
+    entries: [
+      { icon: '🧊', text: "Calcul › Découpe : vue 3D de tout le stock après le calcul — chaque barre avec les pièces à y couper (en couleur, longueur affichée) et la chute en sombre. Les barres non utilisées restent visibles. Touche une barre (ou sa carte) pour la voir seule, vue 3D ou de dessus." },
+      { icon: '🗑', text: "L'outil Empanon est retiré du Calcul." },
+    ],
+  },
+  {
+    version: '5.41.344',
+    date: '05/10/2026',
+    entries: [
+      { icon: '📐', text: "Empanon : nouvelle étape « L'arêtier en plan » — murs d'équerre, murs pas d'équerre (angle entre les murs) ou angle de l'arêtier mesuré directement. Les angles machine en tiennent compte." },
+      { icon: '📏', text: "Empanon : tutoriel 3D en 4 étapes pour relever l'angle sur une coupe déjà faite, à l'équerre et à la fausse équerre, puis le reporter sur la scie circulaire." },
+    ],
+  },
   {
     version: '5.41.343',
     date: '04/10/2026',
