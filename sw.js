@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v901';
+const CACHE_NAME = 'rwood-cache-v904';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -117,17 +117,38 @@ self.addEventListener('message', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME && k !== MEDIA_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
 const CACHE_FIRST = /\.(png|jpg|jpeg|svg|ico|webp|woff2?)(\?.*)?$/;
+// v5.41.350 — photos / documents Supabase : leur URL ne change jamais (uid unique), on les garde
+// sur le téléphone (cache séparé, conservé d'une version à l'autre) au lieu de les retélécharger
+// à chaque affichage — c'est ce qui faisait exploser le quota « Cached Egress ».
+const MEDIA_CACHE = 'rwood-media-v1';
+const MEDIA_RE = /\/storage\/v1\/object\/public\//;
+const MEDIA_MAX = 600; // nombre de fichiers gardés au maximum
+async function _mediaTrim(cache){
+  try{ const keys = await cache.keys(); for(let i = 0; i < keys.length - MEDIA_MAX; i++) await cache.delete(keys[i]); }catch(e){}
+}
 const NET_ONLY    = /supabase\.co|api-adresse|osrm|nominatim|unpkg\.com|cdnjs/;
 
 self.addEventListener('fetch', (event) => {
   if(event.request.method !== 'GET') return;
   const url = event.request.url;
+  if(MEDIA_RE.test(url) && !/[?&](download|t)=/.test(url)){
+    event.respondWith(caches.open(MEDIA_CACHE).then(async (cache) => {
+      const hit = await cache.match(url);
+      if(hit) return hit;
+      // requête CORS (pas « opaque ») : taille réelle comptée par le navigateur, réponse lisible
+      let r; try{ r = await fetch(url, { mode:'cors', credentials:'omit' }); }catch(e){ r = null; }
+      if(!r) return fetch(event.request);
+      if(r.ok) cache.put(url, r.clone()).then(() => _mediaTrim(cache)).catch(() => {});
+      return r;
+    }));
+    return;
+  }
   if(NET_ONLY.test(url)) return;
 
   // Navigation (chargement de la page) — TOUJOURS réseau d'abord, jamais

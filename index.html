@@ -5441,6 +5441,7 @@
           </div></div>
           <div class="prm-grp"><div class="prm-sec">Entreprise</div><div class="prm-box">
             <div class="prm-row" data-k="adresses dépôt domicile maison" onclick="prmOpen('adresses')"><span class="prm-ic" style="background:#2b1f3d">📍</span><span class="prm-l">Adresses</span><span class="prm-v" id="prmVAdr"></span><span class="prm-chev">›</span></div>
+            <div class="prm-row" data-k="mon entreprise société code rejoindre créer membres équipe" onclick="prmOpen('entreprise')"><span class="prm-ic" style="background:#3d2b1c">🏢</span><span class="prm-l">Mon entreprise</span><span class="prm-v" id="prmVCo"></span><span class="prm-chev">›</span></div>
             <div class="prm-row" data-k="prime de trajet barème zone indemnités heures contractuelles semaine" onclick="prmOpen('trajet')"><span class="prm-ic" style="background:#1f3330">💶</span><span class="prm-l">Prime de trajet et heures</span><span class="prm-v" id="prmVTrj"></span><span class="prm-chev">›</span></div>
           </div></div>
           <div class="prm-grp"><div class="prm-sec">Plus</div><div class="prm-box">
@@ -5671,6 +5672,10 @@
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="resetTrajetBareme()">Réinitialiser au barème Nouvelle-Aquitaine 2026</button>
           </div>
           </div>
+        </div>
+
+        <div class="prm-pg" data-pg="entreprise" data-title="Mon entreprise">
+          <div id="rwCoBody"><div class="hint" style="text-align:center;padding:20px;">Chargement…</div></div>
         </div>
 
         <div class="prm-pg" data-pg="maj" data-title="Mise à jour">
@@ -9305,12 +9310,14 @@ function getSupaUserId(){
    ══════════════════════════════════════════════════════════════════════ */
 const RW_GW_DEFAULT = 'off';   // 'on' quand l'étape B est validée pour tout le monde
 window._rwGwStats = { ok:0, fallback:0, last:'' };
-function _rwGwMode(){ try{ const v = localStorage.getItem('rwood-gw'); if(v === 'on' || v === 'off') return v; }catch(e){} return RW_GW_DEFAULT; }
+function _rwGwMode(){ if(_rwGwCompany()) return 'on'; try{ const v = localStorage.getItem('rwood-gw'); if(v === 'on' || v === 'off') return v; }catch(e){} return RW_GW_DEFAULT; }
 function _rwGwCompany(){ return (typeof data !== 'undefined' && data && data.settings && data.settings.companyCode) || ''; }
 async function _rwGwCall(payload){
+  // v5.41.349 — étape C : on envoie le jeton Google quand le compte est relié (identité vérifiée côté serveur)
+  let tok = null; try{ if(typeof rwGoogleToken === 'function') tok = await rwGoogleToken(); }catch(e){}
   return fetch(SUPA_URL + '/functions/v1/rwood-gateway', {
     method:'POST',
-    headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY, 'Content-Type':'application/json' },
+    headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + (tok || SUPA_KEY), 'Content-Type':'application/json' },
     body: JSON.stringify(Object.assign({
       company: _rwGwCompany() || undefined,
       rwoodId: (typeof data !== 'undefined' && data && data.settings && data.settings.auth && data.settings.auth.authId) || undefined,
@@ -17211,6 +17218,8 @@ const SUPA_BUCKET = 'rwood-shared';
 
 /* Upload un fichier vers Supabase Storage — retourne l'URL publique */
 async function uploadFileToSupabase(file, siteId, opts){
+  // v5.41.350 — quota Supabase : toute photo est réduite à 1600 px / JPEG 0,78 avant l'envoi (≈ 250-500 Ko au lieu de 3-8 Mo)
+  try{ if(file && /^image\/(jpe?g|png|webp)$/i.test(file.type || '') && typeof _rwShrinkPhoto === 'function'){ const sm = await _rwShrinkPhoto(file, 1600, 0.78); if(sm && sm.size < file.size) file = sm; } }catch(_){}
   // Détecter le type MIME de façon fiable
   let mimeType = file.type || '';
   if(!mimeType || mimeType === 'application/octet-stream'){
@@ -17265,7 +17274,10 @@ async function uploadFileToSupabase(file, siteId, opts){
   // Dropbox de l'entreprise. Inactif tant que Dropbox n'est pas configuré.
   // v5.41.110 — opts.skipDropbox : le Dropbox est réservé aux photos et
   // documents de chantier ; les pliages/croquis (PDF zinc) n'y vont jamais.
-  if(!(opts && opts.skipDropbox) && typeof backupMediaToDropbox === 'function'){
+  // v5.41.351 — Dropbox = photos et documents de CHANTIER uniquement : pas les photos / croquis
+  // de la liste À faire, du magasin, du catalogue, des fiches tuiles…
+  const _isSite = (data.sites || []).some(x => x && x.id === siteId);
+  if(_isSite && !(opts && opts.skipDropbox) && typeof backupMediaToDropbox === 'function'){
     backupMediaToDropbox(file, siteId);
   }
 
@@ -19344,7 +19356,7 @@ async function _rwShrinkPhoto(file, maxDim, q){
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
     const md = maxDim || 2560;
     const k = Math.min(1, md / Math.max(bmp.width, bmp.height));
-    if(k >= 1 && file.size < 1.6 * 1024 * 1024){ if(bmp.close) bmp.close(); return file; }
+    if(k >= 1 && file.size < (md <= 1600 ? 600 * 1024 : 1.6 * 1024 * 1024)){ if(bmp.close) bmp.close(); return file; }
     const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
     let blob;
     if(typeof OffscreenCanvas !== 'undefined'){
@@ -31630,6 +31642,7 @@ function prmOpen(pg){
     if(pg === 'accueil'){ if(typeof rwBgRender === 'function') rwBgRender(); if(typeof simpleModeRenderConfig === 'function') simpleModeRenderConfig(); }
     if(pg === 'auto' && typeof routeFavRender === 'function') routeFavRender();
     if(pg === 'donnees') renderTrash();
+    if(pg === 'entreprise') rwCoRender();
   }catch(e){}
   const body = document.getElementById('parametresModalBody'); if(body) body.scrollTop = 0;
 }
@@ -31847,6 +31860,133 @@ function _paramApplyRoles(){
   show('paramTilesCard', sm);
   prmPaint();
 }
+
+/* ═══ MODULE — Mon entreprise (multi-entreprise, étape C, v5.41.349) ═══
+   Créer une entreprise, la rejoindre avec son code (le patron valide),
+   gérer les membres. Passe par la porte d'entrée (compte Google obligatoire). */
+let _rwCo = null, _rwCoAdmin = null;
+const RW_CO_ROLES = [['patron','Patron'],['conducteur','Conducteur'],['chef','Chef d\'équipe'],['ouvrier','Ouvrier'],['comptable','Comptable']];
+function _rwCoMyName(){ let a = null; try{ a = JSON.parse(localStorage.getItem('rwood-account') || 'null'); }catch(e){} const p = (data.settings && data.settings.myProfile) || {}; const w = (data.workers || []).find(x => x.id === p.workerId); return (a && a.name) || (w && w.name) || ''; }
+async function _rwCoOp(op, extra){
+  const r = await _rwGwCall(Object.assign({ op, myName: _rwCoMyName() }, extra || {}));
+  let j = null; try{ j = await r.json(); }catch(e){}
+  if(!r.ok || !j || j.error){ const e = new Error((j && j.error) || ('HTTP ' + r.status)); e.status = r.status; throw e; }
+  return j;
+}
+async function rwCoRender(){
+  const el = document.getElementById('rwCoBody'); if(!el) return;
+  const linked = typeof rwGoogleSession === 'function' && rwGoogleSession();
+  if(!linked){
+    el.innerHTML = `<div class="card"><div style="font-weight:800;">🔐 Relie d'abord ton compte à Google</div><div class="hint" style="margin-top:4px;">Pour créer ou rejoindre une entreprise, ton identité doit être vérifiée.</div>
+      <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="prmOpen('connexion')">Relier à Google</button></div>`;
+    return;
+  }
+  el.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Chargement…</div>';
+  try{ _rwCo = await _rwCoOp('company_info'); }
+  catch(e){ el.innerHTML = `<div class="card"><div style="font-weight:800;">⚠️ Entreprise injoignable</div><div class="hint" style="margin-top:4px;">${escapeHtml(e.status === 404 ? 'La porte d\'entrée n\'est pas encore installée.' : e.message)}</div><button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwCoRender()">Réessayer</button></div>`; return; }
+  _rwCoCheckSwitch(_rwCo);
+  const co = _rwCo.company, me = _rwCo.me || {}, rq = _rwCo.request;
+  const roleL = (RW_CO_ROLES.find(x => x[0] === me.role) || [0, me.role || '—'])[1];
+  let h = '';
+  if(co){
+    h += `<div class="card"><div class="hint">Ton entreprise</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${escapeHtml(co.name || co.code)}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;"><span class="hint" style="margin:0;">Code :</span><b style="font-size:18px;letter-spacing:2px;color:var(--wood);">${escapeHtml(co.code)}</b>
+      <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="rwCoShare()">📤 Partager</button></div>
+      <div class="hint" style="margin-top:6px;">Ton rôle : <b>${escapeHtml(roleL)}</b>${me.isPatron ? ' · tu valides les nouveaux membres' : ''}</div></div>`;
+  } else {
+    h += `<div class="card" style="border-color:#ff8a7a;"><div style="font-weight:800;">Tu ne fais plus partie d'une entreprise</div><div class="hint" style="margin-top:4px;">Le patron t'a retiré. Rejoins une entreprise avec son code ou crée la tienne.</div></div>`;
+  }
+  if(rq) h += `<div class="card"><div style="font-weight:800;">⏳ Demande envoyée</div><div class="hint" style="margin-top:4px;">Pour rejoindre <b>${escapeHtml(rq.name || rq.code)}</b> (${escapeHtml(rq.code)}). Le patron doit la valider.</div><button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwCoCancel()">Annuler la demande</button></div>`;
+  if(me.isPatron) h += `<div class="prm-sec">Équipe</div><div id="rwCoAdmin"><div class="hint">Chargement…</div></div>`;
+  if(!(co && co.legacy && me.role === 'patron')) h += `<div class="prm-sec">Changer d'entreprise</div>
+    <div class="card"><label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Rejoindre avec un code</label>
+      <div style="display:flex;gap:6px;margin-top:6px;"><input id="rwCoJoinIn" type="text" autocomplete="off" placeholder="Ex : K7P2QX" maxlength="10" style="flex:1;min-width:0;text-transform:uppercase;letter-spacing:2px;font-weight:800;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><button class="btn btn-primary" onclick="rwCoJoin()">Envoyer</button></div>
+      <div class="hint" style="margin-top:6px;">Le patron de cette entreprise reçoit ta demande et la valide.</div></div>
+    <div class="card"><label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Créer une nouvelle entreprise</label>
+      <div style="display:flex;gap:6px;margin-top:6px;"><input id="rwCoNewIn" type="text" autocomplete="off" placeholder="Nom de l'entreprise" maxlength="60" style="flex:1;min-width:0;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><button class="btn btn-outline" onclick="rwCoCreate()">Créer</button></div>
+      <div class="hint" style="margin-top:6px;">Tu en deviens le patron. Tes collègues la rejoignent avec son code.</div></div>`;
+  el.innerHTML = h;
+  if(me.isPatron) rwCoAdminRender();
+}
+async function rwCoAdminRender(){
+  const el = document.getElementById('rwCoAdmin'); if(!el) return;
+  try{ _rwCoAdmin = await _rwCoOp('company_admin'); }catch(e){ el.innerHTML = `<div class="hint">${escapeHtml(e.message)}</div>`; return; }
+  const me = (_rwCo && _rwCo.me && _rwCo.me.rwoodId) || '';
+  const sel = (id, cur, fn) => `<select onchange="${fn}('${id}', this.value)" style="padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:13px;">${RW_CO_ROLES.map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const rq = _rwCoAdmin.requests || [], mb = (_rwCoAdmin.members || []).filter(m => m.active !== false);
+  let h = '';
+  if(rq.length) h += `<div class="card" style="border-color:var(--wood);"><div style="font-weight:800;margin-bottom:6px;">🔔 ${rq.length} demande${rq.length > 1 ? 's' : ''} pour rejoindre</div>` + rq.map(r => `
+    <div style="padding:8px 0;border-top:1px solid var(--line);"><div style="font-weight:700;">${escapeHtml(r.name || r.rwood_id)} <span class="hint" style="margin:0;">${escapeHtml(r.rwood_id)}</span></div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;"><select id="rwCoRole_${escapeHtml(r.rwood_id)}" style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${RW_CO_ROLES.map(([k, l]) => `<option value="${k}" ${k === 'ouvrier' ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button class="btn btn-primary btn-sm" onclick="rwCoDecide('${escapeHtml(r.rwood_id)}', true)">✓ Accepter</button><button class="btn btn-outline btn-sm" onclick="rwCoDecide('${escapeHtml(r.rwood_id)}', false)">✕</button></div></div>`).join('') + '</div>';
+  h += `<div class="prm-box">` + (mb.length ? mb.map(m => `<div class="prm-row" style="cursor:default;"><span class="prm-l">${escapeHtml(m.name || m.rwood_id)}<small>${escapeHtml(m.rwood_id)}</small></span>${sel(m.rwood_id, m.role, 'rwCoSetRole')}${m.rwood_id !== me ? `<button class="btn btn-outline btn-sm" onclick="rwCoRemove('${escapeHtml(m.rwood_id)}')" title="Retirer">✕</button>` : ''}</div>`).join('') : '<div class="prm-row">Aucun membre</div>') + '</div>';
+  el.innerHTML = h;
+}
+async function rwCoCreate(){
+  const v = (document.getElementById('rwCoNewIn') || {}).value || '';
+  if(v.trim().length < 2){ showToast('Indique le nom de l\'entreprise'); return; }
+  if(!confirm('Créer « ' + v.trim() + ' » et en devenir le patron ?\n\nLes données de ton entreprise actuelle seront retirées de ce téléphone (elles restent sur le serveur pour tes anciens collègues).')) return;
+  try{ const j = await _rwCoOp('company_create', { name: v.trim() }); showToast('🏢 Entreprise créée : ' + j.company.code); _rwCoSwitch(j.company, 'patron', true); }
+  catch(e){ showToast('⚠️ ' + e.message); }
+}
+async function rwCoJoin(){
+  const v = ((document.getElementById('rwCoJoinIn') || {}).value || '').trim().toUpperCase();
+  if(!/^[A-Z0-9]{4,10}$/.test(v)){ showToast('Code invalide'); return; }
+  try{ await _rwCoOp('company_join', { code: v }); showToast('📨 Demande envoyée au patron'); rwCoRender(); }
+  catch(e){ showToast('⚠️ ' + e.message); }
+}
+async function rwCoCancel(){ try{ await _rwCoOp('company_cancel'); rwCoRender(); }catch(e){ showToast('⚠️ ' + e.message); } }
+async function rwCoDecide(id, accept){
+  const sel = document.getElementById('rwCoRole_' + id);
+  try{ await _rwCoOp('company_decide', { rwoodId: id, accept, role: sel ? sel.value : 'ouvrier' }); showToast(accept ? '✅ Membre accepté' : 'Demande refusée'); rwCoAdminRender(); }
+  catch(e){ showToast('⚠️ ' + e.message); }
+}
+async function rwCoSetRole(id, role){ try{ await _rwCoOp('company_member_set', { rwoodId: id, role }); showToast('Rôle mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); } }
+async function rwCoRemove(id){
+  if(!confirm('Retirer ' + id + ' de l\'entreprise ? Il n\'aura plus accès aux données.')) return;
+  try{ await _rwCoOp('company_member_set', { rwoodId: id, active: false }); showToast('Membre retiré'); rwCoAdminRender(); }catch(e){ showToast('⚠️ ' + e.message); }
+}
+function rwCoShare(){
+  const co = _rwCo && _rwCo.company; if(!co) return;
+  const txt = 'Rejoins ' + (co.name || 'notre entreprise') + ' sur RWOOD : Paramètres › Mon entreprise › code ' + co.code;
+  if(navigator.share) navigator.share({ text: txt }).catch(() => {});
+  else { try{ navigator.clipboard.writeText(co.code); showToast('Code copié : ' + co.code); }catch(e){ showToast('Code : ' + co.code); } }
+}
+/* Changement d'entreprise : on range les données de l'ancienne hors du téléphone, on garde le compte */
+function _rwCoSwitch(co, role, confirmed){
+  const newCode = co && !co.legacy ? co.code : '';
+  if(!data.settings) data.settings = {};
+  const cur = data.settings.companyCode || '';
+  if(newCode === cur) return false;
+  if(!confirmed && !confirm('Tu fais maintenant partie de « ' + (co.name || co.code) + ' ».\n\nLes données de ton ancienne entreprise vont être retirées de ce téléphone.')) return false;
+  const keepS = { auth: data.settings.auth, myProfile: Object.assign({}, data.settings.myProfile || {}), simpleTiles: data.settings.simpleTiles, simpleMode: data.settings.simpleMode, accentColor: data.settings.accentColor, domicileAddress: data.settings.domicileAddress, routeFavs: data.settings.routeFavs };
+  const me = (data.workers || []).find(w => w.id === (data.settings.myProfile || {}).workerId);
+  Object.keys(data).forEach(k => { if(Array.isArray(data[k])) data[k] = []; else if(k !== 'settings' && data[k] && typeof data[k] === 'object') data[k] = {}; });
+  data.settings = keepS; data.settings.companyCode = newCode;
+  if(role && RW_CO_ROLES.some(x => x[0] === role)) data.settings.myProfile.role = role;
+  if(me) data.workers = [me];
+  ['rwood-active-site','rwood-suivi-obj','rwood-places','rwood-notes-bureau','rwood-notes-seen'].forEach(k => { try{ localStorage.removeItem(k); }catch(e){} });
+  try{ localStorage.setItem('rwood-data', JSON.stringify(data)); }catch(e){}
+  setTimeout(() => location.reload(), 400);
+  return true;
+}
+function _rwCoCheckSwitch(j){
+  if(!j || !j.company) return;
+  if(_rwCoCheckSwitch.asked) return;
+  const newCode = j.company.legacy ? '' : j.company.code, cur = (data.settings && data.settings.companyCode) || '';
+  if(newCode !== cur){ _rwCoCheckSwitch.asked = true; _rwCoSwitch(j.company, j.me && j.me.role, false); }
+}
+/* Au démarrage : demande validée par un patron ? retiré ? (compte Google seulement) */
+document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
+  try{
+    if(!(typeof rwGoogleSession === 'function' && rwGoogleSession())) return;
+    const j = await _rwCoOp('company_info');
+    _rwCo = j;
+    const v = document.getElementById('prmVCo'); if(v) v.textContent = j.company ? (j.company.name || j.company.code) : 'aucune';
+    if(!j.company){ showToast('⚠️ Tu as été retiré de ton entreprise'); return; }
+    _rwCoCheckSwitch(j);
+  }catch(e){ /* porte d'entrée pas encore déployée : rien */ }
+}, 6000));
 
 /* DEV › Multi-entreprise : interrupteur + test de la porte d'entrée */
 function rwGwRender(){
@@ -40630,9 +40770,31 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.348';
+const APP_VERSION = '5.41.351';
 
 const CHANGELOG = [
+  {
+    version: '5.41.351',
+    date: '06/10/2026',
+    entries: [
+      { icon: '🗂', text: "Dropbox : seules les photos et documents de chantier y sont copiés. Les photos et croquis de la liste À faire, du magasin et du catalogue n'y vont plus." },
+    ],
+  },
+  {
+    version: '5.41.350',
+    date: '06/10/2026',
+    entries: [
+      { icon: '📉', text: "Photos plus légères : chaque photo envoyée est réduite (1600 px) avant l'envoi, et les photos déjà vues sont gardées sur le téléphone au lieu d'être retéléchargées à chaque affichage." },
+    ],
+  },
+  {
+    version: '5.41.349',
+    date: '05/10/2026',
+    entries: [
+      { icon: '🏢', text: "Paramètres › Mon entreprise : voir son entreprise et son code, en créer une nouvelle, ou en rejoindre une avec son code (le patron valide la demande)." },
+      { icon: '👥', text: "Le patron gère son équipe : demandes à accepter avec le rôle, changement de rôle, retrait d'un membre." },
+    ],
+  },
   {
     version: '5.41.348',
     date: '05/10/2026',
