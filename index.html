@@ -4677,8 +4677,10 @@
         <div class="chip-row" id="rwSuRoles">
           <div class="chip selected" data-role="ouvrier" onclick="rwSuRole(this)"><img src="icons/role-ouvrier.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;"> Ouvrier</div>
           <div class="chip" data-role="chef" onclick="rwSuRole(this)"><img src="icons/role-chef.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;"> Chef d'équipe</div>
+          <div class="chip" data-role="conducteur" onclick="rwSuRole(this)"><img src="icons/role-conducteur.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;"> Conducteur de travaux</div>
+          <div class="chip" data-role="comptable" onclick="rwSuRole(this)"><img src="icons/role-compta.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-0.15em;"> Comptable</div>
         </div>
-        <div class="hint" style="margin-top:4px;">Conducteur, comptable… : ton patron te le donne ensuite.</div>
+        <div class="hint" id="rwSuRoleHint" style="margin-top:4px;">Conducteur et comptable : ton patron valide ton rôle. En attendant, tu as l'accès chef d'équipe.</div>
       </div>
     </div>
     <div id="rwSuCreate" style="display:none;">
@@ -9721,6 +9723,7 @@ async function _rwSignupFinish(j, first, last){
   data.settings.auth = { authId:j.rwoodId, authPwd:pwd, locked:false, roleLocked:true, pwdCustomized:true, migratedToRoleLock:true, google:true };
   data.settings.myProfile = { role, firstName:first, lastName:last, company: co.name || '' };
   data.settings.companyCode = co.legacy ? '' : co.code;
+  data.settings.rolePending = j.pendingRole || '';
   if(co.legacy){
     // Nouveau dans l'entreprise d'origine : contacts, itinéraires, chantiers, dépôt de départ
     try{
@@ -9742,7 +9745,7 @@ async function _rwSignupFinish(j, first, last){
     _authShowOnly('authSignupDone');
     return;
   }
-  showToast('✅ Bienvenue chez ' + (co.name || co.code));
+  showToast('✅ Bienvenue chez ' + (co.name || co.code) + (j.pendingRole ? ' — ton rôle ' + (j.pendingRole === 'comptable' ? 'comptable' : 'conducteur') + ' attend la validation du patron' : ''));
   _rwSuEnter();
 }
 function rwSuShare(){
@@ -17349,6 +17352,10 @@ async function deleteSiteDocument(siteId, docId){
    ═══════════════════════════════════════════════════════════════════ */
 
 const SUPA_BUCKET = 'rwood-shared';
+/* v5.41.353 — multi-entreprise D3 : les fichiers d'une autre entreprise sont rangés
+   dans « c/CODE/… » (l'entreprise d'origine garde ses chemins). Sauvegarde, quota et
+   suppression d'une entreprise restent ainsi séparés. */
+function _rwStoragePrefix(){ const c = (typeof _rwGwCompany === 'function') ? _rwGwCompany() : ''; return c ? 'c/' + c + '/' : ''; }
 
 /* Upload un fichier vers Supabase Storage — retourne l'URL publique */
 async function uploadFileToSupabase(file, siteId, opts){
@@ -17368,7 +17375,7 @@ async function uploadFileToSupabase(file, siteId, opts){
   const ext  = mimeType === 'application/pdf' ? 'pdf'
              : mimeType.startsWith('image/')  ? mimeType.split('/')[1].split(';')[0]
              : (file.name||'file').split('.').pop() || 'bin';
-  const path = `sites/${siteId}/${uid()}.${ext}`;
+  const path = `${_rwStoragePrefix()}sites/${siteId}/${uid()}.${ext}`;
 
   // Lire en ArrayBuffer pour garantir l'intégrité des données binaires
   const buffer = await new Promise((resolve, reject) => {
@@ -17447,7 +17454,7 @@ async function uploadDataUrlToSupabase(dataUrl, pathPrefix){
   }catch(e){ return dataUrl; } // base64 invalide : on ne casse rien
   const blob = new Blob([bytes], { type: mimeType });
   const ext = mimeType.startsWith('image/') ? mimeType.split('/')[1].split(';')[0] : 'png';
-  const path = `${pathPrefix}/${uid()}.${ext}`;
+  const path = `${_rwStoragePrefix()}${pathPrefix}/${uid()}.${ext}`;
   const res = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
     method: 'POST',
     headers: {
@@ -17485,6 +17492,8 @@ async function _signatureToUrlIfPossible(base64OrUrl, pathHint){
    ═══════════════════════════════════════════════════════════════════ */
 
 function _dropboxConfigured(){
+  // v5.41.353 — le Dropbox configuré ici est celui de l'entreprise d'origine : jamais pour une autre entreprise
+  if(typeof _rwGwCompany === 'function' && _rwGwCompany()) return false;
   return !!(DROPBOX_APP_KEY && DROPBOX_APP_SECRET && DROPBOX_REFRESH_TOKEN);
 }
 
@@ -17900,7 +17909,7 @@ async function uploadThumbnailToSupabase(file, siteId){
     try{
       const small = await _rwShrinkPhoto(file, 480, 0.7);
       if(small && small !== file && small.size < 400000){
-        const path = `sites/${siteId}/thumbs/${uid()}.jpg`;
+        const path = `${_rwStoragePrefix()}sites/${siteId}/thumbs/${uid()}.jpg`;
         const r = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, { method: 'POST', headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'image/jpeg', 'x-upsert': 'true', 'Cache-Control': 'public, max-age=31536000, immutable' }, body: small });
         if(r.ok) return `${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`;
       }
@@ -17915,7 +17924,7 @@ async function uploadThumbnailToSupabase(file, siteId){
     const res = await fetch(compressedDataUrl);
     const thumbBlob = await res.blob();
 
-    const path = `sites/${siteId}/thumbs/${uid()}.jpg`;
+    const path = `${_rwStoragePrefix()}sites/${siteId}/thumbs/${uid()}.jpg`;
     const uploadRes = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, {
       method: 'POST',
       headers: {
@@ -32004,7 +32013,7 @@ function _paramApplyRoles(){
    Créer une entreprise, la rejoindre avec son code (entrée directe depuis la v5.41.352),
    gérer les membres. Passe par la porte d'entrée (compte Google obligatoire). */
 let _rwCo = null, _rwCoAdmin = null;
-const RW_CO_ROLES = [['patron','Patron'],['conducteur','Conducteur'],['chef','Chef d\'équipe'],['ouvrier','Ouvrier'],['comptable','Comptable']];
+const RW_CO_ROLES = [['patron','Patron'],['conducteur','Conducteur de travaux'],['chef','Chef d\'équipe'],['ouvrier','Ouvrier'],['comptable','Comptable']];
 function _rwCoMyName(){ let a = null; try{ a = JSON.parse(localStorage.getItem('rwood-account') || 'null'); }catch(e){} const p = (data.settings && data.settings.myProfile) || {}; const w = (data.workers || []).find(x => x.id === p.workerId); return (a && a.name) || (w && w.name) || ''; }
 async function _rwCoOp(op, extra){
   const r = await _rwGwCall(Object.assign({ op, myName: _rwCoMyName() }, extra || {}));
@@ -32023,7 +32032,8 @@ async function rwCoRender(){
   el.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Chargement…</div>';
   try{ _rwCo = await _rwCoOp('company_info'); }
   catch(e){ el.innerHTML = `<div class="card"><div style="font-weight:800;">⚠️ Entreprise injoignable</div><div class="hint" style="margin-top:4px;">${escapeHtml(e.status === 404 ? 'La porte d\'entrée n\'est pas encore installée.' : e.message)}</div><button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwCoRender()">Réessayer</button></div>`; return; }
-  _rwCoCheckSwitch(_rwCo);
+  if(_rwCoCheckSwitch(_rwCo)) return;
+  _rwCoSyncRole(_rwCo);
   const co = _rwCo.company, me = _rwCo.me || {}, rq = _rwCo.request;
   const roleL = (RW_CO_ROLES.find(x => x[0] === me.role) || [0, me.role || '—'])[1];
   let h = '';
@@ -32031,7 +32041,9 @@ async function rwCoRender(){
     h += `<div class="card"><div class="hint">Ton entreprise</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${escapeHtml(co.name || co.code)}</div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:8px;"><span class="hint" style="margin:0;">Code :</span><b style="font-size:18px;letter-spacing:2px;color:var(--wood);">${escapeHtml(co.code)}</b>
       <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="rwCoShare()">📤 Partager</button></div>
-      <div class="hint" style="margin-top:6px;">Ton rôle : <b>${escapeHtml(roleL)}</b>${me.isPatron ? ' · donne ce code à tes gars pour qu\'ils rejoignent' : ''}</div></div>`;
+      <div class="hint" style="margin-top:6px;">Ton rôle : <b>${escapeHtml(roleL)}</b>${me.isPatron ? ' · donne ce code à tes gars pour qu\'ils rejoignent' : ''}</div>
+      ${me.pendingRole ? `<div class="hint" style="margin-top:6px;color:var(--wood);">⏳ Rôle <b>${escapeHtml(_rwCoRoleL(me.pendingRole))}</b> en attente de validation par le patron. En attendant, tu as l'accès chef d'équipe.</div>` : ''}
+      ${me.comptaCode ? `<div style="margin-top:10px;padding:10px;border-radius:10px;border:1.5px dashed var(--wood);"><div class="hint" style="margin:0;">🔐 Ton code comptable (personnel, ne le partage pas)</div><b style="font-size:20px;letter-spacing:3px;">${escapeHtml(me.comptaCode)}</b></div>` : ''}</div>`;
   } else {
     h += `<div class="card" style="border-color:#ff8a7a;"><div style="font-weight:800;">Tu n'es dans aucune entreprise</div><div class="hint" style="margin-top:4px;">Rejoins ton entreprise avec son code ou crée la tienne.</div></div>`;
   }
@@ -32040,6 +32052,7 @@ async function rwCoRender(){
   if(!(co && co.legacy && me.role === 'patron')) h += `<div class="prm-sec">Changer d'entreprise</div>
     <div class="card"><label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Rejoindre avec un code</label>
       <div style="display:flex;gap:6px;margin-top:6px;"><input id="rwCoJoinIn" type="text" autocomplete="off" placeholder="Ex : K7P2QX" maxlength="10" style="flex:1;min-width:0;text-transform:uppercase;letter-spacing:2px;font-weight:800;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><button class="btn btn-primary" onclick="rwCoJoin()">Rejoindre</button></div>
+      <select id="rwCoJoinRole" style="width:100%;margin-top:6px;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><option value="ouvrier">Ouvrier</option><option value="chef">Chef d'équipe</option><option value="conducteur">Conducteur de travaux (à valider)</option><option value="comptable">Comptable (à valider)</option></select>
       <div class="hint" style="margin-top:6px;">Tu entres directement. Le patron voit qui a rejoint et peut retirer quelqu'un.</div></div>
     <div class="card"><label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Créer une nouvelle entreprise</label>
       <div style="display:flex;gap:6px;margin-top:6px;"><input id="rwCoNewIn" type="text" autocomplete="off" placeholder="Nom de l'entreprise" maxlength="60" style="flex:1;min-width:0;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><button class="btn btn-outline" onclick="rwCoCreate()">Créer</button></div>
@@ -32051,14 +32064,20 @@ async function rwCoAdminRender(){
   const el = document.getElementById('rwCoAdmin'); if(!el) return;
   try{ _rwCoAdmin = await _rwCoOp('company_admin'); }catch(e){ el.innerHTML = `<div class="hint">${escapeHtml(e.message)}</div>`; return; }
   const me = (_rwCo && _rwCo.me && _rwCo.me.rwoodId) || '';
-  const sel = (id, cur, fn) => `<select onchange="${fn}('${id}', this.value)" style="padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:13px;">${RW_CO_ROLES.map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const sel = (id, cur, fn) => `<select onchange="${fn}('${id}', this.value)" style="padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:13px;">${RW_CO_ROLES.filter(([k]) => k !== 'patron').map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   const rq = _rwCoAdmin.requests || [], mb = (_rwCoAdmin.members || []).filter(m => m.active !== false);
+  const pend = mb.filter(m => m.pending_role);
   let h = '';
+  if(pend.length) h += `<div class="card" style="border-color:var(--wood);"><div style="font-weight:800;margin-bottom:6px;">🔔 ${pend.length} rôle${pend.length > 1 ? 's' : ''} à valider</div>` + pend.map(m => `
+    <div style="padding:8px 0;border-top:1px solid var(--line);"><div style="font-weight:700;">${escapeHtml(m.name || m.rwood_id)} <span class="hint" style="margin:0;">${escapeHtml(m.rwood_id)}</span></div>
+      <div class="hint" style="margin:2px 0 6px;">Demande : <b>${escapeHtml(_rwCoRoleL(m.pending_role))}</b> · accès provisoire chef d'équipe</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" onclick="rwCoRoleDecide('${escapeHtml(m.rwood_id)}','${escapeHtml(m.pending_role)}')">✓ Valider ${escapeHtml(_rwCoRoleL(m.pending_role).toLowerCase())}</button>
+      <button class="btn btn-outline btn-sm" onclick="rwCoRoleDecide('${escapeHtml(m.rwood_id)}','chef')">Chef d'équipe</button><button class="btn btn-outline btn-sm" onclick="rwCoRoleDecide('${escapeHtml(m.rwood_id)}','ouvrier')">Ouvrier</button></div></div>`).join('') + '</div>';
   if(rq.length) h += `<div class="card" style="border-color:var(--wood);"><div style="font-weight:800;margin-bottom:6px;">🔔 ${rq.length} demande${rq.length > 1 ? 's' : ''} pour rejoindre</div>` + rq.map(r => `
     <div style="padding:8px 0;border-top:1px solid var(--line);"><div style="font-weight:700;">${escapeHtml(r.name || r.rwood_id)} <span class="hint" style="margin:0;">${escapeHtml(r.rwood_id)}</span></div>
-      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;"><select id="rwCoRole_${escapeHtml(r.rwood_id)}" style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${RW_CO_ROLES.map(([k, l]) => `<option value="${k}" ${k === 'ouvrier' ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;"><select id="rwCoRole_${escapeHtml(r.rwood_id)}" style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${RW_CO_ROLES.filter(([k]) => k !== 'patron').map(([k, l]) => `<option value="${k}" ${k === 'ouvrier' ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <button class="btn btn-primary btn-sm" onclick="rwCoDecide('${escapeHtml(r.rwood_id)}', true)">✓ Accepter</button><button class="btn btn-outline btn-sm" onclick="rwCoDecide('${escapeHtml(r.rwood_id)}', false)">✕</button></div></div>`).join('') + '</div>';
-  h += `<div class="prm-box">` + (mb.length ? mb.map(m => `<div class="prm-row" style="cursor:default;"><span class="prm-l">${escapeHtml(m.name || m.rwood_id)}<small>${escapeHtml(m.rwood_id)}</small></span>${sel(m.rwood_id, m.role, 'rwCoSetRole')}${m.rwood_id !== me ? `<button class="btn btn-outline btn-sm" onclick="rwCoRemove('${escapeHtml(m.rwood_id)}')" title="Retirer">✕</button>` : ''}</div>`).join('') : '<div class="prm-row">Aucun membre</div>') + '</div>';
+  h += `<div class="prm-box">` + (mb.length ? mb.map(m => `<div class="prm-row" style="cursor:default;"><span class="prm-l">${escapeHtml(m.name || m.rwood_id)}<small>${escapeHtml(m.rwood_id)}${m.pending_role ? ' · ⏳ ' + escapeHtml(_rwCoRoleL(m.pending_role).toLowerCase()) : ''}</small></span>${m.role === 'patron' ? '<b style="font-size:13px;color:var(--wood);">Patron</b>' : sel(m.rwood_id, m.role, 'rwCoSetRole') + `<button class="btn btn-outline btn-sm" onclick="rwCoRemove('${escapeHtml(m.rwood_id)}')" title="Retirer">✕</button>`}</div>`).join('') : '<div class="prm-row">Aucun membre</div>') + '</div>';
   el.innerHTML = h;
 }
 async function rwCoCreate(){
@@ -32072,7 +32091,8 @@ async function rwCoJoin(){
   const v = ((document.getElementById('rwCoJoinIn') || {}).value || '').trim().toUpperCase();
   if(!/^[A-Z0-9]{4,10}$/.test(v)){ showToast('Code invalide'); return; }
   if(!confirm('Rejoindre l\'entreprise ' + v + ' ?\n\nLes données de ton entreprise actuelle seront retirées de ce téléphone.')) return;
-  try{ const j = await _rwCoOp('company_join', { code: v }); showToast('✅ Bienvenue chez ' + (j.company.name || j.company.code)); _rwCoSwitch(j.company, j.role, true); }
+  const role = ((document.getElementById('rwCoJoinRole') || {}).value) || 'ouvrier';
+  try{ const j = await _rwCoOp('company_join', { code: v, role }); data.settings.rolePending = j.pendingRole || ''; showToast('✅ Bienvenue chez ' + (j.company.name || j.company.code)); _rwCoSwitch(j.company, j.role, true); }
   catch(e){ showToast('⚠️ ' + e.message); }
 }
 async function rwCoCancel(){ try{ await _rwCoOp('company_cancel'); rwCoRender(); }catch(e){ showToast('⚠️ ' + e.message); } }
@@ -32081,7 +32101,54 @@ async function rwCoDecide(id, accept){
   try{ await _rwCoOp('company_decide', { rwoodId: id, accept, role: sel ? sel.value : 'ouvrier' }); showToast(accept ? '✅ Membre accepté' : 'Demande refusée'); rwCoAdminRender(); }
   catch(e){ showToast('⚠️ ' + e.message); }
 }
-async function rwCoSetRole(id, role){ try{ await _rwCoOp('company_member_set', { rwoodId: id, role }); showToast('Rôle mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); } }
+async function rwCoSetRole(id, role){
+  if(role === 'comptable' && !confirm('Donner le rôle comptable à ' + id + ' ?\n\nIl recevra le code comptable de l\'entreprise (lui seul).')){ rwCoAdminRender(); return; }
+  try{ await _rwCoOp('company_member_set', { rwoodId: id, role }); showToast('Rôle mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); }
+  rwCoAdminRender();
+}
+function _rwCoRoleL(r){ return (RW_CO_ROLES.find(x => x[0] === r) || [0, r || '—'])[1]; }
+/* v5.41.353 — le patron valide le rôle demandé (conducteur / comptable) ou rétrograde */
+async function rwCoRoleDecide(id, role){
+  const lbl = _rwCoRoleL(role);
+  if(!confirm(id + ' → ' + lbl + ' ?' + (role === 'comptable' ? '\n\nLe code comptable de l\'entreprise lui sera envoyé (à lui seul).' : ''))) return;
+  try{ await _rwCoOp('company_role_decide', { rwoodId: id, role }); showToast('✅ ' + id + ' : ' + lbl); }catch(e){ showToast('⚠️ ' + e.message); }
+  rwCoAdminRender();
+}
+/* v5.41.353 — le rôle fixé par le patron s'impose sur le téléphone (comptable : après le code) */
+function _rwCoApplyLocalRole(role){
+  if(!data.settings.myProfile) data.settings.myProfile = {};
+  data.settings.myProfile.role = role;
+  if(!data.settings.auth) data.settings.auth = {};
+  data.settings.auth.roleLocked = true;
+  saveData();
+  try{ updateMyProfileExplain(); }catch(e){}
+  try{ applyComptableNavRestrictions(); }catch(e){}
+  try{ applyRoleLockUI(); }catch(e){}
+  try{ if(typeof applyNavHidden === 'function') applyNavHidden(); }catch(e){}
+  try{ renderSites(); }catch(e){}
+  try{ pushMyUserRegistration(); }catch(e){}
+}
+function _rwCoSyncRole(j){
+  const me = j && j.me; if(!me || !j.company || !me.role) return;
+  const local = (data.settings.myProfile && data.settings.myProfile.role) || '';
+  const pend = me.pendingRole || '';
+  if((data.settings.rolePending || '') !== pend){ data.settings.rolePending = pend; saveData(); }
+  // Entreprise d'origine : seul un rôle fixé par le patron s'impose (sinon on garde le rôle du téléphone)
+  if(j.company.legacy && !me.roleByPatron && !pend) return;
+  if(me.role === local) return;
+  if(me.role === 'comptable'){
+    if(_rwCoSyncRole.asked) return; _rwCoSyncRole.asked = true;
+    showToast('✅ Ton rôle comptable est validé : entre ton code comptable');
+    _pendingComptableChip = null; _pendingComptableIsProfileSwitch = 'server';
+    const i = document.getElementById('comptableCodeInput'); if(i) i.value = '';
+    const er = document.getElementById('comptableCodeError'); if(er) er.style.display = 'none';
+    openModal('comptableCode');
+    return;
+  }
+  const was = local;
+  _rwCoApplyLocalRole(me.role);
+  if(was) showToast('Ton rôle : ' + _rwCoRoleL(me.role));
+}
 async function rwCoRemove(id){
   if(!confirm('Retirer ' + id + ' de l\'entreprise ? Il n\'aura plus accès aux données.')) return;
   try{ await _rwCoOp('company_member_set', { rwoodId: id, active: false }); showToast('Membre retiré'); rwCoAdminRender(); }catch(e){ showToast('⚠️ ' + e.message); }
@@ -32102,7 +32169,8 @@ function _rwCoSwitch(co, role, confirmed){
   const keepS = { auth: data.settings.auth, myProfile: Object.assign({}, data.settings.myProfile || {}), simpleTiles: data.settings.simpleTiles, simpleMode: data.settings.simpleMode, accentColor: data.settings.accentColor, domicileAddress: data.settings.domicileAddress, routeFavs: data.settings.routeFavs };
   const me = (data.workers || []).find(w => w.id === (data.settings.myProfile || {}).workerId);
   Object.keys(data).forEach(k => { if(Array.isArray(data[k])) data[k] = []; else if(k !== 'settings' && data[k] && typeof data[k] === 'object') data[k] = {}; });
-  data.settings = keepS; data.settings.companyCode = newCode;
+  const keepPending = data.settings.rolePending || '';
+  data.settings = keepS; data.settings.companyCode = newCode; data.settings.rolePending = keepPending;
   if(role && RW_CO_ROLES.some(x => x[0] === role)) data.settings.myProfile.role = role;
   if(me) data.workers = [me];
   ['rwood-active-site','rwood-suivi-obj','rwood-places','rwood-notes-bureau','rwood-notes-seen'].forEach(k => { try{ localStorage.removeItem(k); }catch(e){} });
@@ -32114,7 +32182,8 @@ function _rwCoCheckSwitch(j){
   if(!j || !j.company) return;
   if(_rwCoCheckSwitch.asked) return;
   const newCode = j.company.legacy ? '' : j.company.code, cur = (data.settings && data.settings.companyCode) || '';
-  if(newCode !== cur){ _rwCoCheckSwitch.asked = true; _rwCoSwitch(j.company, j.me && j.me.role, false); }
+  if(newCode !== cur){ _rwCoCheckSwitch.asked = true; return _rwCoSwitch(j.company, j.me && j.me.role, false); }
+  return false;
 }
 /* Au démarrage : demande validée par un patron ? retiré ? (compte Google seulement) */
 document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
@@ -32124,7 +32193,9 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
     _rwCo = j;
     const v = document.getElementById('prmVCo'); if(v) v.textContent = j.company ? (j.company.name || j.company.code) : 'aucune';
     if(!j.company){ showToast('⚠️ Tu as été retiré de ton entreprise'); return; }
-    _rwCoCheckSwitch(j);
+    if(_rwCoCheckSwitch(j)) return;
+    _rwCoSyncRole(j);
+    if(j.pendingCount) showToast('🔔 ' + j.pendingCount + ' rôle' + (j.pendingCount > 1 ? 's' : '') + ' à valider : Paramètres › Mon entreprise');
   }catch(e){ /* porte d'entrée pas encore déployée : rien */ }
 }, 6000));
 
@@ -32882,6 +32953,7 @@ async function _handleNotifTarget(target){
       return;
     }
     if(target === 'alertes' || target === 'depannages' || target === 'fiches'){ goTo('alertes-conducteur'); return; }
+    if(target === 'entreprise'){ goTo('parametres'); setTimeout(() => { try{ prmOpen('entreprise'); }catch(e){} }, 150); return; } // v5.41.353 — rôles à valider / code comptable
     if(target === 'prets'){ currentStockCategory = 'pret'; goTo('stock'); return; } // v5.41.313 — rappel de prêt
     if(target.startsWith('remontees')){ const sub = target.split(':')[1]; if(sub) _rmTab = sub; goTo('remontees'); return; } // MODULE — Remontées
     if(target === 'document' || target === '/' || target === ''){ goTo('chantiers'); return; }
@@ -33302,7 +33374,6 @@ function _authShowOnly(id){
 }
 
 let authSelectedRole = 'chef';
-const COMPTABLE_ACCESS_CODE = '332014260'; // code fourni par le developpeur
 
 function setAuthRole(el, role){
   if(role === 'comptable'){
@@ -33321,9 +33392,19 @@ function setAuthRole(el, role){
 
 let _pendingComptableChip = null;
 
-function submitComptableCode(){
+/* v5.41.353 — le code comptable est celui de l'ENTREPRISE, vérifié par le serveur
+   (porte d'entrée) : il est créé quand le patron valide la comptable et envoyé à elle seule. */
+async function submitComptableCode(){
   const code = document.getElementById('comptableCodeInput').value.trim();
-  if(code === COMPTABLE_ACCESS_CODE){
+  let ok = false, why = '';
+  if(code){ try{ const j = await _rwCoOp('company_compta_check', { code }); ok = !!(j && j.ok); }catch(e){ why = String(e.message || ''); } }
+  if(!ok && why && /google_required|not_linked/.test(why)) why = 'Connecte-toi avec Google pour activer le mode comptable.';
+  if(ok && _pendingComptableIsProfileSwitch === 'server'){
+    closeModal('comptableCode'); _pendingComptableIsProfileSwitch = false;
+    _rwCoApplyLocalRole('comptable'); showToast('✅ Mode comptable activé');
+    return;
+  }
+  if(ok){
     closeModal('comptableCode');
     if(_pendingComptableIsProfileSwitch){
       // Cas : changement de role depuis Parametres (profil existant)
@@ -33348,7 +33429,8 @@ function submitComptableCode(){
     }
     showToast('Acces comptable valide');
   } else {
-    document.getElementById('comptableCodeError').style.display = 'block';
+    const er = document.getElementById('comptableCodeError'); er.textContent = why && !/Code incorrect/.test(why) ? why : 'Code incorrect';
+    er.style.display = 'block';
     document.getElementById('comptableCodeInput').value = '';
     document.getElementById('comptableCodeInput').focus();
   }
@@ -33356,6 +33438,7 @@ function submitComptableCode(){
 
 function cancelComptableCode(){
   closeModal('comptableCode');
+  if(_pendingComptableIsProfileSwitch === 'server'){ _pendingComptableIsProfileSwitch = false; _rwCoSyncRole.asked = false; }
   _pendingComptableChip = null;
 }
 
@@ -40910,9 +40993,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.352';
+const APP_VERSION = '5.41.353';
 
 const CHANGELOG = [
+  {
+    version: '5.41.353',
+    date: '06/10/2026',
+    entries: [
+      { icon: '👔', text: "Inscription : on peut aussi choisir Conducteur de travaux ou Comptable. Le patron reçoit une notification et valide le rôle (ou met Chef d'équipe / Ouvrier). En attendant, la personne a l'accès chef d'équipe." },
+      { icon: '🔐', text: "Comptable : à la validation, un code comptable propre à l'entreprise lui est envoyé, à elle seule. Il active le mode comptable." },
+      { icon: '🏢', text: "Mon entreprise : un seul patron par entreprise ; seuls le patron (et le développeur) gèrent les membres et les rôles." },
+      { icon: '👷', text: "Chantier : le patron peut aussi choisir et changer le chef d'équipe, à la création ou plus tard." },
+    ],
+  },
   {
     version: '5.41.352',
     date: '06/10/2026',
@@ -51091,6 +51184,7 @@ async function _rwBkListStorage(prefix, out, depth){
     const items = await res.json();
     for(const it of items){
       const full = prefix ? prefix+'/'+it.name : it.name;
+      if(!prefix && it.name === 'c' && !it.id) continue; // dossiers des autres entreprises
       if(it.id) out.add(full); else await _rwBkListStorage(full, out, depth+1);
     }
     if(items.length<1000) break;
@@ -51104,13 +51198,16 @@ async function rwCloudBackupMedia(){
   try{
     const paths=new Set();
     _rwBkStatus('Recherche des fichiers…');
-    try{ await _rwBkListStorage('', paths, 0); }catch(e){ console.warn('[backup] liste stockage', e); }
+    // v5.41.353 — seulement les fichiers de MON entreprise (jamais ceux des autres)
+    const _pf = _rwStoragePrefix();
+    try{ await _rwBkListStorage(_pf ? _pf.slice(0, -1) : '', paths, 0); }catch(e){ console.warn('[backup] liste stockage', e); }
+    if(!_pf) [...paths].forEach(p => { if(/^c\//.test(p)) paths.delete(p); });
     // Complément : tous les liens de fichiers cités dans les données
     try{
       const rows = await _rwBkFetchAllRows();
       const txt = JSON.stringify(rows);
       const re = new RegExp('/storage/v1/object/public/'+SUPA_BUCKET+'/([^"\\\\?#\\s]+)','g'); let m;
-      while((m=re.exec(txt))) { try{ paths.add(decodeURIComponent(m[1])); }catch(_){ paths.add(m[1]); } }
+      while((m=re.exec(txt))) { let p0 = m[1]; try{ p0 = decodeURIComponent(p0); }catch(_){} if(_pf ? p0.startsWith(_pf) : !/^c\//.test(p0)) paths.add(p0); }
     }catch(e){ console.warn('[backup] scan données', e); }
     const all=[...paths].sort();
     if(!all.length){ _rwBkStatus('Aucun fichier trouvé', 'var(--red)'); if(btn) btn.disabled=false; return; }
@@ -54275,13 +54372,13 @@ async function unassignChefFromSite(siteId, idx){
 }
 
 /* [v5.41.186 → v5.41.192] Bandeau « Chefs assignés » — juste au-dessus du
-   Statut sur la fiche chantier. Visible de tous les rôles ; seul le
-   conducteur de travaux peut ajouter/retirer des chefs. */
+   Statut sur la fiche chantier. Visible de tous les rôles ; le patron et le
+   conducteur de travaux peuvent ajouter/retirer des chefs. */
 function _renderChefAssignedZone(site){
   const el = document.getElementById('detailChefAssignedZone');
   if(!el || !site) return;
   const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  const canEdit = role === 'conducteur';
+  const canEdit = role === 'conducteur' || role === 'patron'; // v5.41.353 — le patron aussi
   const chefs = _siteChefsList(site);
   const rows = chefs.map((c, i) => `
       <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
@@ -71518,9 +71615,9 @@ if(RWOOD_NATIVE){
       <h2>🔐 Code Comptable</h2>
       <button class="modal-close" onclick="cancelComptableCode()">×</button>
     </div>
-    <div class="hint" style="margin-bottom:14px;">Ce code à 9 chiffres est fourni par le développeur de l'application. Il protège l'accès aux fiches d'heures de toute l'équipe.</div>
-    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="9" id="comptableCodeInput"
-      placeholder="• • • • • • • • •"
+    <div class="hint" style="margin-bottom:14px;">Ce code à 8 chiffres est celui de ton entreprise. Tu l'as reçu par notification quand ton patron a validé ton rôle comptable (il est aussi dans Paramètres › Mon entreprise). Il protège l'accès aux fiches d'heures de toute l'équipe.</div>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" id="comptableCodeInput"
+      placeholder="• • • • • • • •"
       style="width:100%;box-sizing:border-box;padding:16px;font-size:24px;letter-spacing:8px;text-align:center;border-radius:12px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-family:monospace;"
       onkeydown="if(event.key==='Enter') submitComptableCode()">
     <div id="comptableCodeError" style="display:none;color:var(--red);font-size:13px;text-align:center;margin-top:8px;">Code incorrect</div>
