@@ -9359,7 +9359,7 @@ function getSupaUserId(){
    Repli automatique sur l'accès direct si la porte ne répond pas, tant
    qu'on est dans l'entreprise d'origine (jamais pour une autre entreprise).
    ══════════════════════════════════════════════════════════════════════ */
-const RW_GW_DEFAULT = 'off';   // 'on' quand l'étape B est validée pour tout le monde
+const RW_GW_DEFAULT = 'on';    // v5.41.355 — étape D5 : tout le monde passe par la porte d'entrée
 window._rwGwStats = { ok:0, fallback:0, last:'' };
 function _rwGwMode(){ if(_rwGwCompany()) return 'on'; try{ const v = localStorage.getItem('rwood-gw'); if(v === 'on' || v === 'off') return v; }catch(e){} return RW_GW_DEFAULT; }
 function _rwGwCompany(){ return (typeof data !== 'undefined' && data && data.settings && data.settings.companyCode) || ''; }
@@ -9376,6 +9376,22 @@ async function _rwGwCall(payload){
     }, payload))
   });
 }
+function _rwGwIsStrict(){ if(window._rwGwStrict !== undefined) return window._rwGwStrict; try{ return localStorage.getItem('rwood-gw-strict') === '1'; }catch(e){ return false; } }
+/* v5.41.355 — D5 : le serveur exige un compte relié à Google → écran bloquant (une fois par ouverture) */
+function _rwNeedGoogle(){
+  if(window._rwNeedGoogleShown) return;
+  const as = document.getElementById('authScreen');
+  if(!as || (as.style.display && as.style.display !== 'none')) return;
+  if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)) return;
+  window._rwNeedGoogleShown = true;
+  setTimeout(() => {
+    if(typeof _rwGOverlay !== 'function') return;
+    _rwGOverlay(`<div style="font-size:38px;margin-bottom:4px;">🔐</div>
+      <div style="font-weight:800;font-size:18px;margin-bottom:6px;">Relie ton compte à Google</div>
+      <div class="hint" style="margin-bottom:16px;">Pour protéger les données de l'entreprise, RWOOD fonctionne maintenant uniquement avec un compte Google. Un seul appui : tu gardes toutes tes données.</div>
+      <button class="btn btn-block rw-gbtn" onclick="_rwGNagGo()">Relier à Google</button>`);
+  }, 300);
+}
 async function supaFetch(path, options={}){
   if(path.indexOf('/rest/v1/rwood_sync') === 0 && _rwGwMode() === 'on'){
     const h = Object.assign({ 'Prefer':'return=minimal' }, options.headers || {});
@@ -9383,11 +9399,15 @@ async function supaFetch(path, options={}){
     const qi = path.indexOf('?');
     try{
       const r = await _rwGwCall({ method:(options.method || 'GET').toUpperCase(), query: qi >= 0 ? path.slice(qi + 1) : '', body, prefer: h['Prefer'] || '' });
+      // v5.41.355 — serveur verrouillé (D5) : plus de repli sur l'accès direct
+      const st = r.headers.get('X-Rwood-Strict');
+      if(st === '1' || st === '0'){ window._rwGwStrict = st === '1'; try{ localStorage.setItem('rwood-gw-strict', st); }catch(e){} }
+      if(r.status === 401) _rwNeedGoogle();
       if(r.status !== 404 && r.status < 500){ window._rwGwStats.ok++; return r; }
       window._rwGwStats.last = 'HTTP ' + r.status;
     }catch(e){ window._rwGwStats.last = String(e && e.message || e); }
     // Repli sur l'accès direct : seulement pour l'entreprise d'origine
-    if(_rwGwCompany() && !window._rwGwLegacy){ return new Response('[]', { status:503 }); }
+    if((_rwGwCompany() && !window._rwGwLegacy) || _rwGwIsStrict()){ return new Response('[]', { status:503 }); }
     window._rwGwStats.fallback++;
     console.warn('[gateway] repli accès direct :', window._rwGwStats.last);
   }
@@ -10668,8 +10688,12 @@ async function qcPullFromSupabase(){
 /* Polling léger : rafraîchit le stock quand une vue quincaillerie est affichée. */
 function startQcPolling(){
   if(_qcPollTimer) return;
+  let _qcTick = 0;
   _qcPollTimer = setInterval(async () => {
     if(!navigator.onLine || document.visibilityState !== 'visible') return;
+    // v5.41.355 — toutes les 6 s seulement sur l'écran quincaillerie, sinon toutes les 60 s
+    _qcTick++;
+    if(!document.querySelector('#view-quincaillerie.active, #view-qcScan.active') && _qcTick % 10) return;
     try{
       const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.'+encodeURIComponent(QC_SYNC_KEY)+'&select=updated_at', { headers:{'Prefer':''} });
       if(!res.ok) return;
@@ -40993,9 +41017,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.354';
+const APP_VERSION = '5.41.355';
 
 const CHANGELOG = [
+  {
+    version: '5.41.355',
+    date: '06/10/2026',
+    entries: [
+      { icon: '🛡', text: "Sécurité : toutes les données passent par la porte d'entrée RWOOD, qui vérifie qui tu es et ton entreprise. Bientôt, la connexion Google sera obligatoire pour tout le monde : relie ton compte dès maintenant (Paramètres › Connexion)." },
+    ],
+  },
   {
     version: '5.41.354',
     date: '06/10/2026',
@@ -71008,7 +71039,7 @@ function _rwPushPointage(){
   if(_rwPushPointage._k === key) return;
   const dc = st.depotCoords || null;
   R.setPointage({ canPoint: !!wid, tasks, signature: sig.length < 500000 ? sig : '', today, depotLat: dc && dc.lat, depotLng: dc && dc.lng,
-    workerId: wid || '', syncUid: (typeof COMPANY_SYNC_KEY !== 'undefined' ? (_rwGwCompany() ? _rwGwCompany() + '__' : '') + COMPANY_SYNC_KEY + '_' + getDeviceSyncId() : ''), sync: sync.length < 1500000 ? sync : '' })
+    workerId: wid || '', syncUid: (typeof COMPANY_SYNC_KEY !== 'undefined' ? (_rwGwCompany() ? _rwGwCompany() + '__' : '') + COMPANY_SYNC_KEY + '_' + getDeviceSyncId() : ''), syncKey: (typeof COMPANY_SYNC_KEY !== 'undefined' ? COMPANY_SYNC_KEY + '_' + getDeviceSyncId() : ''), syncCompany: _rwGwCompany() || '', sync: sync.length < 1500000 ? sync : '' })
     .then(() => { _rwPushPointage._k = key; }).catch(() => {});
 }
 /* Même contenu que pushPointageToSupabase (mon ouvrier + mes pointages), pour l'envoi direct depuis la voiture */
