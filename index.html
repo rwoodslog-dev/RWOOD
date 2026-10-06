@@ -4560,6 +4560,9 @@
 .rw-su-tab small{font-weight:600;color:var(--ink-soft);font-size:12px;}
 .rw-su-tab.on{border-color:var(--wood);background:rgba(232,172,61,.14);box-shadow:0 0 0 2px rgba(232,172,61,.25) inset;}
 .rw-su-code{text-transform:uppercase;letter-spacing:3px;font-weight:900;font-size:18px;text-align:center;}
+.rw-plans{display:flex;gap:8px;margin-top:10px;}.rw-pl{flex:1;border:1.5px solid var(--line);border-radius:14px;padding:10px 6px;text-align:center;background:var(--bg-elev);cursor:pointer;}
+.rw-pl.on{border-color:var(--wood);box-shadow:0 0 0 2px rgba(232,172,61,.25) inset;}.rw-pl b{display:block;font-size:14px;}.rw-pl .p{font-size:19px;font-weight:900;color:var(--wood);margin:3px 0;}.rw-pl small{display:block;color:var(--ink-soft);font-size:11px;}
+.rw-bar{height:9px;border-radius:6px;background:rgba(127,127,127,.25);margin-top:6px;overflow:hidden;}.rw-bar i{display:block;height:100%;background:var(--wood);}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -4685,6 +4688,7 @@
     </div>
     <div id="rwSuCreate" style="display:none;">
       <div class="field"><label>Nom de ton entreprise</label><input type="text" id="rwSuCoName" maxlength="60" placeholder="Ex : Charpente Dupont"></div>
+      <div class="field"><label>Ton métier</label><select id="rwSuTrade"></select></div>
       <div class="hint" style="margin:-4px 0 0;">Tu en deviens le <b>patron</b>. Tu reçois un code à donner à tes gars. Ton appli démarre vide.</div>
     </div>
     <div class="hint" id="rwSuErr" style="color:var(--red); display:none; margin-top:10px;"></div>
@@ -6762,6 +6766,10 @@
         <button class="btn btn-outline btn-block" onclick="rwGwTest()">🔎 Tester la porte d'entrée</button>
         <div id="rwGwStatus" class="hint" style="margin-top:8px;"></div>
       </div>
+      <details class="dev-labo" ontoggle="if(this.open) rwDevCompanies()">
+        <summary>🏢 Entreprises &amp; formules</summary>
+        <div id="rwDevCoList"></div>
+      </details>
       <div class="dev-row" onclick="openCatalogueAdmin()"><span class="b">🧱 Catalogue tuiles</span><span class="dev-ar">›</span></div>
 
       <details class="dev-labo">
@@ -9707,10 +9715,14 @@ async function rwGoogleLinkSubmit(){
    unique sur tout RWOOD, lien Google, entreprise. L'appli démarre vide ; seuls les
    nouveaux de l'entreprise d'origine reçoivent ses contacts/itinéraires de départ. */
 let _rwSuM = 'join', _rwSuJ = null;
+/* v5.41.356 — étape E : métier de l'entreprise (outils propres à chaque métier, plus tard) */
+const RW_TRADES = [['charpente','🪵 Charpente'],['couverture','🏠 Couverture'],['menuiserie','🚪 Menuiserie'],['electricite','⚡ Électricité'],['plomberie','🚿 Plomberie'],['platrerie','🧱 Plâtrerie / plaquiste'],['maconnerie','🏗 Maçonnerie'],['autre','🔧 Autre métier']];
+function _rwTradeOptions(cur){ return RW_TRADES.map(([k, l]) => `<option value="${k}" ${k === (cur || 'charpente') ? 'selected' : ''}>${l}</option>`).join(''); }
 function rwSuMode(m){
   _rwSuM = m === 'create' ? 'create' : 'join';
   document.querySelectorAll('.rw-su-tab').forEach(b => b.classList.toggle('on', b.dataset.m === _rwSuM));
   document.getElementById('rwSuJoin').style.display = _rwSuM === 'join' ? '' : 'none';
+  const ts = document.getElementById('rwSuTrade'); if(ts && !ts.options.length) ts.innerHTML = _rwTradeOptions();
   document.getElementById('rwSuCreate').style.display = _rwSuM === 'create' ? '' : 'none';
 }
 function rwSuRole(el){ document.querySelectorAll('#rwSuRoles .chip').forEach(c => c.classList.toggle('selected', c === el)); }
@@ -9727,9 +9739,10 @@ async function rwSignupSubmit(){
   const role = ((document.querySelector('#rwSuRoles .chip.selected') || {}).dataset || {}).role || 'ouvrier';
   btn.disabled = true; btn.textContent = 'Création…';
   try{
-    const r = await _rwGwCall({ op:'signup', firstName:first, lastName:last, mode:_rwSuM, code, companyName:coName, role });
+    const trade = ((document.getElementById('rwSuTrade') || {}).value) || 'charpente';
+    const r = await _rwGwCall({ op:'signup', firstName:first, lastName:last, mode:_rwSuM, code, companyName:coName, role, trade });
     let j = null; try{ j = await r.json(); }catch(e){}
-    if(!r.ok || !j || !j.ok) throw new Error((j && j.error) === 'google_required' ? 'Session Google expirée : reconnecte-toi.' : ((j && j.error) || ('erreur ' + r.status)));
+    if(!r.ok || !j || !j.ok) throw new Error((j && j.error) === 'google_required' ? 'Session Google expirée : reconnecte-toi.' : ((j && (j.message || j.error)) || ('erreur ' + r.status)));
     if(j.existing){ showToast('Tu as déjà un compte : ' + j.rwoodId); await _rwGOpenAccount(j.rwoodId); return; }
     await _rwSignupFinish(j, first, last);
   }catch(e){ say(String(e.message || e)); }
@@ -32042,7 +32055,7 @@ function _rwCoMyName(){ let a = null; try{ a = JSON.parse(localStorage.getItem('
 async function _rwCoOp(op, extra){
   const r = await _rwGwCall(Object.assign({ op, myName: _rwCoMyName() }, extra || {}));
   let j = null; try{ j = await r.json(); }catch(e){}
-  if(!r.ok || !j || j.error){ const e = new Error((j && j.error) || ('HTTP ' + r.status)); e.status = r.status; throw e; }
+  if(!r.ok || !j || j.error){ const e = new Error((j && (j.message || j.error)) || ('HTTP ' + r.status)); e.status = r.status; throw e; }
   return j;
 }
 async function rwCoRender(){
@@ -32072,6 +32085,7 @@ async function rwCoRender(){
     h += `<div class="card" style="border-color:#ff8a7a;"><div style="font-weight:800;">Tu n'es dans aucune entreprise</div><div class="hint" style="margin-top:4px;">Rejoins ton entreprise avec son code ou crée la tienne.</div></div>`;
   }
   if(rq) h += `<div class="card"><div style="font-weight:800;">⏳ Demande envoyée</div><div class="hint" style="margin-top:4px;">Pour rejoindre <b>${escapeHtml(rq.name || rq.code)}</b> (${escapeHtml(rq.code)}). Le patron doit la valider.</div><button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwCoCancel()">Annuler la demande</button></div>`;
+  if(me.isPatron && _rwCo.plan && _rwCo.plan.seats) h += _rwPlanCardHtml(_rwCo.plan);
   if(me.isPatron) h += `<div class="prm-sec">Équipe</div><div id="rwCoAdmin"><div class="hint">Chargement…</div></div>`;
   if(!(co && co.legacy && me.role === 'patron')) h += `<div class="prm-sec">Changer d'entreprise</div>
     <div class="card"><label style="font-size:12px;font-weight:700;color:var(--ink-soft);">Rejoindre avec un code</label>
@@ -32183,6 +32197,74 @@ function rwCoShare(){
   if(navigator.share) navigator.share({ text: txt }).catch(() => {});
   else { try{ navigator.clipboard.writeText(co.code); showToast('Code copié : ' + co.code); }catch(e){ showToast('Code : ' + co.code); } }
 }
+/* ── v5.41.356 — Étape E : « Ma formule » (seul le nombre de comptes change) ── */
+const RW_PLAN_OFFERS = [['solo','Solo',19,'1 à 3 comptes'],['equipe','Équipe',49,"jusqu'à 10"],['entreprise','Entreprise',99,"jusqu'à 25"]];
+/* v5.41.359 — règles Google Play : dans l'appli Android, aucun prix ni lien de paiement
+   (l'abonnement se gère hors de l'appli). Les prix restent visibles sur la version web. */
+function _rwIsNativeApp(){ try{ return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }catch(e){ return false; } }
+function _rwPlanCardHtml(p){
+  if(_rwIsNativeApp()){
+    const pct0 = Math.min(100, Math.round(100 * (p.used || 0) / Math.max(1, p.seats || 1)));
+    return `<div class="prm-sec">Mon abonnement</div><div class="card"><div class="hint">Formule</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${escapeHtml(p.plan === 'essai' ? 'Accès découverte' : p.label)}</div>
+      <div class="hint" style="margin-top:10px;">Comptes utilisés : <b style="color:var(--ink);">${p.plan === 'interne' ? p.used + ' · sans limite' : p.used + ' / ' + p.seats}</b></div>${p.plan === 'interne' ? '' : `<div class="rw-bar"><i style="width:${pct0}%;${p.full ? 'background:var(--red);' : ''}"></i></div>`}
+      ${p.full && p.plan !== 'interne' ? '<div class="hint" style="margin-top:6px;color:var(--red);">Entreprise complète : les nouveaux ne peuvent plus rejoindre.</div>' : ''}
+      <div class="field" style="margin:12px 0 0;"><label>Métier de l'entreprise</label><select onchange="rwCoTradeSet(this.value)" style="width:100%;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${_rwTradeOptions(p.trade)}</select></div></div>`;
+  }
+  const pct = Math.min(100, Math.round(100 * (p.used || 0) / Math.max(1, p.seats || 1)));
+  const unl = p.plan === 'interne';
+  const seatsTxt = unl ? (p.used + ' comptes · sans limite') : (p.used + ' / ' + p.seats + ' comptes');
+  const head = p.plan === 'essai'
+    ? `Essai gratuit <span style="color:var(--wood);">· ${p.trialLeft > 0 ? p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' restant' + (p.trialLeft > 1 ? 's' : '') : 'terminé'}</span>`
+    : escapeHtml(p.label) + (p.price ? ` <span style="color:var(--wood);">· ${p.price} €/mois</span>` : '');
+  return `<div class="prm-sec">Ma formule</div><div class="card">
+    <div class="hint">Formule actuelle</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${head}</div>
+    ${p.offer === 'fondateur' ? '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(232,172,61,.14);border:1.5px solid var(--wood);"><b>⭐ Offre Fondateur</b><div class="hint" style="margin:2px 0 0;">Tu fais partie des 10 premières entreprises : 3 mois d\'essai, puis ton prix est bloqué à vie, même si les tarifs augmentent.</div></div>' : ''}
+    ${p.plan === 'essai' ? '<div class="hint" style="margin-top:4px;">Toute l\'appli est incluse, quelle que soit la formule : seul le nombre de comptes change.</div>' : ''}
+    <div class="hint" style="margin-top:10px;">Comptes utilisés : <b style="color:var(--ink);">${seatsTxt}</b></div>${unl ? '' : `<div class="rw-bar"><i style="width:${pct}%;${p.full ? 'background:var(--red);' : ''}"></i></div>`}
+    ${p.full && !unl ? '<div class="hint" style="margin-top:6px;color:var(--red);">Entreprise complète : les nouveaux ne peuvent plus rejoindre.</div>' : ''}
+    ${unl ? '' : `<div class="rw-plans">${RW_PLAN_OFFERS.map(([k, l, pr, n]) => `<div class="rw-pl ${k === p.plan ? 'on' : ''}" onclick="rwPlanChoose('${k}')"><b>${l}</b><div class="p">${pr} €</div><small>par mois HT</small><small>${n}</small></div>`).join('')}</div>
+    <div class="hint" style="margin-top:8px;">Entreprise : 4 € par compte au-delà de 25. Annuel : 2 mois offerts. Toutes les fonctions, le support, la maintenance et les mises à jour sont inclus dans chaque formule.</div>
+    <div style="margin-top:10px;padding:10px;border-radius:12px;border:1.5px dashed var(--line);"><b>🚀 Mise en service — sur devis (facultatif)</b><div class="hint" style="margin-top:4px;">On configure ton entreprise à ta place : reprise de tes chantiers, équipe, contacts et dépôt, puis prise en main avec tes chefs d'équipe. Prix selon la taille de l'entreprise et la quantité de données à reprendre.</div>
+      <button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwPlanChoose('mes')">Demander un devis</button></div>`}
+    <div class="field" style="margin:12px 0 0;"><label>Métier de l'entreprise</label><select onchange="rwCoTradeSet(this.value)" style="width:100%;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${_rwTradeOptions(p.trade)}</select>
+      <div class="hint" style="margin-top:4px;">Les outils de calcul propres à chaque métier arrivent au fur et à mesure (charpente disponible).</div></div>
+  </div>`;
+}
+/* Paiement en ligne à venir (étape F) : pour l'instant, demande par e-mail */
+function rwPlanChoose(k){
+  const co = (_rwCo && _rwCo.company) || {}, o = RW_PLAN_OFFERS.find(x => x[0] === k);
+  const what = k === 'mes' ? 'un devis pour la mise en service' : ('la formule ' + (o ? o[1] + ' (' + o[2] + ' €/mois HT)' : k));
+  if(!confirm((k === 'mes' ? 'Demander ' : 'Choisir ') + what + ' pour « ' + (co.name || '') + ' » ?\n\n' + (k === 'mes' ? 'Un e-mail prêt à envoyer s\'ouvre vers RWOOD.' : 'Le paiement en ligne arrive bientôt : en attendant, un e-mail prêt à envoyer s\'ouvre vers RWOOD.'))) return;
+  const used = (_rwCo && _rwCo.plan && _rwCo.plan.used) || '';
+  const body = 'Bonjour,\n\nJe souhaite ' + what + ' pour mon entreprise « ' + (co.name || '') + ' » (code ' + (co.code || '') + ').' + (k === 'mes' ? '\n\nNombre de personnes : ' + used + '\nNombre de chantiers en cours : \nDonnées à reprendre (contacts, chantiers, stock…) : ' : '') + '\n\nMerci !';
+  location.href = 'mailto:rwoods.log@gmail.com?subject=' + encodeURIComponent('RWOOD — ' + (co.name || '') + ' : ' + what) + '&body=' + encodeURIComponent(body);
+}
+async function rwCoTradeSet(t){ try{ await _rwCoOp('company_trade_set', { trade:t }); data.settings.companyTrade = t; saveData(); showToast('Métier mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); } }
+/* Patron : fin d'essai → rappel (une fois par jour) */
+function _rwPlanNag(j){
+  const p = j && j.plan; if(!p) return;
+  if(p.trade && data.settings.companyTrade !== p.trade){ data.settings.companyTrade = p.trade; saveData(); }
+  if(_rwIsNativeApp()) return; // pas de relance « choisis ta formule » dans l'appli Android (règles Google Play)
+  if(!(j.me && j.me.isPatron) || p.plan !== 'essai' || p.trialLeft == null) return;
+  if(p.trialLeft > 3) return;
+  const k = 'rwood-plan-nag-' + new Date().toISOString().slice(0, 10);
+  try{ if(localStorage.getItem(k)) return; localStorage.setItem(k, '1'); }catch(e){}
+  showToast(p.trialLeft > 0 ? '⏳ Ton essai gratuit se termine dans ' + p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' : Paramètres › Mon entreprise › Ma formule' : '⏳ Ton essai gratuit est terminé : choisis ta formule dans Paramètres › Mon entreprise');
+}
+/* DEV : entreprises et formules (avant le paiement Stripe) */
+async function rwDevCompanies(){
+  const el = document.getElementById('rwDevCoList'); if(!el) return;
+  el.innerHTML = '<div class="hint">Chargement…</div>';
+  let j; try{ j = await _rwCoOp('company_dev_list'); }catch(e){ el.innerHTML = '<div class="hint">⚠️ ' + escapeHtml(e.message) + '</div>'; return; }
+  const opts = cur => ['essai','solo','equipe','entreprise','interne'].map(k => `<option value="${k}" ${k === cur ? 'selected' : ''}>${k}</option>`).join('');
+  el.innerHTML = (j.companies || []).map(c => `<div style="padding:8px 0;border-top:1px solid var(--line);">
+    <div style="font-weight:800;">${escapeHtml(c.name || c.code)} <span class="hint" style="margin:0;">${escapeHtml(c.code)} · ${escapeHtml(c.trade || '')} · ${c.used}/${c.plan === 'interne' ? '∞' : c.seats}${c.offer === 'fondateur' ? ' · ⭐ Fondateur' : ''}${c.plan === 'essai' && c.trialLeft != null ? ' · essai ' + c.trialLeft + ' j' : ''}</span></div>
+    <div style="display:flex;gap:6px;margin-top:6px;"><select onchange="rwDevPlanSet('${escapeHtml(c.code)}', {plan:this.value})" style="flex:1;padding:6px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${opts(c.plan)}</select>
+    <button class="btn btn-outline btn-sm" onclick="const d = prompt('Jours d\\'essai à partir d\\'aujourd\\'hui ?', '30'); if(d !== null) rwDevPlanSet('${escapeHtml(c.code)}', {trialDays:+d})">Essai…</button>
+    <button class="btn btn-outline btn-sm" onclick="const d = prompt('Comptes en plus (essai / Entreprise) ?', '0'); if(d !== null) rwDevPlanSet('${escapeHtml(c.code)}', {seatsExtra:+d})">+ comptes</button>
+    <button class="btn btn-outline btn-sm" title="Offre Fondateur" onclick="rwDevPlanSet('${escapeHtml(c.code)}', {offer:${c.offer === 'fondateur' ? "''" : "'fondateur'"}})">${c.offer === 'fondateur' ? '⭐ retirer' : '⭐'}</button></div></div>`).join('') || '<div class="hint">Aucune entreprise</div>';
+}
+async function rwDevPlanSet(code, patch){ try{ await _rwCoOp('company_dev_plan', Object.assign({ code }, patch)); showToast('Formule mise à jour'); }catch(e){ showToast('⚠️ ' + e.message); } rwDevCompanies(); }
 /* Changement d'entreprise : on range les données de l'ancienne hors du téléphone, on garde le compte */
 function _rwCoSwitch(co, role, confirmed){
   const newCode = co && !co.legacy ? co.code : '';
@@ -32219,6 +32301,7 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
     if(!j.company){ showToast('⚠️ Tu as été retiré de ton entreprise'); return; }
     if(_rwCoCheckSwitch(j)) return;
     _rwCoSyncRole(j);
+    _rwPlanNag(j);
     if(j.pendingCount) showToast('🔔 ' + j.pendingCount + ' rôle' + (j.pendingCount > 1 ? 's' : '') + ' à valider : Paramètres › Mon entreprise');
   }catch(e){ /* porte d'entrée pas encore déployée : rien */ }
 }, 6000));
@@ -41017,9 +41100,39 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.355';
+const APP_VERSION = '5.41.359';
 
 const CHANGELOG = [
+  {
+    version: '5.41.359',
+    date: '07/10/2026',
+    entries: [
+      { icon: '📱', text: "Appli Android : la page Mon entreprise affiche seulement les comptes utilisés et le métier (sans prix), conformément aux règles du Play Store." },
+    ],
+  },
+  {
+    version: '5.41.358',
+    date: '07/10/2026',
+    entries: [
+      { icon: '⭐', text: "Ma formule : « Offre Fondateur » pour les 10 premières entreprises — 3 mois d'essai, puis prix bloqué à vie." },
+    ],
+  },
+  {
+    version: '5.41.357',
+    date: '07/10/2026',
+    entries: [
+      { icon: '🚀', text: "Ma formule : la mise en service est maintenant sur devis, selon la taille de l'entreprise et les données à reprendre (bouton « Demander un devis »)." },
+    ],
+  },
+  {
+    version: '5.41.356',
+    date: '07/10/2026',
+    entries: [
+      { icon: '💼', text: "Mon entreprise › Ma formule (patron) : essai gratuit de 30 jours, comptes utilisés, formules Solo / Équipe / Entreprise. Toute l'appli est incluse dans chaque formule, seul le nombre de comptes change." },
+      { icon: '🚫', text: "Entreprise complète : un nouveau ne peut plus rejoindre, et le patron est prévenu pour passer à la formule supérieure." },
+      { icon: '🛠', text: "Nouvelle entreprise : on choisit son métier (charpente, couverture, menuiserie, électricité, plomberie, plâtrerie…). Les outils propres à chaque métier arriveront au fur et à mesure." },
+    ],
+  },
   {
     version: '5.41.355',
     date: '06/10/2026',
