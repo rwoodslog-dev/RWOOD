@@ -41142,9 +41142,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.361';
+const APP_VERSION = '5.41.362';
 
 const CHANGELOG = [
+  {
+    version: '5.41.362',
+    date: '07/10/2026',
+    entries: [
+      { icon: '🛟', text: "Croquis : plus rien ne se perd. Le croquis et ses côtes sont gardés automatiquement en brouillon ; ✕ ou le bouton retour demandent confirmation, et à la réouverture l'appli propose « Reprendre » le croquis non enregistré." },
+      { icon: '🔄', text: "Croquis : tu peux tourner le téléphone (portrait ↔ paysage) pendant le dessin, le croquis garde la même forme, la même échelle et le même sens." },
+      { icon: '↶', text: "Croquis : « Recommencer » peut maintenant être annulé avec ↶ Annuler." },
+    ],
+  },
   {
     version: '5.41.361',
     date: '07/10/2026',
@@ -58998,6 +59007,9 @@ let _sketch = null; // état courant de l'outil (null si fermé)
 function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   const ex = document.getElementById('modal-sketchTool');
   if(ex) ex.remove();
+  _sketchStopGuard();
+  // v5.41.362 — mémorise l'ouverture (pour reprendre un brouillon dans le même contexte)
+  _sketchOpenArgs = { onSave, existingSketch, bgImageUrl, opts: opts || {}, base: _sketchSig(existingSketch) };
   const div = document.createElement('div');
   div.className = 'modal-overlay open';
   div.id = 'modal-sketchTool';
@@ -59320,6 +59332,125 @@ function openSketchTool(onSave, existingSketch, bgImageUrl, opts){
   // l'étape "côtes" avec la forme dessinée, plutôt qu'un canevas vide.
   if(_sketch.step === 'label') _sketchRenderLabelStep();
   _sketchUpdateTools();
+  _sketch._initSig = _sketchStateSig();
+  _sketchStartGuard();
+  if(!(opts && opts._fromDraft)) _sketchOfferDraft();
+  else _sketch._initSig = '';   // un brouillon repris compte comme « pas encore enregistré »
+}
+
+/* ═══ v5.41.362 — rien ne se perd + même échelle quand on tourne le téléphone ═══
+   • Brouillon enregistré automatiquement sur le téléphone (toutes les 1,5 s, à chaque mise
+     en arrière-plan et à la fermeture) : forme, côtes, repères, angles.
+   • ✕ / bouton retour : demande confirmation ; le brouillon reste de toute façon gardé et
+     l'outil propose de le reprendre à la prochaine ouverture.
+   • Rotation / redimensionnement : la zone de dessin suit la nouvelle taille d'écran SANS
+     déformer le croquis (même échelle, recentré ; réduit uniformément seulement s'il ne
+     tient plus). */
+const SKETCH_DRAFT_KEY = 'rw-sketch-draft';
+let _sketchOpenArgs = null, _sketchGuardT = null, _sketchLastDraft = '';
+function _sketchSig(ex){
+  if(!ex || !Array.isArray(ex.segments) || !ex.segments.length) return '';
+  const a = ex.segments[0], z = ex.segments[ex.segments.length - 1];
+  return ex.segments.length + ':' + Math.round(a.p1.x) + ',' + Math.round(a.p1.y) + ':' + Math.round(z.p2.x) + ',' + Math.round(z.p2.y) + ':' + (ex.canvasWidth || 0);
+}
+function _sketchStateSig(){ if(!_sketch) return ''; try{ return JSON.stringify([_sketch.segments.map(s => [Math.round(s.p1.x), Math.round(s.p1.y), Math.round(s.p2.x), Math.round(s.p2.y), s.text || '', s.dash || '']), _sketch.markers || [], _sketch.angleNotes || [], !!_sketch.closed]); }catch(_){ return ''; } }
+function _sketchHasWork(){ return !!(_sketch && _sketch.segments && _sketch.segments.length && _sketchStateSig() !== _sketch._initSig); }
+function _sketchDraftSave(){
+  if(!_sketchHasWork() || _sketch._saved) return;
+  const c = _sketch.canvas;
+  const d = {
+    at: Date.now(), base: (_sketchOpenArgs && _sketchOpenArgs.base) || '',
+    title: (_sketchOpenArgs && _sketchOpenArgs.opts && _sketchOpenArgs.opts.title) || '',
+    segments: _sketch.segments.map(s => ({ p1:s.p1, p2:s.p2, color:s.color, text:s.text || '', dash:s.dash || null })),
+    markers: (_sketch.markers || []).map(m => ({ segIndex:m.segIndex, t:m.t, type:m.type, side:m.side || 1 })),
+    angleNotes: (_sketch.angleNotes || []).map(n => ({ a:n.a, b:n.b, deg:n.deg })),
+    closed: !!_sketch.closed, canvasWidth: c.width, canvasHeight: c.height,
+    pliageType: _sketch.pliageType || undefined, boudin: _sketch.boudin ? { mm:_sketch.boudin.mm } : null,
+  };
+  // les côtes en cours de saisie (champ encore sélectionné) sont prises aussi
+  const js = JSON.stringify(d);
+  const cmp = js.replace(/"at":\d+,/, '');
+  if(cmp === _sketchLastDraft) return;
+  _sketchLastDraft = cmp;
+  try{ localStorage.setItem(SKETCH_DRAFT_KEY, js); }catch(_){}
+}
+function _sketchDraftGet(){ try{ const d = JSON.parse(localStorage.getItem(SKETCH_DRAFT_KEY) || 'null'); return d && Array.isArray(d.segments) && d.segments.length ? d : null; }catch(_){ return null; } }
+function _sketchDraftClear(){ _sketchLastDraft = ''; try{ localStorage.removeItem(SKETCH_DRAFT_KEY); }catch(_){} }
+function _sketchOnHide(){ if(document.visibilityState === 'hidden') _sketchDraftSave(); }
+function _sketchStartGuard(){
+  _sketchStopGuard();
+  _sketchGuardT = setInterval(_sketchDraftSave, 1500);
+  document.addEventListener('visibilitychange', _sketchOnHide);
+  window.addEventListener('pagehide', _sketchDraftSave);
+  window.addEventListener('resize', _sketchOnResize);
+  window.addEventListener('orientationchange', _sketchOnResizeLater);
+}
+function _sketchStopGuard(){
+  if(_sketchGuardT){ clearInterval(_sketchGuardT); _sketchGuardT = null; }
+  document.removeEventListener('visibilitychange', _sketchOnHide);
+  window.removeEventListener('pagehide', _sketchDraftSave);
+  window.removeEventListener('resize', _sketchOnResize);
+  window.removeEventListener('orientationchange', _sketchOnResizeLater);
+}
+/* Propose de reprendre un croquis non enregistré (même endroit : nouveau croquis, ou le même croquis modifié) */
+function _sketchOfferDraft(){
+  const d = _sketchDraftGet(); if(!d || !_sketchOpenArgs) return;
+  if((d.base || '') !== (_sketchOpenArgs.base || '')) return;
+  if(Date.now() - (d.at || 0) > 14 * 86400000){ _sketchDraftClear(); return; }
+  const wrap = document.getElementById('sketchCanvasWrap'); if(!wrap) return;
+  const hh = new Date(d.at).toLocaleString('fr-FR', { weekday:'short', hour:'2-digit', minute:'2-digit' });
+  const bar = document.createElement('div');
+  bar.id = 'sketchDraftBar';
+  bar.style.cssText = 'position:absolute;left:10px;right:10px;top:56px;z-index:9;background:rgba(26,18,6,.95);border:1.5px solid #E8AC3D;border-radius:12px;padding:10px 12px;color:#f5ede3;display:flex;align-items:center;gap:8px;flex-wrap:wrap;box-shadow:0 6px 20px rgba(0,0,0,.4);';
+  bar.innerHTML = `<div style="flex:1;min-width:150px;font-size:13px;"><b>♻️ Croquis non enregistré</b><br><span style="opacity:.8;">${d.segments.length} trait${d.segments.length > 1 ? 's' : ''} · ${hh}</span></div>
+    <button type="button" class="btn btn-primary" style="padding:8px 12px;font-size:13px;" onclick="_sketchDraftRestore()">Reprendre</button>
+    <button type="button" class="btn btn-outline" style="padding:8px 10px;font-size:13px;" onclick="if(confirm('Effacer ce croquis non enregistré ?')){ _sketchDraftClear(); this.parentNode.remove(); }">Effacer</button>`;
+  wrap.appendChild(bar);
+}
+function _sketchDraftRestore(){
+  const d = _sketchDraftGet(); const a = _sketchOpenArgs; if(!d || !a) return;
+  const opts = Object.assign({}, a.opts, { _fromDraft: true });
+  if(d.pliageType) opts.pliageType = d.pliageType;
+  const keepBase = a.base;
+  openSketchTool(a.onSave, d, null, opts);
+  if(_sketchOpenArgs) _sketchOpenArgs.base = keepBase;    // reste lié au même croquis d'origine
+  if(_sketch && d.boudin) _sketch.boudin = { mm: d.boudin.mm };
+  showToast('♻️ Croquis repris');
+}
+/* Rotation : même échelle, rien n'est étiré */
+function _sketchOnResizeLater(){ setTimeout(_sketchOnResize, 350); }
+function _sketchOnResize(){
+  if(!_sketch || !_sketch.canvas) return;
+  const wrap = document.getElementById('sketchCanvasWrap'); if(!wrap) return;
+  const r = wrap.getBoundingClientRect(); if(r.width < 50 || r.height < 50) return;
+  const c = _sketch.canvas, dpr = _sketch.dpr || 1;
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if(Math.abs(W - c.width) < 4 && Math.abs(H - c.height) < 4) return;
+  const wasClean = !_sketchHasWork();
+  const pts = [];
+  (_sketch.segments || []).forEach(sg => { pts.push(sg.p1, sg.p2); });
+  // boîte englobante du croquis
+  let k = 1, ox = (W - c.width) / 2, oy = (H - c.height) / 2;
+  if(pts.length){
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const m = 60 * dpr, bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+    k = Math.min(1, (W - 2 * m) / bw, (H - 2 * m) / bh);           // réduit seulement si ça ne tient plus
+    if(!(k > 0)) k = 1;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    ox = W / 2 - cx * k; oy = H / 2 - cy * k;
+  }
+  const tf = p => ({ x: p.x * k + ox, y: p.y * k + oy });
+  const seen = new Set();
+  (_sketch.segments || []).forEach(sg => {
+    [ 'p1', 'p2' ].forEach(key => { const p = sg[key]; if(seen.has(p)) return; seen.add(p); const q = tf(p); p.x = q.x; p.y = q.y; });
+  });
+  if(_sketch.bgRect){ const b = _sketch.bgRect; const q = tf({ x:b.dx, y:b.dy }); b.dx = q.x; b.dy = q.y; b.dw *= k; b.dh *= k; }
+  c.width = W; c.height = H;
+  _sketch.zoom = 1; _sketch.panX = 0; _sketch.panY = 0;
+  try{ _sketchApplyZoomTransform(); }catch(_){}
+  try{ if(_sketch.step === 'label') _sketchRenderLabelStep(); else _sketchRedrawShape(); }catch(_){ try{ _sketchRedrawShape(); }catch(__){} }
+  if(wasClean) _sketch._initSig = _sketchStateSig();
 }
 
 /* ═══ v5.41.262 — plein écran, forme fermée, couper un segment, angles relevés ═══ */
@@ -59343,7 +59474,7 @@ function _sketchUndo(){
   _sketch.tool = null; _sketch.angleFirst = -1; _sketch.markerArm = null;
   if(!_sketch.segments.length){
     const keep = _sketch.history;
-    _sketchRedo();
+    _sketch._undoing = true; _sketchRedo(); _sketch._undoing = false;
     _sketch.history = keep;   // « Recommencer » vide l'historique, pas l'annulation
   } else {
     _sketch.step = 'label';
@@ -59648,7 +59779,27 @@ function _sketchEditAngleNote(i){
   _sketchRenderLabelStep();
 }
 
-function _sketchClose(){
+function _sketchClose(force){
+  // v5.41.362 — jamais de perte : fermeture confirmée si le croquis n'est pas enregistré
+  if(!force && _sketchHasWork() && !_sketch._saved){
+    const ex = document.getElementById('sketchQuitSheet');
+    if(ex){ ex.remove(); return; }           // 2e appui sur retour = on reste sur le dessin
+    _sketchDraftSave();
+    const wrap = document.getElementById('sketchCanvasWrap') || document.body;
+    const sh = document.createElement('div');
+    sh.id = 'sketchQuitSheet';
+    sh.style.cssText = 'position:absolute;inset:0;z-index:10;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:18px;';
+    sh.innerHTML = `<div style="background:#1E1711;border:1.5px solid #E8AC3D;border-radius:16px;padding:18px;max-width:330px;width:100%;color:#f5ede3;text-align:center;">
+      <div style="font-size:30px;">✏️</div><div style="font-weight:900;font-size:17px;margin:4px 0 6px;">Croquis pas encore enregistré</div>
+      <div style="font-size:13px;opacity:.85;margin-bottom:14px;">Il est gardé en brouillon sur ce téléphone : tu pourras le reprendre en rouvrant le croquis.</div>
+      <button type="button" class="btn btn-primary btn-block" onclick="document.getElementById('sketchQuitSheet').remove()">✏️ Continuer le dessin</button>
+      <button type="button" class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_sketchFinish()">💾 Enregistrer maintenant</button>
+      <button type="button" class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_sketchClose(true)">Quitter (brouillon gardé)</button></div>`;
+    wrap.appendChild(sh);
+    return;
+  }
+  if(_sketch && !_sketch._saved) _sketchDraftSave();
+  _sketchStopGuard();
   const m = document.getElementById('modal-sketchTool');
   if(m) m.remove();
   _sketch = null;
@@ -60782,6 +60933,7 @@ function _sketchCloseSegmentMenu(){
 function _sketchRedo(){
   if(!_sketch) return;
   _sketchCloseSegmentMenu();
+  if(_sketchHasWork() && !_sketch._undoing) _sketchSnap();   // v5.41.362 — « Recommencer » s'annule avec ↶
   const { ctx, canvas } = _sketch;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#fff';
@@ -60795,7 +60947,7 @@ function _sketchRedo(){
   // l'outil de repère en cours, sinon il resterait armé sur un dessin vide.
   _sketch.markers = [];
   _sketch.markerArm = null;
-  _sketch.angleNotes = []; _sketch.tool = null; _sketch.angleFirst = -1; _sketch.closed = false; _sketch.history = [];
+  _sketch.angleNotes = []; _sketch.tool = null; _sketch.angleFirst = -1; _sketch.closed = false;
   _sketchUpdateTools();
   const hint = document.getElementById('sketchStepHint');
   if(hint) hint.textContent = 'Dessine la forme au doigt, en un seul trait — elle sera redressée automatiquement dès que tu lèves le doigt.';
@@ -60836,7 +60988,9 @@ function _sketchFinish(){
   canvas.toBlob((blob) => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const cb = _sketch.onSave;
-    _sketchClose();
+    _sketch._saved = true;
+    _sketchDraftClear();
+    _sketchClose(true);
     if(cb) cb(blob, sketchData);
   }, 'image/png', 0.95);
 }
