@@ -1335,7 +1335,17 @@
     height: 100%;
     object-fit: cover;
     background: #000;
+    opacity: 0; transition: opacity .15s;
   }
+  #cameraVideo.on{ opacity: 1; }
+  /* v5.41.361 — ouverture immédiate + miniatures de la rafale */
+  #camLoading{ position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:#fff; font-weight:700; font-size:15px; z-index:3; pointer-events:none; }
+  #camLoading.on{ display:flex; }
+  .cam-spin{ width:42px; height:42px; border-radius:50%; border:4px solid rgba(255,255,255,.25); border-top-color:#E8AC3D; animation:camspin .8s linear infinite; }
+  @keyframes camspin{ to{ transform:rotate(360deg); } }
+  #camBurstThumbs{ position:absolute; left:14px; bottom:calc(28px + env(safe-area-inset-bottom,0px)); display:flex; gap:6px; z-index:7; pointer-events:none; }
+  #camBurstThumbs img{ width:40px; height:40px; object-fit:cover; border-radius:8px; border:2px solid #fff; box-shadow:0 2px 8px rgba(0,0,0,.5); animation:camthumb .25s ease-out; }
+  @keyframes camthumb{ from{ transform:scale(.4); opacity:0; } to{ transform:none; opacity:1; } }
   .cam-overlay-top{
     position: absolute;
     top: calc(14px + env(safe-area-inset-top,0));
@@ -7458,7 +7468,9 @@
 <div class="modal-overlay" id="modal-cameraCapture">
   <div class="modal">
     <div id="cameraCaptureStage">
-      <video id="cameraVideo" autoplay playsinline muted></video>
+      <video id="cameraVideo" autoplay playsinline muted poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video>
+      <div id="camLoading"><div class="cam-spin"></div><div>Ouverture de l'appareil photo…</div></div>
+      <div id="camBurstThumbs"></div>
 
       <div class="cam-overlay-top">
         <button class="cam-icon-btn" id="camCloseBtn" onclick="closeCameraCapture()" title="Fermer">×</button>
@@ -19553,6 +19565,7 @@ async function _rwShrinkPhoto(file, maxDim, q){
 }
 
 /* Envoie un lot de photos sur un chantier : réduites, 3 à la fois, une seule synchro et une seule notification à la fin. */
+let _rwUpRefreshT = null;
 async function _rwUploadSitePhotos(siteId, files){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site || !files || !files.length) return;
@@ -19574,6 +19587,8 @@ async function _rwUploadSitePhotos(siteId, files){
       catch(e){ failed++; }
       done++;
       _mediaUploadShowProgress(done, total);
+      // v5.41.361 — les photos apparaissent dans la galerie au fur et à mesure (pas seulement à la fin)
+      if(!_rwUpRefreshT) _rwUpRefreshT = setTimeout(() => { _rwUpRefreshT = null; try{ if(typeof renderCloudMedia === 'function') renderCloudMedia(siteId); }catch(_){} try{ if(typeof _galerieOpenSiteId !== 'undefined' && _galerieOpenSiteId === siteId){ const root = document.getElementById('galerieContent'); if(root) _galerieRenderFolder(root, siteId); } }catch(_){} }, 1200);
     }
   };
   await Promise.all([worker(), worker(), worker()]);
@@ -20099,52 +20114,55 @@ async function openCameraCapture(targetInputId, opts){
     return;
   }
 
-  try{
-    const probe = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    probe.getTracks().forEach(t=>t.stop());
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    camDevices = devices.filter(d=>d.kind === 'videoinput');
-  } catch(err){
-    if(_camBurst){ _camBurst = null; _camBurstUi(); showToast('📷 Autorise l\'appareil photo pour RWOOD (Paramètres du téléphone › Applis › RWOOD › Autorisations), puis réessaie'); return; }
-    document.getElementById(targetInputId).click();
-    return;
-  }
-
-  // Trouver la caméra arrière par label OU par position (généralement index >= 1 si front en premier)
-  camDeviceIndex = 0;
-  let backFound = false;
-  const backIdx = camDevices.findIndex(d => /back|rear|environment|arrière/i.test(d.label));
-  if(backIdx >= 0){
-    camDeviceIndex = backIdx;
-    backFound = true;
-  } else if(camDevices.length >= 2){
-    // Sur Android, caméra front = index 0, arrière = index 1 (souvent)
-    // Prendre le dernier de la liste hors front (heuristic)
-    const notFront = camDevices.findIndex(d => !/front|face|selfie|user/i.test(d.label));
-    if(notFront >= 0){ camDeviceIndex = notFront; backFound = true; }
-    else { camDeviceIndex = camDevices.length - 1; backFound = true; }
-  }
-  // Si on n'a pas trouvé par label, on laissera facingMode:'environment' gérer
-  _camUseEnvironmentFallback = !backFound;
-
-  await probeCamLenses();
-  camZoom = Math.max(camZoomMin, Math.min(camZoomMax, 1));
-  camDeviceIndex = camLensIndexForZoom(camZoom);
-
-  document.getElementById('camSwitchBtn').style.display = (camDevices.length === 2) ? 'flex' : 'none';
-  renderCamLensRow();
-  setupCamPinchZoom();
-
-  const zoomAvailable = (camZoomMax - camZoomMin) > 0.05;
-  document.getElementById('camZoomPill').style.display = zoomAvailable ? 'block' : 'none';
-
+  // v5.41.361 — ouverture IMMÉDIATE : la caméra s'affiche tout de suite (fond noir + roue),
+  // une seule ouverture de la caméra (avant : 3 à 5 ouvertures successives = 2 à 3 s d'attente).
+  _camManualLensSelect = false;
+  camZoom = 1;
+  if(!camLensInfo || !camLensInfo.length){ camLensInfo = [{ base:1, capMin:1, capMax:1, step:0.1, nativeMin:1, nativeMax:1 }]; camZoomMin = 1; camZoomMax = 1; }
+  const vid = document.getElementById('cameraVideo'); if(vid) vid.classList.remove('on');
+  const thumbs = document.getElementById('camBurstThumbs'); if(thumbs) thumbs.innerHTML = '';
+  document.getElementById('camLoading').classList.add('on');
+  document.getElementById('camSwitchBtn').style.display = 'none';
+  document.getElementById('camZoomPill').style.display = 'none';
   const hasLogo = !!(data.settings && data.settings.companyLogo);
   document.getElementById('camWatermarkToggle').style.display = hasLogo ? 'flex' : 'none';
   updateCamWatermarkChip();
-
-  _camManualLensSelect = false; // reset : toujours démarrer sur caméra arrière automatique
+  setupCamPinchZoom();
   openModal('cameraCapture');
-  await startCameraStream();
+
+  const ok = await startCameraStream({ quiet:true });
+  if(!ok){
+    document.getElementById('camLoading').classList.remove('on');
+    closeModal('cameraCapture');
+    if(_camBurst){ _camBurst = null; _camBurstUi(); showToast('📷 Autorise l\'appareil photo pour RWOOD (Paramètres du téléphone › Applis › RWOOD › Autorisations), puis réessaie'); return; }
+    const inp = document.getElementById(targetInputId); if(inp) inp.click();
+    return;
+  }
+  // En arrière-plan, sans rouvrir la caméra : liste des objectifs et zoom du courant
+  _camQuickLensInfo().catch(() => {});
+}
+/* v5.41.361 — objectifs et zoom SANS ouvrir chaque caméra (l'ancienne détection rouvrait tous les objectifs) */
+async function _camQuickLensInfo(){
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  camDevices = devices.filter(d => d.kind === 'videoinput');
+  const track = camStream && camStream.getVideoTracks()[0];
+  const curId = track && track.getSettings ? track.getSettings().deviceId : '';
+  const caps = (track && track.getCapabilities && track.getCapabilities()) || {};
+  const prev = (_camLensCache && _camLensCache.info) || null;
+  camLensInfo = camDevices.map((d, i) => {
+    const base = camLensBase(d.label);
+    if(prev && prev[i]) return Object.assign({}, prev[i]);
+    let capMax = base, step = 0.1;
+    if(d.deviceId === curId && caps.zoom){ capMax = base * (caps.zoom.max / caps.zoom.min); step = caps.zoom.step || 0.1; }
+    return { base, capMin: base, capMax, step, nativeMin: base, nativeMax: capMax };
+  });
+  const ci = camDevices.findIndex(d => d.deviceId === curId);
+  if(ci >= 0) camDeviceIndex = ci;
+  const cur = camLensInfo[camDeviceIndex] || { base:1, capMax:1 };
+  camZoomMin = cur.base; camZoomMax = cur.capMax; camZoom = cur.base;
+  document.getElementById('camSwitchBtn').style.display = (camDevices.length === 2) ? 'flex' : 'none';
+  document.getElementById('camZoomPill').style.display = (camZoomMax - camZoomMin) > 0.05 ? 'block' : 'none';
+  renderCamLensRow();
   renderCamZoomUI();
 }
 
@@ -20258,8 +20276,9 @@ function selectCamLens(idx){
 
 let _camManualLensSelect = false; // true uniquement quand l'user a choisi une lentille manuellement
 
-async function startCameraStream(){
-  if(camStream){ camStream.getTracks().forEach(t=>t.stop()); }
+async function startCameraStream(opts){
+  const quiet = !!(opts && opts.quiet);
+  if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream = null; }
 
   // ── Stratégie caméra arrière : facingMode TOUJOURS en priorité ──────────
   // deviceId peut pointer vers la caméra avant — on l'évite au démarrage
@@ -20299,12 +20318,16 @@ async function startCameraStream(){
         : { video: { facingMode: 'environment' } };
       camStream = await navigator.mediaDevices.getUserMedia(fallback);
     } catch(err2){
+      if(quiet) return false;
       showToast("Impossible d'accéder à la caméra");
       closeCameraCapture();
-      return;
+      return false;
     }
   }
-  document.getElementById('cameraVideo').srcObject = camStream;
+  const _v = document.getElementById('cameraVideo');
+  _v.onplaying = () => { _v.classList.add('on'); const l = document.getElementById('camLoading'); if(l) l.classList.remove('on'); };
+  _v.srcObject = camStream;
+  try{ _v.play().catch(() => {}); }catch(_){}
 
   camTorchOn = false;
   const track = camStream.getVideoTracks()[0];
@@ -20315,6 +20338,7 @@ async function startCameraStream(){
 
   applyZoomToCurrentTrack(camZoom);
   renderCamLensRow();
+  return true;
 }
 
 function applyZoomToCurrentTrack(targetZoom){
@@ -20426,8 +20450,10 @@ function closeCameraCapture(){
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream = null; }
   closeModal('cameraCapture');
   // rafale : fermer la caméra = envoyer les photos déjà prises
-  if(_camBurst){ const b = _camBurst; _camBurst = null; _camBurstUi(); if(b.files.length) b.onDone(b.files); }
+  if(_camBurst){ const b = _camBurst; _camBurst = null; _camBurstUi(); if(b.pending){ b._closing = true; } else _camBurstFinish(b); }
+  const v = document.getElementById('cameraVideo'); if(v) v.classList.remove('on');
 }
+function _camBurstFinish(b){ if(b._finished) return; b._finished = true; if(b.files.length) b.onDone(b.files); }
 function _camBurstUi(){
   const stage = document.getElementById('cameraCaptureStage');
   if(!stage) return;
@@ -20439,7 +20465,7 @@ function _camBurstUi(){
     bar.style.cssText = 'position:absolute;left:0;right:0;top:calc(64px + env(safe-area-inset-top,0px));display:flex;justify-content:center;align-items:center;gap:10px;z-index:6;pointer-events:none;';
     stage.appendChild(bar);
   }
-  const n = _camBurst.files.length;
+  const n = _camBurst.files.length + (_camBurst.pending || 0);
   bar.innerHTML = `<div style="background:rgba(0,0,0,.6);color:#fff;border-radius:999px;padding:7px 14px;font-weight:800;font-size:14px;">📸 Rafale : ${n} / ${_camBurst.max}</div>`
     + (n ? `<button type="button" onclick="closeCameraCapture()" style="pointer-events:auto;background:#3ACF7D;color:#06240f;border:none;border-radius:999px;padding:8px 16px;font-weight:900;font-size:14px;">✓ Terminer (${n})</button>` : '');
 }
@@ -20481,11 +20507,13 @@ async function capturePhoto(){
   if(!video.videoWidth){ return; }
   // petit flash blanc : la photo est prise
   try{ const st = document.getElementById('cameraCaptureStage'); const f = document.createElement('div'); f.style.cssText = 'position:absolute;inset:0;background:#fff;opacity:.7;z-index:9;pointer-events:none;transition:opacity .25s;'; st.appendChild(f); requestAnimationFrame(() => { f.style.opacity = '0'; }); setTimeout(() => f.remove(), 300); }catch(_){}
+  // v5.41.361 — photo INSTANTANÉE : on fige l'image de l'aperçu tout de suite (avant : prise
+  // « pleine qualité » qui bloquait la caméra 1 à 2 s). L'aperçu fait 1920 px, et les photos
+  // sont réduites à 1600 px à l'envoi : la qualité finale est la même.
+  const lowRes = Math.max(video.videoWidth, video.videoHeight) < 1280;
   const canvas = document.createElement('canvas');
-  let ctx;
-  const full = await _camGrabBlob(video);
-  let bmp = null;
-  if(full){ try{ bmp = await createImageBitmap(full, { imageOrientation: 'from-image' }); }catch(_){ bmp = null; } }
+  let ctx, full = null, bmp = null;
+  if(lowRes){ full = await _camGrabBlob(video); if(full){ try{ bmp = await createImageBitmap(full, { imageOrientation: 'from-image' }); }catch(_){ bmp = null; } } }
   if(bmp){
     const k = Math.min(1, 3000 / Math.max(bmp.width, bmp.height));
     canvas.width = Math.round(bmp.width * k); canvas.height = Math.round(bmp.height * k);
@@ -20498,27 +20526,44 @@ async function capturePhoto(){
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   }
 
+  // rafale : miniature et compteur TOUT DE SUITE, l'encodage JPEG se fait ensuite en arrière-plan
+  if(_camBurst){
+    const b = _camBurst;
+    b.pending = (b.pending || 0) + 1;
+    try{
+      const tc = document.createElement('canvas'), tk = 96 / Math.max(canvas.width, canvas.height);
+      tc.width = Math.round(canvas.width * tk); tc.height = Math.round(canvas.height * tk);
+      tc.getContext('2d').drawImage(canvas, 0, 0, tc.width, tc.height);
+      const box = document.getElementById('camBurstThumbs');
+      if(box){ const im = new Image(); im.src = tc.toDataURL('image/jpeg', 0.7); box.prepend(im); while(box.children.length > 3) box.lastChild.remove(); }
+    }catch(_){}
+    _camBurstUi();
+    const done = b.files.length + b.pending >= b.max;
+    (async () => {
+      if(camWatermarkEnabled){ try{ await drawCamWatermark(ctx, canvas.width, canvas.height); }catch(_){} }
+      canvas.toBlob(blob => {
+        b.pending--;
+        if(blob) b.files.push(new File([blob], 'photo-rwood-' + Date.now() + '.jpg', { type: 'image/jpeg' }));
+        if(_camBurst === b) _camBurstUi();
+        if(b._closing && !b.pending) _camBurstFinish(b);
+      }, 'image/jpeg', 0.88);
+    })();
+    if(done){ showToast('📸 ' + b.max + ' photos : envoi…'); closeCameraCapture(); }
+    return;
+  }
+
   if(camWatermarkEnabled){
     await drawCamWatermark(ctx, canvas.width, canvas.height);
   }
-
   canvas.toBlob(blob=>{
     const file = new File([blob], 'photo-rwood.jpg', { type: 'image/jpeg' });
-
-    // rafale : la caméra reste ouverte, on garde la photo et on continue
-    if(_camBurst){
-      _camBurst.files.push(new File([blob], 'photo-rwood-' + Date.now() + '.jpg', { type: 'image/jpeg' }));
-      _camBurstUi();
-      if(_camBurst.files.length >= _camBurst.max){ showToast('📸 ' + _camBurst.max + ' photos : envoi…'); closeCameraCapture(); }
-      return;
-    }
     const targetInput = document.getElementById(camTargetInputId);
     const dt = new DataTransfer();
     dt.items.add(file);
     targetInput.files = dt.files;
     closeCameraCapture();
     targetInput.dispatchEvent(new Event('change', { bubbles: true }));
-  }, 'image/jpeg', 0.92);
+  }, 'image/jpeg', 0.9);
 }
 
 function addPhotoFromGallery(input){
@@ -32207,8 +32252,7 @@ function _rwPlanCardHtml(p){
     const pct0 = Math.min(100, Math.round(100 * (p.used || 0) / Math.max(1, p.seats || 1)));
     return `<div class="prm-sec">Mon abonnement</div><div class="card"><div class="hint">Formule</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${escapeHtml(p.plan === 'essai' ? 'Accès découverte' : p.label)}</div>
       <div class="hint" style="margin-top:10px;">Comptes utilisés : <b style="color:var(--ink);">${p.plan === 'interne' ? p.used + ' · sans limite' : p.used + ' / ' + p.seats}</b></div>${p.plan === 'interne' ? '' : `<div class="rw-bar"><i style="width:${pct0}%;${p.full ? 'background:var(--red);' : ''}"></i></div>`}
-      ${p.full && p.plan !== 'interne' ? '<div class="hint" style="margin-top:6px;color:var(--red);">Entreprise complète : les nouveaux ne peuvent plus rejoindre.</div>' : ''}
-      <div class="field" style="margin:12px 0 0;"><label>Métier de l'entreprise</label><select onchange="rwCoTradeSet(this.value)" style="width:100%;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${_rwTradeOptions(p.trade)}</select></div></div>`;
+      ${p.full && p.plan !== 'interne' ? '<div class="hint" style="margin-top:6px;color:var(--red);">Entreprise complète : les nouveaux ne peuvent plus rejoindre.</div>' : ''}</div>`;
   }
   const pct = Math.min(100, Math.round(100 * (p.used || 0) / Math.max(1, p.seats || 1)));
   const unl = p.plan === 'interne';
@@ -32226,8 +32270,6 @@ function _rwPlanCardHtml(p){
     <div class="hint" style="margin-top:8px;">Entreprise : 4 € par compte au-delà de 25. Annuel : 2 mois offerts. Toutes les fonctions, le support, la maintenance et les mises à jour sont inclus dans chaque formule.</div>
     <div style="margin-top:10px;padding:10px;border-radius:12px;border:1.5px dashed var(--line);"><b>🚀 Mise en service — sur devis (facultatif)</b><div class="hint" style="margin-top:4px;">On configure ton entreprise à ta place : reprise de tes chantiers, équipe, contacts et dépôt, puis prise en main avec tes chefs d'équipe. Prix selon la taille de l'entreprise et la quantité de données à reprendre.</div>
       <button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwPlanChoose('mes')">Demander un devis</button></div>`}
-    <div class="field" style="margin:12px 0 0;"><label>Métier de l'entreprise</label><select onchange="rwCoTradeSet(this.value)" style="width:100%;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${_rwTradeOptions(p.trade)}</select>
-      <div class="hint" style="margin-top:4px;">Les outils de calcul propres à chaque métier arrivent au fur et à mesure (charpente disponible).</div></div>
   </div>`;
 }
 /* Paiement en ligne à venir (étape F) : pour l'instant, demande par e-mail */
@@ -41100,9 +41142,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.359';
+const APP_VERSION = '5.41.361';
 
 const CHANGELOG = [
+  {
+    version: '5.41.361',
+    date: '07/10/2026',
+    entries: [
+      { icon: '📸', text: "Appareil photo de RWOOD bien plus rapide : il s'ouvre tout de suite (plus d'icône grise « lecture »), et chaque photo de la rafale est prise instantanément, avec sa miniature en bas de l'écran." },
+      { icon: '🖼', text: "Envoi des photos : elles apparaissent dans la galerie du chantier au fur et à mesure de l'envoi." },
+    ],
+  },
+  {
+    version: '5.41.360',
+    date: '07/10/2026',
+    entries: [
+      { icon: '🧹', text: "Mon entreprise : le choix du métier est retiré de la page abonnement (il reviendra avec les outils propres à chaque métier)." },
+    ],
+  },
   {
     version: '5.41.359',
     date: '07/10/2026',
