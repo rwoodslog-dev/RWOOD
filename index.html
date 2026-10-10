@@ -41226,9 +41226,20 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.368';
+const APP_VERSION = '5.41.369';
 
 const CHANGELOG = [
+  {
+    version: '5.41.369',
+    date: '10/10/2026',
+    entries: [
+      { icon: '📏', text: "Croquis Paint (PC) : ÉCHELLE RÉELLE. Nouveau groupe « Échelle » dans le ruban (1:1 = taille réelle à l'écran, 2:1, 1:2, 1:5, 1:10, 1:20, ou Libre) : les formes sont à l'échelle et affichent leurs cotes en mm ou cm (longueur d'une ligne, largeur × hauteur d'un rectangle, Ø d'un cercle…), en direct pendant le tracé puis en permanence (bouton 📏)." },
+      { icon: '🧲', text: "Croquis Paint : aimant sur les mm entiers (bouton 🧲) — les tracés s'arrondissent à 1 mm (0,5 mm en 2:1, 5 mm en 1:5, 10 mm en 1:10/1:20) pour des dimensions rondes. Le pas est indiqué par l'échelle choisie." },
+      { icon: '✏️', text: "Croquis Paint : « Dimensions exactes… » (menu ⋮ de la forme, ou double-clic avec l'outil Sélection) pour saisir la longueur, la largeur × hauteur ou le diamètre au mm près ; le point de départ de la forme ne bouge pas." },
+      { icon: '🔩', text: "Croquis Paint : vis et pointes dessinées à leur VRAI diamètre (liste « Ø vis » de 3 à 10 mm), tête, noyau, filetage et pointe proportionnés comme une vraie vis à l'échelle choisie. L'outil Distance propose aussi automatiquement la mesure réelle comme texte." },
+      { icon: '🔒', text: "L'échelle se choisit avant de dessiner et se fige dès qu'il y a du contenu (« Tout effacer » pour la changer). Elle est enregistrée avec le croquis et retrouvée à l'ouverture, même sur un écran de taille différente. Les anciens croquis s'ouvrent en « Libre » (comme avant)." },
+    ],
+  },
   {
     version: '5.41.368',
     date: '08/10/2026',
@@ -65879,6 +65890,347 @@ const PAINT_SYMBOLS = [
   { id:'ecrouB',  label:'Écrou borgne',     placement:'rect' },
 ];
 
+/* ═══════════════════════════════════════════════════════════════════
+   v5.41.369 — ÉCHELLE RÉELLE du Croquis Paint (demande de Rémi) :
+   tout ce qu'on dessine est maintenant à l'échelle, avec des cotes en
+   mm ou cm. Principe : les formes restent stockées en coordonnées
+   « monde » (pixels), et le croquis porte un facteur `pxPerMm` (pixels
+   monde par mm réel) choisi via l'Échelle (1:1 = taille réelle à
+   l'écran à 100 % de zoom, 1:2, 1:5…). Toute dimension affichée/saisie
+   = pixels ÷ pxPerMm. « Libre » = comportement historique, sans
+   échelle ni cotes (anciens croquis).
+   - cote en direct pendant le tracé + cotes permanentes (bouton 📏) ;
+   - aimant sur les mm entiers (bouton 🧲) ;
+   - « Dimensions exactes… » (menu ⋮ ou double-clic) pour saisir
+     longueur / largeur × hauteur / Ø au mm près ;
+   - vis et pointes dessinées à leur VRAI diamètre (Ø) à l'échelle ;
+   - l'échelle est enregistrée dans paintData.scale.
+   ═══════════════════════════════════════════════════════════════════ */
+const PAINT_SCALES = [
+  { id:'2:1',  ratio:2,    snap:0.5 },
+  { id:'1:1',  ratio:1,    snap:1 },
+  { id:'1:2',  ratio:0.5,  snap:1 },
+  { id:'1:5',  ratio:0.2,  snap:5 },
+  { id:'1:10', ratio:0.1,  snap:10 },
+  { id:'1:20', ratio:0.05, snap:10 },
+];
+const PAINT_CSS_PX_PER_MM = 96 / 25.4; // ≈ 3,78 px CSS par mm : taille réelle à l'écran
+const PAINT_VIS_DIAMS = [3, 3.5, 4, 4.5, 5, 6, 8, 10];
+function _paintPxPerMmForScale(id, dpr){
+  const sc = PAINT_SCALES.find(x => x.id === id);
+  if(!sc) return null;
+  return PAINT_CSS_PX_PER_MM * sc.ratio * (dpr || 1);
+}
+function _paintHasScale(){ return !!(_paint && _paint.pxPerMm > 0); }
+function _paintNum(mm){
+  if(!isFinite(mm)) return '';
+  const cm = _paint && _paint.unit === 'cm';
+  const v = cm ? mm / 10 : mm;
+  return String(parseFloat(v.toFixed(cm ? 2 : 1))).replace('.', ',');
+}
+function _paintUnitLabel(){ return (_paint && _paint.unit === 'cm') ? 'cm' : 'mm'; }
+function _paintFmtPx(px){
+  if(!_paintHasScale()) return '';
+  return _paintNum(px / _paint.pxPerMm) + ' ' + _paintUnitLabel();
+}
+function _paintShapeDimText(s){
+  if(!_paintHasScale() || !s) return '';
+  const k = _paint.pxPerMm, u = _paintUnitLabel();
+  const n = px => _paintNum(px / k);
+  if(s.type === 'polygon' && s.points && s.points.length){
+    const b = _paintShapeBounds(s);
+    return n(b.x2 - b.x1) + ' × ' + n(b.y2 - b.y1) + ' ' + u;
+  }
+  if(s.x1 === undefined || s.x2 === undefined) return '';
+  const w = Math.abs(s.x2 - s.x1), h = Math.abs(s.y2 - s.y1), len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+  switch(s.type){
+    case 'line': case 'arrow': case 'distance': return n(len) + ' ' + u;
+    case 'rect': return n(w) + ' × ' + n(h) + ' ' + u;
+    case 'circle': return Math.abs(w - h) < 1.5 ? 'Ø ' + n(w) + ' ' + u : n(w) + ' × ' + n(h) + ' ' + u;
+    case 'triangle': return 'base ' + n(w) + ' · h ' + n(h) + ' ' + u;
+    case 'symbol': {
+      const def = PAINT_SYMBOLS.find(x => x.id === s.symbol);
+      if(def && def.placement === 'rect') return n(w) + ' × ' + n(h) + ' ' + u;
+      return (s.diam ? 'Ø' + _paintNum(s.diam) + ' × ' : '') + n(len) + ' ' + u;
+    }
+  }
+  return '';
+}
+/* Pastille de cote : taille constante à l'écran (÷ zoom), fond clair pour
+   rester lisible sur un plan/photo. */
+function _paintDrawDimText(ctx, text, x, y, viewScale){
+  if(!text || !_paint) return;
+  const dpr = _paint.dpr || 1, k = 1 / (viewScale || 1);
+  const fs = 12 * dpr * k;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.font = '700 ' + fs + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width, padX = 5 * dpr * k, h = fs + 6 * dpr * k;
+  const rx = x - tw / 2 - padX, ry = y - h / 2, rw = tw + padX * 2;
+  ctx.fillStyle = 'rgba(255,255,255,0.93)';
+  ctx.strokeStyle = 'rgba(22,64,122,0.55)'; ctx.lineWidth = 1 * dpr * k;
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(rx, ry, rw, h, h / 2); else ctx.rect(rx, ry, rw, h);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#16407a';
+  ctx.fillText(text, x, y + 0.5 * dpr * k);
+  ctx.restore();
+}
+function _paintDrawShapeDimLabel(ctx, s, idx, selectedIdx, scale){
+  if(!_paintHasScale()) return;
+  if(!(_paint.showDims || idx === selectedIdx)) return;
+  if(s.type === 'distance' || s.type === 'pen' || s.type === 'text' || s.type === 'marker') return;
+  const txt = _paintShapeDimText(s);
+  if(!txt) return;
+  const b = _paintShapeBounds(s);
+  const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+  let lx = cx, ly = b.y1 - 16 * (_paint.dpr || 1) / (scale || 1);
+  if(s.rotation){
+    const a = s.rotation * Math.PI / 180, dx = lx - cx, dy = ly - cy;
+    lx = cx + dx * Math.cos(a) - dy * Math.sin(a);
+    ly = cy + dx * Math.sin(a) + dy * Math.cos(a);
+  }
+  _paintDrawDimText(ctx, txt, lx, ly, scale);
+}
+/* Aimant sur les mm entiers (pas selon l'échelle : 0,5 mm en 2:1 … 10 mm
+   en 1:10) pour le point d'arrivée d'un tracé. L'aimant « bords des
+   autres formes » (_paintSnapPoint) garde la priorité sur son axe. */
+function _paintSnapMm(start, cur, raw){
+  if(!_paintHasScale() || !_paint.snapMm || !start || !cur) return cur;
+  const sc = PAINT_SCALES.find(x => x.id === _paint.scaleId);
+  const step = (sc ? sc.snap : 1) * _paint.pxPerMm;
+  if(!(step > 0)) return cur;
+  const rnd = v => Math.round(v / step) * step;
+  const t = _paint.tool;
+  const symDef = PAINT_SYMBOLS.find(x => x.id === t);
+  const lineLike = t === 'line' || t === 'arrow' || t === 'distance' || (symDef && symDef.placement === 'line');
+  const boxLike = t === 'rect' || t === 'circle' || t === 'triangle' || (symDef && symDef.placement === 'rect');
+  if(lineLike){
+    const dx = cur.x - start.x, dy = cur.y - start.y, len = Math.hypot(dx, dy);
+    if(len < step) return cur;
+    const L = rnd(len);
+    return { x: start.x + dx / len * L, y: start.y + dy / len * L };
+  }
+  if(boxLike){
+    return {
+      x: (raw && cur.x !== raw.x) ? cur.x : start.x + rnd(cur.x - start.x),
+      y: (raw && cur.y !== raw.y) ? cur.y : start.y + rnd(cur.y - start.y),
+    };
+  }
+  return cur;
+}
+/* Dimensions RÉELLES d'une vis / pointe vue de profil, à partir du
+   diamètre nominal Ø (mm) et de l'échelle (px monde par mm). Tête Ø ≈ 2×Ø,
+   noyau ≈ 0,68×Ø, pointe ≈ 1,6×Ø (vis) ou 2×Ø (pointe/clou), pas ≈ 0,5×Ø.
+   Planchers en pixels pour que ça reste lisible aux petites échelles. */
+function _paintRealScrewDims(real, kind, d){
+  const D = Math.max(0.5, real.diam) * real.k;
+  const mx = (v, m) => Math.max(v, m * d);
+  if(kind === 'pointe'){
+    const half = mx(D * 0.5, 1);
+    return { headHalfW: mx(D, 2.5), neckHalfW: half, headDepth: mx(D * 0.3, 1.5), neckDepth: 0,
+             shaftHalfW: half, threadHalfW: half, tipLen: mx(D * 2, 4), tipHalfW: half, pitch: 6 * d };
+  }
+  const half = mx(D * 0.34, 1);
+  return { headHalfW: mx(D, 3), neckHalfW: half, headDepth: mx(D * 0.55, 2), neckDepth: mx(D * 0.15, 1),
+           shaftHalfW: half, threadHalfW: mx(D * 0.5, 1.6), tipLen: mx(D * 1.6, 4), tipHalfW: half, pitch: mx(D * 0.5, 3) };
+}
+
+/* ─── Réglages du ruban « Échelle » ─────────────────────────────── */
+function _paintScaleEditable(){
+  if(!_paint) return false;
+  const hasContent = _paint.shapes.length > 0 || _paint._baseHasContent;
+  return !hasContent || !_paint.pxPerMm; // figée dès qu'il y a du contenu À L'ÉCHELLE
+}
+function _paintSetScale(id){
+  if(!_paint) return;
+  if(!_paintScaleEditable()){
+    _paint._scaleUiKey = null; _paintUpdateScaleUI();
+    showToast("Échelle figée : « Tout effacer » pour la changer");
+    return;
+  }
+  _paint.scaleId = id || '';
+  _paint.pxPerMm = id ? _paintPxPerMmForScale(id, _paint.dpr) : null;
+  _paint._scaleUiKey = null;
+  _paintRedraw();
+}
+function _paintSetUnit(u){
+  if(!_paint) return;
+  _paint.unit = (u === 'cm') ? 'cm' : 'mm';
+  _paint._scaleUiKey = null;
+  _paintRedraw();
+}
+function _paintToggleDims(){
+  if(!_paint || !_paintHasScale()) return;
+  _paint.showDims = !_paint.showDims;
+  _paint._scaleUiKey = null;
+  _paintRedraw();
+}
+function _paintToggleSnap(){
+  if(!_paint || !_paintHasScale()) return;
+  _paint.snapMm = !_paint.snapMm;
+  _paint._scaleUiKey = null;
+  _paintRedraw();
+}
+function _paintIsLineSymbol(s){
+  if(!s || s.type !== 'symbol') return false;
+  const def = PAINT_SYMBOLS.find(x => x.id === s.symbol);
+  return !!(def && def.placement === 'line');
+}
+function _paintSetVisDiam(v){
+  if(!_paint || !(v > 0)) return;
+  _paint.visDiam = v;
+  const sel = _paint.shapes[_paint.selectedIdx];
+  if(_paintIsLineSymbol(sel)){ _paintPushHistory(); sel.diam = v; }
+  _paint._scaleUiKey = null;
+  _paintRedraw();
+}
+function _paintUpdateScaleUI(){
+  if(!_paint) return;
+  const el = id => document.getElementById(id);
+  const sel = _paint.shapes[_paint.selectedIdx];
+  const selIsScrew = _paintIsLineSymbol(sel);
+  const toolDef = PAINT_SYMBOLS.find(x => x.id === _paint.tool);
+  const toolIsScrew = !!(toolDef && toolDef.placement === 'line');
+  const has = _paintHasScale();
+  const editable = _paintScaleEditable();
+  const showVis = has && (toolIsScrew || selIsScrew);
+  const diamVal = (selIsScrew && sel.diam) ? sel.diam : _paint.visDiam;
+  const key = [_paint.scaleId, _paint.unit, _paint.showDims, _paint.snapMm, editable, has, showVis, diamVal].join('|');
+  if(_paint._scaleUiKey === key) return;
+  _paint._scaleUiKey = key;
+  const ss = el('paintScaleSelect');
+  if(ss){
+    ss.value = _paint.scaleId || '';
+    ss.disabled = !editable;
+    ss.title = editable ? "Échelle du croquis (1:1 = taille réelle à l'écran)" : "Échelle figée : « Tout effacer » pour la changer";
+  }
+  const us = el('paintUnitSelect');
+  if(us){ us.value = _paint.unit === 'cm' ? 'cm' : 'mm'; us.disabled = !has; }
+  const setBtn = (b, on) => {
+    if(!b) return;
+    b.disabled = !has;
+    b.style.opacity = has ? '' : '0.45';
+    b.style.borderColor = (has && on) ? 'var(--wood)' : '';
+    b.style.background = (has && on) ? 'var(--card)' : '';
+  };
+  setBtn(el('paintDimsBtn'), _paint.showDims);
+  setBtn(el('paintSnapBtn'), _paint.snapMm);
+  const vr = el('paintVisRow');
+  if(vr) vr.style.display = showVis ? 'block' : 'none';
+  const vs = el('paintVisDiamSelect');
+  if(vs){
+    const sv = String(diamVal);
+    if(![...vs.options].some(o => o.value === sv)) vs.add(new Option(sv.replace('.', ','), sv));
+    vs.value = sv;
+  }
+}
+
+/* ─── « Dimensions exactes… » : saisir longueur / L × H / Ø au mm près ─── */
+function _paintDimsKind(s){
+  if(!s) return null;
+  if(s.holes && s.holes.length) return null;
+  if(s.moulures && s.moulures.length) return null;
+  if(s.type === 'line' || s.type === 'arrow' || s.type === 'distance') return 'len';
+  if(s.type === 'symbol') return _paintIsLineSymbol(s) ? 'len' : 'box';
+  if(s.type === 'rect' || s.type === 'triangle') return 'box';
+  if(s.type === 'circle') return Math.abs(Math.abs(s.x2 - s.x1) - Math.abs(s.y2 - s.y1)) < 1.5 ? 'circle' : 'box';
+  return null;
+}
+function _paintCloseDimsEditor(){
+  const o = document.getElementById('paintDimsEditor');
+  if(o) o.remove();
+}
+function _paintOpenDimsEditor(){
+  if(!_paint || _paint.selectedIdx < 0) return;
+  const s = _paint.shapes[_paint.selectedIdx];
+  if(!s) return;
+  if(!_paintHasScale()){ showToast("Choisis d'abord une échelle (autre que « Libre »)"); return; }
+  const kind = _paintDimsKind(s);
+  if(!kind){ showToast('Dimensions exactes indisponibles pour cette forme'); return; }
+  _paintCloseDimsEditor();
+  const unit = _paintUnitLabel();
+  const k = _paint.pxPerMm;
+  const w = Math.abs(s.x2 - s.x1), h = Math.abs(s.y2 - s.y1), len = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+  const fld = (id, label, px) => `
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--ink-soft);">${label}
+      <span style="display:flex;align-items:center;gap:6px;">
+        <input id="${id}" type="text" inputmode="decimal" value="${_paintNum(px / k)}" style="width:110px;padding:7px 9px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:15px;font-weight:700;">
+        <span style="font-size:13px;color:var(--ink);">${unit}</span>
+      </span>
+    </label>`;
+  let fields = '';
+  if(kind === 'len') fields = fld('paintDimL', 'Longueur', len);
+  else if(kind === 'circle') fields = fld('paintDimW', 'Diamètre (Ø)', w);
+  else fields = fld('paintDimW', s.type === 'triangle' ? 'Base' : 'Largeur', w) + fld('paintDimH', 'Hauteur', h);
+  let diamSel = '';
+  if(_paintIsLineSymbol(s)){
+    const cur = s.diam || _paint.visDiam;
+    const list = PAINT_VIS_DIAMS.includes(cur) ? PAINT_VIS_DIAMS : [...PAINT_VIS_DIAMS, cur].sort((a, b) => a - b);
+    diamSel = `
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--ink-soft);">Diamètre Ø (mm)
+      <select id="paintDimD" style="width:110px;padding:7px 9px;border-radius:8px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:15px;font-weight:700;">
+        ${list.map(v => `<option value="${v}" ${v === cur ? 'selected' : ''}>${String(v).replace('.', ',')}</option>`).join('')}
+      </select>
+    </label>`;
+  }
+  const ov = document.createElement('div');
+  ov.id = 'paintDimsEditor';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML = `
+    <div style="background:var(--card,#fff);color:var(--ink,#222);border:1.5px solid var(--line);border-radius:14px;padding:18px 20px;min-width:300px;box-shadow:0 10px 40px rgba(0,0,0,.45);">
+      <div style="font-size:16px;font-weight:800;margin-bottom:4px;">📏 Dimensions exactes</div>
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:14px;">Échelle ${_paint.scaleId} · le point de départ de la forme reste en place.</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;">${fields}${diamSel}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn btn-outline" onclick="_paintCloseDimsEditor()">Annuler</button>
+        <button type="button" class="btn btn-primary" onclick="_paintApplyDimsEditor()">Appliquer</button>
+      </div>
+    </div>`;
+  ov.addEventListener('mousedown', e => { if(e.target === ov) _paintCloseDimsEditor(); });
+  ov.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); _paintApplyDimsEditor(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); _paintCloseDimsEditor(); }
+  });
+  document.body.appendChild(ov);
+  const first = ov.querySelector('input');
+  if(first){ first.focus(); first.select(); }
+}
+function _paintApplyDimsEditor(){
+  if(!_paint || _paint.selectedIdx < 0) { _paintCloseDimsEditor(); return; }
+  const s = _paint.shapes[_paint.selectedIdx];
+  const kind = _paintDimsKind(s);
+  if(!s || !kind){ _paintCloseDimsEditor(); return; }
+  const k = _paint.pxPerMm;
+  const read = id => {
+    const e = document.getElementById(id);
+    if(!e) return null;
+    const v = parseFloat(String(e.value).replace(',', '.'));
+    if(!isFinite(v) || v <= 0) return null;
+    return (_paint.unit === 'cm' ? v * 10 : v) * k; // → pixels monde
+  };
+  let L = null, W = null, H = null;
+  if(kind === 'len'){ L = read('paintDimL'); if(L == null){ showToast('Longueur invalide'); return; } }
+  else if(kind === 'circle'){ W = H = read('paintDimW'); if(W == null){ showToast('Diamètre invalide'); return; } }
+  else { W = read('paintDimW'); H = read('paintDimH'); if(W == null || H == null){ showToast('Dimension invalide'); return; } }
+  _paintPushHistory();
+  if(kind === 'len'){
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, l0 = Math.hypot(dx, dy);
+    const ux = l0 > 1e-6 ? dx / l0 : 1, uy = l0 > 1e-6 ? dy / l0 : 0;
+    s.x2 = s.x1 + ux * L; s.y2 = s.y1 + uy * L;
+    const dEl = document.getElementById('paintDimD');
+    if(dEl && _paintIsLineSymbol(s)){ const dv = parseFloat(dEl.value); if(dv > 0){ s.diam = dv; _paint.visDiam = dv; } }
+  } else {
+    const sx = (s.x2 >= s.x1) ? 1 : -1, sy = (s.y2 >= s.y1) ? 1 : -1;
+    s.x2 = s.x1 + sx * W; s.y2 = s.y1 + sy * H;
+  }
+  _paint._scaleUiKey = null;
+  _paintCloseDimsEditor();
+  _paintRedraw();
+}
+
+
 let _paint = null;
 
 function openPaintSketchTool(onSave, existingPaint){
@@ -65978,6 +66330,31 @@ function openPaintSketchTool(onSave, existingPaint){
           </div>
         </div>
         <div class="paint-tb-sep"></div>
+        <!-- v5.41.369 — ÉCHELLE RÉELLE : échelle du croquis, unité des cotes, cotes
+             permanentes (📏), aimant sur les mm entiers (🧲) ; « Ø vis » n'apparaît
+             qu'avec Vis/Pointe (outil actif ou vis sélectionnée). -->
+        <div class="paint-tb-group">
+          <div class="paint-tb-label">Échelle</div>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <select id="paintScaleSelect" title="Échelle du croquis (1:1 = taille réelle à l'écran)" style="padding:5px 6px;border-radius:6px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;">
+              <option value="">Libre</option>
+              ${PAINT_SCALES.map(sc => `<option value="${sc.id}">${sc.id}</option>`).join('')}
+            </select>
+            <select id="paintUnitSelect" title="Unité des cotes" style="padding:5px 6px;border-radius:6px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;">
+              <option value="mm">mm</option>
+              <option value="cm">cm</option>
+            </select>
+            <button type="button" id="paintDimsBtn" class="paint-tb-btn" title="Afficher les cotes sur les formes" data-tip="Cotes affichées" onclick="_paintToggleDims()">📏</button>
+            <button type="button" id="paintSnapBtn" class="paint-tb-btn" title="Aimant : arrondit les tracés aux mm entiers" data-tip="Aimant mm" onclick="_paintToggleSnap()">🧲</button>
+          </div>
+        </div>
+        <div id="paintVisRow" class="paint-tb-group" style="display:none;">
+          <div class="paint-tb-label">Ø vis (mm)</div>
+          <select id="paintVisDiamSelect" title="Diamètre réel de la vis / pointe" style="padding:5px 6px;border-radius:6px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);font-size:12px;">
+            ${PAINT_VIS_DIAMS.map(v => `<option value="${v}">${String(v).replace('.', ',')}</option>`).join('')}
+          </select>
+        </div>
+        <div class="paint-tb-sep"></div>
         <!-- v5.41.151 — Repères posables sur n'importe quelle ligne (continue
              ou pointillée) du croquis : Épaisseur (croix), Axe (V), Rameneret
              (Z) — voir _paintArmMarker/_paintPlaceMarkerAt. Un bouton "armé"
@@ -66056,6 +66433,7 @@ function openPaintSketchTool(onSave, existingPaint){
             <button type="button" onclick="_paintLayerDown()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⬇️ Descendre le calque</button>
             <button type="button" onclick="_paintDuplicateSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">⧉ Dupliquer</button>
             <button type="button" onclick="_paintRotateSelected(-15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↺ Rotation gauche (15°)</button>
+            <button type="button" id="paintDimsMenuBtn" onclick="_paintCloseShapeMenu(); _paintOpenDimsEditor()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">📏 Dimensions exactes…</button>
             <button type="button" id="paintMoulureMenuBtn" onclick="_paintCloseShapeMenu(); _paintOpenMoulureEditor()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">🪚 Moulure…</button>
             <button type="button" id="paintMagnetMenuBtn" onclick="_paintToggleMagnetSelected()" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">🧲 Désaimanter</button>
             <button type="button" onclick="_paintRotateSelected(15)" style="text-align:left;padding:6px 8px;border-radius:6px;border:none;background:none;font-size:12px;font-weight:700;cursor:pointer;color:#2a2118;">↻ Rotation droite (15°)</button>
@@ -66086,6 +66464,8 @@ function openPaintSketchTool(onSave, existingPaint){
   _paint = {
     canvas, ctx, dpr, onSave,
     tool: 'pen', color: PAINT_COLORS[0], lineWidth: 3, fontSize: 16, textMode: 'fit', fillMaterial: 'none', fillColor: '#4EA1FF',
+    // v5.41.369 — échelle réelle (voir PAINT_SCALES) : 1:2 par défaut sur un nouveau croquis
+    scaleId: '1:2', pxPerMm: _paintPxPerMmForScale('1:2', dpr), unit: 'mm', showDims: true, snapMm: true, visDiam: 5,
     shapes: [], selectedIdx: -1, drawing: false, start: null, current: null,
     // v5.41.146 — tracé « Forme libre »/« Découpe libre » en cours (sommets
     // posés point à point) : { points:[...], cursor:{x,y}|null }, ou null
@@ -66124,7 +66504,22 @@ function openPaintSketchTool(onSave, existingPaint){
   if(existingPaint && Array.isArray(existingPaint.shapes) && existingPaint.shapes.length){
     const sw = existingPaint.w || canvas.width, sh = existingPaint.h || canvas.height;
     const scaleX = canvas.width / sw, scaleY = canvas.height / sh;
-    _paint.shapes = existingPaint.shapes.map(sh2 => _paintScaleShape(sh2, scaleX, scaleY));
+    // v5.41.369 — un croquis À L'ÉCHELLE est remis à l'échelle de façon UNIFORME
+    // (même facteur en X et Y) et son pxPerMm suit : les dimensions réelles
+    // restent exactes même si la taille de l'écran a changé. Un ancien croquis
+    // sans échelle repasse en « Libre » (comportement historique).
+    const sc0 = (existingPaint.scale && existingPaint.scale.pxPerMm > 0) ? existingPaint.scale : null;
+    const kx = scaleX, ky = sc0 ? scaleX : scaleY;
+    _paint.shapes = existingPaint.shapes.map(sh2 => _paintScaleShape(sh2, kx, ky));
+    if(sc0){
+      _paint.pxPerMm = sc0.pxPerMm * scaleX;
+      _paint.scaleId = sc0.id || '';
+      _paint.unit = sc0.unit === 'cm' ? 'cm' : 'mm';
+      _paint.showDims = sc0.showDims !== false;
+      if(sc0.visDiam > 0) _paint.visDiam = sc0.visDiam;
+    } else {
+      _paint.pxPerMm = null; _paint.scaleId = '';
+    }
   }
 
   // v5.41.136 — CORRECTIF « le croquis rétrécit d'un coup » : la résolution
@@ -66231,6 +66626,11 @@ function openPaintSketchTool(onSave, existingPaint){
   document.getElementById('paintFontSizeSelect').onchange = (e) => { _paint.fontSize = parseInt(e.target.value,10) || 16; };
   document.getElementById('paintFillSelect').onchange = (e) => { _paint.fillMaterial = e.target.value; _paintUpdateFillColorRow(); };
   document.getElementById('paintFillColorInput').oninput = (e) => { _paint.fillColor = e.target.value; };
+  // v5.41.369 — échelle réelle
+  document.getElementById('paintScaleSelect').onchange = (e) => _paintSetScale(e.target.value);
+  document.getElementById('paintUnitSelect').onchange = (e) => _paintSetUnit(e.target.value);
+  document.getElementById('paintVisDiamSelect').onchange = (e) => _paintSetVisDiam(parseFloat(e.target.value));
+  _paint._scaleUiKey = null; _paintUpdateScaleUI();
   _paintUpdateFontSizeRow();
   _paintUpdateFillRow();
 
@@ -66506,7 +66906,8 @@ function openPaintSketchTool(onSave, existingPaint){
       _paintRedraw();
       return;
     }
-    _paint.current = _paintSnapPoint(p);
+    // v5.41.369 — aimant sur les mm entiers (échelle réelle), après l'aimant « bords »
+    _paint.current = _paintSnapMm(_paint.start, _paintSnapPoint(p), p);
     _paintRedraw();
   };
   // v5.41.171 — geste terminé (quelle que soit la branche empruntée) : on
@@ -66539,7 +66940,8 @@ function openPaintSketchTool(onSave, existingPaint){
       // (ex. une longueur) à afficher sur la ligne — voir _paintDrawDistanceShape.
       const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
       if(Math.hypot(x2-x1, y2-y1) >= 8*dpr){
-        const txt = prompt('Texte à afficher sur la cote (ex. une longueur) :', '');
+        // v5.41.369 — avec une échelle, la longueur réelle est pré-remplie
+        const txt = prompt('Texte à afficher sur la cote (ex. une longueur) :', _paintHasScale() ? _paintFmtPx(Math.hypot(x2-x1, y2-y1)) : '');
         if(txt !== null){
           _paintPushHistory();
           _paint.shapes.push({ type:'distance', x1, y1, x2, y2, text:(txt||'').trim(), color:_paint.color, width:_paint.lineWidth*dpr, dash: _paint.pendingDash || null });
@@ -66599,7 +67001,10 @@ function openPaintSketchTool(onSave, existingPaint){
         : (Math.hypot(_paint.current.x - _paint.start.x, _paint.current.y - _paint.start.y) >= 8*dpr);
       if(big){
         _paintPushHistory();
-        _paint.shapes.push({ type:'symbol', symbol:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color });
+        const symShape = { type:'symbol', symbol:_paint.tool, x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y, color:_paint.color };
+        // v5.41.369 — vis/pointe : diamètre RÉEL (mm) choisi dans « Ø vis », dessiné à l'échelle
+        if(!isRectSymbol && _paintHasScale()) symShape.diam = _paint.visDiam;
+        _paint.shapes.push(symShape);
       }
     } else if(_paint.tool === 'text' && _paint.textMode !== 'fixed' && _paint.current){
       const x1 = _paint.start.x, y1 = _paint.start.y, x2 = _paint.current.x, y2 = _paint.current.y;
@@ -66647,6 +67052,10 @@ function openPaintSketchTool(onSave, existingPaint){
   // en dehors d'un geste actif, paintMove/finishDraw ne faisaient de toute
   // façon rien (voir leurs gardes `if(!_paint.drawing) return` etc.).
   canvas.onmousedown = paintDown;
+  // v5.41.369 — double-clic sur une forme sélectionnée (outil Sélection) : dimensions exactes
+  canvas.addEventListener('dblclick', () => {
+    if(_paint && _paint.tool === 'select' && _paint.selectedIdx >= 0 && _paintHasScale()) _paintOpenDimsEditor();
+  });
   // Filet de sécurité : si l'outil est fermé (_paintClose) EN PLEIN geste
   // (souris toujours enfoncée), ces références permettent d'y retirer les
   // écouteurs `window` malgré tout — voir _paintClose.
@@ -67493,6 +67902,9 @@ function _paintRenderShapeMenu(){
   if(!pop || !btn) return;
   if(!_paintShapeMenuOpen){ pop.style.display = 'none'; return; }
   // v5.41.211 — « Moulure… » : rectangles uniquement
+  // v5.41.369 — « Dimensions exactes… » : seulement avec une échelle et une forme mesurable
+  const dmb = document.getElementById('paintDimsMenuBtn');
+  if(dmb){ const sd = _paint && _paint.shapes[_paint.selectedIdx]; dmb.style.display = (_paintHasScale() && sd && _paintDimsKind(sd)) ? '' : 'none'; }
   const mob = document.getElementById('paintMoulureMenuBtn');
   if(mob){ const sl = _paint && _paint.shapes[_paint.selectedIdx]; mob.style.display = (sl && sl.type === 'rect') ? '' : 'none'; }
   // v5.41.201 — bouton aimant : visible seulement pour les formes aimantables
@@ -68222,7 +68634,7 @@ function _paintDrawFillPatternClean(ctx, material, x, y, w, h, dpr, pathFn){
    ligne : la longueur et l'orientation du tracé deviennent celles de la
    quincaillerie. `dpr` sert à garder les hachures/traits secondaires à une
    taille lisible quel que soit le zoom écran (pixel ratio). */
-function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
+function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr, real){
   ctx.save();
   ctx.strokeStyle = color; ctx.fillStyle = color;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -68237,8 +68649,8 @@ function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
   const px = -uy, py = ux;                     // perpendiculaire
   ctx.lineWidth = Math.max(2, 2*(dpr||1));
   switch(symbol){
-    case 'vis': _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr); break;
-    case 'pointe': _paintDrawPointeRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr); break;
+    case 'vis': _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr, real); break;
+    case 'pointe': _paintDrawPointeRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr, real); break;
   }
   ctx.restore();
 }
@@ -68255,13 +68667,15 @@ function _paintDrawSymbol(ctx, symbol, x1, y1, x2, y2, color, dpr){
    `len` — discipline déjà appliquée au goujon/écrou pour éviter l'effet
    « échelle » sur un tracé long. Seul le nombre de spires s'adapte à la
    longueur (via Math.floor), pas leur taille individuelle. */
-function _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, dpr){
+function _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, dpr, ov){
   // Tête évasée (trapèze) + col cylindrique court, perpendiculaire au départ
   // du tracé — commun à Vis et Pointe.
-  const headHalfW = 9*(dpr||1);   // demi-largeur du haut de la tête (évasée)
-  const neckHalfW = 3.2*(dpr||1); // demi-largeur du col, sous la tête
-  const headDepth = 3.5*(dpr||1); // profondeur (le long de la tige) de la tête évasée
-  const neckDepth = 2.5*(dpr||1); // profondeur du col cylindrique
+  // v5.41.369 — `ov` (optionnel) impose des dimensions RÉELLES (échelle) ;
+  // sans lui, tailles fixes historiques en pixels.
+  const headHalfW = ov ? ov.headHalfW : 9*(dpr||1);   // demi-largeur du haut de la tête (évasée)
+  const neckHalfW = ov ? ov.neckHalfW : 3.2*(dpr||1); // demi-largeur du col, sous la tête
+  const headDepth = ov ? ov.headDepth : 3.5*(dpr||1); // profondeur (le long de la tige) de la tête évasée
+  const neckDepth = ov ? ov.neckDepth : 2.5*(dpr||1); // profondeur du col cylindrique
   // 4 coins du trapèze : large en haut (x1,y1), plus étroit à la jonction avec le col.
   const topL = { x:x1 - px*headHalfW, y:y1 - py*headHalfW };
   const topR = { x:x1 + px*headHalfW, y:y1 + py*headHalfW };
@@ -68284,15 +68698,16 @@ function _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, dpr){
   ctx.beginPath(); ctx.moveTo(midL.x, midL.y); ctx.lineTo(midR.x, midR.y); ctx.stroke();
   return headDepth + neckDepth; // distance consommée par la tête, le long de la tige
 }
-function _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr){
+function _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr, real){
   const d = (dpr||1);
-  const headUsed = _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, d);
-  const tipLen = 11*d;               // longueur FIXE de la pointe conique
-  const tipHalfW = 3*d;              // demi-largeur à la base de la pointe conique
+  const R = real ? _paintRealScrewDims(real, 'vis', d) : null; // v5.41.369 — Ø réel à l'échelle
+  const headUsed = _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, d, R);
+  const tipLen = R ? R.tipLen : 11*d;               // longueur FIXE de la pointe conique
+  const tipHalfW = R ? R.tipHalfW : 3*d;              // demi-largeur à la base de la pointe conique
   const shaftStart = headUsed;
   const shaftEnd = Math.max(shaftStart, len - tipLen);
   // Tige (2 lignes parallèles) entre le col et le début de la pointe conique.
-  const shaftHalfW = 3*d;
+  const shaftHalfW = R ? R.shaftHalfW : 3*d;
   ctx.beginPath();
   ctx.moveTo(x1+ux*shaftStart-px*shaftHalfW, y1+uy*shaftStart-py*shaftHalfW);
   ctx.lineTo(x1+ux*shaftEnd-px*shaftHalfW, y1+uy*shaftEnd-py*shaftHalfW);
@@ -68307,10 +68722,10 @@ function _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr){
   // v5.41.140 — le filetage démarre plus bas (smoothLen fixe), pour laisser
   // une partie de tige LISSE bien visible entre le col de la tête et le
   // début du filetage, comme sur une vraie vis à bois.
-  const smoothLen = 45*d;               // longueur FIXE de tige lisse sous la tête
+  const smoothLen = R ? Math.max(0, (shaftEnd - shaftStart) * 0.35) : 45*d;               // longueur FIXE de tige lisse sous la tête
   const threadStart = Math.min(shaftEnd, shaftStart + smoothLen);
-  const pitch = 6*d;                    // pas fixe entre deux sommets de spire
-  const threadHalfW = shaftHalfW + 2*d; // dépasse la tige de 2×dpr de chaque côté
+  const pitch = R ? R.pitch : 6*d;                    // pas fixe entre deux sommets de spire
+  const threadHalfW = R ? R.threadHalfW : shaftHalfW + 2*d; // dépasse la tige de 2×dpr de chaque côté
   ctx.lineWidth = Math.max(1.3, 1.4*d);
   ctx.beginPath();
   let first = true;
@@ -68330,12 +68745,13 @@ function _paintDrawVisRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr){
   ctx.lineTo(x1+ux*shaftEnd+px*tipHalfW, y1+uy*shaftEnd+py*tipHalfW);
   ctx.stroke();
 }
-function _paintDrawPointeRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr){
+function _paintDrawPointeRealiste(ctx, x1,y1,x2,y2, ux,uy,px,py, len, dpr, real){
   const d = (dpr||1);
-  const headUsed = _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, d);
-  const tipLen = 10*d;               // longueur FIXE de la pointe triangulaire
-  const tipHalfW = 2.5*d;
-  const shaftHalfW = 2*d;            // tige plus fine que la vis (pas de filetage)
+  const R = real ? _paintRealScrewDims(real, 'pointe', d) : null; // v5.41.369 — Ø réel à l'échelle
+  const headUsed = _paintDrawHeadTrapeze(ctx, x1,y1, ux,uy,px,py, d, R);
+  const tipLen = R ? R.tipLen : 10*d;               // longueur FIXE de la pointe triangulaire
+  const tipHalfW = R ? R.tipHalfW : 2.5*d;
+  const shaftHalfW = R ? R.shaftHalfW : 2*d;            // tige plus fine que la vis (pas de filetage)
   const shaftStart = headUsed;
   const shaftEnd = Math.max(shaftStart, len - tipLen);
   // Tige LISSE (2 lignes parallèles, sans filetage).
@@ -68694,7 +69110,8 @@ function _paintDrawOneShape(ctx, s){
     ctx.font = `700 ${s.size}px sans-serif`;
     ctx.fillText(s.text, s.x, s.y);
   } else if(s.type === 'symbol'){
-    _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr);
+    _paintDrawSymbol(ctx, s.symbol, s.x1, s.y1, s.x2, s.y2, s.color, _paint.dpr,
+      (_paintHasScale() && s.diam > 0) ? { diam: s.diam, k: _paint.pxPerMm } : null);
   } else if(s.type === 'distance'){
     _paintDrawDistanceShape(ctx, s, _paint.dpr);
   } else if(s.type === 'arrow'){
@@ -68941,10 +69358,12 @@ function _paintDrawShapesOn(ctx, shapes, selectedIdx, scale){
         ctx.setLineDash([]);
         ctx.restore();
       }
+      _paintDrawShapeDimLabel(ctx, s, idx, selectedIdx, scale);
       return;
     }
     ctx.save();
     _paintDrawOneShape(ctx, s);
+    _paintDrawShapeDimLabel(ctx, s, idx, selectedIdx, scale); // v5.41.369 — cote à l'échelle
     if(idx === selectedIdx){
       const b = _paintShapeBounds(s);
       ctx.save();
@@ -69148,6 +69567,18 @@ function _paintRedraw(){
     }
     ctx.restore();
   }
+  // v5.41.369 — cote EN DIRECT pendant le tracé (échelle réelle) : longueur,
+  // L × H, Ø… près du curseur, en mm ou cm selon le réglage.
+  if(_paint.drawing && _paint.current && _paintHasScale()){
+    const t = _paint.tool;
+    const pv = { x1:_paint.start.x, y1:_paint.start.y, x2:_paint.current.x, y2:_paint.current.y };
+    if(['line','rect','circle','triangle','arrow','distance'].includes(t)) pv.type = t;
+    else if(PAINT_SYMBOLS.some(sy => sy.id === t)){ pv.type = 'symbol'; pv.symbol = t; pv.diam = _paint.visDiam; }
+    if(pv.type){
+      const txt = _paintShapeDimText(pv);
+      _paintDrawDimText(ctx, txt, _paint.current.x + 14 * _paint.dpr / v.scale, _paint.current.y - 18 * _paint.dpr / v.scale, v.scale);
+    }
+  }
   // v5.41.146 — aperçu du tracé « Forme libre » / « Découpe libre » en
   // cours : sommets déjà posés reliés par des segments pleins, plus un
   // dernier segment pointillé jusqu'au curseur (élastique), et un petit
@@ -69168,6 +69599,10 @@ function _paintRedraw(){
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    if(_paintHasScale() && _paint.tool === 'polygon' && _paint.polyDraft.cursor){
+      const lp = pts[pts.length-1], cu = _paint.polyDraft.cursor, segPx = Math.hypot(cu.x-lp.x, cu.y-lp.y);
+      if(segPx > 4 * _paint.dpr) _paintDrawDimText(ctx, _paintFmtPx(segPx), (lp.x+cu.x)/2, (lp.y+cu.y)/2 - 14 * _paint.dpr / v.scale, v.scale);
+    }
     const closeRadius = 12 * _paint.dpr;
     ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, closeRadius, 0, Math.PI*2);
     ctx.fillStyle = 'rgba(78,161,255,0.18)'; ctx.fill();
@@ -69175,6 +69610,7 @@ function _paintRedraw(){
     ctx.restore();
   }
   ctx.setTransform(1,0,0,1,0,0);
+  _paintUpdateScaleUI(); // v5.41.369 — garde le ruban « Échelle » à jour
   // v5.41.140 — repositionne le bouton ⋮ flottant (menu calque/duplication/
   // rotation) sur le coin de la sélection à chaque redessin, pour qu'il
   // suive un déplacement/redimensionnement/zoom en temps réel.
@@ -69341,6 +69777,8 @@ function _paintFinish(){
   exportCanvas.toBlob(blob => {
     if(!blob){ showToast('❌ Échec de la génération du croquis'); return; }
     const paintData = { shapes: JSON.parse(JSON.stringify(shapes)), w: canvas.width, h: canvas.height };
+    // v5.41.369 — échelle réelle enregistrée (rouverte à l'identique, voir openPaintSketchTool)
+    if(_paintHasScale()) paintData.scale = { id: _paint.scaleId, pxPerMm: _paint.pxPerMm, unit: _paint.unit, showDims: _paint.showDims, visDiam: _paint.visDiam };
     onSave(blob, paintData);
     _paintClose();
   }, 'image/png');
