@@ -4827,6 +4827,20 @@
   .pl-segs i:first-child{ border-left:none; }
   .pl-segs i.w0{ border-left:2px solid rgba(0,0,0,.55); }
   body.theme-light .pl13 td.d.w0, body.theme-light .pl13 th.d.w0, body.theme-light .pl13 th.wk, body.theme-light .pl13 td.pl-span.w0s{ border-left-color:#555; }
+  /* v5.41.399 — tableau des demandes d'absence (Fiches d'heures) */
+  .abs-ft{ margin-top:12px; }
+  .abs-ft-h{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; } .abs-ft-h b{ font-size:15px; }
+  .abs-ft-w{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .abs-ft-t{ width:100%; border-collapse:collapse; font-size:13px; }
+  .abs-ft-t th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); padding:5px 6px; border-bottom:1.5px solid var(--line); }
+  .abs-ft-t td{ padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .abs-ft-t .c{ text-align:center; white-space:nowrap; }
+  .abs-ft-t small{ display:block; color:var(--ink-soft); font-size:11px; margin-top:2px; }
+  .abs-ft-t tr.cx td{ opacity:.55; }
+  .abs-ft-t .abs-st{ white-space:nowrap; font-size:10px; }
+  .abs-tb-act{ display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  .abs-tb-btn{ padding:5px 9px; border-radius:8px; border:1.5px solid var(--wood); background:transparent; color:var(--wood); font-weight:800; font-size:12px; cursor:pointer; font-family:inherit; }
+  .abs-tb-btn.x{ border-color:var(--line); color:var(--ink-soft); }
   /* ═══ Absences & Planning (fin) ═══ */
 
   /* ═══ v5.41.372 — THÈME « CHANTIER » (mode clair Balise : jaune / noir / blanc) ═══
@@ -5691,6 +5705,8 @@
       <div class="heures-mode" id="heuresMode-fiches" style="display:none;">
         <div class="card" id="fichesWeekHeader"></div>
         <div id="fichesContent"></div>
+        <!-- v5.41.399 — demandes d'absence de l'ouvrier -->
+        <div id="fichesAbsTable"></div>
 
       </div>
 
@@ -30044,8 +30060,10 @@ function renderFiches(){
   if(profile.role === 'comptable' || profile.role === 'patron'){
     if(document.getElementById('fichesAddWorkerBtn')) document.getElementById('fichesAddWorkerBtn').style.display = 'none';
     renderComptableFiches();
+    if(document.getElementById('fichesAbsTable')) document.getElementById('fichesAbsTable').innerHTML = '';
     return;
   }
+  try{ if(typeof _absRenderFichesTable === 'function') _absRenderFichesTable(); }catch(e){}   // v5.41.399
 
   const monday = getMondayOfWeek(new Date(), fichesWeekOffset);
   const days = [];
@@ -42269,9 +42287,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.398';
+const APP_VERSION = '5.41.399';
 
 const CHANGELOG = [
+  {
+    version: '5.41.399',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🏖️', text: "Ouvriers : Heures › Fiches d'heures affiche le tableau « Mes demandes d'absence » (dates, motif, jours, statut : en cours de validation avec qui a déjà validé, validée, refusée avec le motif, annulée)." },
+      { icon: '✏️', text: "Une demande en cours de validation peut être modifiée en cas d'erreur (dates, motif, précisions…) : elle repart pour validation chez le patron et la comptable, qui sont prévenus. Une demande validée ou refusée ne se modifie plus." },
+    ],
+  },
   {
     version: '5.41.398',
     date: '13/10/2026',
@@ -73866,7 +73892,10 @@ function _absMergeOne(a, b){
   if(!a) return b; if(!b) return a;
   const n = (a.updatedAt || '') >= (b.updatedAt || '') ? a : b, o = n === a ? b : a;
   const out = Object.assign({}, o, n);
-  out.approvals = Object.assign({}, o.approvals || {}, n.approvals || {});
+  // v5.41.399 — demande modifiée par l'ouvrier : les validations d'avant la modification ne comptent plus
+  const eo = o.resetAt || '', en = n.resetAt || '';
+  out.approvals = en > eo ? Object.assign({}, n.approvals || {}) : eo > en ? Object.assign({}, o.approvals || {}) : Object.assign({}, o.approvals || {}, n.approvals || {});
+  out.resetAt = en > eo ? en : eo;
   const fin = s => s === 'refused' || s === 'cancelled';
   if(fin(o.status) && !fin(n.status)){ out.status = o.status; out.refusal = o.refusal || n.refusal; out.cancel = o.cancel || n.cancel; }
   out.status = _absComputeStatus(out);
@@ -73958,7 +73987,50 @@ function _absSavedSig(){
 }
 
 /* ── Demande (ouvrier) ── */
-function absOpenNew(){
+
+/* ═══ v5.41.399 — Ouvrier : ses demandes d'absence dans Heures › Fiches d'heures
+   (tableau Dates · Motif · Jours · Statut, modification tant que c'est en cours de validation) ═══ */
+function _absStatusTxt(r){
+  if(r.status === 'approved') return { cls:'ok', t:'✅ Validée', d:_absApprovalsTxt(r) };
+  if(r.status === 'refused') return { cls:'no', t:'❌ Refusée', d:(r.refusal && r.refusal.reason ? '« ' + r.refusal.reason + ' »' : 'par ' + _absShort(r.refusal && r.refusal.name)) };
+  if(r.status === 'cancelled') return { cls:'cx', t:'Annulée', d:'' };
+  const a = r.approvals || {}, need = r.needs || [];
+  const done = need.filter(k => a[k]).length;
+  return { cls:'w', t:'⏳ En cours de validation', d:(done ? done + '/' + need.length + ' · ' : '') + need.map(k => (a[k] ? '✓ ' : '… ') + (ABS_ROLE_LBL[k] || k)).join(' · ') };
+}
+function _absRenderFichesTable(){
+  const box = document.getElementById('fichesAbsTable'); if(!box) return;
+  const me = _absMe();
+  if(_absIsBureau() || !me.authId){ box.innerHTML = ''; return; }
+  if(!_absList){ box.innerHTML = '<div class="card"><div class="hint">🏖️ Chargement de tes demandes d\'absence…</div></div>'; _absLoad(true).then(() => { if(_absList) _absRenderFichesTable(); }); return; }
+  const mine = _absList.filter(r => r.authId === me.authId).sort((a, b) => (b.from || '').localeCompare(a.from || ''));
+  const pend = mine.filter(r => r.status === 'pending').length;
+  const rows = mine.slice(0, 30).map(r => {
+    const t = ABS_TYPES[r.type] || { emoji:'', short:r.type }, st = _absStatusTxt(r);
+    const act = r.status === 'pending'
+      ? `<button class="abs-tb-btn" onclick="absEditMine('${r.id}')">✏️ Modifier</button><button class="abs-tb-btn x" onclick="absCancelMine('${r.id}')">Annuler</button>`
+      : r.status === 'approved' ? `<button class="abs-tb-btn" onclick="absPdf('${r.id}')">📄 PDF</button>` : '';
+    return `<tr class="${st.cls}"><td><b>${_absRange(r)}</b>${r.back ? '<small>retour ' + _absFmt(r.back, { day:'numeric', month:'short' }) + '</small>' : ''}</td>
+      <td>${t.emoji || ''} ${escapeHtml(t.short || '')}${r.type === 'recup' && r.recupHours ? '<small>' + escapeHtml(String(r.recupHours)) + ' h</small>' : ''}</td>
+      <td class="c">${r.days} j</td>
+      <td><span class="abs-st ${st.cls}">${st.t}</span>${st.d ? '<small>' + escapeHtml(st.d) + '</small>' : ''}${act ? '<div class="abs-tb-act">' + act + '</div>' : ''}</td></tr>`;
+  }).join('');
+  box.innerHTML = `<div class="card abs-ft">
+    <div class="abs-ft-h"><b>🏖️ Mes demandes d'absence</b>${pend ? `<span class="abs-st w">${pend} en cours</span>` : ''}</div>
+    ${mine.length ? `<div class="abs-ft-w"><table class="abs-ft-t"><thead><tr><th>Dates</th><th>Motif</th><th class="c">Jours</th><th>Statut</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : '<div class="hint" style="padding:6px 0;">Aucune demande envoyée pour l\'instant.</div>'}
+    <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="absOpenNew()">＋ Nouvelle demande d'absence</button>
+  </div>`;
+}
+let _absEditId = null;
+function absEditMine(id){
+  const r = (_absList || []).find(x => x.id === id);
+  if(!r || r.authId !== _absMe().authId){ showToast('Demande introuvable'); return; }
+  if(r.status !== 'pending'){ showToast('Cette demande est déjà ' + (r.status === 'approved' ? 'validée' : r.status === 'refused' ? 'refusée' : 'annulée') + ' : elle ne peut plus être modifiée'); return; }
+  absOpenNew(r);
+}
+function absOpenNew(edit){
+  _absEditId = edit && edit.id ? edit.id : null;
   const t = _absToday(), from = _absIsWork(t) ? _absNextWork(t) : _absNextWork(t);
   const box = document.getElementById('absReqBody'); if(!box) return;
   box.innerHTML = `
@@ -73978,8 +74050,19 @@ function absOpenNew(){
     <div class="abs-l" style="display:flex;justify-content:space-between;align-items:center;">Signature<button type="button" class="abs-lnk" onclick="_absEditSig && _absEditSig.clear()">Effacer</button></div>
     <div class="abs-sigw"><canvas id="absSigCanvas"></canvas></div>
     <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="absSubmit()">📨 Envoyer la demande</button>`;
+  if(_absEditId){   // v5.41.399 — modification d'une demande en cours de validation
+    const g = id => document.getElementById(id);
+    g('absFrom').value = edit.from; g('absTo').value = edit.to; if(edit.back){ g('absBack').value = edit.back; if(edit.back !== _absNextWork(edit.to)) g('absBack').dataset.manual = '1'; }
+    const rt = document.querySelector('input[name=absType][value="' + edit.type + '"]'); if(rt) rt.checked = true;
+    const ri = document.querySelector('input[name=absInit][value="' + (edit.initiative || 'salarie') + '"]'); if(ri) ri.checked = true;
+    if(edit.type === 'recup' && g('absRecupH')) g('absRecupH').value = edit.recupHours || '';
+    if(g('absNote')) g('absNote').value = edit.note || '';
+    const btn = box.querySelector('.btn-primary'); if(btn) btn.textContent = '💾 Enregistrer la modification';
+    box.insertAdjacentHTML('afterbegin', '<div class="abs-al" style="margin:0 0 6px;background:rgba(232,172,61,.12);border-color:var(--wood);color:var(--ink);">✏️ Modification de ta demande. Le patron et la comptable devront la valider à nouveau.</div>');
+  }
+  const mh = document.querySelector('#modal-absReq .modal-header h2'); if(mh) mh.textContent = _absEditId ? 'Modifier ma demande' : 'Demande d\'absence';
   openModal('absReq');
-  setTimeout(() => { _absEditSig = _absSigPad('absSigCanvas', _absSavedSig()); _absReqLive(); }, 280);
+  setTimeout(() => { _absEditSig = _absSigPad('absSigCanvas', (edit && edit.sigWorker) || _absSavedSig()); _absReqLive(); }, 280);
 }
 function _absReqLive(datesChanged){
   const f = document.getElementById('absFrom'), t = document.getElementById('absTo'), b = document.getElementById('absBack');
@@ -74017,17 +74100,22 @@ async function absSubmit(){
   if(_absIdsByRole(reg, 'comptable').length) needs.push('comptable');
   needs = needs.filter(k => k !== me.role);
   const now = new Date().toISOString();
-  const r = { id:uid(), authId:me.authId, name:me.name || me.authId, first:me.first, last:me.last, role:me.role, workerId:me.workerId,
+  const prev = _absEditId ? (_absList || []).find(x => x.id === _absEditId) : null;
+  if(_absEditId && (!prev || prev.status !== 'pending')){ showToast('Cette demande a été traitée entre-temps : elle ne peut plus être modifiée'); closeModal('absReq'); _absEditId = null; absRender(); return; }
+  const r = { id:prev ? prev.id : uid(), authId:me.authId, name:me.name || me.authId, first:me.first, last:me.last, role:me.role, workerId:me.workerId,
     from, to, back, days:days.length, type, recupHours, initiative, note, sigWorker:sig,
-    createdAt:now, updatedAt:now, status:'pending', needs, approvals:{} };
+    createdAt:prev ? prev.createdAt : now, updatedAt:now, status:'pending', needs, approvals:{} };
+  if(prev){ r.resetAt = now; r.editedAt = now; r.edits = (prev.edits || 0) + 1; }
   r.status = _absComputeStatus(r);
   showToast('Envoi…');
   if(!(await _absSave([r]))) return;
   closeModal('absReq');
   const tl = ABS_TYPES[type];
   const ids = [].concat(needs.includes('patron') ? _absIdsByRole(reg, 'patron') : [], needs.includes('comptable') ? _absIdsByRole(reg, 'comptable') : []);
-  _absNotify(ids, '🏖️ Demande d\'absence', _absShort(r.name) + ' — ' + tl.label + ' · ' + _absRange(r) + (type === 'recup' ? ' (' + recupHours + ' h)' : ''), 'abs-' + r.id);
-  showToast(r.status === 'approved' ? '✅ Absence enregistrée' : '📨 Demande envoyée');
+  _absNotify(ids, prev ? '✏️ Demande d\'absence modifiée' : '🏖️ Demande d\'absence', _absShort(r.name) + ' — ' + tl.label + ' · ' + _absRange(r) + (type === 'recup' ? ' (' + recupHours + ' h)' : ''), 'abs-' + r.id);
+  showToast(r.status === 'approved' ? '✅ Absence enregistrée' : prev ? '✏️ Demande modifiée · renvoyée pour validation' : '📨 Demande envoyée');
+  _absEditId = null;
+  try{ if(typeof currentHeuresMode !== 'undefined' && currentHeuresMode === 'fiches') _absRenderFichesTable(); }catch(e){}
   if(r.status === 'approved') _absApplyMine(_absList || []);
   _absTab = 'mes'; _absOpen = true; absRender(); _absRefreshBadges();
 }
@@ -74035,7 +74123,7 @@ async function absCancelMine(id){
   const r = (_absList || []).find(x => x.id === id); if(!r || r.status !== 'pending') return;
   if(!confirm('Annuler cette demande d\'absence ?')) return;
   const c = Object.assign({}, r, { status:'cancelled', cancel:{ by:_absMe().authId, name:_absMe().name, at:new Date().toISOString() }, updatedAt:new Date().toISOString() });
-  if(await _absSave([c])){ showToast('Demande annulée'); absRender(); _absRefreshBadges(); }
+  if(await _absSave([c])){ showToast('Demande annulée'); absRender(); _absRefreshBadges(); try{ _absRenderFichesTable(); }catch(e){} }
 }
 
 /* ── Validation (patron / comptable) ── */
@@ -74158,6 +74246,7 @@ async function absSync(){
   }
   _absRefreshBadges();
   if(_absVisible()) absRender();
+  try{ const fm = document.getElementById('heuresMode-fiches'); if(fm && fm.style.display !== 'none') _absRenderFichesTable(); }catch(e){}
 }
 
 /* ── Vue Absences ── */
@@ -74283,7 +74372,7 @@ function _absStatusPill(r){
   if(r.status === 'approved') return '<span class="abs-st ok">VALIDÉE</span>';
   if(r.status === 'refused') return '<span class="abs-st no">REFUSÉE</span>';
   if(r.status === 'cancelled') return '<span class="abs-st cx">ANNULÉE</span>';
-  return '<span class="abs-st w">EN ATTENTE</span>';
+  return '<span class="abs-st w">EN COURS DE VALIDATION</span>';
 }
 function _absHead(r, who){
   const t = ABS_TYPES[r.type] || { emoji:'', label:r.type };
@@ -74306,7 +74395,7 @@ function _absRenderMes(list){
   }).join('');
   const cards = mine.map(r => {
     let foot = '';
-    if(r.status === 'pending') foot = `Envoyée le ${_absAtTxt(r.createdAt)} · ${_absApprovalsTxt(r)} · <a class="abs-lnk" onclick="absCancelMine('${r.id}')">annuler</a>`;
+    if(r.status === 'pending') foot = `Envoyée le ${_absAtTxt(r.createdAt)}${r.editedAt ? ' · modifiée le ' + _absAtTxt(r.editedAt) : ''} · ${_absApprovalsTxt(r)} · <a class="abs-lnk" onclick="absEditMine('${r.id}')">✏️ modifier</a> · <a class="abs-lnk" onclick="absCancelMine('${r.id}')">annuler</a>`;
     else if(r.status === 'approved') foot = `${_absApprovalsTxt(r)} · <a class="abs-lnk" onclick="absPdf('${r.id}')">📄 Feuille PDF</a>`;
     else if(r.status === 'refused') foot = `Refusée par ${escapeHtml(_absShort(r.refusal && r.refusal.name))}${r.refusal && r.refusal.reason ? ' — « ' + escapeHtml(r.refusal.reason) + ' »' : ''}`;
     else foot = 'Annulée';
