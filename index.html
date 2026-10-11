@@ -12032,6 +12032,7 @@ function goTo(viewName, siteId){
 
   if(viewName === 'magasin') magasinRender(); // MODULE — Magasin
   if(viewName === 'planning') planningRender(); // v5.41.394
+  if(viewName === 'agenda' && typeof _absLoad === 'function') _absLoad(false).then(() => { if(_absApplyMine(_absList || [])) { try{ renderAgenda(); }catch(e){} } });   // v5.41.403
   if(viewName === 'notes'){ // MODULE — Notes ("Listes à faire") — réservé chef/ouvrier
     const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
     if(role !== 'chef' && role !== 'ouvrier' && role !== 'conducteur'){ goTo('chantiers'); return; }
@@ -15538,6 +15539,7 @@ function openAlerteComposeGroup(){
         <div class="chip" data-type="heures" onclick="_setAlerteComposeType('heures')">⏱ Envoi d'heures</div>
         <div class="chip" data-type="evenement" onclick="_setAlerteComposeType('evenement')">📅 Événement</div>
         <div class="chip" data-type="depannage" onclick="_setAlerteComposeType('depannage')">🛠️ Dépannage</div>
+        ${(myRole === 'patron' || myRole === 'comptable') ? `<div class="chip" data-type="absence" onclick="_setAlerteComposeType('absence')">🏖️ Demande d'absence</div>` : ''}
         `}
       </div>
 
@@ -15550,6 +15552,23 @@ function openAlerteComposeGroup(){
         <div class="field">
           <label>Date de l'événement</label>
           <input type="date" id="alerteEventDate">
+        </div>
+      </div>
+
+      <!-- v5.41.402 — Champs propres à "Demande d'absence" (patron / comptable) -->
+      <div id="alerteAbsFields" style="display:none;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:8px;">
+          <label>Motif de la demande</label>
+          <input type="text" id="alerteAbsMotif" placeholder="Ex : Congés de Noël">
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">${["Congés de Noël", "Congés d'été", "Pont de l'Ascension", "Congés de printemps", "Congés de la Toussaint"].map(m => `<button type="button" class="chip" style="font-size:12px;" onclick="document.getElementById('alerteAbsMotif').value=this.textContent">${m}</button>`).join('')}</div>
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label>À envoyer avant le</label>
+          <input type="date" id="alerteAbsDeadline">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>L'entreprise sera fermée <small style="text-transform:none;font-weight:600;">(facultatif)</small></label>
+          <div style="display:flex;gap:8px;align-items:center;"><span class="hint">du</span><input type="date" id="alerteAbsCloseFrom" style="flex:1;" onchange="const t=document.getElementById('alerteAbsCloseTo'); if(!t.value||t.value<this.value) t.value=this.value;"><span class="hint">au</span><input type="date" id="alerteAbsCloseTo" style="flex:1;"></div>
         </div>
       </div>
 
@@ -15696,12 +15715,14 @@ function _setAlerteComposeType(type){
   if(eventFields) eventFields.style.display = (type === 'evenement') ? 'block' : 'none';
   const depannageFields = document.getElementById('alerteDepannageFields');
   if(depannageFields) depannageFields.style.display = (type === 'depannage') ? 'block' : 'none';
+  const absFields = document.getElementById('alerteAbsFields');   // v5.41.402
+  if(absFields) absFields.style.display = (type === 'absence') ? 'block' : 'none';
   const textLabel = document.getElementById('alerteTextLabel');
-  if(textLabel) textLabel.textContent = (type === 'depannage') ? 'Notes (instructions détaillées)' : 'Message';
+  if(textLabel) textLabel.textContent = (type === 'depannage') ? 'Notes (instructions détaillées)' : (type === 'absence') ? 'Message complémentaire (facultatif)' : 'Message';
   // Modèles rapides : masqués pour le dépannage (formulaire structuré suffisant).
   const tplTitle = document.getElementById('alerteTemplateTitle');
   const tplChips = document.getElementById('alerteTemplateChips');
-  const showTpl = (type !== 'depannage');
+  const showTpl = (type !== 'depannage' && type !== 'absence');
   if(tplTitle) tplTitle.style.display = showTpl ? '' : 'none';
   if(tplChips) tplChips.style.display = showTpl ? '' : 'none';
   if(type === 'depannage') _renderDepannageTools();
@@ -15779,9 +15800,20 @@ function _reenableAlerteSendBtn(){
 async function sendAlerteToMembers(authIds, names){
   const textEl = document.getElementById('alerteComposeText');
   const text = textEl ? textEl.value.trim() : '';
-  if(!text){ showToast(_alerteComposeType === 'depannage' ? 'Écris les instructions du dépannage' : 'Écris un message'); _reenableAlerteSendBtn(); return; }
+  if(!text && _alerteComposeType !== 'absence'){ showToast(_alerteComposeType === 'depannage' ? 'Écris les instructions du dépannage' : 'Écris un message'); _reenableAlerteSendBtn(); return; }
 
   const type = _alerteComposeType || 'info';
+  // v5.41.402 — Demande d'absence (patron / comptable) : motif, date limite, fermeture de l'entreprise
+  let absData = null;
+  if(type === 'absence'){
+    const v = id => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+    absData = { absMotif:v('alerteAbsMotif'), absDeadline:v('alerteAbsDeadline'), absCloseFrom:v('alerteAbsCloseFrom'), absCloseTo:v('alerteAbsCloseTo') };
+    if(!absData.absMotif){ showToast('Indique le motif (ex : congés de Noël)'); _reenableAlerteSendBtn(); return; }
+    if(!absData.absDeadline){ showToast('Indique la date limite d\'envoi'); _reenableAlerteSendBtn(); return; }
+    if(absData.absCloseFrom && !absData.absCloseTo) absData.absCloseTo = absData.absCloseFrom;
+    if(absData.absCloseTo && absData.absCloseFrom && absData.absCloseTo < absData.absCloseFrom){ showToast('La fin de fermeture est avant le début'); _reenableAlerteSendBtn(); return; }
+    absData.absNote = text;
+  }
   let eventData = null;
   if(type === 'evenement'){
     const dateEl = document.getElementById('alerteEventDate');
@@ -15865,6 +15897,8 @@ async function sendAlerteToMembers(authIds, names){
     const dateLabel = d.toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'});
     const site = eventData.siteId ? (data.sites||[]).find(s=>s.id===eventData.siteId) : null;
     alertText = `📅 ${senderName} : ${text} — ${dateLabel}${site ? ' (' + site.name + ')' : ''}`;
+  } else if(type === 'absence' && absData){
+    alertText = '🏖️ ' + senderName + ' : ' + _absAlertSummary(absData);
   } else if(type === 'depannage' && depannageData){
     const dateLabel = depannageData.date
       ? new Date(depannageData.date + 'T00:00:00').toLocaleDateString('fr-FR', {day:'numeric', month:'long', year:'numeric'})
@@ -15878,7 +15912,7 @@ async function sendAlerteToMembers(authIds, names){
 
   const ok = await sendAlert(
     alertText,
-    'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData, resolvedAuthIds
+    'devices', null, names.join(', '), type, null, null, deviceIds, eventData, depannageData, resolvedAuthIds, null, absData
   );
 
   // Notification système immédiate (push natif) chez les destinataires,
@@ -15886,7 +15920,9 @@ async function sendAlerteToMembers(authIds, names){
   if(ok){
     const pushTitle = type === 'depannage' ? 'RWOOD — Dépannage'
       : type === 'evenement' ? 'RWOOD — Nouvel événement'
+      : type === 'absence' ? 'RWOOD — Demande d\'absence'
       : 'RWOOD — Alerte';
+    if(type === 'absence' && absData){ notifyPush(authIds, pushTitle, _absAlertSummary(absData), 'absence-req', 'absences'); } else
     notifyPush(authIds, pushTitle, text, type, 'conv:' + ((data.settings && data.settings.auth && data.settings.auth.authId) || '')); // v5.41.200 — ouvre la conversation avec l'expéditeur
   }
 
@@ -16079,7 +16115,7 @@ async function renderAlertesChatList(){
     if(count) count.textContent = _chatSelectedKeys.size + ' sélectionnée(s)';
   }
 
-  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷', fichier:'📄' };
+  const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷', fichier:'📄', absence:'🏖️' };
   const myId = getDeviceSyncId();
   const rows = [];
   if(broadcast.length) rows.push({ type:'broadcast', key:'__broadcast__', authId:null, name:'Toute l\'équipe', alerts: broadcast });
@@ -16184,7 +16220,7 @@ async function _renderChatThreadModal(row){
 
   const kindIcon = { info:'💬', signature:'✍️', heures:'⏱️', 'rappel-heures':'⏱️', evenement:'📅', depannage:'🛠️', croquis:'📐', photo:'📷' };
   const myId = getDeviceSyncId();
-  kindIcon.fichier = '📄';
+  kindIcon.fichier = '📄'; kindIcon.absence = '🏖️';
   // v5.41.308 — séparateur par jour (Aujourd'hui / Hier / 3 oct.) + heure seule dans la bulle
   let _lastDay = '';
   const _dayLbl = d => { const t = new Date(); t.setHours(0,0,0,0); const x = new Date(d); x.setHours(0,0,0,0); const diff = Math.round((t - x) / 86400000);
@@ -30555,6 +30591,7 @@ let _comptableLiveData = null; // dernier pull reussi {ouvrier -> {attendance, s
 let _comptableAutoRefreshTimer = null;
 
 function renderComptableFiches(){
+  try{ if(typeof _absLoad === 'function' && !_absList) _absLoad(true).then(() => { try{ if(currentHeuresMode === 'fiches') renderComptableFichesContent(_comptableLiveData || []); }catch(e){} }); }catch(e){}   // v5.41.403
   const container = document.getElementById('fichesContent');
 
   document.getElementById('fichesWeekHeader').innerHTML = `
@@ -30636,6 +30673,10 @@ function _computeWorkerWeekData(aw, offset){
     if(typeof comptaEditApplyOverride === 'function'){
       const ov = comptaEditApplyOverride(device.deviceId || aw.device.deviceId, aw.workerId, dKey, entry, ed);
       if(ov){ entry = ov.entry; ed = ov.ed; }
+    }
+    // v5.41.403 — absence validée pas encore remontée par le téléphone de l'ouvrier : affichée quand même
+    if(typeof _absFicheEntry === 'function' && (!entry || (!_entryTotalHours(entry) && (entry.typeJournee || 'normal') === 'normal'))){
+      const ab = _absFicheEntry(device.ownerAuthId, dKey); if(ab){ entry = Object.assign({}, entry || {}, ab); if(!ed) ed = { workers:{} }; }
     }
     const isMulti = _entryHasMultiSites(entry);
     const h = entry ? _entryTotalHours(entry) : 0;
@@ -37997,10 +38038,10 @@ function _agendaDayCellHtml(d, month, todayKey){
   const isToday = key === todayKey;
   const isSelected = key === agendaSelectedDate;
 
-  const dayTasks = data.tasks.filter(t=>t.date===key);
+  const dayTasks = data.tasks.filter(t=>t.date===key).concat(_agAbsTeam(key, key));
   const dots = dayTasks.slice(0,4).map(t=>{
     const site = data.sites.find(s=>s.id===t.siteId);
-    const color = site && site.color ? site.color : 'var(--ink-soft)';
+    const color = t.absId ? '#3FB27F' : t._absTeam ? t.color : site && site.color ? site.color : 'var(--ink-soft)';
     return `<span class="calendar-day-dot" style="background:${color};"></span>`;
   }).join('');
 
@@ -38024,6 +38065,7 @@ function _agendaDayCellHtml(d, month, todayKey){
 
 /* v5.41.310 — ligne de tâche commune (Liste + jour du Mois) : appui = actions */
 function _agTaskRowHtml(t, showDate){
+  if(t && t._absTeam) return `<div class="ag-row" style="cursor:default;"><span class="ag-dot" style="background:${t.color};"></span><div class="ag-body"><div class="ag-txt">${escapeHtml(t.text)}</div><div class="ag-meta">Absence validée · équipe</div></div></div>`;   // v5.41.403
   const site = (data.sites||[]).find(s=>s.id===t.siteId);
   const color = site && site.color ? (String(site.color).startsWith('var(') ? site.color : colorFull(site.color)) : 'var(--ink-soft)';
   const sel = _agSelTask === t.id;
@@ -38065,7 +38107,7 @@ function renderAgendaList(){
   const today = new Date(); today.setHours(0,0,0,0);
   const end = new Date(today); end.setDate(end.getDate() + _agListDays);
   const tk = dateKeyOf(today), ek = dateKeyOf(end);
-  const all = (data.tasks || []).filter(t => t && t.date >= tk).sort(_agSortTasks);
+  const all = (data.tasks || []).filter(t => t && t.date >= tk).concat(_agAbsTeam(tk, dateKeyOf(new Date(today.getFullYear() + 1, today.getMonth(), today.getDate())))).sort(_agSortTasks);
   const shown = all.filter(t => t.date < ek);
   const later = all.length - shown.length;
   let html = '', last = '';
@@ -38080,6 +38122,7 @@ function renderAgendaList(){
 }
 
 function renderAgenda(){
+  try{ if(typeof _absLoad === 'function' && typeof _absList !== 'undefined' && !_absList && !window._agAbsLoading){ window._agAbsLoading = true; _absLoad(true).then(() => { window._agAbsLoading = false; _absApplyMine(_absList || []); const v = document.getElementById('view-agenda'); if(v && v.classList.contains('active')) renderAgenda(); }); } }catch(e){}   // v5.41.403
   const _fab = document.getElementById('agendaFab');
   if(agendaMode === 'liste' || !['mois','semaine','annee'].includes(agendaMode)){ renderAgendaList(); return; }
   { const mw = document.getElementById('agendaMonthWrap'); if(mw) mw.style.display = ''; }
@@ -38222,7 +38265,7 @@ function renderAgendaDayTasks(){
   const dateLabel = d.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long', year:'numeric'});
   document.getElementById('agendaDayTitle').textContent = dateLabel;
 
-  const tasks = data.tasks.filter(t=>t.date===agendaSelectedDate).sort(_agSortTasks);
+  const tasks = data.tasks.filter(t=>t.date===agendaSelectedDate).concat(_agAbsTeam(agendaSelectedDate, agendaSelectedDate)).sort(_agSortTasks);
   const container = document.getElementById('agendaDayTasks');
 
   if(tasks.length === 0){
@@ -42304,9 +42347,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.401';
+const APP_VERSION = '5.41.403';
 
 const CHANGELOG = [
+  {
+    version: '5.41.403',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📅', text: "Absence validée : elle s'inscrit dans l'agenda de l'ouvrier (un jour par jour ouvré, avec les dates et le retour sur le premier jour) et disparaît si elle est annulée. Le patron, la comptable et le conducteur voient aussi les absences validées de l'équipe dans leur agenda." },
+      { icon: '🗓️', text: "Fiches d'heures : les jours d'absence validés apparaissent aussi chez le patron et la comptable, même avant que le téléphone de l'ouvrier ait renvoyé sa fiche." },
+    ],
+  },
+  {
+    version: '5.41.402',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🏖️', text: "Messagerie : nouveau type d'alerte « Demande d'absence » pour le patron et la comptable. On indique le motif (congés de Noël, d'été…), la date limite (« à envoyer avant le… ») et, si besoin, la fermeture de l'entreprise (« fermée du… au… »). L'ouvrier reçoit la notification et un bouton « Faire ma demande » qui ouvre sa demande d'absence déjà pré-remplie." },
+    ],
+  },
   {
     version: '5.41.401',
     date: '13/10/2026',
@@ -53292,7 +53350,7 @@ async function _deleteAlertFromMyConversation(alertId){
 }
 
 /* Envoyer une nouvelle alerte (cote comptable) */
-async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds, croquisData){
+async function sendAlert(text, recipientType, recipientDeviceId, recipientName, kind, recipientRoles, siteId, recipientDeviceIds, eventData, depannageData, recipientAuthIds, croquisData, extraData){
   if(!text || !text.trim()) return false;
   try{
     const alerts = await _fetchAlerts();
@@ -53331,6 +53389,7 @@ async function sendAlert(text, recipientType, recipientDeviceId, recipientName, 
       fileSize: (croquisData && croquisData.fileSize) || null,
       fileType: (croquisData && croquisData.fileType) || null,
       senderName: _senderName,
+      ...(extraData && typeof extraData === 'object' ? extraData : {}),   // v5.41.402 — ex. demande d'absence (absMotif, absDeadline, absCloseFrom/To)
       createdAt: new Date().toISOString(),
       readBy: []
     });
@@ -56826,6 +56885,8 @@ function _alertReceivedActionsHtml(a, isRead, myId, refreshFn, deleteMode, noClo
     mainActionHtml = alreadyAdded
       ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
       : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
+  } else if(a.kind === 'absence'){
+    mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_absFromAlert('${a.id}')">🏖️ Faire ma demande</button>`;
   } else if(a.kind === 'nouveau-chantier'){
     mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
   } else if(a.kind === 'depannage'){
@@ -57204,6 +57265,27 @@ function _pointDepannageOnHours(alertId){
 /* Ouvrier/chef : ajoute l'événement reçu par alerte à son agenda personnel
    (data.tasks), et mémorise qu'il l'a fait pour ne pas dupliquer l'action
    ni la reproposer. Le rappel J-1 est géré séparément (voir _checkAgendaReminders). */
+function _absFicheEntry(authId, k){
+  if(!authId || typeof _absList === 'undefined' || !_absList || !_absIsWork(k)) return null;
+  const r = _absList.find(x => x && x.status === 'approved' && x.authId === String(authId).toLowerCase() && k >= x.from && k <= x.to)
+         || _absList.find(x => x && x.status === 'approved' && String(x.authId).toLowerCase() === String(authId).toLowerCase() && k >= x.from && k <= x.to);
+  return r ? { typeJournee:r.type, absId:r.id, hours:'' } : null;
+}
+/* v5.41.402 — alerte « Demande d'absence » envoyée par le patron / la comptable */
+function _absAlertSummary(d){
+  const f = k => k ? new Date(k + 'T00:00:00').toLocaleDateString('fr-FR', { day:'numeric', month:'long' }) : '';
+  let t = "Demande d'absence — " + (d.absMotif || 'congés') + '. Merci d\'envoyer ta demande avant le ' + f(d.absDeadline) + '.';
+  if(d.absCloseFrom) t += " L'entreprise sera fermée " + (d.absCloseFrom === d.absCloseTo ? 'le ' + f(d.absCloseFrom) : 'du ' + f(d.absCloseFrom) + ' au ' + f(d.absCloseTo)) + '.';
+  if(d.absNote) t += ' ' + d.absNote;
+  return t;
+}
+function _absFromAlert(alertId){
+  const a = (_myAlertsCache || []).find(x => x.id === alertId) || {};
+  window._absPrefill = { from:a.absCloseFrom || '', to:a.absCloseTo || a.absCloseFrom || '', note:a.absMotif || '' };
+  try{ document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open')); }catch(e){}
+  goTo('absences');
+  setTimeout(() => { try{ absOpenNew(); }catch(e){} }, 450);
+}
 function _addEventToAgendaFromAlert(alertId){
   const alert = (_myAlertsCache||[]).find(a => a.id === alertId);
   if(!alert || !alert.eventDate) return;
@@ -57400,6 +57482,8 @@ function _renderAlertInboxList(){
       mainActionHtml = alreadyAdded
         ? `<span class="hint" style="align-self:center;">✅ Ajouté à l'agenda</span>`
         : `<button class="btn btn-primary btn-sm" onclick="_addEventToAgendaFromAlert('${a.id}')">📅 Ajouter à l'agenda</button>`;
+    } else if(a.kind === 'absence'){
+      mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_absFromAlert('${a.id}')">🏖️ Faire ma demande</button>`;
     } else if(a.kind === 'nouveau-chantier'){
       mainActionHtml = `<button class="btn btn-primary btn-sm" onclick="_openSiteFromAlert('${a.id}','${a.siteId||''}')"><img src="icons/oeil_ouvert.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Visionner</button>`;
     } else if(a.kind === 'depannage'){
@@ -74181,6 +74265,12 @@ function absOpenNew(edit){
     const btn = box.querySelector('.btn-primary'); if(btn) btn.textContent = '💾 Enregistrer la modification';
     box.insertAdjacentHTML('afterbegin', '<div class="abs-al" style="margin:0 0 6px;background:rgba(232,172,61,.12);border-color:var(--wood);color:var(--ink);">✏️ Modification de ta demande. Le patron et la comptable devront la valider à nouveau.</div>');
   }
+  if(!_absEditId && window._absPrefill){   // v5.41.402 — ouverte depuis l'alerte « Demande d'absence »
+    const pf = window._absPrefill; window._absPrefill = null;
+    const g = id => document.getElementById(id);
+    if(pf.from){ g('absFrom').value = pf.from; g('absTo').value = pf.to || pf.from; g('absBack').value = _absNextWork(pf.to || pf.from); }
+    if(pf.note && g('absNote')) g('absNote').value = pf.note;
+  }
   const mh = document.querySelector('#modal-absReq .modal-header h2'); if(mh) mh.textContent = _absEditId ? 'Modifier ma demande' : 'Demande d\'absence';
   openModal('absReq');
   setTimeout(() => { _absEditSig = _absSigPad('absSigCanvas', (edit && edit.sigWorker) || _absSavedSig()); _absReqLive(); }, 280);
@@ -74311,10 +74401,48 @@ async function absCancelApproved(id){
 }
 
 /* ── Côté ouvrier : jours posés dans SES heures + retour de décision ── */
-function _absApplyMine(list){
-  const me = _absMe(); if(!me.authId || !me.workerId) return 0;
-  if(!data.attendance) data.attendance = {};
+/* v5.41.403 — absence validée → aussi dans MON agenda (une entrée par jour ouvré, retirée si annulée) */
+function _absAgendaSync(list){
+  const me = _absMe(); if(!me.authId) return 0;
+  if(!Array.isArray(data.tasks)) data.tasks = [];
   let n = 0;
+  (list || []).filter(r => r && r.authId === me.authId).forEach(r => {
+    const mineIds = new Set(data.tasks.filter(t => t && t.absId === r.id).map(t => t.id));
+    if(r.status === 'approved'){
+      const t = ABS_TYPES[r.type] || { emoji:'🏖️', label:'Absence' };
+      const want = new Map();
+      _absWorkDays(r.from, r.to).forEach((k, i) => want.set('abs-' + r.id + '-' + k, { date:k,
+        text:t.emoji + ' ' + t.label + (r.type === 'recup' && r.recupHours ? ' (' + r.recupHours + ' h)' : '') + (i === 0 ? ' · ' + _absRange(r) + (r.back ? ' · retour ' + _absFmt(r.back, { day:'numeric', month:'short' }) : '') : '') }));
+      data.tasks = data.tasks.filter(x => { if(x && x.absId === r.id && !want.has(x.id)){ n++; return false; } return true; });
+      want.forEach((v, id) => {
+        const ex = data.tasks.find(x => x.id === id);
+        if(ex){ if(ex.text !== v.text){ ex.text = v.text; n++; } return; }
+        data.tasks.push({ id, date:v.date, siteId:null, text:v.text, absId:r.id, createdAt:new Date().toISOString() }); n++;
+      });
+    } else if(mineIds.size){
+      data.tasks = data.tasks.filter(x => !(x && x.absId === r.id)); n += mineIds.size;
+    }
+  });
+  return n;
+}
+/* v5.41.403 — Agenda du patron / comptable / conducteur : absences validées de l'équipe (affichage seul) */
+function _agAbsTeam(fromKey, toKey){
+  if(typeof _absList === 'undefined' || !_absList) return [];
+  const me = _absMe(); if(!['patron', 'comptable', 'conducteur'].includes(me.role)) return [];
+  const out = [];
+  _absList.filter(r => r && r.status === 'approved' && r.authId !== me.authId && _absOverlap(r.from, r.to, fromKey, toKey)).forEach(r => {
+    const t = ABS_TYPES[r.type] || { emoji:'🏖️', short:'Absence' };
+    _absWorkDays(r.from < fromKey ? fromKey : r.from, r.to > toKey ? toKey : r.to).forEach(k =>
+      out.push({ id:'absteam-' + r.id + '-' + k, date:k, text:t.emoji + ' ' + _absShort(r.name) + ' — ' + (t.short || t.label) + ' (' + _absRange(r) + ')', _absTeam:true, color:t.color }));
+  });
+  return out;
+}
+function _absApplyMine(list){
+  const me = _absMe(); if(!me.authId) return 0;
+  let nAg = 0; try{ nAg = _absAgendaSync(list); }catch(e){}
+  if(!me.workerId){ if(nAg) saveData(); return nAg; }
+  if(!data.attendance) data.attendance = {};
+  let n = nAg;
   (list || []).filter(r => r && r.authId === me.authId).forEach(r => {
     if(r.status === 'approved'){
       _absWorkDays(r.from, r.to).forEach(k => {
