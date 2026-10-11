@@ -1929,6 +1929,18 @@
 
   /* v5.41.311 — Calcul simplifié */
   /* v5.41.371 — Calcul › Coupe biaise */
+  .pu-card .cb-lbl small{ font-weight:600; opacity:.75; }
+  .pu-sel{ width:100%; font-size:16px; font-weight:700; padding:10px 12px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); margin-top:4px; }
+  .pu-big{ display:grid; grid-template-columns:2fr 1fr; gap:10px; text-align:center; }
+  .pu-big span{ display:block; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); }
+  .pu-big b{ font-size:42px; line-height:1.1; } .pu-big small{ font-size:16px; color:var(--ink-soft); }
+  .pu-ok{ margin:8px 0; padding:8px 11px; border-radius:10px; background:rgba(31,157,85,.14); border:1.5px solid rgba(31,157,85,.45); font-size:13px; font-weight:800; }
+  .pu-svg{ width:100%; height:auto; display:block; margin-top:8px; background:#fff; border-radius:10px; border:1.5px solid var(--line); }
+  .pu-t{ font:800 20px sans-serif; fill:#3a2a1e; } .pu-c{ font:800 19px sans-serif; fill:#111; } .pu-l{ font:700 19px sans-serif; fill:#111; } .pu-b{ fill:#2f6fd6; } .pu-g{ fill:#1f9d55; } .pu-r{ fill:#d63a2f; }
+  .pu-marks{ display:grid; grid-template-columns:repeat(auto-fill, minmax(86px, 1fr)); gap:6px; }
+  .pu-marks div{ display:flex; align-items:center; gap:6px; padding:6px 8px; border-radius:10px; border:1.5px solid var(--line); font-size:15px; }
+  .pu-marks i{ font-style:normal; font-size:11px; font-weight:800; color:var(--ink-soft); min-width:16px; }
+  body.theme-chantier .pu-marks div{ border:2px solid #111; }
   .dq-unit{ display:flex; align-items:center; gap:10px; margin-bottom:10px; font-weight:800; font-size:13px; color:var(--ink-soft); }
   .dq-kerf{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .dq-kerf span{ font-weight:800; } .dq-kerf input{ width:80px; font-size:18px; font-weight:800; padding:8px 10px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); }
@@ -6043,6 +6055,7 @@
         <button type="button" class="chip" data-mode="pythagore" onclick="setCalcMode('pythagore')"><span class="ci">📐</span><span>Pythagore</span></button>
         <button type="button" class="chip" data-mode="repartition" onclick="setCalcMode('repartition')"><span class="ci">📏</span><span>Répartition</span></button>
         <button type="button" class="chip" data-mode="biaise" onclick="setCalcMode('biaise')"><span class="ci">🪚</span><span>Coupe biaise</span></button>
+        <button type="button" class="chip" data-mode="pureaux" onclick="setCalcMode('pureaux')"><span class="ci">🏠</span><span>Pureaux</span></button>
         <button type="button" class="chip" data-mode="simple" onclick="setCalcMode('simple')"><span class="ci">🧮</span><span>Calculette</span></button>
         <button type="button" class="chip" data-mode="decoupe" onclick="setCalcMode('decoupe')"><span class="ci">✂️</span><span>Découpe</span></button>
       </div>
@@ -6108,6 +6121,7 @@
       <!-- RÉPARTITION -->
       <div class="calc-mode" id="calcMode-empanon" style="display:none;"></div>
       <div class="calc-mode" id="calcMode-biaise" style="display:none;"></div>
+      <div class="calc-mode" id="calcMode-pureaux" style="display:none;"></div>
       <div class="calc-mode" id="calcMode-repartition" style="display:none;">
         <div id="r3Root"></div>
         <div id="repLegacy" style="display:none;">
@@ -23258,11 +23272,16 @@ function _catalogueDoAssoc(siteId){
   // Résout (ou crée) l'entrée correspondante dans le catalogue unique
   // data.tiles, puis assigne son id au chantier — exactement le chemin déjà
   // utilisé par openSelectTileModal/selectTileForSite.
+  // v5.41.388 — le texte « pureau » du catalogue n'est plus mis dans Dimensions : on en tire les chiffres
+  const _txt = [model.pureau, model.infos].join(' '), _rg = _catPureauRange(_txt), _ln = _catTileLen(_txt);
   const tile = resolveOrCreateTile({
     name: nom,
     brand: marque,
     ref: model.type || '',
-    dimensions: model.pureau || ''
+    dimensions: _ln > 0 ? Math.round(_ln) + ' mm (longueur)' : '',
+    pureauMin: _rg ? _rg.min / 10 : undefined,
+    pureauMax: _rg ? _rg.max / 10 : undefined,
+    notes: model.pureau || ''
   });
   if(!tile){ closeModal('catalogueAssoc'); return; }
   // Complète la fiche technique du catalogue unique si elle manque encore
@@ -34788,6 +34807,10 @@ function resolveOrCreateTile(tileInfo){
     tile = { id: uid(), name: tileInfo.name, brand: tileInfo.brand || '', ref: tileInfo.ref || '', dimensions: tileInfo.dimensions || '' };
     data.tiles.push(tile);
   }
+  // v5.41.388 — complète le pureau / la note si la fiche n'en a pas encore (sans écraser une saisie)
+  if(tile.pureauMin == null && tileInfo.pureauMin != null) tile.pureauMin = tileInfo.pureauMin;
+  if(tile.pureauMax == null && tileInfo.pureauMax != null) tile.pureauMax = tileInfo.pureauMax;
+  if(!tile.notes && tileInfo.notes) tile.notes = tileInfo.notes;
   return tile;
 }
 
@@ -35468,8 +35491,9 @@ function setCalcMode(mode){
   });
   // La barre d'unité mm/cm ne concerne pas l'outil Découpe (il a son propre sélecteur m / cm / mm)
   const unitTabs = document.getElementById('calcUnitTabs');
-  if(unitTabs) unitTabs.style.display = (mode === 'decoupe' || mode === 'simple' || mode === 'repartition' || mode === 'empanon' || mode === 'biaise') ? 'none' : 'flex';
+  if(unitTabs) unitTabs.style.display = (mode === 'decoupe' || mode === 'simple' || mode === 'repartition' || mode === 'empanon' || mode === 'biaise' || mode === 'pureaux') ? 'none' : 'flex';
   if((mode === 'repartition' || mode === 'empanon') && typeof r3MountKind === 'function') setTimeout(() => r3MountKind(mode === 'empanon' ? 'emp' : 'rep'), 0); // v5.41.335/338 — assistants 3D
+  if(mode === 'pureaux') setTimeout(puMount, 0); // v5.41.386 — litonnage / pureaux
   if(mode === 'biaise') setTimeout(cbMount, 0); // v5.41.371 — coupe biaise (angle machine)
   // [Point calcul] Rafraîchit l'historique de l'outil qu'on vient d'ouvrir.
   if(mode === 'cumul' || mode === 'pythagore') renderCalcHistoryList(mode);
@@ -37220,6 +37244,223 @@ function _cbLive(){
     </details>`;
 }
 /* ═══ MODULE — Coupe biaise (fin) ═══ */
+/* v5.41.388 — lecture des chiffres dans le texte libre du catalogue fabricants */
+function _catPureauRange(txt){
+  const t = String(txt || '').replace(/,/g, '.');
+  // « pureau … 35.3 à 36.6 cm » / « 35–38 cm » (jamais une plage de tuiles/m²)
+  const re = /(\d+(?:\.\d+)?)\s*(?:à|–|-|—)\s*(\d+(?:\.\d+)?)\s*(cm|mm)(?!\s*\/|²)/gi;
+  let m, best = null;
+  while((m = re.exec(t))){
+    const before = t.slice(Math.max(0, m.index - 40), m.index).toLowerCase();
+    let a = +m[1], b = +m[2]; if(m[3].toLowerCase() === 'cm'){ a *= 10; b *= 10; }
+    if(a < 150 || b > 800 || a > b) continue;           // pas un pureau de tuile
+    const score = /pureau/.test(before) ? 2 : 1;
+    if(!best || score > best.score) best = { min:a, max:b, score };
+  }
+  return best ? { min: best.min, max: best.max } : null;
+}
+function _catTileLen(txt){
+  const t = String(txt || '').replace(/,/g, '.');
+  let m = t.match(/(?:format|dim\.?\s*utiles?)\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(cm|mm)?/i);
+  if(m){ let a = Math.max(+m[1], +m[2]); if((m[3] || 'cm').toLowerCase() === 'cm') a *= 10; return a; }
+  m = t.match(/tuile\s+(?:filée\s+)?(?:épaissie\s+)?de\s+(\d+(?:\.\d+)?)\s*cm/i);
+  if(m) return +m[1] * 10;
+  return NaN;
+}
+/* ═══ MODULE — Pureaux de tuiles (v5.41.386) ═══
+   Tracé automatique du litonnage, mesures le long du rampant depuis la FACE EXTÉRIEURE DU BANDEAU :
+   - 1er liteau (égout) : haut du liteau à  L_tuile (crochet → nez) − dépassement voulu ;
+   - dernier liteau (faîtage) : haut du liteau à  R − jeu sous faîtage (R = bandeau → face ext. du bois de faîtage) ;
+   - entre les deux : n pureaux égaux, p = S / n, avec p dans [pureau mini ; maxi] de la tuile → aucune coupe.
+   Si aucun n entier ne tombe dans la plage : pureau maxi et la plus petite coupe possible au faîtage. */
+const PU_KEY = 'rwood-pureaux';
+let pu = null;
+function _puN(v){ const n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(n) ? n : NaN; }
+function _puF(n, d){ return isFinite(n) ? n.toLocaleString('fr-FR', { maximumFractionDigits: d == null ? 1 : d }) : '—'; }
+function _puLoad(){ let s = null; try{ s = JSON.parse(localStorage.getItem(PU_KEY) || 'null'); }catch(e){} return Object.assign({ R:'', tile:'', L:'', pmin:'', pmax:'', d:'50', jeu:'40' }, s || {}); }
+function _puSave(){ try{ localStorage.setItem(PU_KEY, JSON.stringify(pu)); }catch(e){} }
+function _puTiles(){ return (data.tiles || []).filter(t => t && t.name); }
+function _puCat(){
+  const out = [];
+  try{ (typeof _catalogueEffectif === 'function' ? _catalogueEffectif() : CATALOGUE_AQUITAINE).forEach(g => (g.modeles || []).forEach(m => {
+    const txt = [m.pureau, m.infos].join(' ');
+    out.push({ id:'cat:' + g.marque + '|' + m.nom, name:m.nom, brand:(g.marque || '').split(' — ')[0], range:_catPureauRange(txt), len:_catTileLen(txt), note:m.pureau || '', fiche:m.fiche || '' });
+  })); }catch(e){}
+  return out;
+}
+/* longueur hors-tout tuile (mm) lue dans « 420 x 280 mm », « 42 x 28 cm »… : la plus grande des deux */
+function _puTileLen(t){
+  const m = String(t && t.dimensions || '').replace(',', '.').match(/(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*(mm|cm)?/i);
+  if(!m) return NaN;
+  let a = Math.max(+m[1], +m[2]); const u = (m[3] || '').toLowerCase();
+  if(u === 'cm' || (!u && a < 100)) a *= 10;
+  return a;
+}
+function puPickTile(id){
+  pu.tile = id;
+  if(String(id).startsWith('cat:')){
+    const c = _puCat().find(x => x.id === id);
+    if(c){ if(c.range){ pu.pmin = String(Math.round(c.range.min)); pu.pmax = String(Math.round(c.range.max)); } else { pu.pmin = ''; pu.pmax = ''; }
+      if(c.len > 0) pu.L = String(Math.round(c.len)); }
+    _puSave(); puRender(); return;
+  }
+  const t = _puTiles().find(x => x.id === id);
+  if(t){
+    const rg = (t.pureauMin == null && t.pureauMax == null) ? _catPureauRange([t.dimensions, t.notes].join(' ')) : null;
+    pu.pmin = t.pureauMin != null ? String(Math.round(t.pureauMin * 10)) : rg ? String(Math.round(rg.min)) : '';
+    pu.pmax = t.pureauMax != null ? String(Math.round(t.pureauMax * 10)) : rg ? String(Math.round(rg.max)) : '';
+    let L = _puTileLen(t); if(!(L > 0)) L = _catTileLen([t.dimensions, t.notes].join(' '));
+    if(L > 0) pu.L = String(Math.round(L));
+  }
+  _puSave(); puRender();
+}
+function puSet(k, v){ pu[k] = v; _puSave(); _puCalcRender(); }
+function puCalc(s){
+  const R = _puN(s.R), L = _puN(s.L), d = _puN(s.d), jeu = _puN(s.jeu);
+  let pmin = _puN(s.pmin), pmax = _puN(s.pmax);
+  if(pmin > 0 && !(pmax > 0)) pmax = pmin; if(pmax > 0 && !(pmin > 0)) pmin = pmax;
+  if(pmin > pmax){ const t = pmin; pmin = pmax; pmax = t; }
+  const out = { ok:false, R, L, d, jeu, pmin, pmax };
+  if(!(R > 0)) return Object.assign(out, { why:'Indique la cote bandeau → faîtage.' });
+  if(!(L > 0)) return Object.assign(out, { why:'Indique la longueur de la tuile.' });
+  if(!(pmax > 0)) return Object.assign(out, { why:'Indique le pureau mini et maxi de la tuile.' });
+  if(!(d >= 0)) return Object.assign(out, { why:'Indique le dépassement à l\'égout.' });
+  const x1 = L - d, xN = R - (jeu >= 0 ? jeu : 40), S = xN - x1;
+  if(!(S > 0)) return Object.assign(out, { why:'Rampant trop court pour cette tuile.' });
+  let n = Math.ceil(S / pmax - 1e-9), p = S / n, cut = 0, exact = true;
+  if(p < pmin - 1e-9){ exact = false; n = Math.floor(S / pmax + 1e-9); p = pmax; cut = S - n * p; if(n < 1){ n = 1; p = S; cut = 0; } }
+  const marks = []; for(let i = 0; i <= n; i++) marks.push(x1 + i * p);
+  return Object.assign(out, { ok:true, x1, xN: marks[marks.length - 1], S, n, p, cut, exact, marks, rows: n + 1 });
+}
+function puMount(){
+  const host = document.getElementById('calcMode-pureaux'); if(!host) return;
+  pu = _puLoad();
+  if(!pu.tile){ const t = _puTiles().find(x => x.pureauMax != null || x.pureauMin != null); if(t){ puPickTile(t.id); return; } }
+  puRender();
+}
+function puRender(){
+  const host = document.getElementById('calcMode-pureaux'); if(!host) return;
+  const tiles = _puTiles(), cat = _puCat();
+  const inp = (k, ph, unit, extra) => `<div class="cb-in"><input type="text" inputmode="decimal" value="${escapeHtml(String(pu[k] || ''))}" placeholder="${ph}" oninput="puSet('${k}', this.value)" ${extra || ''}><span>${unit}</span></div>`;
+  host.innerHTML = `
+    <div class="card pu-card">
+      <label class="cb-lbl">1 · Cote bandeau → faîtage <small>(face ext. du bandeau → face ext. du bois de faîtage, le long du rampant)</small>${inp('R', 'ex : 5200', 'mm')}</label>
+      <label class="cb-lbl">2 · Tuile</label>
+      <select class="pu-sel" onchange="puPickTile(this.value)"><option value="">— Choisir une tuile —</option>
+        ${tiles.length ? `<optgroup label="Mes tuiles">${tiles.map(t => `<option value="${t.id}" ${t.id === pu.tile ? 'selected' : ''}>${escapeHtml(t.name)}${t.brand ? ' · ' + escapeHtml(t.brand) : ''}${t.pureauMin != null || t.pureauMax != null ? '' : ' (pureau à saisir)'}</option>`).join('')}</optgroup>` : ''}
+        <optgroup label="Catalogue fabricants">${cat.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === pu.tile ? 'selected' : ''}>${escapeHtml(t.name)} · ${escapeHtml(t.brand)}${t.range ? '' : ' (pureau à saisir)'}</option>`).join('')}</optgroup>
+      </select>
+      ${(() => { const c = cat.find(x => x.id === pu.tile); if(!c) return '';
+        return `<div class="hint" style="margin-top:6px;">${c.range ? `Pureau ${_puF(c.range.min / 10)} à ${_puF(c.range.max / 10)} cm repris du catalogue. ` : `Le catalogue n'indique pas le pureau en chiffres (« ${escapeHtml(c.note || '—')} ») : saisis-le ci-dessous. `}${c.fiche ? `<a href="${escapeHtml(c.fiche)}" target="_blank" rel="noopener">Ouvrir la fiche</a>` : ''}</div>`; })()}
+      <div class="cb-row">
+        <label class="cb-lbl">Pureau mini${inp('pmin', 'ex : 345', 'mm')}</label>
+        <label class="cb-lbl">Pureau maxi${inp('pmax', 'ex : 365', 'mm')}</label>
+      </div>
+      <label class="cb-lbl">Longueur de la tuile <small>(du crochet au nez)</small>${inp('L', 'ex : 420', 'mm')}</label>
+      <div class="cb-row">
+        <label class="cb-lbl">3 · Dépassement à l'égout <small>(nez de tuile devant le bandeau)</small>${inp('d', 'ex : 50', 'mm')}</label>
+        <label class="cb-lbl">Jeu sous faîtage <small>(haut du dernier liteau → bois de faîtage)</small>${inp('jeu', '40', 'mm')}</label>
+      </div>
+    </div>
+    <div id="puRes"></div>`;
+  _puCalcRender();
+}
+function _puSvg(r){
+  // v5.41.387 — coupe en pente façon dessin d'atelier : planche d'égout, gouttière, chevron, liteaux, tuiles,
+  // bois de faîtage + faîtière ; cotes parallèles au rampant. Égout et faîtage à l'échelle, coupure au milieu.
+  const VW = 820, ang = 27 * Math.PI / 180, c = Math.cos(ang), sn = Math.sin(ang);
+  const e = [c, -sn], nu = [-sn, -c];                    // le long du rampant (vers le faîtage) / normale vers le haut
+  const p = r.p, m = r.marks, nM = m.length;
+  const showA = Math.min(nM, 2), showB = nM > showA ? Math.min(2, nM - showA) : 0;
+  const aEnd = m[showA - 1] + 90, bStart = showB ? m[nM - showB] - p * 0.6 : aEnd;
+  const LA = aEnd + r.d + 40, LB = showB ? (r.R + 40 - bStart) : 0, GAP = showB ? 70 : 0;
+  const sc = Math.min(0.9, ((VW - 230) / c - GAP) / (LA + LB));
+  const Utot = (LA + LB) * sc + GAP, VH = Math.round(Utot * sn + 330);
+  const O = [150 + (r.d + 40) * sc * c, VH - 190];             // point bandeau / dessus du chevron
+  const U = u => (u <= aEnd || !showB) ? u * sc : aEnd * sc + GAP + (u - bStart) * sc;
+  const P = (u, v) => [O[0] + U(u) * e[0] + v * sc * nu[0], O[1] + U(u) * e[1] + v * sc * nu[1]];
+  const pts = a => a.map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ');
+  const H = 160, bt = 22, bh = 30, bw = 40, tT = 20, L = r.L;
+  let g = '';
+  // gouttière + planche d'égout (verticale)
+  const bx = O[0], by = O[1];
+  g += `<path d="M${bx - bt * sc - 150 * sc} ${by + 20} a ${75 * sc} ${75 * sc} 0 0 0 ${150 * sc} 0" fill="none" stroke="#7fb3e6" stroke-width="5"/>`;
+  // chevron (coupe d'aplomb à l'égout), en 2 morceaux si coupure
+  const cut0 = [bx, by], cutB = [bx, by + H * sc / c];
+  const chev = (u0, u1, first, last) => {
+    const a0 = first ? cut0 : P(u0, 0), a1 = P(u1, 0), b0 = first ? cutB : P(u0, -H);
+    const b1 = last ? [a1[0], a1[1] + H * sc / c] : P(u1, -H);
+    return `<polygon points="${pts([a0, a1, b1, b0])}" fill="#cd6a34" stroke="#6b3214" stroke-width="1.5"/>`;
+  };
+  g += chev(0, showB ? aEnd : r.R, true, !showB);
+  if(showB) g += chev(bStart, r.R, false, true);
+  g += `<rect x="${bx - bt * sc}" y="${by - 30 * sc}" width="${bt * sc}" height="${H * sc / c + 45 * sc}" fill="#9b6a3a" stroke="#4a2d10" stroke-width="1.5"/>`;
+  // coupure
+  if(showB){ const z1 = P(aEnd, 60), z2 = P(aEnd, -H - 30); const q1 = P(bStart, 60), q2 = P(bStart, -H - 30);
+    g += `<path d="M${z1[0] + 6} ${z1[1]} L${z2[0] + 6} ${z2[1]} M${q1[0] - 6} ${q1[1]} L${q2[0] - 6} ${q2[1]}" stroke="#3a2a1e" stroke-width="2" stroke-dasharray="6 5"/>`; }
+  // bois de faîtage (vertical) + faîtière
+  const F = P(r.R, 0);
+  g += `<rect x="${F[0]}" y="${F[1] - 70 * sc}" width="${30 * sc}" height="${H * sc / c + 70 * sc}" fill="#9b6a3a" stroke="#4a2d10" stroke-width="1.5"/>`;
+  // faîtière : demi-rond posé sur le rang de tête, centré sur le bois de faîtage
+  const fx = F[0] + 15 * sc, Pf = P(r.R - 140, bh + tT * 1.8), fr = fx - Pf[0];
+  const ridgeTile = `<path d="M${Pf[0]} ${Pf[1]} A ${fr} ${fr * 0.8} 0 0 1 ${fx + fr} ${Pf[1]}" fill="none" stroke="#b5502a" stroke-width="${Math.max(7, 20 * sc)}" stroke-linecap="round"/>`;
+  // tuiles (de l'égout vers le faîtage : la tuile du dessus recouvre celle du dessous), puis liteaux
+  const shown = []; for(let i = 0; i < showA; i++) shown.push(i); for(let i = nM - showB; i < nM; i++) shown.push(i);
+  shown.forEach(i => {
+    const hd = m[i], ns = Math.max(m[i] - L, i === 0 ? -r.d : (showB && i >= nM - showB ? bStart - 10 : -1e9));
+    g += `<polygon points="${pts([P(hd + 12, bh), P(hd + 12, bh + tT), P(ns, bh + tT * 2.2), P(ns, bh + tT * 1.2)])}" fill="#4a4a4a" stroke="#1d1d1d" stroke-width="1.2"/>`;
+  });
+  shown.forEach((i, k) => {
+    const q = [P(m[i] - bw, 0), P(m[i], 0), P(m[i], bh), P(m[i] - bw, bh)];
+    g += `<polygon points="${pts(q)}" fill="#a3a03a" stroke="#4d4a12" stroke-width="1.2"/><path d="M${q[0][0]} ${q[0][1]} L${q[2][0]} ${q[2][1]} M${q[1][0]} ${q[1][1]} L${q[3][0]} ${q[3][1]}" stroke="#4d4a12" stroke-width="1"/>`;
+  });
+  g += ridgeTile;
+  // cotes parallèles au rampant (sous le chevron)
+  const cote = (u0, u1, v, col, txt) => {
+    const a0 = P(u0, v), a1 = P(u1, v), t0 = P(u0, -H), t1 = P(u1, -H), mid = P((u0 + u1) / 2, v - 26 / sc);
+    const deg = -ang * 180 / Math.PI;
+    return `<path d="M${t0[0]} ${t0[1]} L${a0[0]} ${a0[1]} M${t1[0]} ${t1[1]} L${a1[0]} ${a1[1]}" stroke="${col}" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>
+      <line x1="${a0[0]}" y1="${a0[1]}" x2="${a1[0]}" y2="${a1[1]}" stroke="${col}" stroke-width="2.5" marker-start="url(#puA)" marker-end="url(#puA)"/>
+      <text x="${mid[0]}" y="${mid[1]}" transform="rotate(${deg} ${mid[0]} ${mid[1]})" class="pu-c" fill="${col}" text-anchor="middle">${txt}</text>`;
+  };
+  const V = -H - 45 / sc;
+  g += cote(0, m[0], V, '#2f6fd6', _puF(m[0], 0));
+  for(let i = 1; i < showA; i++) g += cote(m[i - 1], m[i], V, '#1f9d55', _puF(p, 0));
+  if(showB) for(let i = nM - showB + 1; i < nM; i++) g += cote(m[i - 1], m[i], V, '#1f9d55', _puF(p, 0));
+  g += cote(m[nM - 1], r.R, V, '#d63a2f', _puF(r.R - m[nM - 1], 0));
+  // dépassement (horizontal, comme sur le plan)
+  const nose = P(-r.d, bh + tT * 1.2), dy = by - 70 * sc - 20;
+  g += `<line x1="${nose[0]}" y1="${dy}" x2="${bx - bt * sc}" y2="${dy}" stroke="#111" stroke-width="2" marker-start="url(#puA)" marker-end="url(#puA)"/>
+    <text x="${(nose[0] + bx - bt * sc) / 2}" y="${dy - 8}" class="pu-c" text-anchor="middle">${_puF(r.d, 0)}</text>`;
+  // étiquettes avec flèches
+  const lab = (x, y, tx, ty, t, an) => `<line x1="${x}" y1="${y}" x2="${tx}" y2="${ty}" stroke="#111" stroke-width="1.6" marker-end="url(#puP)"/><text x="${x}" y="${y > ty ? y + 20 : y - 6}" class="pu-l" text-anchor="${an || 'middle'}">${t}</text>`;
+  const T1 = P(m[0] - L * 0.55, bh + tT * 2), B1 = P(m[0] - bw / 2, bh), C1 = P(m[0] + 120, -H / 2);
+  g += lab(T1[0] - 30, T1[1] - 70, T1[0], T1[1] - 6, 'Tuile');
+  g += lab(B1[0] + 30, B1[1] - 110, B1[0] + 2, B1[1] - 22, '1er liteau');
+  g += `<text x="${C1[0]}" y="${C1[1] + 6}" class="pu-l" fill="#fff" text-anchor="middle" transform="rotate(${-ang * 180 / Math.PI} ${C1[0]} ${C1[1]})">Chevron</text>`;
+  g += lab(bx - 40, by + H * sc / c + 70, bx - bt * sc / 2, by + H * sc / c + 14 * sc, 'Planche d’égout');
+  g += lab(F[0] + 10, F[1] + H * sc / c + 120, F[0] + 15 * sc, F[1] + H * sc / c + 4, 'Bois de faîtage', 'end');
+  g += `<text x="${fx}" y="${Pf[1] - fr * 0.8 - 18}" class="pu-l" text-anchor="middle">Faîtière</text>`;
+  return `<svg viewBox="0 0 ${VW} ${VH}" class="pu-svg"><defs>
+    <marker id="puA" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9" fill="none" stroke="context-stroke" stroke-width="1.6"/></marker>
+    <marker id="puP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#111"/></marker></defs>${g}</svg>`;
+}
+function _puCalcRender(){
+  const el = document.getElementById('puRes'); if(!el) return;
+  const r = puCalc(pu);
+  if(!r.ok){ el.innerHTML = `<div class="card"><div class="hint">${r.why}</div></div>`; return; }
+  el.innerHTML = `<div class="card">
+      <div class="pu-big"><div><span>Pureau</span><b>${_puF(r.p, 1)}<small> mm</small></b></div><div><span>Liteaux</span><b>${r.rows}</b></div></div>
+      ${r.exact ? `<div class="pu-ok">✓ Aucune coupe au faîtage · pureau dans la plage ${_puF(r.pmin, 0)}–${_puF(r.pmax, 0)} mm</div>`
+        : `<div class="cb-warn">⚠️ Aucun pureau de la plage ne tombe juste. Pureau maxi : il reste <b>${_puF(r.cut, 0)} mm</b> en plus au faîtage (rang de tête à recouvrir par la faîtière, ou à recouper).</div>`}
+      ${_puSvg(r)}
+      <div class="cb-s" style="margin:8px 0 4px;">Repères à tracer sur chaque chevron, <b>depuis la face du bandeau</b> (haut du liteau, côté faîtage) :</div>
+      <div class="pu-marks">${r.marks.map((m, i) => `<div><i>${i + 1}</i><b>${_puF(m, 0)}</b></div>`).join('')}</div>
+      <div class="cb-s" style="margin-top:8px;">1er liteau : <b>${_puF(r.x1, 0)} mm</b> (tuile ${_puF(r.L, 0)} − dépassement ${_puF(r.d, 0)}). Dernier liteau à <b>${_puF(r.R - r.xN, 0)} mm</b> du bois de faîtage.</div>
+    </div>`;
+}
+/* ═══ MODULE — Pureaux de tuiles (fin) ═══ */
+
 
 
 /* ═══ MODULE — Répartition 3D (fin) ═══ */
@@ -41801,9 +42042,31 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.385';
+const APP_VERSION = '5.41.388';
 
 const CHANGELOG = [
+  {
+    version: '5.41.388',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📚', text: "Pureaux : le choix de la tuile propose aussi le catalogue des fabricants. Le pureau est repris automatiquement quand la fiche l'indique en chiffres, sinon l'appli demande de le saisir (avec un lien vers la fiche)." },
+      { icon: '🛠️', text: "Ajout d'une tuile du catalogue à un chantier : le pureau mini/maxi est maintenant rempli en chiffres (au lieu de mettre le texte dans Dimensions)." },
+    ],
+  },
+  {
+    version: '5.41.387',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📐', text: "Pureaux : nouveau schéma en coupe façon plan d'atelier (planche d'égout, gouttière, chevron, liteaux, tuiles, bois de faîtage) avec les cotes le long du rampant : 1er liteau, pureaux, jeu sous faîtage et dépassement à l'égout." },
+    ],
+  },
+  {
+    version: '5.41.386',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🏠', text: "Calcul › Pureaux : tracé automatique du litonnage. Tu rentres la cote bandeau → faîtage, tu choisis ta tuile (pureau mini/maxi repris de la fiche) et le dépassement à l'égout. L'appli calcule le pureau qui évite toute coupe au faîtage et donne la liste des repères à tracer depuis le bandeau, avec un schéma." },
+    ],
+  },
   {
     version: '5.41.385',
     date: '13/10/2026',
