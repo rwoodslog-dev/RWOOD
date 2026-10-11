@@ -4861,6 +4861,12 @@
   .abs-tb-act{ display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
   .abs-tb-btn{ padding:5px 9px; border-radius:8px; border:1.5px solid var(--wood); background:transparent; color:var(--wood); font-weight:800; font-size:12px; cursor:pointer; font-family:inherit; }
   .abs-tb-btn.x{ border-color:var(--line); color:var(--ink-soft); }
+  /* v5.41.404 — chantiers brouillons dans le planning */
+  .pl-dtag{ font-size:9px; font-weight:900; letter-spacing:.05em; padding:1px 5px; border-radius:5px; background:rgba(232,172,61,.18); color:var(--wood); vertical-align:2px; }
+  .pl-b.pl-draft{ outline:2px dashed rgba(20,16,12,.55); outline-offset:-3px; }
+  .pl-b.pl-draft .pl-segs{ background:repeating-linear-gradient(135deg, transparent 0 8px, rgba(255,255,255,.22) 8px 12px); }
+  .pl-b.pl-anon{ opacity:.75; }
+  .pl13 td.pl-n.pl-anon b{ color:var(--ink-soft); font-style:italic; font-size:12px; white-space:normal; line-height:1.15; }
   /* ═══ Absences & Planning (fin) ═══ */
 
   /* ═══ v5.41.372 — THÈME « CHANTIER » (mode clair Balise : jaune / noir / blanc) ═══
@@ -42347,9 +42353,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.403';
+const APP_VERSION = '5.41.404';
 
 const CHANGELOG = [
+  {
+    version: '5.41.404',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📝', text: "Planning : le patron et le conducteur peuvent créer un « ＋ Chantier brouillon » directement dans le planning (nom, dates, équipe) et planifier les chantiers encore en brouillon. Ils apparaissent en pointillés avec l'étiquette BROUILLON, et un bouton « Valider le chantier » le rend visible de tous." },
+      { icon: '🔒', text: "Chefs d'équipe : un chantier brouillon apparaît grisé, sans son nom ni son adresse, avec « Chantier brouillon non validé » (l'équipe prévue reste visible). Aucune notification n'est envoyée pour un brouillon." },
+    ],
+  },
   {
     version: '5.41.403',
     date: '13/10/2026',
@@ -55650,7 +55664,7 @@ async function syncAllSitesPushAll(){
       return _filterDeletedMedia(out);
     };
     data.sites.forEach(site => {
-      if(!site || !site.id) return;
+      if(!site || !site.id || site._plNew) return;   // v5.41.404 — brouillon du planning pas encore enregistré
       if(deletedIds.includes(site.id)) return;         // supprimé définitivement : on ne repousse pas
       const existing = byId[site.id];
       // Médias/docs : union entre le local et ce qui est déjà sur le serveur,
@@ -74878,11 +74892,18 @@ function _absTilesMigration(){
 
 /* ═══ Planning des chantiers (patron / conducteur) ═══ */
 function _plCan(){ const r = _absMe().role; return r === 'patron' || r === 'conducteur'; }   // modifier — v5.41.401 : selon le rôle actif uniquement (un compte DEV en mode chef = lecture seule)
+function _plIsDraft(s){ return !!s && s.status === 'brouillon'; }
+/* v5.41.404 — un chantier brouillon reste anonyme pour les chefs : gris, sans nom */
+function _plName(s){ return _plIsDraft(s) && !_plCan() ? 'Chantier brouillon non validé' : (s && s.name) || 'Chantier'; }
 function _plCanView(){ return _plCan() || _absMe().role === 'chef' || !!window._devRoleUnlocked; }   // v5.41.397 — le chef d'équipe consulte sans modifier
 function _plMonday(k){ const d = _absD(k), w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return _absK(d); }
 const PL_COLORS = ['#E8AC3D', '#4FAE6C', '#5B8DEF', '#C8862B', '#B07ACC', '#E07A63', '#3FB2A8', '#D4B13F'];
 function _plColor(s, i){ return (s && s.color && /^#[0-9a-f]{6}$/i.test(s.color)) ? s.color : PL_COLORS[i % PL_COLORS.length]; }
-function _plSites(){ return (data.sites || []).filter(s => s && s.id && !s._deleted); }
+function _plSites(){
+  // v5.41.404 — brouillon créé depuis le planning puis abandonné (jamais enregistré) : retiré
+  if((data.sites || []).some(s => s && s._plNew && (!_plEdit || _plEdit.id !== s.id))) data.sites = data.sites.filter(s => !(s && s._plNew && (!_plEdit || _plEdit.id !== s.id)));
+  return (data.sites || []).filter(s => s && s.id && !s._deleted && !s._plNew);
+}
 function _plTeam(s){
   const chefs = ((typeof _siteChefsList === 'function') ? _siteChefsList(s) : (s.assignedChefs || [])).map(c => ({ name:c.name || '', authId:(typeof _resolveChefAuthId === 'function' ? _resolveChefAuthId(c) : c.authId) || '', phone:c.phone || '', chef:true }));
   const ws = (s.assignedWorkers || []).filter(w => w && (w.authId || w.name)).map(w => ({ name:w.name || '', authId:w.authId || '', phone:w.phone || '' }));
@@ -74925,7 +74946,7 @@ function planningRender(){
   for(let w = 0; w < PL_BEFORE + PL_AFTER; w++) for(let d = 0; d < 5; d++) days.push(_absAdd(_plStart, w * 7 + d));
   _plDays = days; _plDw = _plDayW();
   root.innerHTML = `<div class="pl13-top"><b id="plRangeLbl"></b><small>Glisse de gauche à droite pour parcourir les semaines</small></div>
-    <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>
+    <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>${_plCan() ? '<button class="pl-chip add" onclick="planningNewDraft()">＋ Chantier brouillon</button>' : ''}
       <button class="pl-chip${_plShowAbs ? ' on' : ''}" onclick="planningToggleAbs()">🏖️ Absences : ${_plShowAbs ? 'affichées' : 'masquées'}</button></div>`
     + _plRenderGrid(days);
   const nsc = document.querySelector('#planningRoot .pl13w');
@@ -74955,11 +74976,11 @@ function _plRenderGrid(days){
   days.forEach((k, i) => { const dd = _absD(k).getDate(); h2 += `<th class="${dcls(k, i)}${dd === 1 ? ' m1' : ''}">${'LMMJV'.charAt(i % 5)}<b>${dd}</b></th>`; });
   // Une ligne par chantier : barre couleur du chantier + liste des personnes prévues
   const rows = sites.map(s => {
-    const ci = all.indexOf(s), col = _plColor(s, ci), e0 = s.dueDate || s.startDate;
+    const ci = all.indexOf(s), dr = _plIsDraft(s), anon = dr && !_plCan(), col = anon ? '#8E8A84' : _plColor(s, ci), e0 = s.dueDate || s.startDate;
     const i1 = first(s.startDate < a ? a : s.startDate), i2 = last(e0 > b ? b : e0);
     const team = _plTeam(s);
     const names = team.map(p => (p.chef ? '👷 ' : '') + _absShort(p.name)).join(', ');
-    const nameCell = `<td class="pl-n" onclick="planningOpenSite('${s.id}')"><i style="background:${col}"></i><b>${escapeHtml(s.name || 'Chantier')}</b><small>${_absFmt(s.startDate, { day:'numeric', month:'short' })} → ${_absFmt(e0, { day:'numeric', month:'short' })} · ${team.length} pers.</small></td>`;
+    const nameCell = `<td class="pl-n${anon ? ' pl-anon' : ''}" onclick="planningOpenSite('${s.id}')"><i style="background:${col}"></i><b>${anon ? '🔒 ' : ''}${escapeHtml(_plName(s))}</b><small>${dr && !anon ? '<span class="pl-dtag">BROUILLON</span> ' : ''}${_absFmt(s.startDate, { day:'numeric', month:'short' })} → ${_absFmt(e0, { day:'numeric', month:'short' })} · ${team.length} pers.</small></td>`;
     if(i2 < i1) return `<tr>${nameCell}${empty(0, n)}</tr>`;
     // absents de l'équipe, jour par jour, sur la durée du chantier
     const absDays = {}, absWho = new Map();
@@ -74973,7 +74994,7 @@ function _plRenderGrid(days){
       segs += ab ? `<i class="ab${wk}${ab.every(x => x.r.status === 'pending') ? ' pd' : ''}" title="${escapeHtml(ab.map(x => _plAbsTip(days[i], x)).join(' / '))}">${escapeHtml(ab.map(x => x.name.charAt(0)).join(''))}</i>` : `<i class="${i % 5 === 0 && i > i1 ? 'w0' : ''}"></i>`;
     }
     const warn = [...absWho.values()];
-    return `<tr>${nameCell}${empty(0, i1)}<td colspan="${i2 - i1 + 1}" class="pl-span${i1 % 5 === 0 ? ' w0s' : ''}"><div class="pl-b" style="--c:${col}" onclick="planningOpenSite('${s.id}')" title="${escapeHtml((s.name || '') + ' — ' + (names || 'équipe à définir'))}">
+    return `<tr>${nameCell}${empty(0, i1)}<td colspan="${i2 - i1 + 1}" class="pl-span${i1 % 5 === 0 ? ' w0s' : ''}"><div class="pl-b${dr ? ' pl-draft' : ''}${anon ? ' pl-anon' : ''}" style="--c:${col}" onclick="planningOpenSite('${s.id}')" title="${escapeHtml(_plName(s) + ' — ' + (names || 'équipe à définir'))}">
         <div class="pl-segs">${segs}</div>
         <div class="pl-txt"><b>${escapeHtml(names || 'Équipe à définir')}</b>${warn.length ? `<em>⚠️ ${escapeHtml(warn.join(' · '))}</em>` : ''}</div>
       </div></td>${empty(i2 + 1, n)}</tr>`;
@@ -74990,7 +75011,7 @@ function _plRenderGrid(days){
         if(i2 < i1 || i1 < pos) return;
         const t = ABS_TYPES[r.type] || { color:'#888', short:r.type };
         const on = all.filter(s => s.startDate && _absSiteMember(s, authId) && _absOverlap(r.from, r.to, s.startDate, s.dueDate || s.startDate));
-        cells += empty(pos, i1) + `<td colspan="${i2 - i1 + 1}" class="pl-span${i1 % 5 === 0 ? ' w0s' : ''}"><div class="pl-a${r.status === 'pending' ? ' pd' : ''}" style="--c:${t.color};${on.length ? 'box-shadow:inset 4px 0 0 ' + _plColor(on[0], all.indexOf(on[0])) + ';padding-left:8px;' : ''}" title="${escapeHtml(_plAbsTip('', { name:p.name, r }))}"><b>${escapeHtml(t.short || '')}${r.status === 'pending' ? ' ?' : ''}</b>${on.length ? `<em>⚠️ ${escapeHtml(on.map(s => s.name || 'Chantier').join(', '))}</em>` : ''}</div></td>`;
+        cells += empty(pos, i1) + `<td colspan="${i2 - i1 + 1}" class="pl-span${i1 % 5 === 0 ? ' w0s' : ''}"><div class="pl-a${r.status === 'pending' ? ' pd' : ''}" style="--c:${t.color};${on.length ? 'box-shadow:inset 4px 0 0 ' + _plColor(on[0], all.indexOf(on[0])) + ';padding-left:8px;' : ''}" title="${escapeHtml(_plAbsTip('', { name:p.name, r }))}"><b>${escapeHtml(t.short || '')}${r.status === 'pending' ? ' ?' : ''}</b>${on.length ? `<em>⚠️ ${escapeHtml(on.map(s => _plName(s)).join(', '))}</em>` : ''}</div></td>`;
         pos = i2 + 1;
       });
       return `<tr class="pl-ar"><td class="pl-n"><b>${escapeHtml(_absShort(p.name))}</b><small>absent${p.list.length > 1 ? ' ×' + p.list.length : ''}</small></td>${cells}${empty(pos, n)}</tr>`;
@@ -75003,8 +75024,20 @@ function _plRenderGrid(days){
       <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">Aucun chantier daté sur ces 13 semaines.</td></tr>`}${absRows}</tbody></table></div>
     <div class="abs-leg" style="margin-top:8px;">${Object.keys(ABS_TYPES).map(k => `<span><i style="background:${ABS_TYPES[k].color}"></i>${ABS_TYPES[k].short}</span>`).join('')}<span><i class="pd" style="--c:#E8AC3D"></i>Demandée (en attente)</span><span>⚠️ absent pendant un chantier où il est prévu</span></div>
     ${!_plCan() ? '<div class="hint" style="margin-top:10px;">👀 Lecture seule : seuls le patron et le conducteur de travaux modifient le planning. Touche un chantier pour voir son équipe.</div>' : ''}
-    ${undated.length && _plCan() ? `<div class="section-title">Chantiers sans dates · touche pour planifier</div><div>${undated.map(s => `<span class="pl-chip add" onclick="planningOpenSite('${s.id}')">＋ ${escapeHtml(s.name || 'Chantier')}</span>`).join('')}</div>` : ''}
+    ${undated.length && _plCan() ? `<div class="section-title">Chantiers sans dates · touche pour planifier</div><div>${undated.map(s => `<span class="pl-chip add" onclick="planningOpenSite('${s.id}')">＋ ${escapeHtml(s.name || 'Chantier')}${_plIsDraft(s) ? ' · brouillon' : ''}</span>`).join('')}</div>` : ''}
     <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates et son équipe. ' : ''}Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
+}
+/* v5.41.404 — nouveau chantier brouillon directement depuis le planning (patron / conducteur) */
+function planningNewDraft(){
+  if(!_plCan()){ showToast('Réservé au patron et au conducteur'); return; }
+  const t = _absToday(), mon = _plMonday(t);
+  const site = { id:uid(), name:'', address:'', status:'brouillon', progress:0, stockNeeds:{}, stockTaken:{},
+    ownerDeviceId:(typeof getDeviceSyncId === 'function' ? getDeviceSyncId() : ''), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(),
+    startDate:_absAdd(mon, 7), dueDate:_absAdd(mon, 11), assignedChefs:[], assignedWorkers:[], _plNew:true };
+  if(!Array.isArray(data.sites)) data.sites = [];
+  data.sites.push(site);
+  planningOpenSite(site.id);
+  setTimeout(() => { const i = document.getElementById('plDraftName'); if(i) i.focus(); }, 300);
 }
 function planningOpenSite(id){
   const s = (data.sites || []).find(x => x.id === id); if(!s) return;
@@ -75013,8 +75046,8 @@ function planningOpenSite(id){
     if(!_plCanView()) return;
     _plEdit = null;
     const e0 = s.dueDate || s.startDate;
-    document.getElementById('plSiteTitle').textContent = s.name || 'Chantier';
-    document.getElementById('plSiteBody').innerHTML = `${s.address ? `<div class="hint" style="margin:-4px 0 10px;">📍 ${escapeHtml(s.address)}</div>` : ''}
+    document.getElementById('plSiteTitle').textContent = _plName(s);
+    document.getElementById('plSiteBody').innerHTML = `${_plIsDraft(s) ? '<div class="abs-al" style="margin:0 0 10px;background:rgba(128,128,128,.14);border-color:var(--line);color:var(--ink-soft);">🔒 Chantier en préparation, pas encore validé par le conducteur : son nom et son adresse seront visibles une fois validé.</div>' : ''}${s.address && !_plIsDraft(s) ? `<div class="hint" style="margin:-4px 0 10px;">📍 ${escapeHtml(s.address)}</div>` : ''}
       <div class="abs-l">Dates</div><div style="font-weight:800;font-size:15px;">${s.startDate ? _absFmt(s.startDate, { weekday:'short', day:'numeric', month:'short' }) + ' → ' + _absFmt(e0, { weekday:'short', day:'numeric', month:'short' }) : 'Pas encore planifié'}</div>
       <div class="abs-l">Équipe</div><div>${team.length ? team.map(p => { const w = s.startDate ? _plAbsOf(p.authId, s.startDate, e0)[0] : null; const t = w ? ABS_TYPES[w.type] || {} : null;
         return `<span class="pl-chip${w ? ' warn' : ''}" style="cursor:default;">${p.chef ? '👷 ' : ''}${escapeHtml(_absShort(p.name))}${p.chef ? ' (chef)' : ''}${w ? ' · ' + (t.emoji || '') + ' ' + escapeHtml((t.short || '') + ' ' + _absRange(w)) : ''}</span>`; }).join('') : '<span class="hint">Personne pour l\'instant.</span>'}</div>
@@ -75023,7 +75056,7 @@ function planningOpenSite(id){
     openModal('plSite');
     return;
   }
-  _plEdit = { id, start:s.startDate || '', end:s.dueDate || '', chefs:team.filter(p => p.chef), workers:team.filter(p => !p.chef), before:new Set(team.map(p => p.authId).filter(Boolean)) };
+  _plEdit = { id, name:s.name || '', start:s.startDate || '', end:s.dueDate || '', chefs:team.filter(p => p.chef), workers:team.filter(p => !p.chef), before:new Set(team.map(p => p.authId).filter(Boolean)) };
   _plAddOpen = false;
   document.getElementById('plSiteTitle').textContent = s.name || 'Chantier';
   _plRenderEdit();
@@ -75056,25 +75089,38 @@ function _plRenderEdit(){
   }).join('');
   const inTeam = new Set(all.map(x => x[2].authId).filter(Boolean));
   const cand = _absRealUsers(_absReg || []).filter(u => (u.role === 'chef' || u.role === 'ouvrier') && !inTeam.has(u.authId)).sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
-  box.innerHTML = `${s.address ? `<div class="hint" style="margin:-4px 0 10px;">📍 ${escapeHtml(s.address)}</div>` : ''}
+  const dr = _plIsDraft(s);
+  box.innerHTML = `${dr ? `<div class="abs-al" style="margin:0 0 6px;background:rgba(232,172,61,.12);border-color:var(--wood);color:var(--ink);">📝 Chantier brouillon : les chefs le voient grisé, sans nom (« Chantier brouillon non validé »), tant qu'il n'est pas validé.</div>
+    <label class="abs-l">Nom du chantier<input type="text" id="plDraftName" value="${escapeHtml(s.name || '')}" placeholder="Ex : Maison Martin" oninput="_plEdit.name=this.value" style="display:block;width:100%;margin-top:5px;padding:10px 11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;box-sizing:border-box;"></label>` : ''}
+    ${s.address ? `<div class="hint" style="margin:-4px 0 10px;">📍 ${escapeHtml(s.address)}</div>` : ''}
     <div class="abs-g2"><label class="abs-l">Début<input type="date" value="${_plEdit.start}" onchange="_plEditSet('start', this.value)"></label>
     <label class="abs-l">Fin prévue<input type="date" value="${_plEdit.end}" min="${_plEdit.start}" onchange="_plEditSet('end', this.value)"></label></div>
     <div class="abs-l">Équipe</div>
     <div>${chips || '<span class="hint">Personne pour l\'instant.</span>'} <span class="pl-chip add" onclick="_plAddOpen=!_plAddOpen;_plRenderEdit()">＋ Ajouter</span></div>
     ${_plAddOpen ? `<div class="pl-add">${cand.length ? cand.map(u => { const w = _plAbsTxt(u.authId); return `<div class="pl-cand" onclick="_plEditAdd('${escapeHtml(u.authId)}')"><span>${u.role === 'chef' ? '👷' : '🔧'} ${escapeHtml(u.name)}</span>${w ? `<small class="w">${escapeHtml(w)}</small>` : '<small>disponible</small>'}</div>`; }).join('') : '<div class="hint">' + (_absReg ? 'Tout le monde est déjà dans l\'équipe.' : 'Chargement…') + '</div>'}</div>` : ''}
     ${warns.map(w => `<div class="abs-al">⚠️ ${escapeHtml(w)}</div>`).join('')}
-    <div class="abs-g2" style="margin-top:12px;"><button class="btn btn-outline btn-block" onclick="planningSave(false)">💾 Enregistrer</button>
+    ${dr ? `<div class="abs-g2" style="margin-top:12px;"><button class="btn btn-outline btn-block" onclick="planningSave(false)">💾 Enregistrer le brouillon</button>
+      <button class="btn btn-primary btn-block" onclick="planningSave(false, true)">✅ Valider le chantier</button></div>
+    <div class="hint" style="margin-top:6px;text-align:center;">« Valider » rend le chantier visible de tous avec son nom ; tu pourras ensuite prévenir l'équipe.</div>`
+    : `<div class="abs-g2" style="margin-top:12px;"><button class="btn btn-outline btn-block" onclick="planningSave(false)">💾 Enregistrer</button>
       <button class="btn btn-primary btn-block" onclick="planningSave(true)">📣 Enregistrer et prévenir</button></div>
-    <div class="hint" style="margin-top:6px;text-align:center;">« Enregistrer » ne prévient personne : tu pourras prévenir l'équipe plus tard.</div>`;
+    <div class="hint" style="margin-top:6px;text-align:center;">« Enregistrer » ne prévient personne : tu pourras prévenir l'équipe plus tard.</div>`}`;
 }
-async function planningSave(notify){
+async function planningSave(notify, validate){
   if(!_plEdit) return;
   const s = (data.sites || []).find(x => x.id === _plEdit.id); if(!s) return;
   if(_plEdit.end && _plEdit.start && _plEdit.end < _plEdit.start){ showToast('La fin est avant le début'); return; }
+  if(_plIsDraft(s)){   // v5.41.404 — brouillon : nom modifiable, jamais de notification
+    const nm = String(_plEdit.name != null ? _plEdit.name : s.name || '').trim();
+    if(!nm){ showToast('Donne un nom au chantier'); return; }
+    s.name = nm; notify = false;
+    if(validate){ if(!confirm('Valider « ' + nm + ' » ? Il sera visible de toute l\'équipe avec son nom.')) return; s.status = 'a-faire'; }
+  }
   s.startDate = _plEdit.start || null;
   s.dueDate = _plEdit.end || _plEdit.start || null;
   s.assignedChefs = _plEdit.chefs.map(p => ({ name:p.name, phone:p.phone || '', authId:p.authId || '' }));
   if(typeof _syncFlatChefFields === 'function') _syncFlatChefFields(s);
+  delete s._plNew;
   s.assignedWorkers = _plEdit.workers.map(p => ({ name:p.name, authId:p.authId || '', phone:p.phone || '', role:'ouvrier' }));
   const now = new Date().toISOString();
   s.updatedAt = now; s.lastSyncAt = now;
@@ -75089,7 +75135,8 @@ async function planningSave(notify){
   if(notify && old.length) _absNotify(old, '📆 Planning mis à jour', '« ' + (s.name || 'chantier') + ' » ' + when + (/\.$/.test(when) ? '' : '.'), 'pl-' + s.id, 'site:' + s.id);
   closeModal('plSite');
   _plEdit = null;
-  showToast('✅ Planning enregistré' + (notify && ids.length ? ' · équipe prévenue' : ''));
+  showToast(validate ? '✅ Chantier validé : visible de toute l\'équipe' : _plIsDraft(s) ? '📝 Brouillon enregistré' : '✅ Planning enregistré' + (notify && ids.length ? ' · équipe prévenue' : ''));
+  if(validate) setTimeout(() => { try{ planningOpenSite(s.id); }catch(e){} }, 300);   // pour pouvoir prévenir l'équipe tout de suite
   planningRender();
 }
 /* Démarrage : synchro au lancement puis toutes les 5 min (appli au premier plan) */
