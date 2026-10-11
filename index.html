@@ -42469,9 +42469,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.413';
+const APP_VERSION = '5.41.414';
 
 const CHANGELOG = [
+  {
+    version: '5.41.414',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🤏', text: "Planning : zoom libre. Sur téléphone, pince à deux doigts ; sur PC, Ctrl + molette (ou le pincement du pavé tactile) ; partout, les boutons − / +. Le jour sous les doigts ou la souris reste en place. Trimestre / Semestre / Année restent des raccourcis, et l'en-tête passe tout seul des jours aux semaines puis aux mois." },
+    ],
+  },
   {
     version: '5.41.413',
     date: '13/10/2026',
@@ -75116,9 +75123,52 @@ function _plAbsOf(authId, a, b){ return (_absList || []).filter(r => r.authId ==
    (jours hachurés sur le chantier concerné + lignes « Absences » : qui, quand, sur quel chantier). */
 const PL_WEEKS = 13;            // semaines visibles à l'écran (vue normale)
 /* v5.41.412 — zoom : 13 semaines (jours détaillés), 6 mois, ou l'année entière */
-let _plZoom = (() => { try{ const z = localStorage.getItem('rwood-pl-zoom'); return z === '6m' || z === 'an' ? z : 'sem'; }catch(e){ return 'sem'; } })();
-function _plZoomWeeks(){ return _plZoom === 'an' ? 52 : _plZoom === '6m' ? 26 : PL_WEEKS; }
-function planningSetZoom(z){ _plZoom = z; try{ localStorage.setItem('rwood-pl-zoom', z); }catch(e){} planningRender(); }
+/* v5.41.414 — zoom continu : nombre de semaines visibles (pincer, Ctrl + molette, boutons − / +) ;
+   Trimestre / Semestre / Année = raccourcis. L'en-tête s'adapte à la largeur d'un jour. */
+const PL_PRESETS = { sem:13, '6m':26, an:52 }, PL_WMIN = 1.5, PL_WMAX = 60;
+let _plZoom = 'sem';   // mode d'en-tête calculé : 'sem' (jours) | '6m' (mois + semaines) | 'an' (mois courts)
+let _plWeeksVis = (() => { try{ const v = parseFloat(localStorage.getItem('rwood-pl-weeks')); if(v >= PL_WMIN && v <= PL_WMAX) return v;
+  const z = localStorage.getItem('rwood-pl-zoom'); if(z === '6m') return 26; if(z === 'an') return 52; }catch(e){}
+  const w = (document.documentElement.clientWidth || 360); return w < 700 ? 2.5 : 13; })();   // téléphone : jours lisibles par défaut
+function _plZoomWeeks(){ return Math.max(4, Math.min(52, Math.round(_plWeeksVis))); }
+function _plSaveWeeks(){ try{ localStorage.setItem('rwood-pl-weeks', String(_plWeeksVis)); }catch(e){} }
+function planningSetZoom(z){ _plZoomTo(PL_PRESETS[z] || 13); }
+function planningZoomStep(dir){ _plZoomTo(_plWeeksVis * (dir > 0 ? 1 / 1.45 : 1.45)); }
+let _plZoomRaf = null, _plZoomPending = null;
+/* zoome en gardant le jour situé sous clientX (doigts / souris) au même endroit */
+function _plZoomTo(weeks, clientX){
+  weeks = Math.max(PL_WMIN, Math.min(PL_WMAX, weeks));
+  const sc = document.querySelector('#planningRoot .pl13w');
+  let ax = null;
+  if(sc && sc.clientWidth){ const r = sc.getBoundingClientRect(); ax = (clientX != null ? clientX : r.left + (r.width + _plNameW()) / 2) - r.left - _plNameW(); if(ax < 0) ax = 0; }
+  const dayAt = sc && ax != null ? (sc.scrollLeft + ax) / _plDw : null;
+  _plWeeksVis = weeks; _plSaveWeeks();
+  const nd = _plDayW();
+  if(dayAt != null) _plScrollX = Math.max(0, dayAt - ax / nd);
+  _plZoomPending = true;
+  if(_plZoomRaf) return;
+  _plZoomRaf = requestAnimationFrame(() => { _plZoomRaf = null; if(_plZoomPending){ _plZoomPending = null; planningRender(); } });
+}
+function _plZoomInit(root){
+  if(!root || root.dataset.zoomBound) return; root.dataset.zoomBound = '1';
+  let pinch = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  root.addEventListener('touchstart', e => {
+    if(e.touches.length === 2 && e.target.closest('.pl13w')){ pinch = { d0:dist(e.touches), w0:_plWeeksVis }; if(_plDrag){ _plDrag = null; } }
+  }, { passive:true });
+  root.addEventListener('touchmove', e => {
+    if(!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const d = dist(e.touches); if(d < 10) return;
+    _plZoomTo(pinch.w0 * pinch.d0 / d, (e.touches[0].clientX + e.touches[1].clientX) / 2);
+  }, { passive:false });
+  root.addEventListener('touchend', e => { if(e.touches.length < 2) pinch = null; });
+  root.addEventListener('wheel', e => {
+    if(!(e.ctrlKey || e.metaKey) || !e.target.closest('.pl13w')) return;   // molette seule = défilement normal
+    e.preventDefault();
+    _plZoomTo(_plWeeksVis * Math.exp(Math.max(-60, Math.min(60, e.deltaY)) * 0.006), e.clientX);
+  }, { passive:false });
+}
 function _plHeadRows(days, firstLabel, dcls){
   const n = days.length, today = _absToday();
   let h1 = `<th class="pl-n" rowspan="2">${firstLabel}</th>`, h2 = '';
@@ -75162,7 +75212,7 @@ function _plTodayCol(){
 let _plDays = null, _plDw = 17, _plScrolled = false;
 /* Largeur d'un jour : 13 semaines (65 jours) tiennent dans l'écran, sans descendre sous 17 px (téléphone : on glisse) */
 function _plNameW(){ const r = document.getElementById('planningRoot'); return ((r && r.clientWidth) || 360) < 600 ? 104 : 140; }
-function _plDayW(){ const r = document.getElementById('planningRoot'); const w = (r && r.clientWidth) || 360; return Math.max(_plZoom === 'sem' ? 26 : 2, (w - 4 - _plNameW()) / (_plZoomWeeks() * 5)); }   // v5.41.400 — jours plus larges avec leur numéro (on glisse pour voir les 13 semaines et au-delà)
+function _plDayW(){ const r = document.getElementById('planningRoot'); const w = (r && r.clientWidth) || 360; return Math.max(1, (w - 4 - _plNameW()) / (_plWeeksVis * 5)); }   // v5.41.400 — jours plus larges avec leur numéro (on glisse pour voir les 13 semaines et au-delà)
 function _plOnScroll(){
   const sc = document.querySelector('#planningRoot .pl13w'), lb = document.getElementById('plRangeLbl'); if(!sc || !lb || !_plDays || !sc.clientWidth) return;   // v5.41.406 : rien tant que la vue est cachée
   const i1 = Math.max(0, Math.min(_plDays.length - 1, Math.round(sc.scrollLeft / _plDw)));
@@ -75182,16 +75232,18 @@ function planningRender(){
   const days = [];
   for(let w = 0; w < PL_BEFORE + PL_AFTER; w++) for(let d = 0; d < 5; d++) days.push(_absAdd(_plStart, w * 7 + d));
   _plDays = days; _plDw = _plDayW();
+  _plZoom = _plDw >= 17 ? 'sem' : _plDw >= 5 ? '6m' : 'an';   // v5.41.414 — l'en-tête suit le zoom
   root.classList.remove('pl-dragmode');
   root.innerHTML = `<div class="chip-row abs-tabs" style="margin-bottom:8px;"><div class="chip${_plView === 'chantier' ? ' selected' : ''}" onclick="planningSetView('chantier')">🏗 Par chantier</div><div class="chip${_plView === 'personne' ? ' selected' : ''}" onclick="planningSetView('personne')">👷 Par personne</div></div>
     <div class="pl13-top"><b id="plRangeLbl"></b><small>Glisse de gauche à droite pour parcourir les semaines</small></div>
     ${_plCan() ? _plAddBar() : ''}
     <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>
-      <span class="pl-zoom">${[['sem', 'Trimestre'], ['6m', 'Semestre'], ['an', 'Année']].map(z => `<button class="${_plZoom === z[0] ? 'on' : ''}" onclick="planningSetZoom('${z[0]}')">${z[1]}</button>`).join('')}</span>
+      <span class="pl-zoom"><button onclick="planningZoomStep(-1)" title="Dézoomer (voir plus loin)">−</button>${[['sem', 'Trimestre'], ['6m', 'Semestre'], ['an', 'Année']].map(z => `<button class="${Math.abs(_plWeeksVis - PL_PRESETS[z[0]]) / PL_PRESETS[z[0]] < 0.1 ? 'on' : ''}" onclick="planningSetZoom('${z[0]}')">${z[1]}</button>`).join('')}<button onclick="planningZoomStep(1)" title="Zoomer (voir les jours)">+</button></span>
       ${_plView === 'chantier' ? `<button class="pl-chip${_plShowAbs ? ' on' : ''}" onclick="planningToggleAbs()">🏖️ Absences : ${_plShowAbs ? 'affichées' : 'masquées'}</button>` : ''}
       <button class="pl-chip" onclick="planningPdf()">⬇️ PDF</button></div>`
     + (_plView === 'personne' ? _plRenderPeople(days) : _plRenderGrid(days));
   _plDragInit(root);
+  _plZoomInit(root);
   _plTodayCol();
   const nsc = document.querySelector('#planningRoot .pl13w');
   if(nsc){
@@ -75264,7 +75316,7 @@ function _plRenderGrid(days){
       <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">Aucun chantier daté sur la période affichée.</td></tr>`}${absRows}</tbody></table></div>
     <div class="abs-leg" style="margin-top:8px;">${Object.keys(ABS_TYPES).map(k => `<span><i style="background:${ABS_TYPES[k].color}"></i>${ABS_TYPES[k].short}</span>`).join('')}<span><i class="pd" style="--c:#E8AC3D"></i>Demandée (en attente)</span><span>⚠️ absent pendant un chantier où il est prévu</span></div>
     ${!_plCan() ? '<div class="hint" style="margin-top:10px;">👀 Lecture seule : seuls le patron et le conducteur de travaux modifient le planning. Touche un chantier pour voir son équipe.</div>' : ''}
-    <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates, ses étapes et son équipe. Appui long (½ s) sur une barre pour la déplacer, sur son bord pour l\'allonger. ' : ''}Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
+    <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates, ses étapes et son équipe. Appui long (½ s) sur une barre pour la déplacer, sur son bord pour l\'allonger. ' : ''}Zoom : pince à deux doigts, Ctrl + molette, ou − / +. Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
 }
 /* v5.41.404 — nouveau chantier brouillon directement depuis le planning (patron / conducteur) */
 /* v5.41.405 — « Ajouter un chantier » sous la liste du planning : même formulaire que l'onglet Chantiers
