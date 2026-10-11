@@ -1957,6 +1957,9 @@
   .cb-warn{ margin-top:8px; padding:9px 11px; border-radius:10px; background:rgba(214,58,47,.12); border:1.5px solid rgba(214,58,47,.4); font-size:12.5px; font-weight:700; color:var(--ink); }
   .cb-steps > div{ display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; }
   .cb-steps i{ font-style:normal; flex-shrink:0; width:26px; height:26px; border-radius:50%; background:var(--wood); color:#111; font-weight:900; display:flex; align-items:center; justify-content:center; }
+  .cb-how{ margin:4px 0 6px; padding-left:20px; font-size:13px; color:var(--ink-soft); line-height:1.45; } .cb-how li{ margin:3px 0; } .cb-how b{ color:var(--ink); }
+  .cb-2p{ margin-top:10px; border:1.5px solid var(--line); border-radius:12px; padding:8px 10px; } .cb-2p summary{ font-weight:800; font-size:13.5px; cursor:pointer; } .cb-2p[open] summary{ margin-bottom:4px; }
+  body.theme-chantier .cb-2p{ border:2px solid #111; }
   .cb-no{ background:rgba(214,58,47,.12) !important; border-color:rgba(214,58,47,.5) !important; }
   .cb-nav{ display:flex; gap:10px; margin-top:12px; } .cb-nav .btn{ flex:1; }
   @media (min-width:860px){ .cb-3d{ height:420px; } }
@@ -36798,7 +36801,7 @@ function _cbN(v){ const n = parseFloat(String(v == null ? '' : v).replace(',', '
 function _cbF(n, d){ return isFinite(n) ? n.toLocaleString('fr-FR', { maximumFractionDigits: d == null ? 1 : d }) : '—'; }
 function _cbDeg(r){ return r * 180 / Math.PI; }
 function _cbRad(d){ return d * Math.PI / 180; }
-function _cbDef(){ return { step:0, W:'150', T:'45', D:'65', aMode:'angle', a:'30', da:'', bMode:'angle', b:'45', db:'' }; }
+function _cbDef(){ return { step:0, W:'150', T:'45', aMode:'angle', a:'30', da:'', bMode:'angle', b:'45', db:'' }; }
 function _cbLoad(){ let s = null; try{ s = JSON.parse(localStorage.getItem(CB_KEY) || 'null'); }catch(e){} const o = Object.assign(_cbDef(), s || {}); o.step = Math.max(0, Math.min(CB_STEPS.length - 1, +o.step || 0)); return o; }
 function _cbSave(){ try{ localStorage.setItem(CB_KEY, JSON.stringify(cb.s)); }catch(e){} }
 
@@ -36823,12 +36826,8 @@ function cbCalc(s){
   R.thC = _cbDeg(Math.atan(ta * Math.cos(be)));      // semelle sur le chant
   R.depthD = T / Math.cos(_cbRad(R.thD));            // profondeur de lame nécessaire
   R.depthC = W / Math.cos(_cbRad(R.thC));
-  // Au moins une pose est toujours ≤ 45° (tan θd × tan θc = sin α × sin β < 1) :
-  // ce qui bloque en pratique, c'est la profondeur de lame de la scie.
-  const Dm = _cbN(s.D) > 0 ? _cbN(s.D) : Infinity; R.Dmax = Dm;
-  R.angD = R.thD <= CB_MAX + 1e-9; R.angC = R.thC <= CB_MAX + 1e-9;
-  R.depD = R.depthD <= Dm + 0.5;   R.depC = R.depthC <= Dm + 0.5;
-  const okD = R.angD && R.depD, okC = R.angC && R.depC;
+  // v5.41.374 — seul l'angle compte (45° max) ; si la lame est trop courte on coupe en deux passes.
+  const okD = R.thD <= CB_MAX + 1e-9, okC = R.thC <= CB_MAX + 1e-9;
   // priorité à la face du dessus (celle où l'on a tracé), sinon le chant
   R.face = okD ? 'dessus' : okC ? 'chant' : null;
   R.other = R.face === 'dessus' && okC ? 'chant' : R.face === 'chant' && okD ? 'dessus' : null;
@@ -36870,8 +36869,19 @@ function _cbScene(){
   const sh = p => [p[0] + gap, p[1], p[2]];
   objs.push(_cbHexa([sh(P0), sh(P1), sh(P2), sh(P3), [L + gap,0,0],[L + gap,W,0],[L + gap,W,-T],[L + gap,0,-T]], s.step >= 1 ? off : wood, 1));
   const red = '#d63a2f', blue = '#2f6fd6', green = '#1f9d55';
-  if(showA){ lines.push({ a:P0, b:P1, c:red, w:3 }); tags.push({ p:[(P0[0] + P1[0]) / 2, W * 0.55, 0], t:'Dessus ' + _cbF(_cbDeg(al)) + '°', bg:red }); }
-  if(showB){ lines.push({ a:P0, b:P3, c:blue, w:3 }); tags.push({ p:[(P0[0] + P3[0]) / 2 - 10, 0, -T * 0.55], t:'Chant ' + _cbF(_cbDeg(be)) + '°', bg:blue }); }
+  if(showA){ lines.push({ a:P0, b:P1, c:red, w:3 }); if(!(s.step === 1 && s.aMode === 'cote')) tags.push({ p:[(P0[0] + P1[0]) / 2, W * 0.55, 0], t:'Dessus ' + _cbF(_cbDeg(al)) + '°', bg:red }); }
+  if(showB){ lines.push({ a:P0, b:P3, c:blue, w:3 }); if(!(s.step === 2 && s.bMode === 'cote')) tags.push({ p:[(P0[0] + P3[0]) / 2 - 10, 0, -T * 0.55], t:'Chant ' + _cbF(_cbDeg(be)) + '°', bg:blue }); }
+  const dot = (p, t) => tags.push({ p, t, bg:'#111', dot:true });
+  if(s.step === 1 && s.aMode === 'cote'){
+    lines.push({ a:[x0, 0, 0.5], b:[x0, W, 0.5], c:'#111', w:2, dash:[6,4] });
+    if(showA){ lines.push({ a:[x0, W, 0.6], b:[P1[0], W, 0.6], c:'#1f9d55', w:4 }); tags.push({ p:[(x0 + P1[0]) / 2, W * 1.1, 0], t:_cbF(W * ta, 0) + ' mm', bg:'#1f9d55', up:true }); }
+    dot([x0, 0, 0], 'A'); dot([x0, W, 0], 'B'); if(showA) dot([P1[0], W, 0], 'C');
+  }
+  if(s.step === 2 && s.bMode === 'cote'){
+    lines.push({ a:[x0, -0.5, 0], b:[x0, -0.5, -T], c:'#111', w:2, dash:[6,4] });
+    if(showB){ lines.push({ a:[x0, -0.6, -T], b:[P3[0], -0.6, -T], c:'#1f9d55', w:4 }); tags.push({ p:[(x0 + P3[0]) / 2, -1, -T - 10], t:_cbF(T * tb, 0) + ' mm', bg:'#1f9d55' }); }
+    dot([x0, 0, 0], 'A'); dot([x0, 0, -T], 'B'); if(showB) dot([P3[0], 0, -T], 'C');
+  }
   if(R.ok && s.step >= 3 && R.face){
     // face posée sur la table de la scie (pièce gardée), en bleu clair
     const hl = R.face === 'dessus' ? [[0,0,0.6],[0,W,0.6],[P1[0],W,0.6],[P0[0],0,0.6]] : [[0,-0.6,0],[P0[0],-0.6,0],[P3[0],-0.6,-T],[0,-0.6,-T]];
@@ -36929,10 +36939,11 @@ function _cbDraw(){
   ctx.setLineDash([]);
   ctx.font = '700 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const placed = [];
-  S.tags.forEach(t => {
-    const p = _cbP(t.p, C), tw = ctx.measureText(t.t).width + 12;
+  S.tags.slice().sort((x, y) => (y.dot ? 1 : 0) - (x.dot ? 1 : 0)).forEach(t => {
+    const p = _cbP(t.p, C), tw = t.dot ? 22 : ctx.measureText(t.t).width + 12;
+    if(t.dot){ placed.push([p[0], p[1], 26]); ctx.fillStyle = '#FFC400'; ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p[0], p[1], 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#111'; ctx.fillText(t.t, p[0], p[1] + 0.5); return; }
     // évite les chevauchements : on décale l'étiquette vers le bas jusqu'à trouver une place libre
-    for(let k = 0; k < 8 && placed.some(q => Math.abs(q[0] - p[0]) < (q[2] + tw) / 2 && Math.abs(q[1] - p[1]) < 22); k++) p[1] += 23;
+    for(let k = 0; k < 8 && placed.some(q => Math.abs(q[0] - p[0]) < (q[2] + tw) / 2 && Math.abs(q[1] - p[1]) < 22); k++) p[1] += t.up ? -23 : 23;
     placed.push([p[0], p[1], tw]);
     ctx.fillStyle = t.bg; ctx.beginPath();
     if(ctx.roundRect) ctx.roundRect(p[0] - tw / 2, p[1] - 10, tw, 20, 10); else ctx.rect(p[0] - tw / 2, p[1] - 10, tw, 20);
@@ -37024,14 +37035,15 @@ function cbRender(fly){
   let h = '';
   if(st === 'piece') h = `<div class="cb-t">La pièce</div>
     <div class="cb-s">Le <b>dessus</b> est la face où va reposer la semelle de la scie. Le <b>chant</b> est la face d'à côté.</div>
-    <div class="cb-row"><label>Largeur du dessus${_cbInp('cbW', 'W', '150', 'mm')}</label><label>Épaisseur (chant)${_cbInp('cbT', 'T', '45', 'mm')}</label></div>
-    <label class="cb-lbl">Profondeur de coupe max de ta scie (lame droite)${_cbInp('cbD', 'D', '65', 'mm')}</label>`;
+    <div class="cb-row"><label>Largeur du dessus${_cbInp('cbW', 'W', '150', 'mm')}</label><label>Épaisseur (chant)${_cbInp('cbT', 'T', '45', 'mm')}</label></div>`;
   else if(st === 'dessus') h = `<div class="cb-t">Le tracé sur le dessus <span class="cb-k" style="background:#d63a2f">rouge</span></div>
-    <div class="cb-s">Angle du trait de biais par rapport au trait d'équerre, ou le décalage du trait sur toute la largeur.</div>
-    ${_cbSeg('aMode', s.aMode)}${s.aMode === 'cote' ? _cbInp('cbDa', 'da', 'ex : 87', 'mm sur la largeur') : _cbInp('cbA', 'a', 'ex : 30', '°')}`;
+    ${_cbSeg('aMode', s.aMode)}${s.aMode === 'cote'
+      ? `<ol class="cb-how"><li><b>A</b> = le coin d'où part ton trait de biais, sur l'arête avant du dessus.</li><li>Depuis A, trace un <b>trait d'équerre</b> en travers du dessus jusqu'à l'arête arrière : c'est le point <b>B</b>.</li><li>Sur l'arête arrière, <b>mesure de B jusqu'au trait de biais</b> (point <b>C</b>).</li></ol>${_cbInp('cbDa', 'da', 'ex : 87', 'mm de B à C')}`
+      : `<div class="cb-s">Angle du trait de biais par rapport au trait d'équerre.</div>${_cbInp('cbA', 'a', 'ex : 30', '°')}`}`;
   else if(st === 'chant') h = `<div class="cb-t">Le tracé sur le chant <span class="cb-k" style="background:#2f6fd6">bleu</span></div>
-    <div class="cb-s">Angle du trait par rapport à la verticale, ou le décalage du trait sur toute l'épaisseur. Il part du même coin que le tracé du dessus.</div>
-    ${_cbSeg('bMode', s.bMode)}${s.bMode === 'cote' ? _cbInp('cbDb', 'db', 'ex : 45', 'mm sur l\'épaisseur') : _cbInp('cbB', 'b', 'ex : 45', '°')}`;
+    ${_cbSeg('bMode', s.bMode)}${s.bMode === 'cote'
+      ? `<ol class="cb-how"><li>Le trait du chant part du même coin <b>A</b> que celui du dessus.</li><li>Depuis A, trace un <b>trait d'équerre</b> sur le chant, jusqu'à l'arête du bas : c'est le point <b>B</b>.</li><li>Sur l'arête du bas, <b>mesure de B jusqu'au trait de biais</b> (point <b>C</b>).</li></ol>${_cbInp('cbDb', 'db', 'ex : 45', 'mm de B à C')}`
+      : `<div class="cb-s">Angle du trait par rapport à la verticale. Il part du même coin que le tracé du dessus.</div>${_cbInp('cbB', 'b', 'ex : 45', '°')}`}`;
   else h = `<div class="cb-t">Réglage de la scie circulaire</div><div id="cbLive"></div>`;
   document.getElementById('cbPanel').innerHTML = h;
   document.getElementById('cbPrev').style.visibility = s.step ? 'visible' : 'hidden';
@@ -37046,22 +37058,33 @@ function _cbLive(){
   if(!R.ok){ el.innerHTML = '<div class="hint">Complète les étapes précédentes.</div>'; return; }
   if(!R.face){
     el.innerHTML = `<div class="cb-big cb-no"><span>Résultat</span><b style="font-size:22px;line-height:1.3;">Coupe impossible à la circulaire,</b><small>coupe à la scie égoïne ou au ruban</small></div>
-      <div class="cb-res">
-        <div><span>Semelle sur le dessus</span><b>${_cbF(R.thD)}° · ${_cbF(R.depthD, 0)} mm</b></div>
-        <div><span>Semelle sur le chant</span><b>${_cbF(R.thC)}° · ${_cbF(R.depthC, 0)} mm</b></div>
-      </div>
-      <div class="cb-s" style="margin-top:8px;">Aucune pose ne reste à ${CB_MAX}° maximum avec une profondeur de coupe de ${_cbF(R.Dmax, 0)} mm au plus.</div>`;
+      <div class="cb-s">Il faudrait incliner la lame de ${_cbF(R.thD)}° (semelle sur le dessus) ou ${_cbF(R.thC)}° (semelle sur le chant) : plus de ${CB_MAX}°.</div>`;
     return;
   }
   const D = R.face === 'dessus';
-  const th = D ? R.thD : R.thC, depth = D ? R.depthD : R.depthC;
-  el.innerHTML = `<div class="cb-big"><span>Angle machine</span><b>${_cbF(th)}°</b><small>inclinaison de la lame</small></div>
+  const th = D ? R.thD : R.thC, depth = D ? R.depthD : R.depthC, t = _cbF(th);
+  const f1 = D ? 'le dessus' : 'le chant avant', f2 = D ? 'le dessous' : 'le chant arrière';
+  const tr1 = D ? `<b style="color:#d63a2f">trait rouge</b>` : `<b style="color:#2f6fd6">trait bleu</b>`;
+  // v5.41.375 — coupe en deux passes : face opposée, même angle, lame penchée de l'autre côté par rapport à la pièce
+  const report = D
+    ? `Sur le chant, repère où le <b style="color:#2f6fd6">trait bleu</b> arrive sur l'arête du bas. Retourne la pièce : depuis ce point, trace sur <b>le dessous</b> un trait parallèle au trait rouge (même angle, ${_cbF(_cbDeg(R.al))}° depuis l'équerre).`
+    : `Sur le dessus, repère où le <b style="color:#d63a2f">trait rouge</b> arrive sur l'arête arrière. Tourne la pièce : depuis ce point, trace sur <b>le chant arrière</b> un trait parallèle au trait bleu (même angle, ${_cbF(_cbDeg(R.be))}° depuis la verticale).`;
+  el.innerHTML = `<div class="cb-big"><span>Angle machine</span><b>${t}°</b><small>inclinaison de la lame</small></div>
     <div class="cb-steps">
-      <div><i>1</i><span>Pose la semelle sur <b>${D ? 'le dessus' : 'le chant'}</b> (en bleu sur la 3D)</span></div>
-      <div><i>2</i><span>Incline la lame à <b>${_cbF(th)}°</b></span></div>
-      <div><i>3</i><span>Suis le <b style="color:${D ? '#d63a2f' : '#2f6fd6'}">trait ${D ? 'rouge du dessus' : 'bleu du chant'}</b></span></div>
+      <div><i>1</i><span>Pose la semelle sur <b>${f1}</b> (en bleu sur la 3D)</span></div>
+      <div><i>2</i><span>Incline la lame à <b>${t}°</b>, penchée <b>vers la chute</b></span></div>
+      <div><i>3</i><span>Suis le ${tr1} ${D ? 'du dessus' : 'du chant'}</span></div>
     </div>
-    <div class="cb-s" style="margin-top:8px;">Profondeur de coupe nécessaire : <b>${_cbF(depth, 0)} mm</b> (ta scie : ${_cbF(R.Dmax, 0)} mm)${R.other ? ` · Possible aussi sur ${R.other === 'chant' ? 'le chant' : 'le dessus'} à ${_cbF(R.other === 'chant' ? R.thC : R.thD)}°.` : ''}</div>`;
+    <div class="cb-s" style="margin-top:8px;">Épaisseur à traverser : <b>${_cbF(depth, 0)} mm</b>.${R.other ? ` Possible aussi sur ${R.other === 'chant' ? 'le chant' : 'le dessus'} à ${_cbF(R.other === 'chant' ? R.thC : R.thD)}°.` : ''}</div>
+    <details class="cb-2p">
+      <summary>🪚 Lame trop courte pour ${_cbF(depth, 0)} mm ? Coupe en deux passes</summary>
+      <div class="cb-steps">
+        <div><i>1</i><span><b>1re passe — semelle sur ${f1}</b> : lame à <b>${t}°</b> penchée vers la chute, suis le ${tr1}, lame sortie au maximum.</span></div>
+        <div><i>2</i><span><b>Retrace la coupe sur ${f2}</b> : ${report}</span></div>
+        <div><i>3</i><span><b>2e passe — semelle sur ${f2}</b> : <b>garde le même angle, ${t}°</b>, ne touche pas au réglage. Par rapport à la pièce, la lame penche maintenant <b>vers la pièce gardée</b> : c'est normal, les deux traits de scie se rejoignent au milieu.</span></div>
+        <div><i>4</i><span>S'il reste un peu de bois au milieu, <b>finis à la scie égoïne</b> en suivant les deux traits de scie.</span></div>
+      </div>
+    </details>`;
 }
 /* ═══ MODULE — Coupe biaise (fin) ═══ */
 
@@ -41645,9 +41668,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.373';
+const APP_VERSION = '5.41.375';
 
 const CHANGELOG = [
+  {
+    version: '5.41.375',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🪚', text: "Coupe biaise : nouvelle aide « Coupe en deux passes » quand la lame est trop courte. 1re passe sur la face indiquée, on retrace la coupe sur la face opposée, 2e passe avec le même angle (la lame penche alors vers la pièce gardée), puis finition à l'égoïne si besoin." },
+    ],
+  },
+  {
+    version: '5.41.374',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📏', text: "Coupe biaise : en mode « Cote (mm) », l'appli explique le tracé pas à pas (point A, trait d'équerre jusqu'à B, mesure de B à C) et montre A, B, C sur la 3D." },
+      { icon: '🪚', text: "Le réglage ne dépend plus de la profondeur de la lame : seul l'angle compte (45° maximum). Si la lame est trop courte, coupe en deux passes et finis le fond à la scie égoïne." },
+    ],
+  },
   {
     version: '5.41.373',
     date: '13/10/2026',
