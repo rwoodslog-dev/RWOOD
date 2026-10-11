@@ -4910,7 +4910,25 @@
   .pl-b.pl-grabbed .pl-grip{ display:block; }
   #plUndo{ position:fixed; left:50%; bottom:calc(var(--nav-h, 64px) + 18px); transform:translateX(-50%); z-index:9998; display:flex; align-items:center; gap:12px; background:#111; color:#fff; padding:10px 12px 10px 16px; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,.5); font-weight:700; font-size:13.5px; max-width:calc(100vw - 32px); }
   #plUndo button{ background:#FFC400; color:#111; border:none; border-radius:9px; padding:7px 12px; font-weight:900; cursor:pointer; white-space:nowrap; }
+  /* v5.41.412 — zoom 6 mois / année */
+  .pl-zoom{ display:inline-flex; border:1.5px solid var(--line); border-radius:16px; overflow:hidden; margin:0 6px 7px 0; }
+  .pl-zoom button{ border:none; background:var(--card); color:var(--ink); font-weight:800; font-size:12.5px; padding:6px 11px; cursor:pointer; font-family:inherit; }
+  .pl-zoom button + button{ border-left:1.5px solid var(--line); }
+  .pl-zoom button.on{ background:var(--wood); color:#1a1208; }
+  .pl13.cmp th.mo{ font-size:12px; color:var(--ink); padding:6px 0 3px; border-left:2.5px solid rgba(225,205,175,.75); white-space:nowrap; overflow:hidden; }
+  .pl13.cmp th.mo.cur{ color:var(--wood); }
+  .pl13.cmp th.wk2{ font-size:9.5px; font-weight:700; color:var(--ink-soft); padding:3px 0; border-left:1px solid rgba(150,140,125,.3); overflow:hidden; white-space:nowrap; }
+  .pl13.cmp th.wk2.cur{ color:#fff; background:#378ADD; }
+  .pl13.cmp td.d{ border-left:none; }
+  .pl13.cmp td.d.w0{ border-left:1px solid rgba(150,140,125,.35); }
+  .pl13.cmp .pl-segs i{ border-left:none; } .pl13.cmp .pl-segs i.w0{ border-left:1px solid rgba(0,0,0,.25); }
+  .pl13.cmp .pl-tk{ font-size:9.5px; }
   /* ═══ Absences & Planning (fin) ═══ */
+  /* v5.41.411 — aucune sélection de texte dans l'appli (appui long, double-clic, glisser),
+     sauf dans les champs où l'on écrit */
+  html, body, body *{ -webkit-user-select:none !important; user-select:none !important; -webkit-touch-callout:none; }
+  input, textarea, select, [contenteditable=""], [contenteditable="true"], input *, textarea *, [contenteditable="true"] *{ -webkit-user-select:text !important; user-select:text !important; -webkit-touch-callout:default; }
+  ::selection{ background:rgba(55,138,221,.35); }
 
   /* ═══ v5.41.372 — THÈME « CHANTIER » (mode clair Balise : jaune / noir / blanc) ═══
      S'ajoute PAR-DESSUS body.theme-light (les deux classes sont posées ensemble) :
@@ -42451,9 +42469,30 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.410';
+const APP_VERSION = '5.41.413';
 
 const CHANGELOG = [
+  {
+    version: '5.41.413',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🔍', text: "Planning : les zooms s'appellent maintenant Trimestre (3 mois, jours détaillés), Semestre (6 mois) et Année." },
+    ],
+  },
+  {
+    version: '5.41.412',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🔍', text: "Planning : choix de l'affichage « 13 sem. » (jours détaillés), « 6 mois » ou « Année ». En 6 mois et à l'année, l'en-tête montre les mois et les semaines ; le glisser, la colonne d'aujourd'hui, les absences et l'export PDF suivent le zoom choisi." },
+    ],
+  },
+  {
+    version: '5.41.411',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🚫', text: "Plus de texte sélectionné par erreur (appui long, double-clic ou glisser) n'importe où dans l'appli : la sélection reste possible uniquement dans les zones où l'on écrit." },
+    ],
+  },
   {
     version: '5.41.410',
     date: '13/10/2026',
@@ -75075,8 +75114,32 @@ function _plAbsOf(authId, a, b){ return (_absList || []).filter(r => r.authId ==
 /* v5.41.395 — Planning sur 13 semaines : un tableau, une colonne par semaine découpée en jours (L→V),
    une couleur par chantier avec la liste des personnes prévues, et les absences en superposition
    (jours hachurés sur le chantier concerné + lignes « Absences » : qui, quand, sur quel chantier). */
-const PL_WEEKS = 13;            // semaines visibles à l'écran
-const PL_BEFORE = 26, PL_AFTER = 52;   // v5.41.396 — plage glissable : 6 mois avant, 1 an après
+const PL_WEEKS = 13;            // semaines visibles à l'écran (vue normale)
+/* v5.41.412 — zoom : 13 semaines (jours détaillés), 6 mois, ou l'année entière */
+let _plZoom = (() => { try{ const z = localStorage.getItem('rwood-pl-zoom'); return z === '6m' || z === 'an' ? z : 'sem'; }catch(e){ return 'sem'; } })();
+function _plZoomWeeks(){ return _plZoom === 'an' ? 52 : _plZoom === '6m' ? 26 : PL_WEEKS; }
+function planningSetZoom(z){ _plZoom = z; try{ localStorage.setItem('rwood-pl-zoom', z); }catch(e){} planningRender(); }
+function _plHeadRows(days, firstLabel, dcls){
+  const n = days.length, today = _absToday();
+  let h1 = `<th class="pl-n" rowspan="2">${firstLabel}</th>`, h2 = '';
+  if(_plZoom === 'sem'){
+    for(let w = 0; w < n / 5; w++){ const k = days[w * 5], cur = k <= today && today <= _absAdd(k, 6); h1 += `<th colspan="5" class="wk${cur ? ' cur' : ''}">S${getISOWeekNumber(_absD(k))}<small>${_absFmt(k, { day:'numeric', month:'short' })}</small></th>`; }
+    days.forEach((k, i) => { const dd = _absD(k).getDate(); h2 += `<th class="${dcls(k, i)}${dd === 1 ? ' m1' : ''}">${'LMMJV'.charAt(i % 5)}<b>${dd}</b></th>`; });
+  } else {
+    // ligne 1 : les mois ; ligne 2 : les semaines
+    let i = 0;
+    while(i < n){
+      const m = days[i].slice(0, 7); let j = i; while(j + 1 < n && days[j + 1].slice(0, 7) === m) j++;
+      const lb = _absD(days[i]).toLocaleDateString('fr-FR', _plZoom === 'an' ? { month:'short' } : { month:'long', year:'numeric' });
+      const span = j - i + 1, cur = today.slice(0, 7) === m;
+      h1 += `<th colspan="${span}" class="mo${cur ? ' cur' : ''}">${span >= (_plZoom === 'an' ? 8 : 4) ? escapeHtml(lb.charAt(0).toUpperCase() + lb.slice(1)) : ''}</th>`;
+      i = j + 1;
+    }
+    for(let w = 0; w < n / 5; w++){ const k = days[w * 5], cur = k <= today && today <= _absAdd(k, 6); h2 += `<th colspan="5" class="wk2${cur ? ' cur' : ''}">${_plZoom === 'an' ? '' : 'S'}${getISOWeekNumber(_absD(k))}</th>`; }
+  }
+  return [h1, h2];
+}
+const PL_BEFORE = 26, PL_AFTER = 78;   // v5.41.396 — plage glissable : 6 mois avant, 18 mois après (v5.41.412)
 let _plStart = null, _plEdit = null, _plAddOpen = false;
 let _plShowAbs = (() => { try{ return localStorage.getItem('rwood-pl-abs') !== '0'; }catch(e){ return true; } })();
 function planningToday(smooth){
@@ -75099,7 +75162,7 @@ function _plTodayCol(){
 let _plDays = null, _plDw = 17, _plScrolled = false;
 /* Largeur d'un jour : 13 semaines (65 jours) tiennent dans l'écran, sans descendre sous 17 px (téléphone : on glisse) */
 function _plNameW(){ const r = document.getElementById('planningRoot'); return ((r && r.clientWidth) || 360) < 600 ? 104 : 140; }
-function _plDayW(){ const r = document.getElementById('planningRoot'); const w = (r && r.clientWidth) || 360; return Math.max(26, (w - 4 - _plNameW()) / (PL_WEEKS * 5)); }   // v5.41.400 — jours plus larges avec leur numéro (on glisse pour voir les 13 semaines et au-delà)
+function _plDayW(){ const r = document.getElementById('planningRoot'); const w = (r && r.clientWidth) || 360; return Math.max(_plZoom === 'sem' ? 26 : 2, (w - 4 - _plNameW()) / (_plZoomWeeks() * 5)); }   // v5.41.400 — jours plus larges avec leur numéro (on glisse pour voir les 13 semaines et au-delà)
 function _plOnScroll(){
   const sc = document.querySelector('#planningRoot .pl13w'), lb = document.getElementById('plRangeLbl'); if(!sc || !lb || !_plDays || !sc.clientWidth) return;   // v5.41.406 : rien tant que la vue est cachée
   const i1 = Math.max(0, Math.min(_plDays.length - 1, Math.round(sc.scrollLeft / _plDw)));
@@ -75124,6 +75187,7 @@ function planningRender(){
     <div class="pl13-top"><b id="plRangeLbl"></b><small>Glisse de gauche à droite pour parcourir les semaines</small></div>
     ${_plCan() ? _plAddBar() : ''}
     <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>
+      <span class="pl-zoom">${[['sem', 'Trimestre'], ['6m', 'Semestre'], ['an', 'Année']].map(z => `<button class="${_plZoom === z[0] ? 'on' : ''}" onclick="planningSetZoom('${z[0]}')">${z[1]}</button>`).join('')}</span>
       ${_plView === 'chantier' ? `<button class="pl-chip${_plShowAbs ? ' on' : ''}" onclick="planningToggleAbs()">🏖️ Absences : ${_plShowAbs ? 'affichées' : 'masquées'}</button>` : ''}
       <button class="pl-chip" onclick="planningPdf()">⬇️ PDF</button></div>`
     + (_plView === 'personne' ? _plRenderPeople(days) : _plRenderGrid(days));
@@ -75147,13 +75211,8 @@ function _plRenderGrid(days){
   const absOn = _plShowAbs ? (_absList || []).filter(r => (r.status === 'approved' || r.status === 'pending') && _absOverlap(r.from, r.to, a, b)) : [];
   const dcls = (k, i) => 'd' + (i % 5 === 0 ? ' w0' : '') + (k === today ? ' td' : '') + (_absIsFerie(k) ? ' fe' : '');
   const empty = (i1, i2) => { let h = ''; for(let i = i1; i < i2; i++) h += `<td class="${dcls(days[i], i)}"></td>`; return h; };
-  // En-tête : 13 colonnes « semaine », chacune découpée en 5 jours
-  let h1 = '<th class="pl-n" rowspan="2">Chantier</th>', h2 = '';
-  for(let w = 0; w < n / 5; w++){
-    const k = days[w * 5], cur = k <= today && today <= _absAdd(k, 6);
-    h1 += `<th colspan="5" class="wk${cur ? ' cur' : ''}">S${getISOWeekNumber(_absD(k))}<small>${_absFmt(k, { day:'numeric', month:'short' })}</small></th>`;
-  }
-  days.forEach((k, i) => { const dd = _absD(k).getDate(); h2 += `<th class="${dcls(k, i)}${dd === 1 ? ' m1' : ''}">${'LMMJV'.charAt(i % 5)}<b>${dd}</b></th>`; });
+  // En-tête : semaines découpées en jours (ou mois + semaines en vue 6 mois / année)
+  const [h1, h2] = _plHeadRows(days, 'Chantier', dcls);
   // Une ligne par chantier : barre couleur du chantier + liste des personnes prévues
   const rows = sites.map(s => {
     const ci = all.indexOf(s), dr = _plIsDraft(s), anon = dr && !_plCan(), col = anon ? '#8E8A84' : _plColor(s, ci), e0 = s.dueDate || s.startDate;
@@ -75197,12 +75256,12 @@ function _plRenderGrid(days){
       });
       return `<tr class="pl-ar"><td class="pl-n"><b>${escapeHtml(_absShort(p.name))}</b><small>absent${p.list.length > 1 ? ' ×' + p.list.length : ''}</small></td>${cells}${empty(pos, n)}</tr>`;
     }).join('');
-    absRows = `<tr class="pl-sec"><td class="pl-n">🏖️ Absences</td><td colspan="${n}">${absRows ? 'Qui est absent, et sur quel chantier il était prévu (⚠️)' : 'Aucune absence sur ces 13 semaines'}</td></tr>` + absRows;
+    absRows = `<tr class="pl-sec"><td class="pl-n">🏖️ Absences</td><td colspan="${n}">${absRows ? 'Qui est absent, et sur quel chantier il était prévu (⚠️)' : 'Aucune absence sur la période affichée'}</td></tr>` + absRows;
   }
   const undated = all.filter(s => !s.startDate && s.status !== 'termine' && s.status !== 'done');
-  return `<div class="pl13w"><table class="pl13${_plDw < 11 ? ' nar' : ''}" style="width:${_plNameW() + n * _plDw}px;--nw:${_plNameW()}px"><colgroup><col class="cn" style="width:${_plNameW()}px">${days.map(() => '<col class="cd">').join('')}</colgroup>
+  return `<div class="pl13w"><table class="pl13${_plDw < 11 ? ' nar' : ''}${_plZoom !== 'sem' ? ' cmp' : ''}" style="width:${_plNameW() + n * _plDw}px;--nw:${_plNameW()}px"><colgroup><col class="cn" style="width:${_plNameW()}px">${days.map(() => '<col class="cd">').join('')}</colgroup>
       <thead><tr>${h1}</tr><tr>${h2}</tr></thead>
-      <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">Aucun chantier daté sur ces 13 semaines.</td></tr>`}${absRows}</tbody></table></div>
+      <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">Aucun chantier daté sur la période affichée.</td></tr>`}${absRows}</tbody></table></div>
     <div class="abs-leg" style="margin-top:8px;">${Object.keys(ABS_TYPES).map(k => `<span><i style="background:${ABS_TYPES[k].color}"></i>${ABS_TYPES[k].short}</span>`).join('')}<span><i class="pd" style="--c:#E8AC3D"></i>Demandée (en attente)</span><span>⚠️ absent pendant un chantier où il est prévu</span></div>
     ${!_plCan() ? '<div class="hint" style="margin-top:10px;">👀 Lecture seule : seuls le patron et le conducteur de travaux modifient le planning. Touche un chantier pour voir son équipe.</div>' : ''}
     <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates, ses étapes et son équipe. Appui long (½ s) sur une barre pour la déplacer, sur son bord pour l\'allonger. ' : ''}Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
@@ -75424,9 +75483,7 @@ function _plRenderPeople(days){
   if(!_absReg){ _absRegistry().then(() => { const v = document.getElementById('view-planning'); if(v && v.classList.contains('active')) planningRender(); }); }
   const n = days.length, today = _absToday(), all = _plSites(), sites = all.filter(s => s.startDate || (s.planDayAdds || []).length);
   const dcls = (k, i) => 'd' + (i % 5 === 0 ? ' w0' : '') + (k === today ? ' td' : '') + (_absIsFerie(k) ? ' fe' : '');
-  let h1 = '<th class="pl-n" rowspan="2">Personne</th>', h2 = '';
-  for(let w = 0; w < n / 5; w++){ const k = days[w * 5], cur = k <= today && today <= _absAdd(k, 6); h1 += `<th colspan="5" class="wk${cur ? ' cur' : ''}">S${getISOWeekNumber(_absD(k))}<small>${_absFmt(k, { day:'numeric', month:'short' })}</small></th>`; }
-  days.forEach((k, i) => { const dd = _absD(k).getDate(); h2 += `<th class="${dcls(k, i)}${dd === 1 ? ' m1' : ''}">${'LMMJV'.charAt(i % 5)}<b>${dd}</b></th>`; });
+  const [h1, h2] = _plHeadRows(days, 'Personne', dcls);
   const mon = _plMonday(today), horizon = [];
   for(let w = 0; w < 13; w++) for(let d = 0; d < 5; d++) horizon.push(_absAdd(mon, w * 7 + d));
   const people = _plPeople();
@@ -75454,10 +75511,10 @@ function _plRenderPeople(days){
       }
       i = j + 1;
     }
-    return `<tr><td class="pl-n"><b>${p.role === 'chef' ? '👷 ' : ''}${escapeHtml(_absShort(p.name))}</b><small class="${freeN ? 'pl-fr' : ''}">${freeN} j libre${freeN > 1 ? 's' : ''} · 13 sem.</small></td>${cells}</tr>`;
+    return `<tr><td class="pl-n"><b>${p.role === 'chef' ? '👷 ' : ''}${escapeHtml(_absShort(p.name))}</b><small class="${freeN ? 'pl-fr' : ''}">${freeN} j libre${freeN > 1 ? 's' : ''} sur 3 mois</small></td>${cells}</tr>`;
   }).join('');
   return `<div class="pl13-bar">${[['tous', 'Tous'], ['chefs', 'Chefs'], ['ouvriers', 'Ouvriers']].map(f => `<button class="pl-chip${_plPeopleFilter === f[0] ? ' on' : ''}" onclick="planningSetPeopleFilter('${f[0]}')">${f[1]}</button>`).join('')}</div>
-    <div class="pl13w"><table class="pl13 pl-ppl${_plDw < 11 ? ' nar' : ''}" style="width:${_plNameW() + n * _plDw}px;--nw:${_plNameW()}px"><colgroup><col class="cn" style="width:${_plNameW()}px">${days.map(() => '<col class="cd">').join('')}</colgroup>
+    <div class="pl13w"><table class="pl13 pl-ppl${_plDw < 11 ? ' nar' : ''}${_plZoom !== 'sem' ? ' cmp' : ''}" style="width:${_plNameW() + n * _plDw}px;--nw:${_plNameW()}px"><colgroup><col class="cn" style="width:${_plNameW()}px">${days.map(() => '<col class="cd">').join('')}</colgroup>
       <thead><tr>${h1}</tr><tr>${h2}</tr></thead>
       <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">${_absReg ? 'Aucun chef ni ouvrier dans l\'entreprise.' : 'Chargement de l\'équipe…'}</td></tr>`}</tbody></table></div>
     <div class="abs-leg" style="margin-top:8px;"><span><i style="background:#3FB27F"></i>Absence (pointillés : demandée)</span><span><i style="box-shadow:inset 0 0 0 2px #E05A46"></i>Conflit : 2 chantiers, ou absent mais prévu</span></div>
@@ -75607,6 +75664,12 @@ async function planningUnplan(sid){
   planningRender();
   _plUndoOffer(s.id, before, '🗓️ « ' + (s.name || 'Chantier') + ' » retiré du planning');
 }
+/* v5.41.411 — pas de sélection de texte hors des zones de saisie (double sécurité au cas où un navigateur ignore le CSS) */
+(function(){
+  const editable = el => !!(el && el.closest && el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
+  document.addEventListener('selectstart', e => { if(!editable(e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement)) e.preventDefault(); });
+  document.addEventListener('dblclick', () => { const a = document.activeElement; if(!editable(a)){ try{ const sel = window.getSelection(); if(sel && !sel.isCollapsed) sel.removeAllRanges(); }catch(e){} } });
+})();
 /* v5.41.408 — après un déplacement : bandeau « Annuler » pendant 8 s (erreur de manipulation) */
 function _plUndoOffer(sid, before, msg){
   let bar = document.getElementById('plUndo'); if(bar) bar.remove();
@@ -75682,7 +75745,8 @@ async function planningPdf(){
   showToast('Génération du PDF…');
   const sc = document.querySelector('#planningRoot .pl13w'), days0 = _plDays || [];
   const i0 = sc ? Math.max(0, Math.min(days0.length - 5, Math.floor(sc.scrollLeft / _plDw / 5) * 5)) : 0;
-  const days = days0.slice(i0, i0 + 65), n = days.length; if(!n) return;
+  const days = days0.slice(i0, i0 + _plZoomWeeks() * 5), n = days.length; if(!n) return;
+  const big = n > 65;   // v5.41.412 — 6 mois / année : mois + semaines au lieu des jours
   const a = days[0], b = days[n - 1], all = _plSites();
   const doc = new J({ unit:'mm', format:'a4', orientation:'landscape' });
   const W = 297, M = 8, NW = 44, dw = (W - 2 * M - NW) / n, RH = 9;
@@ -75695,13 +75759,23 @@ async function planningPdf(){
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0, 0, 0); doc.text(title, M, 11);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(120, 120, 120); doc.text('Édité le ' + new Date().toLocaleDateString('fr-FR') + ' · RWOOD', W - M, 11, { align:'right' });
     y = 16; doc.setTextColor(0, 0, 0);
+    if(big){
+      let i = 0;
+      while(i < n){ const m = days[i].slice(0, 7); let j = i; while(j + 1 < n && days[j + 1].slice(0, 7) === m) j++;
+        const x = M + NW + i * dw, w = (j - i + 1) * dw; doc.setFillColor(238, 234, 226); doc.rect(x + 0.2, y, w - 0.4, 6, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
+        const lb = _absD(days[i]).toLocaleDateString('fr-FR', { month:n > 140 ? 'short' : 'long' }); if(w > 8) doc.text(lb, x + w / 2, y + 4.2, { align:'center' }); i = j + 1; }
+      y += 6; doc.setFont('helvetica', 'normal'); doc.setFontSize(n > 140 ? 4.5 : 5.5);
+      for(let w = 0; w < n / 5; w++) doc.text(String(getISOWeekNumber(_absD(days[w * 5]))), M + NW + (w * 5 + 2.5) * dw, y + 3.6, { align:'center' });
+      y += 5;
+    } else {
     for(let w = 0; w < n / 5; w++){ const x = M + NW + w * 5 * dw; doc.setFillColor(238, 234, 226); doc.rect(x, y, 5 * dw, 6, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.text('S' + getISOWeekNumber(_absD(days[w * 5])) + ' · ' + _absFmt(days[w * 5], { day:'numeric', month:'short' }), x + 5 * dw / 2, y + 4.2, { align:'center' }); }
     y += 6; doc.setFont('helvetica', 'normal'); doc.setFontSize(5.5);
     days.forEach((k, i) => { const x = M + NW + i * dw; if(_absIsFerie(k)){ doc.setFillColor(225, 225, 225); doc.rect(x, y, dw, 5, 'F'); } doc.text(String(_absD(k).getDate()), x + dw / 2, y + 3.6, { align:'center' }); });
     y += 5;
+    }
   };
   const grid = (y0, h) => {
-    days.forEach((k, i) => { const x = M + NW + i * dw; doc.setDrawColor(i % 5 === 0 ? 90 : 205, i % 5 === 0 ? 90 : 205, i % 5 === 0 ? 90 : 205); doc.setLineWidth(i % 5 === 0 ? 0.45 : 0.1); doc.line(x, y0, x, y0 + h); });
+    days.forEach((k, i) => { if(big && i % 5) return; const x = M + NW + i * dw; doc.setDrawColor(i % 5 === 0 ? (big ? 170 : 90) : 205, i % 5 === 0 ? (big ? 170 : 90) : 205, i % 5 === 0 ? (big ? 170 : 90) : 205); doc.setLineWidth(i % 5 === 0 ? (big ? 0.2 : 0.45) : 0.1); doc.line(x, y0, x, y0 + h); });
     doc.setDrawColor(205, 205, 205); doc.setLineWidth(0.1); doc.line(M, y0 + h, W - M, y0 + h);
   };
   const clip = (t, maxW) => { let s = String(t || ''); while(s.length > 1 && doc.getTextWidth(s) > maxW) s = s.slice(0, -2) + '…'; return s; };
