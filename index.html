@@ -7816,7 +7816,8 @@
       <h2>Choisir la tuile du chantier</h2>
       <button class="modal-close" onclick="closeModal('selectTile')">×</button>
     </div>
-    <div class="hint" style="margin-bottom:10px;">Sélectionne une tuile parmi le catalogue de l'onglet Couverture.</div>
+    <div class="hint" style="margin-bottom:10px;">Catalogue de l'onglet Toiture : touche un modèle pour l'associer au chantier.</div>
+    <input type="text" id="selectTileSearch" placeholder="🔍 Rechercher un modèle, une marque…" oninput="renderSelectTileList()" style="width:100%;padding:11px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;margin-bottom:10px;">
     <div id="selectTileList"></div>
   </div>
 </div>
@@ -23281,10 +23282,17 @@ function _catalogueDoAssoc(siteId){
   const site = (data.sites||[]).find(s=>s.id===siteId);
   if(!site || !_catalogueAssocTarget){ closeModal('catalogueAssoc'); return; }
   const { marque, nom } = _catalogueAssocTarget;
-  // Retrouver le modèle dans le catalogue effectif
+  const tile = _catAssocModel(site, marque, nom);
+  closeModal('catalogueAssoc');
+  if(tile) showToast('🏗 ' + nom + ' associée à ' + (site.name||'ce chantier'));
+}
+/* v5.41.393 — associe un modèle du catalogue Toiture à un chantier (utilisé par Toiture › Associer
+   ET par le sélecteur « Choisir la tuile du chantier »). Renvoie la fiche tuile ou null. */
+function _catAssocModel(site, marque, nom){
+  if(!site) return null;
   let model = null;
   _catalogueEffectif().forEach(g => { if(g.marque===marque){ const m=g.modeles.find(x=>x.nom===nom); if(m) model=m; } });
-  if(!model){ closeModal('catalogueAssoc'); return; }
+  if(!model) return null;
   // Résout (ou crée) l'entrée correspondante dans le catalogue unique
   // data.tiles, puis assigne son id au chantier — exactement le chemin déjà
   // utilisé par openSelectTileModal/selectTileForSite.
@@ -23299,7 +23307,7 @@ function _catalogueDoAssoc(siteId){
     pureauMax: _rg ? _rg.max / 10 : undefined,
     notes: model.pureau || ''
   });
-  if(!tile){ closeModal('catalogueAssoc'); return; }
+  if(!tile) return null;
   // Complète la fiche technique du catalogue unique si elle manque encore
   // (photo/document), sans écraser une fiche déjà présente.
   const ficheUrl = _modelFicheImportee(marque, model) || _modelLien(marque, model) || '';
@@ -23315,8 +23323,7 @@ function _catalogueDoAssoc(siteId){
   saveData();
   if(typeof syncPush === 'function'){ try{ syncPush(); }catch(_){} }
   if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle();
-  closeModal('catalogueAssoc');
-  showToast('🏗 ' + nom + ' associée à ' + (site.name||'ce chantier'));
+  return tile;
 }
 
 /* ── Administration du catalogue (Dev) ─────────────────────────────── */
@@ -23820,31 +23827,66 @@ function renderDetailTile(siteId){
   `;
 }
 
+/* v5.41.393 — « Choisir la tuile du chantier » : basé sur le catalogue de l'onglet Toiture
+   (mêmes marques et modèles, recherche + pastilles de marque), et non plus sur l'ancienne liste data.tiles. */
+let _stSite = null, _stBrand = 'all', _stFlat = [];
 function openSelectTileModal(siteId){
-  const container = document.getElementById('selectTileList');
-  const tiles = data.tiles || [];
-
-  if(tiles.length === 0){
-    container.innerHTML = `<div class="empty"><div class="icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg></div><h3>Aucune tuile au catalogue</h3><p>Ajoute des tuiles dans l'onglet Couverture pour pouvoir les sélectionner ici.</p></div>`;
-  } else {
-    container.innerHTML = tiles.slice().sort((a,b)=>a.name.localeCompare(b.name, 'fr')).map(tile=>{
-      const meta = [tile.brand, tile.ref, tile.dimensions].filter(Boolean).join(' · ');
-      const photoHtml = tile.photo
-        ? `<img ${photoImgAttrs(tile.photo)} alt="${escapeHtml(tile.name)}" style="width:40px; height:40px; border-radius:8px; object-fit:cover; flex-shrink:0; border:1.5px solid var(--line);">`
-        : '';
-      return `
-        <div class="stock-row" style="cursor:pointer;" onclick="selectTileForSite('${siteId}','${tile.id}')">
-          ${photoHtml}
-          <div class="info">
-            <h4>${escapeHtml(tile.name)}</h4>
-            <div class="unit">${escapeHtml(meta)}</div>
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
+  _stSite = siteId; _stBrand = 'all';
+  const q = document.getElementById('selectTileSearch'); if(q) q.value = '';
+  renderSelectTileList();
   openModal('selectTile');
+}
+function selectTileSetBrand(b){ _stBrand = b; renderSelectTileList(); }
+function renderSelectTileList(){
+  const container = document.getElementById('selectTileList'); if(!container) return;
+  const site = (data.sites||[]).find(s => s.id === _stSite);
+  const cat = (typeof _catalogueEffectif === 'function') ? _catalogueEffectif() : [];
+  const norm = v => (v||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const nq = norm((document.getElementById('selectTileSearch')?.value || '').trim());
+  const cur = site && site.tileId && (data.tiles||[]).find(t => t.id === site.tileId);
+  const curName = cur ? norm(cur.name) : '';
+  _stFlat = [];
+  if(!cat.length){
+    container.innerHTML = `<div class="hint" style="text-align:center;padding:20px 0;">Catalogue Toiture vide.</div>`;
+    return;
+  }
+  const brands = cat.map(g => g.marque);
+  if(_stBrand !== 'all' && !brands.includes(_stBrand)) _stBrand = 'all';
+  const chips = `<div class="cat-brands">${['all'].concat(brands).map(b =>
+    `<button class="${_stBrand === b ? 'on' : ''}" onclick='selectTileSetBrand(${JSON.stringify(b).replace(/'/g,"&#39;")})'>${b === 'all' ? 'Toutes' : escapeHtml(_catBrandShort(b))}</button>`).join('')}</div>`;
+  const row = (marque, m, brand) => {
+    _stFlat.push({ marque, nom: m.nom }); const i = _stFlat.length - 1;
+    const on = curName && norm(m.nom) === curName;
+    const nCol = (m.coloris||[]).length;
+    const fiche = _modelFicheImportee(marque, m);
+    return `<div class="cat-row${on ? ' cat-here' : ''}"><div class="cat-row-h" onclick="selectCatTileForSite(${i})">
+      <div style="flex:1;min-width:0;">
+        <div class="cat-nm">${on ? '✓ ' : ''}${escapeHtml(m.nom)}${fiche ? ' <span title="Fiche enregistrée">📄</span>' : ''}</div>
+        <div class="cat-ty">${escapeHtml((brand ? _catBrandShort(marque) + ' · ' : '') + (m.type||''))}${nCol ? ' · ' + nCol + ' coloris' : ''}</div>
+      </div><span class="cat-chev">›</span></div></div>`;
+  };
+  let here = '';
+  if(cur && !nq){
+    let f = null;
+    cat.forEach(g => g.modeles.forEach(m => { if(!f && norm(m.nom) === curName) f = { marque:g.marque, m }; }));
+    here = `<div class="cat-sec">🏗 Tuile actuelle</div>` + (f ? row(f.marque, f.m, true)
+      : `<div class="cat-row cat-here"><div class="cat-row-h"><div style="flex:1;"><div class="cat-nm">✓ ${escapeHtml(cur.name||'Tuile')}</div><div class="cat-ty">${escapeHtml(cur.brand||'')}</div></div></div></div>`);
+  }
+  const blocks = cat.filter(g => _stBrand === 'all' || g.marque === _stBrand).map(g => {
+    const ms = g.modeles.filter(m => !nq || norm(g.marque).includes(nq) || norm(m.nom).includes(nq) || norm(m.type).includes(nq) || (m.coloris||[]).some(c => norm(c).includes(nq)));
+    if(!ms.length) return '';
+    return `<div class="cat-sec">${escapeHtml(_catBrandShort(g.marque))} <span>${ms.length}</span></div>` + ms.map(m => row(g.marque, m)).join('');
+  }).filter(Boolean).join('');
+  container.innerHTML = chips + here + (blocks || '<div class="hint" style="text-align:center;padding:20px 0;">Aucun modèle ne correspond à ta recherche.</div>');
+}
+function selectCatTileForSite(i){
+  const it = _stFlat[i]; const site = (data.sites||[]).find(s => s.id === _stSite);
+  if(!it || !site) return;
+  const tile = _catAssocModel(site, it.marque, it.nom);
+  if(!tile){ showToast('Impossible d\'associer cette tuile'); return; }
+  closeModal('selectTile');
+  if(typeof renderDetailTile === 'function') renderDetailTile(site.id);
+  showToast('🏗 ' + it.nom + ' associée à ' + (site.name || 'ce chantier'));
 }
 
 function selectTileForSite(siteId, tileId){
@@ -42037,9 +42079,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.392';
+const APP_VERSION = '5.41.393';
 
 const CHANGELOG = [
+  {
+    version: '5.41.393',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🧱', text: "Chantier › Tuile : « Choisir la tuile du chantier » affiche maintenant le catalogue de l'onglet Toiture (marques, recherche, tuile actuelle en tête) au lieu de l'ancienne liste. Un appui associe le modèle au chantier, avec sa fiche PDF." },
+    ],
+  },
   {
     version: '5.41.392',
     date: '13/10/2026',
