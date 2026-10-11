@@ -4898,6 +4898,14 @@
   .pl-asg{ border:1.5px solid var(--line); border-radius:12px; padding:10px; margin-bottom:8px; }
   .pl-asg > div:first-child{ margin-bottom:8px; } .pl-asg i{ display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; }
   .pl-asg small{ display:block; color:var(--ink-soft); margin-top:2px; }
+  /* v5.41.408 — ajout centralisé, appui long, annuler */
+  .pl-addbar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  .pl-addbar .btn{ padding:9px 16px; }
+  .pl-undated{ display:flex; flex-wrap:wrap; gap:0; margin:-2px 0 10px; padding:10px 10px 4px; border:1.5px dashed var(--line); border-radius:12px; }
+  .pl-b.pl-grabbed, .pl-tk.pl-grabbed{ outline:3px solid #fff; outline-offset:1px; box-shadow:0 0 0 6px rgba(232,172,61,.45), 0 8px 20px rgba(0,0,0,.5); z-index:6; }
+  .pl-b.pl-grabbed .pl-grip{ display:block; }
+  #plUndo{ position:fixed; left:50%; bottom:calc(var(--nav-h, 64px) + 18px); transform:translateX(-50%); z-index:9998; display:flex; align-items:center; gap:12px; background:#111; color:#fff; padding:10px 12px 10px 16px; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,.5); font-weight:700; font-size:13.5px; max-width:calc(100vw - 32px); }
+  #plUndo button{ background:#FFC400; color:#111; border:none; border-radius:9px; padding:7px 12px; font-weight:900; cursor:pointer; white-space:nowrap; }
   /* ═══ Absences & Planning (fin) ═══ */
 
   /* ═══ v5.41.372 — THÈME « CHANTIER » (mode clair Balise : jaune / noir / blanc) ═══
@@ -7571,9 +7579,21 @@
         <label>Code boîte à clés</label>
         <input type="text" id="newSiteKeybox" placeholder="Ex : A4521">
       </div>
+      <div style="display:flex;gap:10px;">
+        <div class="field" style="flex:1;">
+          <label>Début prévu</label>
+          <input type="date" id="newSiteStartDate" onchange="const e=document.getElementById('newSiteDueDate'); if(e && (!e.value || e.value < this.value)) e.value = this.value;">
+        </div>
+        <div class="field" style="flex:1;">
+          <label>Fin prévue</label>
+          <input type="date" id="newSiteDueDate">
+        </div>
+      </div>
+      <!-- v5.41.408 — étapes datées dès la création -->
       <div class="field">
-        <label>Date de début prévue</label>
-        <input type="date" id="newSiteStartDate">
+        <label>Étapes <small style="text-transform:none;font-weight:600;">(facultatif)</small></label>
+        <div id="newSiteSteps"></div>
+        <div id="newSiteStepChips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
       </div>
       <div class="field">
         <label>Chef(s) d'équipe assigné(s)</label>
@@ -7602,7 +7622,7 @@
 
     <div style="display:flex; gap:10px; margin-top:4px; flex-wrap:wrap;">
       <button class="btn btn-primary" style="flex:1;" onclick="createSite()">+ Créer le chantier</button>
-      <button class="btn btn-outline" id="btnPutOnHold" style="flex:1; display:none;" onclick="createSiteOnHold()">⏸ Mettre en attente</button>
+      <button class="btn btn-outline" id="btnPutOnHold" style="flex:1; display:none;" onclick="createSiteOnHold()" title="Visible seulement par le patron et les conducteurs (grisé et sans nom pour les chefs)">📝 Enregistrer en brouillon</button>
       <button class="btn btn-outline" onclick="closeModal('addSite'); setTimeout(openQRScanner,200);" style="padding:0 14px; gap:6px; display:flex; align-items:center;">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
         Scanner
@@ -13510,6 +13530,8 @@ function setupAddSiteModal(){
   document.getElementById('newSiteAddress').value = '';
   document.getElementById('newSiteKeybox').value = '';
   document.getElementById('newSiteStartDate').value = '';
+  { const dd = document.getElementById('newSiteDueDate'); if(dd) dd.value = ''; }
+  _newSiteSteps = []; _newSiteStepsRender();
   if(!isConducteur){
     document.getElementById('newSiteProgress').value = 0;
     document.querySelectorAll('#newSiteStatusChips .chip').forEach(c=>c.classList.remove('selected'));
@@ -13517,6 +13539,30 @@ function setupAddSiteModal(){
   }
 }
 
+/* v5.41.408 — étapes saisies dans « Nouveau chantier » */
+let _newSiteSteps = [];
+function _newSiteStepsRender(){
+  const box = document.getElementById('newSiteSteps'), chips = document.getElementById('newSiteStepChips'); if(!box || !chips) return;
+  box.innerHTML = _newSiteSteps.map((t, i) => `<div class="pl-step"><div class="pl-step-r"><input type="text" value="${escapeHtml(t.name)}" placeholder="Étape" oninput="_newSiteSteps[${i}].name=this.value"><b class="pl-x" onclick="_newSiteSteps.splice(${i},1);_newSiteStepsRender()">×</b></div>
+    <div class="pl-step-r"><input type="date" value="${t.start || ''}" onchange="_newSiteSteps[${i}].start=this.value; if(!_newSiteSteps[${i}].end||_newSiteSteps[${i}].end<this.value){_newSiteSteps[${i}].end=this.value;} _newSiteStepsRender()"><span>→</span><input type="date" value="${t.end || ''}" min="${t.start || ''}" onchange="_newSiteSteps[${i}].end=this.value"></div></div>`).join('');
+  chips.innerHTML = (typeof PL_STEP_NAMES !== 'undefined' ? PL_STEP_NAMES : []).map(nm => `<span class="pl-chip add" onclick="_newSiteStepAdd('${nm}')">＋ ${nm}</span>`).join('') + `<span class="pl-chip add" onclick="_newSiteStepAdd('')">＋ Autre</span>`;
+}
+function _newSiteStepAdd(name){
+  if(name && _newSiteSteps.some(t => String(t.name).trim().toLowerCase() === name.toLowerCase())){ showToast('Étape « ' + name + ' » déjà ajoutée'); return; }   // pas de doublon
+  const sd = (document.getElementById('newSiteStartDate') || {}).value || '';
+  const lastEnd = _newSiteSteps.map(t => t.end).filter(Boolean).sort().pop();
+  const start = lastEnd ? _plShiftW(lastEnd, 1) : (sd || '');
+  _newSiteSteps.push({ id:uid(), name, start, end:start ? _plShiftW(start, 4) : '', team:null });
+  _newSiteStepsRender();
+}
+/* v5.41.408 — doublons : un chantier du même nom existe déjà ? */
+function _siteNameKey(n){ return String(n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+function _siteDuplicateOk(name){
+  const k = _siteNameKey(name); if(!k) return true;
+  const dup = (data.sites || []).find(x => x && !x._plNew && !x._deleted && _siteNameKey(x.name) === k);
+  if(!dup) return true;
+  return confirm('Un chantier « ' + dup.name + ' » existe déjà' + (dup.status === 'termine' ? ' (terminé)' : dup.status === 'brouillon' ? ' (brouillon)' : '') + '.\nCréer quand même un deuxième chantier avec ce nom ?');
+}
 function _buildSiteFromForm(status){
   const name = document.getElementById('newSiteName').value.trim();
   const address = document.getElementById('newSiteAddress').value.trim();
@@ -13538,6 +13584,16 @@ function _buildSiteFromForm(status){
   if(isConducteur){
     site.keyboxCode = document.getElementById('newSiteKeybox').value.trim();
     site.startDate = document.getElementById('newSiteStartDate').value || null;
+    site.dueDate = (document.getElementById('newSiteDueDate') || {}).value || site.startDate || null;
+    if(site.startDate && site.dueDate && site.dueDate < site.startDate){ showToast('La fin prévue est avant le début'); return null; }
+    // étapes : nom + dates, et le chantier couvre toutes ses étapes
+    const tks = _newSiteSteps.map(t => Object.assign({}, t, { name:String(t.name || '').trim() || 'Étape' })).filter(t => t.start && t.end).sort((a, b) => a.start.localeCompare(b.start));
+    if(tks.length){
+      site.planTasks = tks;
+      const mn = tks[0].start, mx = tks.map(t => t.end).sort().pop();
+      if(!site.startDate || mn < site.startDate) site.startDate = mn;
+      if(!site.dueDate || mx > site.dueDate) site.dueDate = mx;
+    }
     site.assignedChefs = _newSiteChefs.map(c => ({...c}));
   } else {
     const statusChip = document.querySelector('#newSiteStatusChips .chip.selected');
@@ -13553,6 +13609,7 @@ function createSite(){
   const status = (myRole === 'conducteur' || myRole === 'patron') ? 'a-faire' : null;
   const site = _buildSiteFromForm(status || 'a-faire');
   if(!site) return;
+  if(!_siteDuplicateOk(site.name)) return;   // v5.41.408
 
   data.sites.push(site);
   saveData();
@@ -13592,12 +13649,15 @@ async function _alertNewSiteCreated(site){
 function createSiteOnHold(){
   const site = _buildSiteFromForm('brouillon');
   if(!site) return;
+  if(!_siteDuplicateOk(site.name)) return;   // v5.41.408
+  site.updatedAt = new Date().toISOString();
 
   data.sites.push(site);
   saveData();
   renderSites();
   closeModal('addSite');
-  showToast('Chantier mis en attente — visible uniquement pour vous');
+  showToast('📝 Brouillon enregistré — grisé et sans nom pour les chefs');
+  if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 300);
   try{ _plAfterSiteCreated(site); }catch(e){}   // v5.41.405
   if(site.address && data.settings.depotAddress) calculateSiteTrajetZone(site.id, {silent:true});
 }
@@ -42387,9 +42447,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.407';
+const APP_VERSION = '5.41.408';
 
 const CHANGELOG = [
+  {
+    version: '5.41.408',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🏗️', text: "Planning : un seul bouton « ＋ Ajouter un chantier » en haut, et « 📋 Planifier un chantier existant » juste à côté. Le formulaire du chantier permet maintenant de saisir le début, la fin et les étapes datées, et « 📝 Enregistrer en brouillon » remplace l'ancien bouton « Chantier brouillon »." },
+      { icon: '🔁', text: "Pas de doublons : chantier au même nom (confirmation), étape déjà présente, personne déjà dans l'équipe ou déjà prévue ce jour-là, absence déjà demandée sur les mêmes dates." },
+      { icon: '✋', text: "Planning : plus de bouton « Déplacer les barres ». Un appui long (½ s) attrape une barre, un simple toucher ouvre la fiche et un défilement ne déplace rien. Après chaque déplacement, un bouton « ↩ Annuler » s'affiche 8 s." },
+      { icon: '🔄', text: "Planning partagé : chaque modification (déplacement, étapes, équipe) est envoyée tout de suite et vérifiée sur le serveur ; la dernière modification l'emporte. Le planning ouvert se met à jour tout seul chez le patron, les conducteurs et les chefs, avec « Modifié par … le … » dans la fiche." },
+    ],
+  },
   {
     version: '5.41.407',
     date: '13/10/2026',
@@ -55469,6 +55539,7 @@ async function pushSharedSite(site){
       customEvents:        idSrc.customEvents      || [],
       planTasks:           Array.isArray(idSrc.planTasks) ? idSrc.planTasks : [],     // v5.41.406
       planDayAdds:         Array.isArray(idSrc.planDayAdds) ? idSrc.planDayAdds : [],
+      planBy:              idSrc.planBy || null,
       ownerDeviceId:       site.ownerDeviceId     || getDeviceSyncId(),
       syncLive:            !!site.syncLive,
       lastSyncAt:          site.lastSyncAt        || new Date().toISOString(),
@@ -55589,7 +55660,7 @@ async function pullSharedSites(){
     const conducteurFields = ['name','address','status','progress','color','keyboxCode',
       'startDate','dueDate','deliveryDates','customEvents','assignedChefs','assignedChefs',
       'assignedChefPhone','assignedChefName','assignedChefAuthId','trajetZone',
-      'syncLive','lastSyncAt','ownerDeviceId','teamName','updatedAt','tileId','coverPhotoUrl','planTasks','planDayAdds'];
+      'syncLive','lastSyncAt','ownerDeviceId','teamName','updatedAt','tileId','coverPhotoUrl','planTasks','planDayAdds','planBy'];
 
     relevant.forEach(remote => {
       const idx = data.sites.findIndex(s => s.id === remote.id);
@@ -55755,6 +55826,7 @@ async function syncAllSitesPushAll(){
         dueDate: idSrc.dueDate || null, deliveryDates: idSrc.deliveryDates || [],
         customEvents: idSrc.customEvents || [], ownerDeviceId: site.ownerDeviceId || getDeviceSyncId(),
         planTasks: Array.isArray(idSrc.planTasks) ? idSrc.planTasks : [], planDayAdds: Array.isArray(idSrc.planDayAdds) ? idSrc.planDayAdds : [],   // v5.41.406 — étapes du planning
+        planBy: idSrc.planBy || null,
         syncLive: true, // [syncall] tous les chantiers deviennent visibles/synchronisés
         lastSyncAt: new Date().toISOString(),
         assignedTeamName: idSrc.assignedTeamName || '',
@@ -55817,7 +55889,7 @@ async function syncAllSitesPull(){
       'startDate','dueDate','deliveryDates','customEvents','trajetZone','teamName',
       'assignedChefs','assignedChefPhone','assignedChefName','assignedChefAuthId',
       'assignedTeamName','lastSyncAt','ownerDeviceId','tileId','coverPhotoUrl',
-      'assignedWorkers','planTasks','planDayAdds'];   // v5.41.406 — équipe et étapes du planning
+      'assignedWorkers','planTasks','planDayAdds','planBy'];   // v5.41.406 — équipe et étapes du planning
     // NB : 'sharedMedia' et 'documents' sont VOLONTAIREMENT exclus ci-dessus.
     // Ils ne sont jamais écrasés : on en fait l'UNION (voir _mergeSiteMediaUnion,
     // fonction centralisée) pour qu'un document/photo ne disparaisse jamais
@@ -55899,6 +55971,9 @@ async function syncAllSitesPull(){
       saveData();
       const chantiersView = document.getElementById('view-chantiers');
       if(chantiersView && chantiersView.classList.contains('active') && typeof renderSites === 'function') renderSites();
+      // v5.41.408 — planning ouvert : on affiche tout de suite les modifications des autres (sauf pendant un déplacement / une fiche ouverte)
+      try{ const pv = document.getElementById('view-planning'), mo = document.getElementById('modal-plSite');
+        if(pv && pv.classList.contains('active') && !_plDrag && !(mo && mo.classList.contains('open')) && typeof planningRender === 'function') planningRender(); }catch(e){}
       // Si la modale Notes est ouverte, la rafraîchir aussi — sinon les
       // catégories/notes fusionnées en arrière-plan par ce pull ne
       // s'affichent qu'après avoir fermé/rouvert la fenêtre.
@@ -74383,6 +74458,8 @@ async function absSubmit(){
     recupHours = String((document.getElementById('absRecupH') || {}).value || '').replace(',', '.').trim();
     if(!(parseFloat(recupHours) > 0)){ showToast("Indique le nombre d'heures récupérées"); return; }
   }
+  { const ov = (_absList || []).find(x => x && x.authId === me.authId && x.id !== _absEditId && (x.status === 'pending' || x.status === 'approved') && _absOverlap(from, to, x.from, x.to));
+    if(ov){ showToast('Tu as déjà une demande ' + (ov.status === 'approved' ? 'validée' : 'en cours') + ' sur ces dates (' + _absRange(ov) + ')'); return; } }   // v5.41.408 — pas de doublon
   const sig = _absEditSig ? _absEditSig.get() : '';
   if(!sig){ showToast('Signe ta demande'); return; }
   const reg = await _absRegistry();
@@ -74622,6 +74699,8 @@ async function absBureauSave(){
   if(!f.from || !f.to || f.to < f.from){ showToast('Vérifie les dates'); return; }
   const days = _absWorkDays(f.from, f.to);
   if(!days.length){ showToast('Aucun jour ouvré sur ces dates'); return; }
+  { const ov = (_absList || []).find(x => x && x.authId === u.authId && (x.status === 'pending' || x.status === 'approved') && _absOverlap(f.from, f.to, x.from, x.to));
+    if(ov){ showToast(_absShort(u.name) + ' a déjà une absence ' + (ov.status === 'approved' ? 'validée' : 'en cours') + ' sur ces dates (' + _absRange(ov) + ')'); return; } }   // v5.41.408
   if(f.type === 'recup' && !(parseFloat(String(f.h).replace(',', '.')) > 0)){ showToast("Indique le nombre d'heures récupérées"); return; }
   const now = new Date().toISOString(), nm = String(u.name).trim().split(/\s+/);
   const r = { id:uid(), authId:u.authId, name:u.name, first:nm[0] || '', last:nm.slice(1).join(' '), role:u.role || 'ouvrier', workerId:'',
@@ -75011,12 +75090,12 @@ function planningRender(){
   const days = [];
   for(let w = 0; w < PL_BEFORE + PL_AFTER; w++) for(let d = 0; d < 5; d++) days.push(_absAdd(_plStart, w * 7 + d));
   _plDays = days; _plDw = _plDayW();
-  root.classList.toggle('pl-dragmode', _plDragMode && _plView === 'chantier');
+  root.classList.remove('pl-dragmode');
   root.innerHTML = `<div class="chip-row abs-tabs" style="margin-bottom:8px;"><div class="chip${_plView === 'chantier' ? ' selected' : ''}" onclick="planningSetView('chantier')">🏗 Par chantier</div><div class="chip${_plView === 'personne' ? ' selected' : ''}" onclick="planningSetView('personne')">👷 Par personne</div></div>
     <div class="pl13-top"><b id="plRangeLbl"></b><small>Glisse de gauche à droite pour parcourir les semaines</small></div>
-    <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>${_plCan() && _plView === 'chantier' ? '<button class="pl-chip add" onclick="planningNewDraft()">＋ Chantier brouillon</button>' : ''}
+    ${_plCan() ? _plAddBar() : ''}
+    <div class="pl13-bar"><button class="pl-chip" onclick="planningToday()">📍 Aujourd'hui</button>
       ${_plView === 'chantier' ? `<button class="pl-chip${_plShowAbs ? ' on' : ''}" onclick="planningToggleAbs()">🏖️ Absences : ${_plShowAbs ? 'affichées' : 'masquées'}</button>` : ''}
-      ${_plCan() && _plView === 'chantier' ? `<button class="pl-chip${_plDragMode ? ' on' : ''}" onclick="planningToggleDrag()">✋ ${_plDragMode ? 'Déplacement activé' : 'Déplacer les barres'}</button>` : ''}
       <button class="pl-chip" onclick="planningPdf()">⬇️ PDF</button></div>`
     + (_plView === 'personne' ? _plRenderPeople(days) : _plRenderGrid(days));
   _plDragInit(root);
@@ -75096,13 +75175,19 @@ function _plRenderGrid(days){
       <tbody>${rows || `<tr><td class="pl-n">—</td><td colspan="${n}" class="pl-empty">Aucun chantier daté sur ces 13 semaines.</td></tr>`}${absRows}</tbody></table></div>
     <div class="abs-leg" style="margin-top:8px;">${Object.keys(ABS_TYPES).map(k => `<span><i style="background:${ABS_TYPES[k].color}"></i>${ABS_TYPES[k].short}</span>`).join('')}<span><i class="pd" style="--c:#E8AC3D"></i>Demandée (en attente)</span><span>⚠️ absent pendant un chantier où il est prévu</span></div>
     ${!_plCan() ? '<div class="hint" style="margin-top:10px;">👀 Lecture seule : seuls le patron et le conducteur de travaux modifient le planning. Touche un chantier pour voir son équipe.</div>' : ''}
-    ${undated.length && _plCan() ? `<div class="section-title">Chantiers sans dates · touche pour planifier</div><div>${undated.map(s => `<span class="pl-chip add" onclick="planningOpenSite('${s.id}')">＋ ${escapeHtml(s.name || 'Chantier')}${_plIsDraft(s) ? ' · brouillon' : ''}</span>`).join('')}</div>` : ''}
-    ${_plCan() ? `<button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="planningAddSite()">＋ Ajouter un chantier</button>` : ''}
-    <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates et son équipe. ' : ''}Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
+    <div class="hint" style="margin-top:10px;">${_plCan() ? 'Touche un chantier pour changer ses dates, ses étapes et son équipe. Appui long (½ s) sur une barre pour la déplacer, sur son bord pour l\'allonger. ' : ''}Les jours hachurés sur un chantier = une personne de l'équipe est absente (initiale affichée).</div>`;
 }
 /* v5.41.404 — nouveau chantier brouillon directement depuis le planning (patron / conducteur) */
 /* v5.41.405 — « Ajouter un chantier » sous la liste du planning : même formulaire que l'onglet Chantiers
    (le chantier est créé dans Chantiers), puis on ouvre directement sa fiche planning (dates + équipe). */
+/* v5.41.408 — toutes les actions d'ajout regroupées en haut du planning */
+let _plUndatedOpen = false;
+function _plAddBar(){
+  const undated = _plSites().filter(s => !s.startDate && s.status !== 'termine' && s.status !== 'done');
+  return `<div class="pl-addbar"><button class="btn btn-primary" onclick="planningAddSite()">＋ Ajouter un chantier</button>
+      ${undated.length ? `<button class="pl-chip${_plUndatedOpen ? ' on' : ''}" onclick="_plUndatedOpen=!_plUndatedOpen;planningRender()">📋 Planifier un chantier existant (${undated.length}) ${_plUndatedOpen ? '▴' : '▾'}</button>` : ''}</div>
+    ${_plUndatedOpen && undated.length ? `<div class="pl-undated">${undated.map(s => `<span class="pl-chip add" onclick="planningOpenSite('${s.id}')">＋ ${escapeHtml(s.name || 'Chantier')}${_plIsDraft(s) ? ' · brouillon' : ''}</span>`).join('')}</div>` : ''}`;
+}
 function planningAddSite(){
   if(!_plCan()){ showToast('Réservé au patron et au conducteur'); return; }
   window._plAfterCreate = true;
@@ -75156,6 +75241,7 @@ function _plEditSet(k, v){ if(!_plEdit) return; _plEdit[k] = v; if(k === 'start'
 function _plEditRemove(kind, i){ if(!_plEdit) return; _plEdit[kind].splice(i, 1); _plRenderEdit(); }
 function _plEditAdd(authId){
   const u = _absRealUsers(_absReg || []).find(x => x.authId === authId); if(!u || !_plEdit) return;
+  if(_plEdit.chefs.concat(_plEdit.workers).some(q => q.authId === authId)){ showToast('Déjà dans l\'équipe'); return; }   // v5.41.408
   const p = { name:u.name, authId:u.authId, phone:u.phone || '' };
   if(u.role === 'chef') _plEdit.chefs.push(Object.assign(p, { chef:true })); else _plEdit.workers.push(p);
   _plRenderEdit();
@@ -75179,7 +75265,8 @@ function _plRenderEdit(){
   const inTeam = new Set(all.map(x => x[2].authId).filter(Boolean));
   const cand = _absRealUsers(_absReg || []).filter(u => (u.role === 'chef' || u.role === 'ouvrier') && !inTeam.has(u.authId)).sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
   const dr = _plIsDraft(s);
-  box.innerHTML = `${dr ? `<div class="abs-al" style="margin:0 0 6px;background:rgba(232,172,61,.12);border-color:var(--wood);color:var(--ink);">📝 Chantier brouillon : les chefs le voient grisé, sans nom (« Chantier brouillon non validé »), tant qu'il n'est pas validé.</div>
+  const _by = s.planBy && s.planBy.at ? `<div class="hint" style="margin:-6px 0 8px;">🕘 Modifié par ${escapeHtml(_absShort(s.planBy.name || '?'))} le ${new Date(s.planBy.at).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}</div>` : '';
+  box.innerHTML = _by + `${dr ? `<div class="abs-al" style="margin:0 0 6px;background:rgba(232,172,61,.12);border-color:var(--wood);color:var(--ink);">📝 Chantier brouillon : les chefs le voient grisé, sans nom (« Chantier brouillon non validé »), tant qu'il n'est pas validé.</div>
     <label class="abs-l">Nom du chantier<input type="text" id="plDraftName" value="${escapeHtml(s.name || '')}" placeholder="Ex : Maison Martin" oninput="_plEdit.name=this.value" style="display:block;width:100%;margin-top:5px;padding:10px 11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:15px;box-sizing:border-box;"></label>` : ''}
     ${s.address ? `<div class="hint" style="margin:-4px 0 10px;">📍 ${escapeHtml(s.address)}</div>` : ''}
     <div class="abs-g2"><label class="abs-l">Début<input type="date" value="${_plEdit.start}" onchange="_plEditSet('start', this.value)"></label>
@@ -75222,9 +75309,11 @@ async function planningSave(notify, validate){
   s.assignedWorkers = _plEdit.workers.map(p => ({ name:p.name, authId:p.authId || '', phone:p.phone || '', role:'ouvrier' }));
   const now = new Date().toISOString();
   s.updatedAt = now; s.lastSyncAt = now;
+  { const me = _absMe(); s.planBy = { name:me.name || '', authId:me.authId || '', at:now }; }   // v5.41.408
   saveData();
   showToast('Enregistrement…');
   try{ if(typeof pushSharedSite === 'function') await pushSharedSite(s); }catch(e){}
+  _plVerifyPush(s.id, now, 0);
   try{ if(typeof syncAllSitesCycle === 'function') syncAllSitesCycle(); }catch(e){}
   const ids = s.assignedChefs.map(c => c.authId).concat(s.assignedWorkers.map(w => w.authId)).filter(Boolean);
   const when = s.startDate ? (s.startDate === s.dueDate ? 'le ' + _absFmt(s.startDate) : 'du ' + _absFmt(s.startDate, { day:'numeric', month:'short' }) + ' au ' + _absFmt(s.dueDate, { day:'numeric', month:'short' })) : 'dates à venir';
@@ -75365,11 +75454,13 @@ async function planningAssign(i, mode){
   const { s, t } = f.cand[i], p = { name:f.p.name, authId:f.p.authId || '', chef:f.p.role === 'chef' };
   if(mode === 'day'){
     if(!Array.isArray(s.planDayAdds)) s.planDayAdds = [];
+    if(s.planDayAdds.some(d => d && d.date === f.k && _plSame(d, p))){ showToast('Déjà prévu ce jour-là'); closeModal('plSite'); return; }   // v5.41.408
     s.planDayAdds.push({ authId:p.authId, name:p.name, date:f.k, taskId:t ? t.id : null });
   } else if(t){
     const tk = (s.planTasks || []).find(x => x.id === t.id);
     if(tk){ const base = Array.isArray(tk.team) && tk.team.length ? tk.team : _plTeam(s).map(q => ({ name:q.name, authId:q.authId || '', chef:!!q.chef })); if(!base.some(q => _plSame(q, p))) base.push(p); tk.team = base; }
   } else {
+    if(_plTeam(s).some(q => _plSame(q, p))){ showToast('Déjà dans l\'équipe du chantier'); closeModal('plSite'); return; }
     if(p.chef){ s.assignedChefs = (s.assignedChefs || []).concat([{ name:p.name, authId:p.authId, phone:'' }]); if(typeof _syncFlatChefFields === 'function') _syncFlatChefFields(s); }
     else s.assignedWorkers = (s.assignedWorkers || []).concat([{ name:p.name, authId:p.authId, phone:'', role:'ouvrier' }]);
   }
@@ -75380,26 +75471,53 @@ async function planningAssign(i, mode){
 }
 async function _plPersist(s){
   const now = new Date().toISOString(); s.updatedAt = now; s.lastSyncAt = now;
+  const me = _absMe(); s.planBy = { name:me.name || '', authId:me.authId || '', at:now };   // v5.41.408 — dernière modification
   saveData();
-  try{ if(typeof pushSharedSite === 'function') pushSharedSite(s); }catch(e){}
-  try{ if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 400); }catch(e){}
+  try{ if(typeof pushSharedSite === 'function') await pushSharedSite(s); }catch(e){}
+  _plVerifyPush(s.id, now, 0);
+}
+/* v5.41.408 — la dernière modification gagne : on vérifie qu'elle est bien sur le serveur, sinon on la renvoie
+   (un autre appareil a pu réécrire la liste des chantiers au même moment). */
+function _plVerifyPush(sid, stamp, n){
+  setTimeout(async () => {
+    try{
+      const s = (data.sites || []).find(x => x.id === sid); if(!s || s.updatedAt !== stamp || typeof _fetchSharedSites !== 'function') return;
+      const srv = (await _fetchSharedSites()).find(x => x && x.id === sid);
+      if(!srv || !srv.updatedAt || new Date(srv.updatedAt) < new Date(stamp)){ await pushSharedSite(s); if(n < 2) _plVerifyPush(sid, stamp, n + 1); }
+    }catch(e){}
+  }, 4000 + n * 4000);
 }
 
 /* ── Glisser / étirer (souris : toujours ; doigt : bouton « ✋ Déplacer ») ── */
 let _plDrag = null;
 function _plDragInit(root){
   if(!root || root.dataset.dragBound) return; root.dataset.dragBound = '1';
+  // v5.41.408 — appui long (≈ ½ s) pour attraper une barre : un simple toucher ou un défilement ne déplace jamais rien
+  let pend = null;
+  const cancelPend = () => { if(pend){ clearTimeout(pend.timer); pend = null; } };
   root.addEventListener('pointerdown', e => {
     if(!_plCan() || _plView !== 'chantier') return;
-    if(e.pointerType !== 'mouse' && !_plDragMode) return;
     if(e.pointerType === 'mouse' && e.button !== 0) return;
     const tk = e.target.closest('.pl-tk'), bar = tk || e.target.closest('.pl-b');
     if(!bar || !bar.dataset.sid) return;
-    const r = bar.getBoundingClientRect(), x = e.clientX - r.left, edge = Math.min(14, r.width / 4);
-    _plDrag = { el:bar, sid:bar.dataset.sid, tid:tk ? tk.dataset.tid : null, x0:e.clientX, mode:x < edge ? 'start' : x > r.width - edge ? 'end' : 'move', delta:0, moved:false, w0:r.width };
-    try{ bar.setPointerCapture(e.pointerId); }catch(err){}
-    if(e.pointerType !== 'mouse') e.preventDefault();
+    const r = bar.getBoundingClientRect(), x = e.clientX - r.left, edge = Math.min(16, r.width / 4);
+    cancelPend();
+    pend = { x0:e.clientX, y0:e.clientY, pid:e.pointerId, timer:setTimeout(() => {
+      if(!pend) return;
+      _plDrag = { el:bar, sid:bar.dataset.sid, tid:tk ? tk.dataset.tid : null, x0:pend.x0, mode:x < edge ? 'start' : x > r.width - edge ? 'end' : 'move', delta:0, moved:false, w0:r.width, grabbed:true };
+      try{ bar.setPointerCapture(pend.pid); }catch(err){}
+      bar.classList.add('pl-grabbed');
+      if(navigator.vibrate) navigator.vibrate(25);
+      _plDragSuppress = Date.now() + 100000;   // le relâchement ne doit pas ouvrir la fiche
+      pend = null;
+    }, 450) };
   });
+  root.addEventListener('pointermove', e => {
+    if(pend && (Math.abs(e.clientX - pend.x0) > 6 || Math.abs(e.clientY - pend.y0) > 6)) cancelPend();   // il défile : on n'attrape rien
+  });
+  root.addEventListener('pointerup', cancelPend);
+  root.addEventListener('pointercancel', cancelPend);
+  if(!window._plTouchBlock){ window._plTouchBlock = true; document.addEventListener('touchmove', ev => { if(_plDrag && _plDrag.grabbed) ev.preventDefault(); }, { passive:false }); }
   root.addEventListener('pointermove', e => {
     const d = _plDrag; if(!d) return;
     const dx = e.clientX - d.x0; if(!d.moved && Math.abs(dx) < 5) return;
@@ -75418,11 +75536,12 @@ function _plDragInit(root){
   const end = async () => {
     const d = _plDrag; _plDrag = null;
     const lb = document.getElementById('plDragLbl'); if(lb) lb.remove();
-    if(!d || !d.moved){ return; }
+    if(!d) return;
     _plDragSuppress = Date.now();
-    if(!d.delta){ planningRender(); return; }
+    if(!d.moved || !d.delta){ d.el.classList.remove('pl-grabbed', 'pl-dragging'); d.el.style.transform = ''; d.el.style.width = ''; return; }
     const s = (data.sites || []).find(x => x.id === d.sid), nd = _plDragDates(d);
     if(!s || !nd){ planningRender(); return; }
+    const before = JSON.parse(JSON.stringify({ startDate:s.startDate || null, dueDate:s.dueDate || null, planTasks:s.planTasks || [], planDayAdds:s.planDayAdds || [] }));
     if(d.tid){
       const t = (s.planTasks || []).find(x => x.id === d.tid); if(!t){ planningRender(); return; }
       t.start = nd.from; t.end = nd.to;
@@ -75437,12 +75556,26 @@ function _plDragInit(root){
       (s.planTasks || []).forEach(t => { if(t.start < nd.from) t.start = nd.from; if(t.end > nd.to) t.end = nd.to; if(t.start > nd.to) t.start = nd.to; if(t.end < nd.from) t.end = nd.from; if(t.end < t.start) t.end = t.start; });
     }
     await _plPersist(s);
-    showToast('📆 ' + (s.name || 'Chantier') + (d.tid ? ' · ' + ((s.planTasks || []).find(x => x.id === d.tid) || {}).name : '') + ' : ' + _absRange(nd));
     planningRender();
+    _plUndoOffer(s.id, before, '📆 ' + (s.name || 'Chantier') + (d.tid ? ' · ' + ((s.planTasks || []).find(x => x.id === d.tid) || {}).name : '') + ' : ' + _absRange(nd));
   };
   root.addEventListener('pointerup', end);
-  root.addEventListener('pointercancel', () => { if(_plDrag){ _plDrag = null; const lb = document.getElementById('plDragLbl'); if(lb) lb.remove(); planningRender(); } });
+  root.addEventListener('pointercancel', () => { _plDragSuppress = Date.now(); if(_plDrag){ _plDrag = null; const lb = document.getElementById('plDragLbl'); if(lb) lb.remove(); planningRender(); } });
   root.addEventListener('click', e => { if(Date.now() - _plDragSuppress < 400){ e.stopPropagation(); e.preventDefault(); } }, true);
+}
+/* v5.41.408 — après un déplacement : bandeau « Annuler » pendant 8 s (erreur de manipulation) */
+function _plUndoOffer(sid, before, msg){
+  let bar = document.getElementById('plUndo'); if(bar) bar.remove();
+  bar = document.createElement('div'); bar.id = 'plUndo';
+  bar.innerHTML = `<span>${escapeHtml(msg)}</span><button>↩ Annuler</button>`;
+  document.body.appendChild(bar);
+  const t = setTimeout(() => bar.remove(), 8000);
+  bar.querySelector('button').onclick = async () => {
+    clearTimeout(t); bar.remove();
+    const s = (data.sites || []).find(x => x.id === sid); if(!s) return;
+    Object.assign(s, JSON.parse(JSON.stringify(before)));
+    await _plPersist(s); planningRender(); showToast('↩ Déplacement annulé');
+  };
 }
 function _plDragDates(d){
   const s = (data.sites || []).find(x => x.id === d.sid); if(!s) return null;
@@ -75480,6 +75613,7 @@ function _plStepsHtml(){
 }
 function _plStepAdd(name){
   const E = _plEdit; if(!E) return;
+  if(name && E.tasks.some(t => String(t.name).trim().toLowerCase() === name.toLowerCase())){ showToast('Étape « ' + name + ' » déjà présente'); return; }   // v5.41.408 — pas de doublon
   const lastEnd = E.tasks.length ? E.tasks.map(t => t.end).sort().pop() : null;
   const start = lastEnd ? _plShiftW(lastEnd, 1) : (E.start || _plShiftW(_absToday(), 1));
   E.tasks.push({ id:uid(), name:name, start, end:_plShiftW(start, 4), team:null });
