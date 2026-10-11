@@ -1955,6 +1955,9 @@
   .cb-big span{ display:block; font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); }
   .cb-big b{ display:block; font-size:44px; line-height:1.1; color:var(--ink); } .cb-big small{ color:var(--ink-soft); font-weight:700; }
   .cb-warn{ margin-top:8px; padding:9px 11px; border-radius:10px; background:rgba(214,58,47,.12); border:1.5px solid rgba(214,58,47,.4); font-size:12.5px; font-weight:700; color:var(--ink); }
+  .cb-steps > div{ display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .cb-steps i{ font-style:normal; flex-shrink:0; width:26px; height:26px; border-radius:50%; background:var(--wood); color:#111; font-weight:900; display:flex; align-items:center; justify-content:center; }
+  .cb-no{ background:rgba(214,58,47,.12) !important; border-color:rgba(214,58,47,.5) !important; }
   .cb-nav{ display:flex; gap:10px; margin-top:12px; } .cb-nav .btn{ flex:1; }
   @media (min-width:860px){ .cb-3d{ height:420px; } }
   .calc-tools{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:12px; }
@@ -36781,7 +36784,7 @@ function r3MountKind(kind){
   r3.kind = kind;
 }
 /* ═══ MODULE — Empanon 3D (fin) ═══ */
-/* ═══ MODULE — Coupe biaise (v5.41.371) ═══
+/* ═══ MODULE — Coupe biaise (v5.41.371 · simplifié v5.41.373 : 4 étapes, choix de la face sur la table) ═══
    Angle machine d'une coupe biaise (empanon, pied de tréteau, pied de table).
    Méthode atelier : 1) relever le coin du bas du chant sur l'arête du haut,
    2) trait d'équerre au tracé du dessus → cote c, 3) reporter c sur le côté :
@@ -36789,34 +36792,46 @@ function r3MountKind(kind){
    Repère 3D : x = longueur de la pièce, y = largeur du dessus (vers le fond),
    z = vers le haut ; dessus en z=0, chant (face avant) en y=0. */
 let cb = null;
-const CB_STEPS = ['piece', 'dessus', 'chant', 'releve', 'equerre', 'report'];
+const CB_STEPS = ['piece', 'dessus', 'chant', 'result'];
 const CB_KEY = 'rwood-biaise';
 function _cbN(v){ const n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(n) ? n : NaN; }
 function _cbF(n, d){ return isFinite(n) ? n.toLocaleString('fr-FR', { maximumFractionDigits: d == null ? 1 : d }) : '—'; }
 function _cbDeg(r){ return r * 180 / Math.PI; }
 function _cbRad(d){ return d * Math.PI / 180; }
-function _cbDef(){ return { step:0, W:'150', T:'45', aMode:'angle', a:'30', da:'', bMode:'angle', b:'45', db:'', mA:'', mC:'' }; }
-function _cbLoad(){ let s = null; try{ s = JSON.parse(localStorage.getItem(CB_KEY) || 'null'); }catch(e){} return Object.assign(_cbDef(), s || {}); }
+function _cbDef(){ return { step:0, W:'150', T:'45', D:'65', aMode:'angle', a:'30', da:'', bMode:'angle', b:'45', db:'' }; }
+function _cbLoad(){ let s = null; try{ s = JSON.parse(localStorage.getItem(CB_KEY) || 'null'); }catch(e){} const o = Object.assign(_cbDef(), s || {}); o.step = Math.max(0, Math.min(CB_STEPS.length - 1, +o.step || 0)); return o; }
 function _cbSave(){ try{ localStorage.setItem(CB_KEY, JSON.stringify(cb.s)); }catch(e){} }
 
-/* Calcul à partir des saisies (angles ou cotes) */
+/* Calcul à partir des saisies (angles ou cotes).
+   Plan de coupe : contient le trait du dessus (angle α depuis l'équerre) et celui du chant (β depuis la verticale).
+   Semelle sur le DESSUS, lame suit le trait rouge : tan θd = tan β × cos α.
+   Semelle sur le CHANT,  lame suit le trait bleu  : tan θc = tan α × cos β.
+   (la face opposée donne le même angle). On choisit la pose qui reste ≤ 45°. */
+const CB_MAX = 45;
 function cbCalc(s){
   const W = _cbN(s.W), T = _cbN(s.T);
   const R = { ok:false, W, T };
   if(!(W > 0) || !(T > 0)) return R;
   let al = s.aMode === 'cote' ? Math.atan(_cbN(s.da) / W) : _cbRad(_cbN(s.a));
   let be = s.bMode === 'cote' ? Math.atan(_cbN(s.db) / T) : _cbRad(_cbN(s.b));
-  if(!isFinite(al)) al = NaN; if(!isFinite(be)) be = NaN;
   R.al = al; R.be = be;
   R.validA = isFinite(al) && Math.abs(al) < Math.PI / 2 - 0.01;
   R.validB = isFinite(be) && Math.abs(be) < Math.PI / 2 - 0.01;
   if(!R.validA || !R.validB) return R;
-  R.a = T * Math.tan(be);                 // étape 1 : distance relevée sur l'arête du haut
-  R.c = R.a * Math.cos(al);               // étape 2 : trait d'équerre jusqu'au tracé du dessus
-  const mC = _cbN(s.mC);
-  R.cUsed = mC > 0 ? mC : R.c;            // la mesure de l'atelier prime si elle est saisie
-  R.theta = Math.atan(R.cUsed / T);       // étape 3 : angle machine (inclinaison de la lame)
-  R.thetaTh = Math.atan(R.c / T);
+  const ta = Math.abs(Math.tan(al)), tb = Math.abs(Math.tan(be));
+  R.thD = _cbDeg(Math.atan(tb * Math.cos(al)));      // semelle sur le dessus
+  R.thC = _cbDeg(Math.atan(ta * Math.cos(be)));      // semelle sur le chant
+  R.depthD = T / Math.cos(_cbRad(R.thD));            // profondeur de lame nécessaire
+  R.depthC = W / Math.cos(_cbRad(R.thC));
+  // Au moins une pose est toujours ≤ 45° (tan θd × tan θc = sin α × sin β < 1) :
+  // ce qui bloque en pratique, c'est la profondeur de lame de la scie.
+  const Dm = _cbN(s.D) > 0 ? _cbN(s.D) : Infinity; R.Dmax = Dm;
+  R.angD = R.thD <= CB_MAX + 1e-9; R.angC = R.thC <= CB_MAX + 1e-9;
+  R.depD = R.depthD <= Dm + 0.5;   R.depC = R.depthC <= Dm + 0.5;
+  const okD = R.angD && R.depD, okC = R.angC && R.depC;
+  // priorité à la face du dessus (celle où l'on a tracé), sinon le chant
+  R.face = okD ? 'dessus' : okC ? 'chant' : null;
+  R.other = R.face === 'dessus' && okC ? 'chant' : R.face === 'chant' && okD ? 'dessus' : null;
   R.ok = true;
   return R;
 }
@@ -36846,39 +36861,25 @@ function _cbScene(){
   const ta = showA ? Math.tan(al) : 0, tb = showB ? Math.tan(be) : 0;
   // coins de la coupe : avant-haut, arrière-haut, arrière-bas, avant-bas
   const P0 = [x0, 0, 0], P1 = [x0 + W * ta, W, 0], P2 = [x0 + W * ta + T * tb, W, -T], P3 = [x0 + T * tb, 0, -T];
-  const objs = [], lines = [], tags = [];
+  const objs = [], lines = [], tags = [], polys = [];
   const wood = '#d9a35b', off = '#c9b79a';
   // pièce gardée (à gauche de la coupe) — ordre des sommets : face x- (0..3) puis face coupe (4..7)
   objs.push(_cbHexa([[0,0,0],[0,W,0],[0,W,-T],[0,0,-T], P0, P1, P2, P3], wood, 1));
   // chute (à droite), écartée une fois la coupe définie
-  const gap = (showA || showB) && s.step >= 5 ? W * 0.35 : 0;
+  const gap = (showA || showB) && s.step >= 3 ? W * 0.35 : 0;
   const sh = p => [p[0] + gap, p[1], p[2]];
-  objs.push(_cbHexa([sh(P0), sh(P1), sh(P2), sh(P3), [L + gap,0,0],[L + gap,W,0],[L + gap,W,-T],[L + gap,0,-T]], s.step >= 1 ? off : wood, gap ? 0.35 : 1));
+  objs.push(_cbHexa([sh(P0), sh(P1), sh(P2), sh(P3), [L + gap,0,0],[L + gap,W,0],[L + gap,W,-T],[L + gap,0,-T]], s.step >= 1 ? off : wood, 1));
   const red = '#d63a2f', blue = '#2f6fd6', green = '#1f9d55';
   if(showA){ lines.push({ a:P0, b:P1, c:red, w:3 }); tags.push({ p:[(P0[0] + P1[0]) / 2, W * 0.55, 0], t:'Dessus ' + _cbF(_cbDeg(al)) + '°', bg:red }); }
   if(showB){ lines.push({ a:P0, b:P3, c:blue, w:3 }); tags.push({ p:[(P0[0] + P3[0]) / 2 - 10, 0, -T * 0.55], t:'Chant ' + _cbF(_cbDeg(be)) + '°', bg:blue }); }
-  if(R.ok && s.step >= 3){
-    const A = [x0 + R.a, 0, 0];
-    lines.push({ a:P3, b:[x0 + R.a, 0, 0.5], c:'#7a4b12', w:2, dash:[5,4] });     // relevé du coin du bas
-    lines.push({ a:[x0 + R.a, 0, 0], b:[x0 + R.a, W * 0.18, 0], c:'#7a4b12', w:2 }); // trait d'équerre sur le dessus
-    tags.push({ p:[x0 + R.a / 2, 0, 6], t:'① ' + _cbF(R.a, 0) + ' mm', bg:'#7a4b12' });
-    if(s.step >= 4){
-      // pied de la perpendiculaire au tracé du dessus
-      const d = [Math.sin(al), Math.cos(al)], k = R.a * d[0];
-      const Fp = [x0 + k * d[0], k * d[1], 0];
-      lines.push({ a:A, b:Fp, c:green, w:3 });
-      tags.push({ p:[(A[0] + Fp[0]) / 2 + 8, (A[1] + Fp[1]) / 2, 2], t:'② ' + _cbF(R.cUsed, 0) + ' mm', bg:green });
-    }
-    if(s.step >= 5){
-      // report : c sur l'arête du haut côté pièce gardée, relié au coin du bas → angle machine
-      const Q = [x0 - R.cUsed, 0, 0], Bc = [x0, 0, -T];
-      lines.push({ a:[x0, 0, 0.5], b:[Q[0], 0, 0.5], c:'#8a2be2', w:3 });        // cote ② reportée sur l'arête du haut
-      lines.push({ a:[x0, 0, 0], b:Bc, c:'#8a2be2', w:1.5, dash:[3,3] });        // verticale de référence
-      lines.push({ a:Q, b:Bc, c:'#8a2be2', w:3, dash:[7,5] });                   // ligne de l'angle machine
-      tags.push({ p:[x0 - R.cUsed - 30, 0, -T * 0.5], t:'③ ' + _cbF(_cbDeg(R.theta)) + '° machine', bg:'#8a2be2' });
-    }
+  if(R.ok && s.step >= 3 && R.face){
+    // face posée sur la table de la scie (pièce gardée), en bleu clair
+    const hl = R.face === 'dessus' ? [[0,0,0.6],[0,W,0.6],[P1[0],W,0.6],[P0[0],0,0.6]] : [[0,-0.6,0],[P0[0],-0.6,0],[P3[0],-0.6,-T],[0,-0.6,-T]];
+    polys.push({ pts:hl, col:'rgba(47,111,214,0.30)', edge:'#2f6fd6' });
+    const mid = R.face === 'dessus' ? [x0 * 0.45, W * 0.5, 1] : [x0 * 0.45, -1, -T * 0.5];
+    tags.push({ p:mid, t:'Face sur la table', bg:'#111' });
   }
-  return { objs, lines, tags, L, W, T, x0 };
+  return { objs, lines, tags, polys, L, W, T, x0 };
 }
 function _cbDraw(){
   if(!cb || !cb.cv) return;
@@ -36915,6 +36916,11 @@ function _cbDraw(){
     ctx.globalAlpha = Math.min(1, fc.alpha + 0.3); ctx.strokeStyle = 'rgba(70,45,15,0.75)'; ctx.lineWidth = 1; ctx.stroke();
   });
   ctx.globalAlpha = 1;
+  (S.polys || []).forEach(pl => {
+    const P = pl.pts.map(v => _cbP(v, C));
+    ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath();
+    ctx.fillStyle = pl.col; ctx.fill(); ctx.strokeStyle = pl.edge; ctx.lineWidth = 2; ctx.stroke();
+  });
   S.lines.forEach(l => {
     const a = _cbP(l.a, C), b = _cbP(l.b, C);
     ctx.setLineDash(l.dash || []); ctx.strokeStyle = l.c; ctx.lineWidth = l.w; ctx.lineCap = 'round';
@@ -36942,14 +36948,12 @@ function _cbAnimStep(){
 }
 function _cbCamFor(step){
   const S = cb.scene, W = S.W, T = S.T, x0 = S.x0, R = cbCalc(cb.s);
-  const base = Math.max(W, T * 2.2, 120), a = R.ok ? R.a : T, c = R.ok ? R.cUsed : T;
+  const base = Math.max(W, T * 2.2, 120);
   const views = {
-    piece:   { yaw:-0.55, pitch:0.55, dist:base * 4.2, tx:S.L / 2, ty:W / 2, tz:-T / 2 },
-    dessus:  { yaw:-0.3,  pitch:0.95, dist:base * 2.3, tx:x0 + W * 0.25, ty:W * 0.5, tz:0 },
-    chant:   { yaw:-0.3,  pitch:0.32, dist:base * 1.7, tx:x0 + T * 0.4, ty:W * 0.2, tz:-T / 2 },
-    releve:  { yaw:-0.35, pitch:0.42, dist:base * 1.45, tx:x0 + a * 0.5, ty:W * 0.12, tz:-T * 0.35 },
-    equerre: { yaw:-0.25, pitch:0.95, dist:base * 1.5, tx:x0 + a * 0.5, ty:W * 0.2, tz:0 },
-    report:  { yaw:-0.12, pitch:0.22, dist:base * 1.55, tx:x0 - c * 0.3, ty:0, tz:-T * 0.45 }
+    piece:  { yaw:-0.55, pitch:0.55, dist:base * 4.2, tx:S.L / 2, ty:W / 2, tz:-T / 2 },
+    dessus: { yaw:-0.3,  pitch:0.95, dist:base * 2.3, tx:x0 + W * 0.25, ty:W * 0.5, tz:0 },
+    chant:  { yaw:-0.3,  pitch:0.32, dist:base * 1.9, tx:x0 + T * 0.4, ty:W * 0.2, tz:-T / 2 },
+    result: R.ok && R.face === 'chant' ? { yaw:-0.25, pitch:0.25, dist:base * 3.2, tx:x0, ty:W * 0.3, tz:-T / 2 } : { yaw:-0.45, pitch:0.75, dist:base * 3.2, tx:x0, ty:W * 0.5, tz:-T / 2 }
   };
   return views[step] || views.piece;
 }
@@ -37020,52 +37024,44 @@ function cbRender(fly){
   let h = '';
   if(st === 'piece') h = `<div class="cb-t">La pièce</div>
     <div class="cb-s">Le <b>dessus</b> est la face où va reposer la semelle de la scie. Le <b>chant</b> est la face d'à côté.</div>
-    <div class="cb-row"><label>Largeur du dessus${_cbInp('cbW', 'W', '150', 'mm')}</label><label>Épaisseur (chant)${_cbInp('cbT', 'T', '45', 'mm')}</label></div>`;
+    <div class="cb-row"><label>Largeur du dessus${_cbInp('cbW', 'W', '150', 'mm')}</label><label>Épaisseur (chant)${_cbInp('cbT', 'T', '45', 'mm')}</label></div>
+    <label class="cb-lbl">Profondeur de coupe max de ta scie (lame droite)${_cbInp('cbD', 'D', '65', 'mm')}</label>`;
   else if(st === 'dessus') h = `<div class="cb-t">Le tracé sur le dessus <span class="cb-k" style="background:#d63a2f">rouge</span></div>
     <div class="cb-s">Angle du trait de biais par rapport au trait d'équerre, ou le décalage du trait sur toute la largeur.</div>
     ${_cbSeg('aMode', s.aMode)}${s.aMode === 'cote' ? _cbInp('cbDa', 'da', 'ex : 87', 'mm sur la largeur') : _cbInp('cbA', 'a', 'ex : 30', '°')}`;
   else if(st === 'chant') h = `<div class="cb-t">Le tracé sur le chant <span class="cb-k" style="background:#2f6fd6">bleu</span></div>
     <div class="cb-s">Angle du trait par rapport à la verticale, ou le décalage du trait sur toute l'épaisseur. Il part du même coin que le tracé du dessus.</div>
     ${_cbSeg('bMode', s.bMode)}${s.bMode === 'cote' ? _cbInp('cbDb', 'db', 'ex : 45', 'mm sur l\'épaisseur') : _cbInp('cbB', 'b', 'ex : 45', '°')}`;
-  else if(st === 'releve') h = `<div class="cb-t">① Relever le coin du bas</div>
-    <div class="cb-s">Sur le chant, le trait bleu arrive en bas plus loin que le coin. Remonte ce point sur l'arête du haut avec un trait d'équerre, puis prolonge-le d'équerre sur le dessus.</div>
-    <div class="cb-res" id="cbLive"></div>`;
-  else if(st === 'equerre') h = `<div class="cb-t">② Trait d'équerre jusqu'au tracé du dessus <span class="cb-k" style="background:#1f9d55">vert</span></div>
-    <div class="cb-s">Depuis le point relevé, trace un trait d'équerre <b>au trait rouge</b> jusqu'à le toucher, puis mesure-le.</div>
-    <div class="cb-res" id="cbLive"></div>
-    <label class="cb-lbl">Ta mesure sur la pièce (facultatif)${_cbInp('cbMC', 'mC', 'mesure en mm', 'mm')}</label>`;
-  else h = `<div class="cb-t">③ Reporter et lire l'angle machine <span class="cb-k" style="background:#8a2be2">violet</span></div>
-    <div class="cb-s">Reporte la cote ② sur l'arête du haut à partir du coin, et relie ce point au coin du bas : c'est l'angle de la lame. Règle ta fausse équerre dessus.</div>
-    <div id="cbLive"></div>`;
+  else h = `<div class="cb-t">Réglage de la scie circulaire</div><div id="cbLive"></div>`;
   document.getElementById('cbPanel').innerHTML = h;
   document.getElementById('cbPrev').style.visibility = s.step ? 'visible' : 'hidden';
-  document.getElementById('cbNext').textContent = st === 'report' ? '↺ Nouvelle coupe' : 'Suivant →';
+  document.getElementById('cbNext').textContent = st === 'result' ? '↺ Nouvelle coupe' : (s.step === 2 ? 'Voir le réglage →' : 'Suivant →');
   cb.scene = _cbScene(); _cbLive();
   if(fly){ const to = _cbCamFor(st); if(!cb.cam.dist || cb.cam.dist === 600) Object.assign(cb.cam, to); _cbFly(to, 650); }
   else _cbKick();
 }
 function _cbLive(){
   const el = document.getElementById('cbLive'); if(!el) return;
-  const s = cb.s, R = cbCalc(s), st = CB_STEPS[s.step];
+  const R = cbCalc(cb.s);
   if(!R.ok){ el.innerHTML = '<div class="hint">Complète les étapes précédentes.</div>'; return; }
-  if(st === 'releve') el.innerHTML = `<div><span>Distance relevée sur l'arête</span><b>${_cbF(R.a)} mm</b></div>`;
-  else if(st === 'equerre'){
-    const mC = _cbN(s.mC), diff = mC > 0 ? mC - R.c : 0;
-    el.innerHTML = `<div><span>Cote ② calculée</span><b>${_cbF(R.c)} mm</b></div>` +
-      (mC > 0 && Math.abs(diff) > 2 ? `<div class="cb-warn">⚠️ Ta mesure s'écarte de ${_cbF(Math.abs(diff))} mm : vérifie le tracé. Le résultat utilisera ta mesure.</div>` : '');
-  } else {
-    const th = _cbDeg(R.theta);
-    el.innerHTML = `<div class="cb-big"><span>Angle machine</span><b>${_cbF(th)}°</b><small>inclinaison de la lame</small></div>
+  if(!R.face){
+    el.innerHTML = `<div class="cb-big cb-no"><span>Résultat</span><b style="font-size:22px;line-height:1.3;">Coupe impossible à la circulaire,</b><small>coupe à la scie égoïne ou au ruban</small></div>
       <div class="cb-res">
-        <div><span>Cote à reporter ②</span><b>${_cbF(R.cUsed)} mm</b></div>
-        <div><span>Sur l'épaisseur</span><b>${_cbF(R.T, 0)} mm</b></div>
-        <div><span>Tracé du dessus à suivre</span><b>${_cbF(_cbDeg(R.al))}°</b></div>
-        <div><span>Tracé du chant</span><b>${_cbF(_cbDeg(R.be))}°</b></div>
-        ${_cbN(s.mC) > 0 ? `<div><span>Angle théorique</span><b>${_cbF(_cbDeg(R.thetaTh))}°</b></div>` : ''}
+        <div><span>Semelle sur le dessus</span><b>${_cbF(R.thD)}° · ${_cbF(R.depthD, 0)} mm</b></div>
+        <div><span>Semelle sur le chant</span><b>${_cbF(R.thC)}° · ${_cbF(R.depthC, 0)} mm</b></div>
       </div>
-      ${th > 45 ? '<div class="cb-warn">⚠️ Plus de 45° : la plupart des scies circulaires ne s\'inclinent pas autant. Coupe par l\'autre face (90° − ' + _cbF(th) + '° = ' + _cbF(90 - th) + '°) ou à la scie à ruban.</div>' : ''}
-      <div class="cb-s" style="margin-top:8px;">La semelle repose sur le dessus, la lame suit le trait rouge, inclinée de <b>${_cbF(th)}°</b>.</div>`;
+      <div class="cb-s" style="margin-top:8px;">Aucune pose ne reste à ${CB_MAX}° maximum avec une profondeur de coupe de ${_cbF(R.Dmax, 0)} mm au plus.</div>`;
+    return;
   }
+  const D = R.face === 'dessus';
+  const th = D ? R.thD : R.thC, depth = D ? R.depthD : R.depthC;
+  el.innerHTML = `<div class="cb-big"><span>Angle machine</span><b>${_cbF(th)}°</b><small>inclinaison de la lame</small></div>
+    <div class="cb-steps">
+      <div><i>1</i><span>Pose la semelle sur <b>${D ? 'le dessus' : 'le chant'}</b> (en bleu sur la 3D)</span></div>
+      <div><i>2</i><span>Incline la lame à <b>${_cbF(th)}°</b></span></div>
+      <div><i>3</i><span>Suis le <b style="color:${D ? '#d63a2f' : '#2f6fd6'}">trait ${D ? 'rouge du dessus' : 'bleu du chant'}</b></span></div>
+    </div>
+    <div class="cb-s" style="margin-top:8px;">Profondeur de coupe nécessaire : <b>${_cbF(depth, 0)} mm</b> (ta scie : ${_cbF(R.Dmax, 0)} mm)${R.other ? ` · Possible aussi sur ${R.other === 'chant' ? 'le chant' : 'le dessus'} à ${_cbF(R.other === 'chant' ? R.thC : R.thD)}°.` : ''}</div>`;
 }
 /* ═══ MODULE — Coupe biaise (fin) ═══ */
 
@@ -41649,9 +41645,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.372';
+const APP_VERSION = '5.41.373';
 
 const CHANGELOG = [
+  {
+    version: '5.41.373',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🪚', text: "Coupe biaise simplifiée : 4 étapes (pièce, tracé du dessus, tracé du chant, réglage). Les cotes de construction intermédiaires sont retirées : l'appli calcule l'angle directement." },
+      { icon: '🧭', text: "Le résultat indique la face à poser sur la table de la scie (dessus ou chant, en bleu sur la 3D), l'angle de lame et le trait à suivre. Si aucune pose ne reste sous 45° : « Coupe impossible à la circulaire, coupe à la scie égoïne ou au ruban »." },
+    ],
+  },
   {
     version: '5.41.372',
     date: '13/10/2026',
