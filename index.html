@@ -1417,6 +1417,38 @@
     border-radius: 20px;
   }
 
+  /* v5.41.431 — tri + carte des chantiers (l'onglet Zone est fusionné ici) */
+  #zoneNavBtn{ display:none !important; }
+  .sites-sortbar{ display:flex; flex-direction:column; gap:8px; }
+  .sites-mapbtn{ width:100%; }
+  .sites-sort{ display:flex; align-items:center; gap:6px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; }
+  .sites-sort::-webkit-scrollbar{ display:none; }
+  .sites-sort span{ font-size:12px; font-weight:800; color:var(--ink-soft); flex-shrink:0; }
+  .sites-sort button{ flex-shrink:0; padding:7px 11px; border-radius:99px; border:1.5px solid var(--line); background:transparent; color:var(--ink); font-size:12.5px; font-weight:800; cursor:pointer; font-family:inherit; white-space:nowrap; }
+  .sites-sort button.on{ background:var(--wood); border-color:var(--wood); color:#16110C; }
+  .sites-grp{ grid-column:1/-1; display:flex; align-items:center; gap:8px; margin:14px 2px 8px; font-size:13px; }
+  .sites-grp:first-of-type{ margin-top:4px; }
+  .sites-grp .dot{ width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+  .sites-grp b{ font-weight:900; letter-spacing:.3px; }
+  .sites-grp .sub{ color:var(--ink-soft); font-size:12px; font-weight:600; }
+  .sites-grp .n{ margin-left:auto; font-size:11.5px; font-weight:800; color:var(--ink-soft); background:var(--card); border:1px solid var(--line); border-radius:99px; padding:1px 8px; }
+  #sitesMapOv{ position:fixed; inset:0; z-index:950; background:var(--bg); display:none; flex-direction:column; }
+  #sitesMapOv.on{ display:flex; }
+  #sitesMapOv .sm-top{ display:flex; justify-content:space-between; align-items:center; padding:calc(10px + env(safe-area-inset-top,0px)) 12px 8px; font-size:16px; }
+  #sitesMapOv .sm-top .cam-icon-btn{ background:var(--card); color:var(--ink); border:1.5px solid var(--line); }
+  #sitesMap{ flex:1; min-height:0; }
+  #sitesMapOv .sm-bot{ padding:8px 12px calc(10px + env(safe-area-inset-bottom,0px)); max-height:40vh; overflow-y:auto; }
+  #sitesMapOv .sm-bot summary{ font-weight:800; font-size:13px; cursor:pointer; padding:6px 0; }
+  .sm-lbl{ display:flex; align-items:center; gap:7px; width:max-content; max-width:200px; background:#fff; color:#111; border-radius:10px; padding:4px 8px 4px 4px; border:2px solid var(--c); box-shadow:0 3px 10px rgba(0,0,0,.35); }
+  .sm-lbl.f{ box-shadow:0 0 0 3px #FFC400, 0 3px 10px rgba(0,0,0,.35); }
+  .sm-lbl .ph{ width:42px; height:42px; border-radius:7px; overflow:hidden; background:#f1e6d2; display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0; }
+  .sm-lbl .ph img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .sm-lbl .tx{ min-width:0; display:flex; flex-direction:column; line-height:1.2; }
+  .sm-lbl b{ font-size:12.5px; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:140px; }
+  .sm-lbl small{ font-size:10.5px; color:#555; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; max-width:140px; }
+  .sm-pt{ position:absolute; left:8px; bottom:-8px; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.5); }
+  .sm-pop{ min-width:180px; font-size:12.5px; } .sm-pop img{ width:100%; height:110px; object-fit:cover; border-radius:8px; display:block; margin-bottom:6px; } .sm-pop b{ font-size:14px; }
+
   /* v5.41.423 — appareil photo complet : formats, grille, mise au point, luminosité, zoom, scan */
   #camFrame{ position:absolute; left:0; top:0; width:100%; height:100%; box-shadow:0 0 0 200vmax rgba(0,0,0,.62); pointer-events:none; z-index:1; display:none; }
   #camFrame.on{ display:block; }
@@ -11970,6 +12002,7 @@ function goTo(viewName, siteId){
   if(viewName === 'dev') setTimeout(() => { try{ rwGwRender(); }catch(e){} }, 50); // MODULE — Porte d'entrée multi-entreprise
   if(viewName === 'scanner'){ openQRScanner(); return; }
   if(viewName === 'depot'){ goTo('chantiers'); return; } // Dépôt supprimé : redirection de sécurité
+  if(viewName === 'zone-chantier'){ goTo('chantiers'); setTimeout(() => { try{ sitesMapOpen(); }catch(e){} }, 120); return; } // v5.41.431 — onglet Zone fusionné : carte des chantiers
   // Paramètres n'est plus une .view classique mais une pop-up (voir
   // toggleParametres()) : tout appel goTo('parametres') restant ailleurs
   // dans le code (tour guidé, tuile dashboard...) doit ouvrir cette pop-up
@@ -12557,6 +12590,140 @@ function toggleFavSite(id){
   if(typeof renderSites === 'function') renderSites();
 }
 
+/* ═══ v5.41.431 — Chantiers : tri (zone, statut, A→Z, récents, anciens) + carte des chantiers (remplace l'onglet Zone) ═══ */
+const SITES_SORTS = [['zone', '📍 Zone'], ['statut', '🏷️ Statut'], ['az', '🔤 A → Z'], ['recent', '🆕 Récents'], ['ancien', '⏳ Anciens']];
+let _sitesSort = (() => { try{ const v = localStorage.getItem('rw-sites-sort'); return SITES_SORTS.some(x => x[0] === v) ? v : 'zone'; }catch(e){ return 'zone'; } })();
+function sitesSetSort(k){ _sitesSort = k; try{ localStorage.setItem('rw-sites-sort', k); }catch(e){} renderSites(); }
+const _SITE_STATUS_ORDER = { 'brouillon':-1, 'en-cours':0, 'a-faire':1, 'termine':2 };
+function _siteAddedTs(s){ const t = Date.parse(s.createdAt || '') || 0; if(t) return t; const m = String(s.id || '').match(/([a-z0-9]{8,})$/); return m ? (parseInt(m[1].slice(8), 36) || 0) : 0; }
+function _sitesSortCmp(a, b){
+  const fa = isFavSite(a.id) ? 0 : 1, fb = isFavSite(b.id) ? 0 : 1;   // les favoris ⭐ restent en tête
+  if(fa !== fb) return fa - fb;
+  const nm = (a.name || '').localeCompare(b.name || '', 'fr');
+  if(_sitesSort === 'az') return nm;
+  if(_sitesSort === 'recent') return _siteAddedTs(b) - _siteAddedTs(a) || nm;
+  if(_sitesSort === 'ancien') return _siteAddedTs(a) - _siteAddedTs(b) || nm;
+  if(_sitesSort === 'statut') return ((_SITE_STATUS_ORDER[a.status] ?? 9) - (_SITE_STATUS_ORDER[b.status] ?? 9)) || _compareZones(a.trajetZone, b.trajetZone) || nm;
+  return _compareZones(a.trajetZone, b.trajetZone) || ((_SITE_STATUS_ORDER[a.status] ?? 9) - (_SITE_STATUS_ORDER[b.status] ?? 9)) || nm;
+}
+/* En-têtes de groupe (tri par zone ou par statut) : couleur, km et €/jour de la zone */
+function _sitesGroupKey(s){
+  if(isFavSite(s.id)) return '★';
+  if(_sitesSort === 'zone') return s.trajetZone ? 'z:' + s.trajetZone : 'z:';
+  if(_sitesSort === 'statut') return 's:' + (s.status || '');
+  return null;
+}
+function _sitesGroupHead(key, n){
+  const box = (dot, t, sub) => `<div class="sites-grp">${dot ? `<span class="dot" style="background:${dot}"></span>` : ''}<b>${t}</b>${sub ? `<span class="sub">${sub}</span>` : ''}<span class="n">${n}</span></div>`;
+  if(key === '★') return box('#E8AC3D', '⭐ Favoris', '');
+  if(key.startsWith('z:')){
+    const z = key.slice(2);
+    if(!z) return box('#8a8178', 'Sans zone', 'adresse manquante ou zone pas encore calculée');
+    const r = (typeof getTrajetRates === 'function') ? getTrajetRates(z) : null;
+    const sub = r ? [(r.minKm != null ? r.minKm + '–' : 'jusqu\'à ') + r.maxKm + ' km', r.trajet != null ? Number(r.trajet).toFixed(2).replace('.', ',') + ' €/jour' : ''].filter(Boolean).join(' · ') : '';
+    return box(_zoneColor(z), z === 'GD' ? 'Grand déplacement' : 'Zone ' + escapeHtml(String(z)), sub);
+  }
+  const st = key.slice(2);
+  const col = { 'brouillon':'#8E8A84', 'en-cours':'#4FAE6C', 'a-faire':'#9a9a9a', 'termine':'#5B8DEF' }[st] || '#8a8178';
+  return box(col, escapeHtml((typeof statusLabels !== 'undefined' && statusLabels[st]) || st || 'Sans statut'), '');
+}
+function _sitesSortBarHtml(n){
+  return `<div class="sites-sortbar">
+      <button type="button" class="btn btn-primary sites-mapbtn" onclick="sitesMapOpen()">🗺️ Afficher la carte des chantiers${n ? ' (' + n + ')' : ''}</button>
+      <div class="sites-sort"><span>Trier :</span>${SITES_SORTS.map(([k, l]) => `<button type="button" class="${_sitesSort === k ? 'on' : ''}" onclick="sitesSetSort('${k}')">${l}</button>`).join('')}</div>
+    </div>`;
+}
+
+/* ── Carte des chantiers (Leaflet) : zones autour du dépôt, épingles ; au zoom, nom + adresse + photo ── */
+let _smMap = null, _smMarkers = [], _smSiteMk = {}, _smTestMk = null;
+function _sitePhotoUrl(s){
+  const m = (s.sharedMedia || []).filter(x => x && x.url && (x.type === 'photo' || (x.mimeType || '').startsWith('image/'))).sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0))[0];
+  return m ? m.url : '';
+}
+function _smIcon(s, big, focus){
+  const col = s.color || (s.trajetZone ? _zoneColor(s.trajetZone) : '#E8AC3D');
+  if(!big){
+    const sz = focus ? 22 : 16;
+    return L.divIcon({ className:'', iconSize:[sz, sz], iconAnchor:[sz / 2, sz / 2], html:`<div class="${focus ? 'cab-blink-pin' : ''}" style="background:${col};width:${sz}px;height:${sz}px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.45);"></div>` });
+  }
+  const ph = _sitePhotoUrl(s);
+  return L.divIcon({ className:'', iconSize:[190, 62], iconAnchor:[14, 62], html:`<div class="sm-lbl${focus ? ' f' : ''}" style="--c:${col}">
+      <div class="ph">${ph ? `<img src="${escapeHtml(ph)}" alt="" loading="lazy">` : '🏠'}</div>
+      <div class="tx"><b>${escapeHtml(s.name || 'Chantier')}</b><small>${escapeHtml(s.address || 'Adresse non renseignée')}</small></div></div><i class="sm-pt" style="background:${col}"></i>` });
+}
+function _smPopup(s){
+  const ph = _sitePhotoUrl(s), r = s.trajetZone && typeof getTrajetRates === 'function' ? getTrajetRates(s.trajetZone) : null;
+  return `<div class="sm-pop">${ph ? `<img src="${escapeHtml(ph)}" alt="">` : ''}<b>${escapeHtml(s.name || '')}</b><div>${escapeHtml(s.address || '')}</div>
+    <div style="margin-top:3px;"><span class="badge ${s.status}" style="font-size:10px;">${escapeHtml((statusLabels && statusLabels[s.status]) || s.status || '')}</span>${s.trajetZone ? ` · Zone ${escapeHtml(String(s.trajetZone))}${r && r.trajet != null ? ' · ' + Number(r.trajet).toFixed(2).replace('.', ',') + ' €/j' : ''}` : ''}</div>
+    <div style="display:flex;gap:6px;margin-top:7px;"><button type="button" class="btn btn-primary btn-sm" onclick="sitesMapClose();goTo('detail','${s.id}')">Ouvrir</button><button type="button" class="btn btn-outline btn-sm" onclick="openZoneChantierMap('${s.id}')">🧭 Itinéraire</button></div></div>`;
+}
+async function sitesMapOpen(focusId){
+  let ov = document.getElementById('sitesMapOv');
+  if(!ov){
+    ov = document.createElement('div'); ov.id = 'sitesMapOv';
+    ov.innerHTML = `<div class="sm-top"><b id="smTitle">🗺️ Carte des chantiers</b><button type="button" class="cam-icon-btn" onclick="sitesMapClose()" title="Fermer">×</button></div>
+      <div id="sitesMap"></div>
+      <div class="sm-bot"><div class="zone-strip" id="smStrip"></div>
+        <details id="smTestBox"><summary>📍 Tester une adresse (zone et €/jour)</summary>
+          <div class="zone-test"><input type="text" id="smTestInput" placeholder="Adresse, ville…" enterkeyhint="search" onkeydown="if(event.key==='Enter'){event.preventDefault();zoneTestAddress('smTestInput','smTestRes');}"><button type="button" class="btn btn-primary" onclick="zoneTestAddress('smTestInput','smTestRes')">OK</button></div>
+          <div id="smTestRes"></div></details></div>`;
+    document.body.appendChild(ov);
+  }
+  ov.classList.add('on');
+  const bareme = data.settings.trajetBareme || [];
+  document.getElementById('smStrip').innerHTML = bareme.map(z => `<span><i style="background:${_zoneColor(z.zone)}"></i><b>${escapeHtml(String(z.zone))}</b> ${z.trajet != null ? Number(z.trajet).toFixed(2).replace('.', ',') + ' €' : ''}</span>`).join('');
+  const mapEl = document.getElementById('sitesMap');
+  if(!(await _ensureLeaflet())){ mapEl.innerHTML = '<div style="padding:30px;text-align:center;color:var(--ink-soft);">🗺️ Carte indisponible hors connexion</div>'; return; }
+  if(!_smMap){
+    mapEl.innerHTML = '';
+    _smMap = L.map('sitesMap', { zoomControl:true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap', maxZoom:19 }).addTo(_smMap);
+    _smMap.on('zoomend', _smRelabel);
+  }
+  _smMarkers.forEach(m => m.remove()); _smMarkers = []; _smSiteMk = {};
+  // mêmes chantiers que la liste (filtres et archive compris)
+  const sites = _sitesApplyFilters([...(data.sites || [])]);
+  document.getElementById('smTitle').textContent = '🗺️ Carte des chantiers (' + sites.length + ')';
+  const depot = data.settings.depotCoords, bounds = [];
+  if(depot && bareme.length){
+    [...bareme].reverse().forEach(z => { const c = _zoneColor(z.zone);
+      _smMarkers.push(L.circle([depot.lat, depot.lng], { radius:z.maxKm * 1000, color:c, weight:2, opacity:.9, fillColor:c, fillOpacity:.08, interactive:false }).addTo(_smMap)); });
+  }
+  if(depot){
+    _smMarkers.push(L.marker([depot.lat, depot.lng], { icon:L.divIcon({ className:'', iconSize:[26, 26], iconAnchor:[13, 13], html:'<div style="background:#E8AC3D;width:26px;height:26px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:13px;">🏭</div>' }), zIndexOffset:500 })
+      .bindPopup('<b>Dépôt</b><br>' + escapeHtml(data.settings.depotAddress || '')).addTo(_smMap));
+    bounds.push([depot.lat, depot.lng]);
+  }
+  const big = _smMap.getZoom && _smMap._loaded ? _smMap.getZoom() >= 13 : false;
+  const res = await Promise.all(sites.map(async s => { let g = s._geo || null; try{ if(!g && s.address){ g = await geocodeAddress(s.address); if(g) s._geo = g; } }catch(e){} return { s, g }; }));
+  try{ saveData(); }catch(e){}
+  let fmk = null, fll = null, noGeo = 0;
+  res.forEach(({ s, g }) => {
+    if(!g){ noGeo++; return; }
+    const mk = L.marker([g.lat, g.lng], { icon:_smIcon(s, big, s.id === focusId), zIndexOffset:s.id === focusId ? 1000 : 0 }).bindPopup(_smPopup(s), { maxWidth:240 }).addTo(_smMap);
+    mk._site = s; mk._focus = s.id === focusId;
+    _smMarkers.push(mk); _smSiteMk[s.id] = mk; bounds.push([g.lat, g.lng]);
+    if(s.id === focusId){ fmk = mk; fll = [g.lat, g.lng]; }
+  });
+  if(noGeo) showToast('📍 ' + noGeo + ' chantier' + (noGeo > 1 ? 's' : '') + ' sans adresse trouvée : absent' + (noGeo > 1 ? 's' : '') + ' de la carte');
+  setTimeout(() => {
+    _smMap.invalidateSize();
+    if(fll){ _smMap.setView(fll, 15); setTimeout(() => fmk && fmk.openPopup(), 300); }
+    else if(bounds.length > 1) _smMap.fitBounds(bounds, { padding:[30, 30], maxZoom:15 });
+    else if(bounds.length === 1) _smMap.setView(bounds[0], 12);
+    else _smMap.setView([44.837, -0.579], 9);
+    _smRelabel();
+  }, 60);
+}
+/* zoom ≥ 13 : chaque chantier affiche son nom, son adresse et sa photo */
+function _smRelabel(){
+  if(!_smMap) return;
+  const big = _smMap.getZoom() >= 13;
+  if(_smMap._smBig === big) return; _smMap._smBig = big;
+  Object.values(_smSiteMk).forEach(mk => mk.setIcon(_smIcon(mk._site, big, mk._focus)));
+}
+function sitesMapClose(){ const ov = document.getElementById('sitesMapOv'); if(ov) ov.classList.remove('on'); }
+
 function renderSites(){
   const container = document.getElementById('chantiersList');
   const dashboard = document.getElementById('conducteurDashboard');
@@ -12593,17 +12760,7 @@ function renderSites(){
   }
   // Tri par défaut : par ZONE (alphanumérique 1A, 1B, 2, 3…), puis statut,
   // puis nom. Actif en permanence — le filtrage ci-dessous conserve cet ordre.
-  const order = {'brouillon':-1, 'en-cours':0, 'a-faire':1, 'termine':2};
-  const sorted = [...data.sites].sort((a,b) => {
-    const favA = isFavSite(a.id) ? 0 : 1;
-    const favB = isFavSite(b.id) ? 0 : 1;
-    if(favA !== favB) return favA - favB;
-    const zoneCmp = _compareZones(a.trajetZone, b.trajetZone);
-    if(zoneCmp !== 0) return zoneCmp;
-    const statusCmp = (order[a.status]??9) - (order[b.status]??9);
-    if(statusCmp !== 0) return statusCmp;
-    return (a.name||'').localeCompare(b.name||'', 'fr');
-  });
+  const sorted = [...data.sites].sort(_sitesSortCmp);   // v5.41.431 — tri choisi (zone, statut, A→Z, récents, anciens), favoris en tête
   const myRole = data.settings.myProfile && data.settings.myProfile.role;
 
   // MODULE — SitesFilter : barre recherche + filtres zone/chef, puis filtrage cumulé
@@ -12619,10 +12776,13 @@ function renderSites(){
     return;
   }
 
+  let _gPrev = null;
+  const _gCount = {}; visible.forEach(x => { const k = _sitesGroupKey(x); if(k != null) _gCount[k] = (_gCount[k] || 0) + 1; });
   container.innerHTML = filterBarHtml + visible.map(site => {
+    const _gk = _sitesGroupKey(site), _gh = (_gk != null && _gk !== _gPrev) ? _sitesGroupHead(_gk, _gCount[_gk]) : ''; _gPrev = _gk;
     const newCount = _dashSiteUnseenChantier(site.id);
     const cardBadgeHtml = newCount > 0 ? `<span class="site-card-badge">${newCount > 9 ? '9+' : newCount}</span>` : '';
-    return `
+    return _gh + `
     <div class="card" style="${site.color ? `background:${cardTintBackground(site.color)};` : ''}position:relative;" onclick="goTo('detail', '${site.id}')">
       ${cardBadgeHtml}
       <div class="card-row">
@@ -12732,18 +12892,19 @@ function _sitesFilterBarHtml(sites){
   const showZone = zones.length > 0;
   const archivedCount = (data.sites||[]).filter(s => s.status === 'termine').length;
   return `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;grid-column:1/-1;">
       <div class="section-title" style="margin:0;">${_sitesShowArchive ? '📦 Archive (chantiers terminés)' : 'Chantiers en cours'}</div>
       <button class="btn btn-outline btn-sm" onclick="toggleSitesArchiveView()">
         ${_sitesShowArchive ? '← Retour aux chantiers' : `📦 Archive${archivedCount ? ' (' + archivedCount + ')' : ''}`}
       </button>
     </div>
-    <div class="sites-filter-bar">
+    <div class="sites-filter-bar" style="grid-column:1/-1;">
       <input type="text" id="search-chantiers" class="sites-filter-search" placeholder="🔍 Rechercher un chantier..."
         value="${escapeHtml(_sitesFilter.text)}" oninput="_sitesFilterOnText(this.value)">
       ${showZone ? `<div class="sites-filter-selects">
         <select id="filter-zone" onchange="_sitesFilterOnZone(this.value)">${zoneOpts}</select>
       </div>` : ''}
+      ${_sitesSortBarHtml(_sitesApplyFilters(sites).length)}
     </div>`;
 }
 
@@ -17531,8 +17692,8 @@ function _zoneFullscreen(){
   if(_zoneMap) [80, 300].forEach(t => setTimeout(() => { try{ _zoneMap.invalidateSize(); }catch(e){} }, t));
 }
 /* v5.41.314 — tester une adresse : zone, km, €/jour, sans créer de chantier */
-async function zoneTestAddress(){
-  const inp = document.getElementById('zoneTestInput'), res = document.getElementById('zoneTestRes');
+async function zoneTestAddress(inpId, resId){
+  const inp = document.getElementById(inpId || 'zoneTestInput'), res = document.getElementById(resId || 'zoneTestRes');
   const addr = inp ? inp.value.trim() : ''; if(!addr || !res) return;
   if(!data.settings.depotAddress){ res.innerHTML = "⚠️ Renseigne d'abord l'adresse du dépôt dans Paramètres."; return; }
   res.innerHTML = '⏳ Calcul…';
@@ -17542,6 +17703,7 @@ async function zoneTestAddress(){
     if(!geo){ res.innerHTML = '❌ Adresse introuvable. Ajoute la ville ou le code postal.'; return; }
     const km = Math.round(haversineKm(data.settings.depotCoords.lat, data.settings.depotCoords.lng, geo.lat, geo.lng) * 10) / 10;
     const z = findTrajetZone(km), r = z ? getTrajetRates(z) : null;
+    if(resId === 'smTestRes' && _smMap && window.L){ try{ if(_smTestMk) _smTestMk.remove(); _smTestMk = L.marker([geo.lat, geo.lng], { icon:L.divIcon({ className:'', iconSize:[28, 28], iconAnchor:[14, 28], html:'<div style="font-size:26px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))">📍</div>' }), zIndexOffset:2000 }).addTo(_smMap); _smMap.setView([geo.lat, geo.lng], Math.max(_smMap.getZoom(), 11)); }catch(_){} }
     res.innerHTML = `<div style="display:flex;align-items:center;gap:10px;"><span style="width:14px;height:14px;border-radius:50%;background:${z ? _zoneColor(z) : '#8a8178'};flex-shrink:0;"></span>
       <div><b style="font-size:16px;">${z ? (z === 'GD' ? 'Grand déplacement' : 'Zone ' + escapeHtml(String(z))) : 'Hors barème'}</b> · ${_zoneFmtKm(km)}${r ? ' · <b style="color:var(--wood);">' + _zoneFmtEur(r.trajet) + '</b>' : ''}
       <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">À vol d'oiseau depuis le dépôt</div></div></div>`;
@@ -43192,9 +43354,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.430';
+const APP_VERSION = '5.41.431';
 
 const CHANGELOG = [
+  {
+    version: '5.41.431',
+    date: '12/10/2026',
+    entries: [
+      { icon: '🗺️', text: "Chantiers : bouton « Afficher la carte des chantiers ». Tous les chantiers sur une carte avec le dépôt et les zones ; en zoomant, chaque chantier affiche son nom, son adresse et sa dernière photo. Toucher un chantier = ouvrir sa fiche ou l'itinéraire. Le test d'adresse (zone et €/jour) est sous la carte." },
+      { icon: '↕️', text: "Chantiers : tri en un appui — par zone (avec les km et le €/jour de chaque zone), par statut, de A à Z, les plus récents ou les plus anciens. Les favoris ⭐ restent en tête. Le choix est gardé." },
+      { icon: '🧹', text: "L'onglet « Zone » est supprimé : tout est maintenant dans Chantiers (carte + tri par zone). Le bouton Zone du chantier actif ouvre la carte centrée sur ce chantier." }
+    ],
+  },
   {
     version: '5.41.430',
     date: '12/10/2026',
@@ -60373,7 +60544,7 @@ const SIMPLE_ALL_TILES = [
   // v5.41.150 — Zinc fusionné dans l'onglet "couverture" (Couverture
   // Zinguerie) : retiré comme tuile séparée (voir bascule Toiture/Zinc dans
   // la vue elle-même).
-  { view:'zone-chantier', img:'icons/zone.png', icon:'🗾', label:'Zone' },
+  // v5.41.431 — tuile « Zone » retirée : carte des chantiers + tri par zone dans l'onglet Chantiers
   { view:'magasin', img:'icons/magasin.png', icon:'🛒', label:'Magasin' },
   { view:'planning', img:'icons/planning.png', icon:'📆', label:'Planning' },
   // (Tuile "Quincaillerie" — scanner dédié à icône vis — définitivement absente
@@ -64554,9 +64725,9 @@ function dashQuickAddPhoto(){
 
 /* "Zone" : ouvre la carte Zone Chantier en centrant/faisant clignoter le
    point du chantier actif (voir renderZoneChantier + _zoneFocusSiteId). */
-function dashOpenZone(siteId){
-  _zoneFocusSiteId = siteId;
-  goTo('zone-chantier');
+function dashOpenZone(siteId){   // v5.41.431 — la carte des chantiers, centrée sur ce chantier
+  goTo('chantiers');
+  setTimeout(() => { try{ sitesMapOpen(siteId); }catch(e){} }, 120);
 }
 
 /* Icône maison : choisir une photo parmi les médias déjà importés pour ce
