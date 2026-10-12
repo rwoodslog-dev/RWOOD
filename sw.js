@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v972';
+const CACHE_NAME = 'rwood-cache-v976';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -184,8 +184,8 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('push', (event) => {
   if(!event.data) return;
-  let p; try { p = event.data.json(); } catch(e) { p = {title:'RWOOD', body:event.data.text()}; }
-  event.waitUntil(self.registration.showNotification(p.title||'RWOOD', {
+  let p; try { p = event.data.json(); } catch(e) { p = {title:'Notybat', body:event.data.text()}; }
+  event.waitUntil(self.registration.showNotification(p.title||'Notybat', {
     body:p.body||'', icon:'./icons/icon-192.png', badge:'./icons/icon-192.png',
     tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
   }));
