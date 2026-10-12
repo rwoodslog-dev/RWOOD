@@ -1432,6 +1432,14 @@
   .sites-grp b{ font-weight:900; letter-spacing:.3px; }
   .sites-grp .sub{ color:var(--ink-soft); font-size:12px; font-weight:600; }
   .sites-grp .n{ margin-left:auto; font-size:11.5px; font-weight:800; color:var(--ink-soft); background:var(--card); border:1px solid var(--line); border-radius:99px; padding:1px 8px; }
+  #chantiersList.az-on{ padding-right:24px; }
+  .sites-let{ scroll-margin-top:90px; } .sites-let b.L{ font-size:17px; color:var(--wood); min-width:20px; }
+  .sites-az{ position:fixed; right:2px; top:50%; transform:translateY(-50%); z-index:60; display:flex; flex-direction:column; align-items:center; padding:6px 3px; border-radius:14px; background:rgba(20,16,12,.55); touch-action:none; user-select:none; cursor:pointer; max-height:72vh; }
+  .sites-az span{ font-size:11px; font-weight:900; line-height:1; padding:2px 5px; color:var(--wood); flex:1; display:flex; align-items:center; }
+  .sites-az span.off{ color:rgba(255,255,255,.28); }
+  body.theme-light .sites-az{ background:rgba(255,255,255,.75); } body.theme-light .sites-az span.off{ color:rgba(0,0,0,.25); }
+  #sitesAzBubble{ position:fixed; right:44px; top:50%; transform:translateY(-50%) scale(.6); width:70px; height:70px; border-radius:18px; background:var(--wood); color:#16110C; font-size:38px; font-weight:900; display:flex; align-items:center; justify-content:center; z-index:61; opacity:0; pointer-events:none; transition:opacity .15s, transform .15s; }
+  #sitesAzBubble.on{ opacity:1; transform:translateY(-50%) scale(1); }
   #sitesMapOv{ position:fixed; inset:0; z-index:950; background:var(--bg); display:none; flex-direction:column; }
   #sitesMapOv.on{ display:flex; }
   #sitesMapOv .sm-top{ display:flex; justify-content:space-between; align-items:center; padding:calc(10px + env(safe-area-inset-top,0px)) 12px 8px; font-size:16px; }
@@ -12607,8 +12615,10 @@ function _sitesSortCmp(a, b){
   return _compareZones(a.trajetZone, b.trajetZone) || ((_SITE_STATUS_ORDER[a.status] ?? 9) - (_SITE_STATUS_ORDER[b.status] ?? 9)) || nm;
 }
 /* En-têtes de groupe (tri par zone ou par statut) : couleur, km et €/jour de la zone */
+function _siteLetter(s){ const c = String(s.name || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : '#'; }
 function _sitesGroupKey(s){
   if(isFavSite(s.id)) return '★';
+  if(_sitesSort === 'az') return 'l:' + _siteLetter(s);   // v5.41.432 — une lettre par groupe + barre A–Z
   if(_sitesSort === 'zone') return s.trajetZone ? 'z:' + s.trajetZone : 'z:';
   if(_sitesSort === 'statut') return 's:' + (s.status || '');
   return null;
@@ -12616,6 +12626,7 @@ function _sitesGroupKey(s){
 function _sitesGroupHead(key, n){
   const box = (dot, t, sub) => `<div class="sites-grp">${dot ? `<span class="dot" style="background:${dot}"></span>` : ''}<b>${t}</b>${sub ? `<span class="sub">${sub}</span>` : ''}<span class="n">${n}</span></div>`;
   if(key === '★') return box('#E8AC3D', '⭐ Favoris', '');
+  if(key.startsWith('l:')) return `<div class="sites-grp sites-let" id="sitesLet-${key.slice(2) === '#' ? 'num' : key.slice(2)}"><b class="L">${key.slice(2)}</b><span class="n">${n}</span></div>`;
   if(key.startsWith('z:')){
     const z = key.slice(2);
     if(!z) return box('#8a8178', 'Sans zone', 'adresse manquante ou zone pas encore calculée');
@@ -12626,6 +12637,29 @@ function _sitesGroupHead(key, n){
   const st = key.slice(2);
   const col = { 'brouillon':'#8E8A84', 'en-cours':'#4FAE6C', 'a-faire':'#9a9a9a', 'termine':'#5B8DEF' }[st] || '#8a8178';
   return box(col, escapeHtml((typeof statusLabels !== 'undefined' && statusLabels[st]) || st || 'Sans statut'), '');
+}
+/* v5.41.432 — barre A–Z (tri alphabétique) : toucher ou glisser sur une lettre = la liste descend à cette lettre */
+function _sitesAzBarHtml(visible){
+  if(_sitesSort !== 'az') return '';
+  const have = new Set(visible.filter(x => !isFavSite(x.id)).map(_siteLetter));
+  const L = (have.has('#') ? ['#'] : []).concat('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''));   // les noms qui commencent par un chiffre sont en tête de liste
+  return `<div id="sitesAzBar" class="sites-az" onpointerdown="_sitesAzDown(event)">${L.map(l => `<span data-l="${l}" class="${have.has(l) ? '' : 'off'}">${l}</span>`).join('')}</div><div id="sitesAzBubble"></div>`;
+}
+function _sitesAzGo(l, smooth){
+  const order = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let i = order.indexOf(l), el = null;
+  for(; i < order.length && !el; i++) el = document.getElementById('sitesLet-' + (order[i] === '#' ? 'num' : order[i]));   // lettre vide : la suivante
+  const b = document.getElementById('sitesAzBubble'); if(b){ b.textContent = l; b.classList.add('on'); clearTimeout(b._t); b._t = setTimeout(() => b.classList.remove('on'), 600); }
+  if(el) el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block:'start' });
+}
+function _sitesAzDown(e){
+  const bar = document.getElementById('sitesAzBar'); if(!bar) return;
+  e.preventDefault(); try{ bar.setPointerCapture(e.pointerId); }catch(_){}
+  let last = null;
+  const pick = ev => { const r = bar.getBoundingClientRect(), sp = bar.children, k = Math.max(0, Math.min(sp.length - 1, Math.floor((ev.clientY - r.top) / r.height * sp.length))), l = sp[k].dataset.l; if(l !== last){ last = l; _sitesAzGo(l, false); try{ navigator.vibrate && navigator.vibrate(5); }catch(_){} } };
+  pick(e);
+  const mv = ev => pick(ev), up = () => { bar.removeEventListener('pointermove', mv); bar.removeEventListener('pointerup', up); bar.removeEventListener('pointercancel', up); };
+  bar.addEventListener('pointermove', mv); bar.addEventListener('pointerup', up); bar.addEventListener('pointercancel', up);
 }
 function _sitesSortBarHtml(n){
   return `<div class="sites-sortbar">
@@ -12778,7 +12812,8 @@ function renderSites(){
 
   let _gPrev = null;
   const _gCount = {}; visible.forEach(x => { const k = _sitesGroupKey(x); if(k != null) _gCount[k] = (_gCount[k] || 0) + 1; });
-  container.innerHTML = filterBarHtml + visible.map(site => {
+  container.classList.toggle('az-on', _sitesSort === 'az');
+  container.innerHTML = filterBarHtml + _sitesAzBarHtml(visible) + visible.map(site => {
     const _gk = _sitesGroupKey(site), _gh = (_gk != null && _gk !== _gPrev) ? _sitesGroupHead(_gk, _gCount[_gk]) : ''; _gPrev = _gk;
     const newCount = _dashSiteUnseenChantier(site.id);
     const cardBadgeHtml = newCount > 0 ? `<span class="site-card-badge">${newCount > 9 ? '9+' : newCount}</span>` : '';
@@ -43354,9 +43389,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.431';
+const APP_VERSION = '5.41.432';
 
 const CHANGELOG = [
+  {
+    version: '5.41.432',
+    date: '12/10/2026',
+    entries: [
+      { icon: '🔤', text: "Chantiers triés de A à Z : une barre de lettres apparaît sur le côté droit. Touche une lettre (ou glisse le doigt dessus) et la liste descend directement aux chantiers qui commencent par cette lettre. Les chantiers sont aussi regroupés par lettre." }
+    ],
+  },
   {
     version: '5.41.431',
     date: '12/10/2026',
