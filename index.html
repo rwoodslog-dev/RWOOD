@@ -5795,7 +5795,7 @@
         <div id="patronCumulContent"></div>
       </div>
 
-      <!-- v5.41.307 — Réglages du chantier (replié, conducteur et patron seulement) -->
+      <!-- v5.41.307 — Réglages du chantier (conducteur et patron seulement) — v5.41.445 : ouvert par défaut -->
       <div id="detailSettingsWrap" class="card dset-wrap" style="display:none;">
         <button class="dset-head" onclick="_detailSetToggle()">
           <span>⚙️ Réglages du chantier</span><span id="detailSettingsArrow">▸</span>
@@ -12214,7 +12214,8 @@ function goTo(viewName, siteId){
     const _detailEl = document.getElementById('view-detail');
     _detailEl.classList.add('active', 'ios-slide-in');
     setTimeout(()=>_detailEl.classList.remove('ios-slide-in'), 350);
-    if(currentDetailSite !== siteId && typeof _detailSetToggle === 'function') _detailSetToggle(false);
+    // v5.41.445 — réglages du chantier OUVERTS par défaut (patron / conducteur, seuls à les voir)
+    if(currentDetailSite !== siteId && typeof _detailSetToggle === 'function') _detailSetToggle(true);
     currentDetailSite = siteId;
     // Le bandeau "Chantier actif" doit refléter le chantier qu'on vient
     // d'ouvrir, pas rester bloqué sur un choix précédent : on le synchronise
@@ -43625,9 +43626,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.444';
+const APP_VERSION = '5.41.445';
 
 const CHANGELOG = [
+  {
+    version: '5.41.445',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🧊', text: "Bandeau Chantier actif : un seul bouton « 3D ». Patron, conducteur et chef ajoutent le lien, puis choisissent Visualiser ou Modifier. L'ouvrier ouvre la 3D directement." },
+      { icon: '⚙️', text: "Fiche chantier : les « Réglages du chantier » sont ouverts par défaut pour le patron et le conducteur." }
+    ],
+  },
   {
     version: '5.41.444',
     date: '13/10/2026',
@@ -61854,9 +61863,7 @@ function _cabMoreButtons(site){
       <button onclick="dashOpenTuileFiche('${site.id}')"><img src="icons/toiture.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🏠'}))"> Fiche tuile</button>
       <button onclick="openKeyboxModal('${site.id}')"><img src="icons/boitecles.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🔑'}))"> Boîte à clés</button>
       <button onclick="openReunionChantierModal('${site.id}')"><img src="icons/agenda.png" alt="" class="cab-btn-icon" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🗓️'}))"> Réunion${(site.reunionChantier && site.reunionChantier.enabled) ? ' ✅' : ''}</button>
-      ${(site.model3d && site.model3d.url)
-        ? `<button onclick="_m3dOpen('${site.id}')" style="${_m3dStatus(site).expired ? 'color:#ff6b6b;border-color:#ff6b6b;' : ''}" title="${_m3dStatus(site).expired ? 'Lien 3D obsolète (plus de 3 mois)' : 'Voir la maquette 3D'}">🧊 Voir la 3D${_m3dStatus(site).expired ? ' ⚠️' : ''}</button>${_m3dCanEdit() ? `<button onclick="_m3dEdit('${site.id}')" title="Modifier le lien 3D">✏️ 3D</button>` : ''}`
-        : (_m3dCanEdit() ? `<button onclick="_m3dEdit('${site.id}')" title="Ajouter le lien de la maquette 3D">🧊 Ajouter la 3D</button>` : '')}
+      ${_m3dBandBtn(site)}
   `;
 }
 /* Aperçu compact des notes du chantier actif, affiché directement dans le
@@ -77796,14 +77803,42 @@ document.addEventListener('visibilitychange', () => { if(document.visibilityStat
    Lien vers la visionneuse 3D du chantier (ex. projekteprofi.sema-server.com
    /webviewer/…). Le lien fourni n'est valable que 3 mois : on mémorise la
    date d'ajout et le bouton passe en ROUGE « lien obsolète » 3 mois après.
-   Ajout / modification / suppression : conducteur de travaux, patron (et dev).
+   Ajout / modification / suppression : patron, conducteur, chef (et dev) — v5.41.445.
    Tout le monde voit et ouvre le bouton. Stocké sur le chantier (site.model3d
    = { url, setAt, setBy }) → synchronisé avec l'équipe comme le reste.
    ═══════════════════════════════════════════════════════════════════ */
 function _m3dCanEdit(){
   if(window._devRoleUnlocked) return true;
   const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
-  return r === 'conducteur' || r === 'patron';
+  return r === 'conducteur' || r === 'patron' || r === 'chef';   // v5.41.445 — + chef
+}
+/* v5.41.445 — bandeau Chantier actif : UN seul bouton « 3D ».
+   Patron / conducteur / chef : sans lien → ajouter ; avec lien → choix Visualiser / Modifier.
+   Ouvrier : avec lien → ouvre directement ; sans lien → pas de bouton. */
+function _m3dBandBtn(site){
+  const has = !!(site.model3d && site.model3d.url), can = _m3dCanEdit();
+  if(!has && !can) return '';
+  const exp = has && _m3dStatus(site).expired;
+  const act = !has ? `_m3dEdit('${site.id}')` : (can ? `_m3dChoice('${site.id}')` : `_m3dOpen('${site.id}')`);
+  const tip = !has ? 'Ajouter le lien de la maquette 3D' : (exp ? 'Lien 3D obsolète (plus de 3 mois)' : 'Maquette 3D');
+  return `<button onclick="${act}" style="${exp ? 'color:#ff6b6b;border-color:#ff6b6b;' : ''}" title="${tip}">🧊 3D${exp ? ' ⚠️' : (!has ? ' ＋' : '')}</button>`;
+}
+function _m3dChoice(siteId){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site) return;
+  if(!site.model3d || !site.model3d.url){ _m3dEdit(siteId); return; }
+  const st = _m3dStatus(site);
+  let ex = document.getElementById('modal-m3dChoice'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'modal-m3dChoice'; ex.className = 'modal-overlay open';
+  const close = `document.getElementById('modal-m3dChoice').remove()`;
+  ex.innerHTML = `<div class="modal" style="max-width:380px;">
+    <div class="modal-header"><h2>🧊 3D — ${escapeHtml(site.name || '')}</h2><button class="modal-close" onclick="${close}">×</button></div>
+    ${st.expired ? `<div class="hint" style="color:#ff6b6b;margin-bottom:8px;">⚠️ Lien obsolète depuis le ${_m3dFmt(st.exp)}</div>` : (st.soon ? `<div class="hint" style="color:#F5A623;margin-bottom:8px;">⏳ Expire le ${_m3dFmt(st.exp)}</div>` : '')}
+    <button class="btn btn-primary btn-block" style="height:50px;font-size:16px;font-weight:800;" onclick="${close};_m3dOpen('${site.id}')">👁️ Visualiser</button>
+    <button class="btn btn-outline btn-block" style="height:46px;margin-top:8px;font-weight:700;" onclick="${close};_m3dEdit('${site.id}')">✏️ Modifier</button>
+  </div>`;
+  ex.addEventListener('click', e => { if(e.target === ex) ex.remove(); });
+  document.body.appendChild(ex);
 }
 function _m3dStatus(site){
   const m = site && site.model3d;
@@ -77851,7 +77886,7 @@ function _m3dOpen(siteId){
   window.open(site.model3d.url, '_blank');
 }
 function _m3dEdit(siteId){
-  if(!_m3dCanEdit()){ showToast('🔒 Réservé au conducteur de travaux'); return; }
+  if(!_m3dCanEdit()){ showToast('🔒 Réservé au patron, au conducteur et au chef'); return; }
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site) return;
   let ex = document.getElementById('modal-m3dEdit'); if(ex) ex.remove();
