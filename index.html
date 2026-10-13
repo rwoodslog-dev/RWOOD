@@ -307,6 +307,35 @@
   .rm-save{ margin-top:14px; height:52px; font-size:16px; font-weight:800; }
   .rm-priv{ text-align:center; font-size:12px; color:var(--ink-soft); margin-top:10px; }
   .rm-filt{ margin-bottom:10px; }
+  .rw-tags{ display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; align-items:center; }
+  .rw-tag{ padding:4px 9px; border-radius:14px; border:1px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:12.5px; font-weight:700; cursor:pointer; }
+  .rw-tag.on{ background:var(--wood); color:#1a0d00; border-color:var(--wood); }
+  .rw-tags.dark .rw-tag{ background:#2a2a2a; border-color:#444; color:#ddd; }
+  .rw-tags.dark .rw-tag.on{ background:#E8AC3D; color:#1a0d00; border-color:#E8AC3D; }
+  .rw-tag-new{ display:inline-flex; gap:3px; }
+  .rw-tag-new input{ width:140px; padding:4px 8px; border-radius:14px; border:1px dashed var(--wood); background:transparent; color:inherit; font-size:12.5px; font-family:inherit; }
+  .rw-tags.dark .rw-tag-new input{ color:#fff; }
+  .rw-tag-new button{ border-radius:14px; border:1px solid var(--wood); background:var(--wood); color:#1a0d00; font-weight:900; padding:0 9px; cursor:pointer; }
+  .gal-filt{ display:flex; gap:6px; margin:4px 0 8px; }
+  .gal-filt button{ flex:1; padding:8px 4px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); font-weight:700; font-size:13px; cursor:pointer; }
+  .gal-filt button.on{ background:var(--wood); color:#1a0d00; border-color:var(--wood); }
+  .gal-tagbar{ display:flex; gap:6px; overflow-x:auto; padding-bottom:6px; margin-bottom:6px; scrollbar-width:none; }
+  .gal-tagbar::-webkit-scrollbar{ display:none; }
+  .gal-tagbar .rw-tag{ flex:0 0 auto; }
+  .gal-tagbar .rw-tag small{ opacity:.65; font-weight:600; margin-left:3px; }
+  .gal-docs{ display:flex; gap:8px; overflow-x:auto; padding-bottom:6px; margin-bottom:4px; scrollbar-width:thin; }
+  .gal-dc{ flex:0 0 108px; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer; position:relative; }
+  .gal-dc img{ width:100%; height:118px; object-fit:cover; display:block; background:#ddd; }
+  .gal-dc .pg{ position:absolute; right:4px; top:4px; background:rgba(0,0,0,.72); color:#fff; font-size:10.5px; font-weight:800; border-radius:6px; padding:1px 5px; }
+  .gal-dc .n{ font-size:12px; font-weight:800; padding:5px 6px 0; line-height:1.2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .gal-dc .d{ font-size:10.5px; color:var(--ink-soft); padding:1px 6px 6px; }
+  .gal-dl{ display:flex; gap:10px; align-items:center; background:var(--card); border:1px solid var(--line); border-left:4px solid #5aa0e0; border-radius:10px; padding:8px; margin-bottom:7px; cursor:pointer; }
+  .gal-dl img{ width:46px; height:58px; object-fit:cover; border-radius:5px; background:#ddd; flex:0 0 auto; }
+  .gal-dl b{ font-size:14px; }
+  .gal-dl .m{ font-size:11.5px; color:var(--ink-soft); margin-top:2px; }
+  .gal-dl .t{ font-size:11.5px; color:var(--wood); margin-top:2px; font-weight:700; }
+  .galerie-cell{ position:relative; }
+  .galerie-cell .gal-lab{ position:absolute; left:3px; right:3px; bottom:3px; background:rgba(0,0,0,.72); color:#fff; font-size:10px; font-weight:700; border-radius:5px; padding:2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; z-index:2; }
   .rm-pop{ position:relative; max-width:420px; border:1.5px solid var(--wood); border-radius:20px; padding:18px 18px 14px; }
   .rm-pop-ic{ display:block; width:140px; height:140px; object-fit:contain; margin:0 auto 4px; }
   .rm-pop h2{ margin:0 0 6px; font-size:20px; text-align:center; line-height:1.25; }
@@ -9782,10 +9811,17 @@ function mergeArrayById(localArr, remoteArr){
   const ids = new Set([...localMap.keys(), ...remoteMap.keys()]);
   // Union dédupliquée de deux listes de médias/documents (par id/url/data/name).
   const mergeMedia = (a, b) => {
-    const out = [], seen = new Set();
+    const out = [], seen = new Map();
     const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
     [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
-      const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+      const k = keyOf(m);
+      if(seen.has(k)){
+        // v5.41.446 — titre / hashtags modifiés : on garde la version la plus récente (metaAt)
+        const j = seen.get(k), o = out[j];
+        if(m && o && (m.metaAt || '') > (o.metaAt || '')) out[j] = m;
+        return;
+      }
+      seen.set(k, out.length); out.push(m);
     });
     // Exclut toute photo/document définitivement supprimé (voir
     // DELETED_MEDIA_KEY) — sans ce filtre, l'union ci-dessus resuscite une
@@ -13160,6 +13196,41 @@ let _galerieCurrentPhotos = []; // tableau filtré+trié de la session
 let _galerieSentinelObs = null; // ancien IntersectionObserver (conservé pour compat, plus utilisé)
 let _galerieScrollCheck = null; // fonction de vérification scroll infini actuellement active (voir _galerieSetupSentinel)
 
+/* v5.41.446 — filtres de la galerie d'un chantier */
+function _galF(siteId){
+  if(!window._galFilt || window._galFilt.siteId !== siteId) window._galFilt = { siteId, kind:'all', tag:null, q:'', sort:'recent' };
+  return window._galFilt;
+}
+function _galSet(k, v){
+  const F = _galF(_galerieOpenSiteId);
+  if(k === 'tag') F.tag = (F.tag === v) ? null : v; else F[k] = v;
+  galerieRender();
+}
+function _galShortDate(d){ try{ return d ? new Date(d).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''; }catch(e){ return ''; } }
+/* Regroupe les pages d'un même document (docGroup), le plus récent en premier */
+function _galDocGroups(list){
+  const map = new Map();
+  (list || []).filter(m => m && m.doc).forEach(m => {
+    const k = m.docGroup || m.id;
+    if(!map.has(k)) map.set(k, { key:k, pages:[], title:'', tags:[], date:m.uploadedAt, by:'' });
+    const g = map.get(k);
+    g.pages.push(m);
+    if(!g.title && m.title) g.title = m.title;
+    (m.tags || []).forEach(t => { if(!g.tags.includes(t)) g.tags.push(t); });
+    if((m.uploadedAt || '') > (g.date || '')) g.date = m.uploadedAt;
+    if(!g.by && m.uploadedBy) g.by = String(m.uploadedBy).trim().split(' ')[0];
+  });
+  const out = [...map.values()];
+  out.forEach(g => g.pages.sort((a, b) => (a.page || 0) - (b.page || 0)));
+  return out.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+}
+function _galOpenDoc(key){
+  const site = (data.sites || []).find(s => s.id === _galerieOpenSiteId); if(!site) return;
+  const g = _galDocGroups(site.sharedMedia || []).find(x => x.key === key); if(!g) return;
+  const i = (_galerieCurrentPhotos || []).findIndex(x => x && x.id === g.pages[0].id);
+  if(i >= 0) galerieOpenLightbox(i); else { _galerieCurrentPhotos = g.pages.slice(); galerieOpenLightbox(0); }
+}
+
 function _galerieRenderFolder(root, siteId){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site){ _galerieOpenSiteId = null; _galerieRenderFolders(root); return; }
@@ -13185,11 +13256,56 @@ function _galerieRenderFolder(root, siteId){
     return;
   }
 
-  // Reset état de pagination
-  _galerieCurrentPhotos = photos;
-  _galerieRenderedCount = 0;
+  // v5.41.446 — filtres Tout / Photos / Documents + #hashtags, rangée « Documents »
+  const F = _galF(siteId);
+  const tagCnt = {};
+  photos.forEach(m => (m.tags || []).forEach(t => { tagCnt[t] = (tagCnt[t] || 0) + 1; }));
+  if(F.tag && !tagCnt[F.tag]) F.tag = null;
+  let shown = photos;
+  if(F.kind === 'photo') shown = shown.filter(m => !m.doc);
+  if(F.kind === 'doc') shown = shown.filter(m => m.doc);
+  if(F.tag) shown = shown.filter(m => (m.tags || []).includes(F.tag));
+  const nDocs = _galDocGroups(photos.filter(m => m.doc)).length;
+  const tags = Object.keys(tagCnt).sort((a, b) => (tagCnt[b] - tagCnt[a]) || a.localeCompare(b, 'fr'));
+  const filtHtml = `
+    <div class="gal-filt">
+      <button class="${F.kind === 'all' ? 'on' : ''}" onclick="_galSet('kind','all')">Tout</button>
+      <button class="${F.kind === 'photo' ? 'on' : ''}" onclick="_galSet('kind','photo')">📷 Photos</button>
+      <button class="${F.kind === 'doc' ? 'on' : ''}" onclick="_galSet('kind','doc')">📄 Documents${nDocs ? ' · ' + nDocs : ''}</button>
+    </div>
+    ${tags.length ? `<div class="gal-tagbar">${tags.map(t => `<button class="rw-tag${F.tag === t ? ' on' : ''}" onclick="_galSet('tag','${escapeHtml(t)}')">#${escapeHtml(t)}<small>${tagCnt[t]}</small></button>`).join('')}</div>` : ''}`;
 
-  root.innerHTML = backBar + `
+  if(F.kind === 'doc'){
+    let groups = _galDocGroups(shown);
+    const q = (F.q || '').trim().toLowerCase();
+    if(q) groups = groups.filter(g => (g.title || '').toLowerCase().includes(q) || g.tags.some(t => t.includes(q)));
+    if(F.sort === 'az') groups.sort((a, b) => (a.title || '~').localeCompare(b.title || '~', 'fr'));
+    _galerieCurrentPhotos = [].concat(...groups.map(g => g.pages));
+    _galerieRenderedCount = _galerieCurrentPhotos.length;
+    let idx = 0;
+    root.innerHTML = backBar + filtHtml + `
+      <input type="search" id="galDocSearch" placeholder="🔍 Chercher un document" value="${escapeHtml(F.q || '')}" oninput="_galF('${siteId}').q=this.value;clearTimeout(window._galDocT);window._galDocT=setTimeout(()=>{galerieRender();const i=document.getElementById('galDocSearch');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},300)" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--ink);font-size:14px;margin-bottom:8px;">
+      <div style="display:flex;gap:6px;margin-bottom:8px;"><button class="rw-tag${F.sort !== 'az' ? ' on' : ''}" onclick="_galSet('sort','recent')">Récents</button><button class="rw-tag${F.sort === 'az' ? ' on' : ''}" onclick="_galSet('sort','az')">A → Z</button></div>
+      ${groups.length ? groups.map(g => { const i0 = idx; idx += g.pages.length; return `
+        <div class="gal-dl" onclick="galerieOpenLightbox(${i0})">
+          <img src="${escapeHtml(g.pages[0].thumbUrl || g.pages[0].url)}" alt="" loading="lazy">
+          <div style="min-width:0;"><b>${escapeHtml(g.title || 'Document sans nom')}</b>
+            <div class="m">${_galShortDate(g.date)} · ${g.pages.length} page${g.pages.length > 1 ? 's' : ''}${g.by ? ' · ' + escapeHtml(g.by) : ''}</div>
+            ${g.tags.length ? `<div class="t">${g.tags.map(t => '#' + escapeHtml(t)).join(' ')}</div>` : ''}</div>
+        </div>`; }).join('') : `<div class="empty" style="padding:26px 10px;"><div class="icon" style="font-size:32px;">📄</div><h3>Aucun document</h3><p>Scanne un document avec 📷 › « 📄 Scanner un document ».</p></div>`}`;
+    return;
+  }
+
+  // Reset état de pagination
+  _galerieCurrentPhotos = shown;
+  _galerieRenderedCount = 0;
+  const docStrip = (F.kind === 'all' && !F.tag && nDocs) ? (() => { const gs = _galDocGroups(photos.filter(m => m.doc)).slice(0, 12); return `
+    <div class="rm-lbl" style="margin:4px 2px 6px;">📄 Documents · ${nDocs}${nDocs > gs.length ? ` <a href="#" onclick="_galSet('kind','doc');return false;" style="color:var(--wood);text-transform:none;">tout voir</a>` : ''}</div>
+    <div class="gal-docs">${gs.map(g => `<div class="gal-dc" onclick="_galOpenDoc('${escapeHtml(g.key)}')">
+      <img src="${escapeHtml(g.pages[0].thumbUrl || g.pages[0].url)}" alt="" loading="lazy">${g.pages.length > 1 ? `<span class="pg">${g.pages.length} p.</span>` : ''}
+      <div class="n">${escapeHtml(g.title || 'Sans nom')}</div><div class="d">${_galShortDate(g.date)}</div></div>`).join('')}</div>`; })() : '';
+
+  root.innerHTML = backBar + filtHtml + docStrip + (shown.length ? '' : `<div class="empty" style="padding:26px 10px;"><div class="icon" style="font-size:32px;">🏷️</div><h3>Rien ici</h3><p>Aucun média ne correspond à ce filtre.</p></div>`) + `
     <div class="galerie-grid" id="galerieGrid"></div>
     <div id="galerieSentinel" style="height:1px;"></div>`
     + (_galerieSelectMode ? _galerieActionBarHtml() : '');
@@ -13247,6 +13363,7 @@ function _galerieAppendBatch(site){
       ${_galerieSelectMode ? `<div class="galerie-check">${checked?'✓':''}</div>` : ''}
       <img src="${escapeHtml(m.thumbUrl || m.url)}" alt="photo" decoding="async" loading="eager" fetchpriority="${i < 12 ? 'high' : 'auto'}" class="galerie-lazy">
       <div class="galerie-cap">${_galerieCaption(m)}</div>
+      ${(m.doc || m.title || (m.tags && m.tags.length)) ? `<div class="gal-lab">${m.doc ? '📄 ' : ''}${escapeHtml(m.title || (m.tags || []).map(t => '#' + t).join(' ') || 'Document')}</div>` : ''}
     </div>`;
   }
   grid.insertAdjacentHTML('beforeend', html);
@@ -13300,6 +13417,7 @@ function _galerieTeardownSentinel(){
 /* Ouvre le dossier d'un chantier (charge ses photos à la demande). */
 function galerieOpenFolder(siteId){
   _galerieOpenSiteId = siteId;
+  window._galFilt = null;   // v5.41.446 — filtres remis à zéro
   _galerieSelectMode = false;
   _galerieSelected.clear();
   _galerieLastCount = -1; // recalcul du compteur pour ce dossier
@@ -13700,6 +13818,8 @@ function _galerieRenderLightbox(){
     ${hasPrev ? `<button class="galerie-lb-arrow galerie-lb-arrow-left" onclick="event.stopPropagation(); galerieLightboxPrev();">‹</button>` : ''}
     <div class="galerie-lb-imgwrap"><img id="galerieLbImg" src="${escapeHtml(m.url)}" alt="photo"></div>
     ${hasNext ? `<button class="galerie-lb-arrow galerie-lb-arrow-right" onclick="event.stopPropagation(); galerieLightboxNext();">›</button>` : ''}
+    <button type="button" onclick="event.stopPropagation(); rwMediaMetaEdit('${_galerieOpenSiteId}','${escapeHtml(m.id || '')}')" style="position:fixed;top:calc(64px + env(safe-area-inset-top,0px));right:14px;z-index:1002;height:40px;border-radius:20px;border:none;background:rgba(255,255,255,.14);color:#fff;font-weight:800;font-size:14px;padding:0 14px;">🏷️ ${m.title || (m.tags && m.tags.length) ? 'Modifier' : 'Titre / #'}</button>
+    ${(m.title || m.doc || (m.tags && m.tags.length)) ? `<div style="color:#fff;text-align:center;max-width:92vw;"><div style="font-weight:800;font-size:16px;">${m.doc ? '📄 ' : ''}${escapeHtml(m.title || (m.doc ? 'Document sans nom' : ''))}${m.doc && m.page ? ' <span style="opacity:.6;font-weight:600;font-size:13px;">· page ' + m.page + '</span>' : ''}</div>${(m.tags && m.tags.length) ? `<div style="color:#E8AC3D;font-weight:700;font-size:13px;margin-top:2px;">${m.tags.map(t => '#' + escapeHtml(t)).join(' ')}</div>` : ''}</div>` : ''}
     <div class="galerie-lb-cap">${escapeHtml(caption)} <span style="opacity:.6;">(${_galerieLbIndex+1}/${photos.length})</span></div>
   `;
   _resetGalerieLbZoom();
@@ -13711,6 +13831,49 @@ function _galerieRenderLightbox(){
     () => _galerieLbZoom.scale <= 1.01 && (_galerieCurrentPhotos || []).length > 1,
     () => { if(_galerieLbIndex > 0){ galerieLightboxPrev(); return true; } return false; },
     () => { if(_galerieLbIndex < (_galerieCurrentPhotos || []).length - 1){ galerieLightboxNext(); return true; } return false; });
+}
+/* v5.41.446 — titre, hashtags et « document » d'un média de la galerie (toutes les pages d'un document à la fois) */
+let _rwMetaEd = null;
+function rwMediaMetaEdit(siteId, mediaId){
+  const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+  const m = (site.sharedMedia || []).find(x => x && x.id === mediaId); if(!m) return;
+  const pages = m.doc && m.docGroup ? (site.sharedMedia || []).filter(x => x && x.doc && x.docGroup === m.docGroup) : [m];
+  _rwMetaEd = { siteId, mediaId, title: m.title || '', tags: (m.tags || []).slice(), doc: !!m.doc, n: pages.length };
+  let ex = document.getElementById('modal-rwMeta'); if(ex) ex.remove();
+  ex = document.createElement('div'); ex.id = 'modal-rwMeta'; ex.className = 'modal-overlay open'; ex.style.zIndex = 1100;
+  ex.innerHTML = `<div class="modal" style="max-width:440px;">
+    <div class="modal-header"><h2>🏷️ Titre et hashtags</h2><button class="modal-close" onclick="document.getElementById('modal-rwMeta').remove()">×</button></div>
+    <div class="field" style="margin-bottom:8px;"><label>Titre</label><input id="rwMetaTitle" value="${escapeHtml(_rwMetaEd.title)}" maxlength="80" placeholder="ex. Plan pergola" oninput="_rwMetaEd.title=this.value" style="width:100%;box-sizing:border-box;"></div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin:6px 0 10px;"><input type="checkbox" id="rwMetaDoc" ${_rwMetaEd.doc ? 'checked' : ''} onchange="_rwMetaEd.doc=this.checked"> 📄 C'est un document (plan, bon, devis…)</label>
+    <div class="rm-lbl" style="margin-top:4px;">Hashtags</div>
+    ${rwTagPickerHtml('meta', siteId, _rwMetaEd, false)}
+    ${!rwTagCanCreate() ? '<div class="hint" style="margin-top:6px;">Les nouveaux hashtags sont créés par le chef, le conducteur ou le patron.</div>' : ''}
+    ${pages.length > 1 ? `<div class="hint" style="margin-top:8px;">S'applique aux ${pages.length} pages de ce document.</div>` : ''}
+    <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="rwMediaMetaSave()">💾 Enregistrer</button>
+  </div>`;
+  ex.addEventListener('click', e => { if(e.target === ex) ex.remove(); });
+  document.body.appendChild(ex);
+}
+async function rwMediaMetaSave(){
+  const o = _rwMetaEd; if(!o) return;
+  const site = (data.sites || []).find(s => s.id === o.siteId); if(!site) return;
+  const m = (site.sharedMedia || []).find(x => x && x.id === o.mediaId); if(!m) return;
+  const pages = m.doc && m.docGroup ? (site.sharedMedia || []).filter(x => x && x.doc && x.docGroup === m.docGroup) : [m];
+  const now = new Date().toISOString(), title = String(o.title || '').trim(), tags = (o.tags || []).map(rwTagNorm).filter(Boolean);
+  pages.forEach(x => {
+    if(title) x.title = title; else delete x.title;
+    if(tags.length) x.tags = tags.slice(); else delete x.tags;
+    if(o.doc){ x.doc = true; if(!x.docGroup) x.docGroup = m.docGroup || m.id; if(!x.page) x.page = 1; }
+    else { delete x.doc; delete x.docGroup; delete x.page; }
+    x.metaAt = now;
+  });
+  rwTagRemember(o.siteId, tags);
+  site.updatedAt = now;
+  saveData();
+  const md = document.getElementById('modal-rwMeta'); if(md) md.remove();
+  showToast('🏷️ Enregistré');
+  try{ const root = document.getElementById('galerieContent'); if(root && _galerieOpenSiteId === o.siteId){ const lbOpen = (document.getElementById('galerieLightbox') || {}).style; const keep = _galerieCurrentPhotos; _galerieRenderFolder(root, o.siteId); if(lbOpen && lbOpen.display === 'flex'){ _galerieCurrentPhotos = keep; _galerieRenderLightbox(); } } }catch(_){}
+  try{ if(site.syncLive && typeof pushSharedSite === 'function') await pushSharedSite(site); else if(typeof _rwPushSites === 'function') _rwPushSites(); }catch(_){}
 }
 /* v5.41.270 — « ✏️ Annoter une copie » : l'original reste dans la galerie, la copie annotée est ajoutée à côté. */
 function galerieAnnotateCopy(){
@@ -19125,6 +19288,15 @@ async function addSharedMediaToSite(siteId, file, opts){
       uploadedAt:  new Date().toISOString(),
       siteId
     });
+    // v5.41.446 — titre / hashtags / document (choisis à la relecture ou au scan)
+    { const mt = (opts && opts.meta) || null;
+      if(mt){ const e = site.sharedMedia[site.sharedMedia.length - 1];
+        if(mt.title) e.title = mt.title;
+        if(mt.tags && mt.tags.length) e.tags = mt.tags.map(rwTagNorm).filter(Boolean);
+        if(mt.doc){ e.doc = true; e.docGroup = mt.docGroup || mediaId; e.page = mt.page || 1; }
+        if(mt.title || mt.doc || (mt.tags && mt.tags.length)) e.metaAt = new Date().toISOString();
+        if(e.tags && e.tags.length) rwTagRemember(siteId, e.tags);
+      } }
 
     saveData();
     if(!silent){ renderCloudMedia(siteId); showToast('✅ ' + file.name + ' ajouté'); }
@@ -20227,7 +20399,13 @@ function _rwAnCSS(){
   + '#rwReview .rv-x{position:absolute;top:4px;right:4px;width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;border:none;font-size:15px;font-weight:900;}'
   + '#rwReview .rv-pen{position:absolute;left:4px;bottom:4px;height:30px;border-radius:15px;background:rgba(200,134,43,.95);color:#1a0d00;border:none;font-size:12.5px;font-weight:900;padding:0 10px;}'
   + '#rwReview .rv-done{position:absolute;left:4px;top:4px;background:#3ACF7D;color:#06240f;border-radius:10px;font-size:11px;font-weight:900;padding:2px 7px;}'
-  + '#rwReview .rv-bottom{padding:10px 10px calc(12px + env(safe-area-inset-bottom,0px));background:#111;flex-shrink:0;}';
+  + '#rwReview .rv-bottom{padding:10px 10px calc(12px + env(safe-area-inset-bottom,0px));background:#111;flex-shrink:0;}'
+  + '#rwReview .rv-meta{flex-shrink:0;max-height:46vh;overflow-y:auto;background:#181818;border-top:1px solid #333;padding:8px 10px;}'
+  + '#rwReview .rv-mg{padding:6px 0 10px;border-bottom:1px solid #2a2a2a;}#rwReview .rv-mg:last-child{border-bottom:none;}'
+  + '#rwReview .rv-mh{font-weight:800;font-size:13.5px;color:#E8AC3D;margin-bottom:6px;}'
+  + '#rwReview .rv-mt{width:100%;box-sizing:border-box;background:#222;border:1px solid #444;border-radius:9px;color:#fff;padding:9px 10px;font-size:15px;font-family:inherit;}'
+  + '#rwReview .rv-sugg{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}#rwReview .rv-sugg button{background:#2a2a2a;border:1px solid #444;color:#ddd;border-radius:14px;padding:4px 9px;font-size:12px;}'
+  + '#rwReview .rv-doc{position:absolute;left:4px;top:4px;background:rgba(0,0,0,.75);color:#fff;font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 5px;}';
   document.head.appendChild(st);
 }
 
@@ -20557,16 +20735,102 @@ function rwAnnotatePhoto(src, opts){
 }
 
 /* Relire les photos avant l'envoi : ✏️ annoter, ✕ retirer, puis « Envoyer ». */
+/* ═══ v5.41.446 — Titres, documents et #hashtags des médias de chantier ═══════════
+   Champs ajoutés à site.sharedMedia[] : title, tags[], doc (document scanné),
+   docGroup (pages d'un même document), page, metaAt (date de la dernière
+   modification du titre / des hashtags → la fusion garde la plus récente).
+   Hashtags créés : site.mediaTags (synchro avec le chantier) + liste perso
+   data.settings.mediaTagsRecent (réutilisables sur les autres chantiers).
+   Création d'un nouveau hashtag : chef, conducteur, patron. Tout le monde
+   peut choisir un hashtag existant et filtrer la galerie. */
+const _rwFileMeta = new WeakMap();
+const RW_TAG_DEFAULTS = ['plan', 'bon_de_livraison', 'devis', 'facture', 'déchetterie', 'avant', 'après', 'réserve'];
+function rwTagNorm(t){
+  return String(t || '').trim().replace(/^#+/, '').toLowerCase().replace(/[\s\-']+/g, '_').replace(/[^0-9a-z_àâäçéèêëîïôöùûüÿœæ]/g, '').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 30);
+}
+function rwTagCanCreate(){
+  if(window._devRoleUnlocked) return true;
+  const r = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+  return r === 'chef' || r === 'conducteur' || r === 'patron';
+}
+function rwTagList(siteId){
+  const site = (data.sites || []).find(x => x.id === siteId);
+  const cnt = {};
+  ((site && site.sharedMedia) || []).forEach(m => (m && m.tags || []).forEach(t => { cnt[t] = (cnt[t] || 0) + 1; }));
+  const all = new Set([].concat(Object.keys(cnt), (site && site.mediaTags) || [], (data.settings && data.settings.mediaTagsRecent) || [], RW_TAG_DEFAULTS).map(rwTagNorm).filter(Boolean));
+  return [...all].sort((a, b) => ((cnt[b] || 0) - (cnt[a] || 0)) || a.localeCompare(b, 'fr'));
+}
+function rwTagRemember(siteId, tags){
+  tags = [...new Set((tags || []).map(rwTagNorm).filter(Boolean))];
+  if(!tags.length) return;
+  const site = (data.sites || []).find(x => x.id === siteId);
+  if(site){
+    const cur = [...new Set(site.mediaTags || [])];
+    const add = tags.filter(t => !cur.includes(t));
+    if(add.length){ site.mediaTags = cur.concat(add); site.updatedAt = new Date().toISOString(); }
+  }
+  const st = data.settings || (data.settings = {});
+  const rec = (st.mediaTagsRecent || []).filter(t => !tags.includes(t));
+  st.mediaTagsRecent = tags.concat(rec).slice(0, 40);
+}
+/* Sélecteur de hashtags (chips à cocher + « ＋ nouveau » pour chef/conducteur/patron).
+   st = { tags:[] } est modifié en place ; onChange() est rappelé après chaque clic. */
+const _rwTagPk = {};
+function rwTagPickerHtml(pid, siteId, st, dark){
+  _rwTagPk[pid] = { siteId, st };
+  const list = rwTagList(siteId);
+  (st.tags || []).forEach(t => { if(!list.includes(t)) list.unshift(t); });
+  const chips = list.map(t => `<button type="button" class="rw-tag${(st.tags || []).includes(t) ? ' on' : ''}" onclick="rwTagToggle('${pid}','${escapeHtml(t)}')">#${escapeHtml(t)}</button>`).join('');
+  const add = rwTagCanCreate() ? `<span class="rw-tag-new"><input id="rwTagIn_${pid}" placeholder="＋ nouveau hashtag" maxlength="30" onkeydown="if(event.key==='Enter'){event.preventDefault();rwTagAdd('${pid}');}"><button type="button" onclick="rwTagAdd('${pid}')">＋</button></span>` : '';
+  return `<div class="rw-tags${dark ? ' dark' : ''}" id="rwTags_${pid}">${chips}${add}</div>`;
+}
+function _rwTagRepaint(pid){
+  const o = _rwTagPk[pid], box = document.getElementById('rwTags_' + pid); if(!o || !box) return;
+  const tmp = document.createElement('div'); tmp.innerHTML = rwTagPickerHtml(pid, o.siteId, o.st, box.classList.contains('dark'));
+  box.replaceWith(tmp.firstElementChild);
+}
+function rwTagToggle(pid, t){
+  const o = _rwTagPk[pid]; if(!o) return;
+  const a = o.st.tags || (o.st.tags = []); const i = a.indexOf(t);
+  if(i >= 0) a.splice(i, 1); else a.push(t);
+  _rwTagRepaint(pid);
+}
+function rwTagAdd(pid){
+  const o = _rwTagPk[pid], inp = document.getElementById('rwTagIn_' + pid); if(!o || !inp) return;
+  const t = rwTagNorm(inp.value);
+  if(!t){ showToast('Écris le hashtag, ex. bon_de_livraison'); return; }
+  const a = o.st.tags || (o.st.tags = []); if(!a.includes(t)) a.push(t);
+  rwTagRemember(o.siteId, [t]); saveData();
+  _rwTagRepaint(pid);
+  setTimeout(() => { const i2 = document.getElementById('rwTagIn_' + pid); if(i2) i2.focus(); }, 30);
+}
+const RW_DOC_SUGG = ['Plan', 'Devis', 'Bon de livraison', 'Bon de commande', 'Facture', 'Notice', 'PV'];
+
 function rwReviewPhotos(files, title){
   return new Promise(resolve => {
     _rwAnCSS();
-    let list = files.map(f => ({ f, url: URL.createObjectURL(f), edited: false }));
+    let list = files.map(f => ({ f, url: URL.createObjectURL(f), edited: false, meta: _rwFileMeta.get(f) || null }));
+    // v5.41.446 — groupes à nommer : un par document scanné + un pour les photos
+    const siteId = (typeof _rwReviewSiteId !== 'undefined') ? _rwReviewSiteId : null;
+    const groups = {};
+    const gKey = x => (x.meta && x.meta.doc) ? ('d:' + (x.meta.docGroup || 'doc')) : 'photos';
+    const ensureGroups = () => { list.forEach(x => { const k = gKey(x); if(!groups[k]) groups[k] = { title:'', tags:[], doc: k !== 'photos' }; }); };
     const ex = document.getElementById('rwReview'); if(ex) ex.remove();
     const root = document.createElement('div');
     root.id = 'rwReview';
     document.body.appendChild(root);
     const close = val => { list.forEach(x => URL.revokeObjectURL(x.url)); root.remove(); resolve(val); };
     const draw = () => {
+      ensureGroups();
+      const present = [...new Set(list.map(gKey))];
+      let dn = 0;
+      const metaHtml = siteId ? `<div class="rv-meta">${present.map(k => { const g = groups[k], n = list.filter(x => gKey(x) === k).length; const pid = 'rv' + k.replace(/[^a-z0-9]/gi, '');
+        return `<div class="rv-mg">
+          <div class="rv-mh">${g.doc ? '📄 Document ' + (++dn) + ' · ' + n + ' page' + (n > 1 ? 's' : '') : '📷 ' + n + ' photo' + (n > 1 ? 's' : '')}</div>
+          <input class="rv-mt" data-g="${escapeHtml(k)}" value="${escapeHtml(g.title)}" placeholder="${g.doc ? 'Nom du document (ex. Plan pergola)' : 'Titre (facultatif)'}" maxlength="80">
+          ${g.doc ? `<div class="rv-sugg">${RW_DOC_SUGG.map(t => `<button type="button" data-g="${escapeHtml(k)}" data-t="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}</div>` : ''}
+          ${rwTagPickerHtml(pid, siteId, g, true)}
+        </div>`; }).join('')}</div>` : '';
       root.innerHTML = `
         <div class="rv-top">
           <button class="rv-b" data-a="cancel">✕</button>
@@ -20579,15 +20843,31 @@ function rwReviewPhotos(files, title){
             ${x.edited ? '<span class="rv-done">✏️ annotée</span>' : ''}
             <button class="rv-x" data-x="${i}">✕</button>
             <button class="rv-pen" data-i="${i}">✏️ Annoter</button>
+            ${x.meta && x.meta.doc ? '<span class="rv-doc">📄 p. ' + (x.meta.page || 1) + '</span>' : ''}
           </div>`).join('')}</div>
+        ${metaHtml}
         <div class="rv-bottom"><button class="rv-b rv-ok" data-a="send" style="width:100%;height:52px;font-size:16px;" ${list.length ? '' : 'disabled'}>⬆️ Envoyer ${list.length} photo${list.length > 1 ? 's' : ''}</button></div>`;
       root.querySelector('[data-a="cancel"]').onclick = () => { if(confirm('Annuler l\'envoi de ces photos ?')) close(null); };
-      root.querySelector('[data-a="send"]').onclick = () => close(list.map(x => x.f));
+      root.querySelectorAll('.rv-mt').forEach(inp => inp.oninput = () => { groups[inp.dataset.g].title = inp.value; });
+      root.querySelectorAll('.rv-sugg button').forEach(b => b.onclick = () => { const g = groups[b.dataset.g]; g.title = b.dataset.t + ' '; const inp = [...root.querySelectorAll('.rv-mt')].find(i => i.dataset.g === b.dataset.g); if(inp){ inp.value = g.title; inp.focus(); } });
+      root.querySelector('[data-a="send"]').onclick = () => {
+        if(siteId){
+          const used = [];
+          list.forEach(x => {
+            const g = groups[gKey(x)] || {};
+            const m = Object.assign({}, x.meta || {}, { title: String(g.title || '').trim(), tags: (g.tags || []).slice() });
+            _rwFileMeta.set(x.f, m);
+            used.push(...m.tags);
+          });
+          if(used.length){ rwTagRemember(siteId, used); saveData(); }
+        }
+        close(list.map(x => x.f));
+      };
       root.querySelectorAll('.rv-x').forEach(b => b.onclick = ev => { ev.stopPropagation(); const i = +b.dataset.x; URL.revokeObjectURL(list[i].url); list.splice(i, 1); draw(); });
       root.querySelectorAll('.rv-cell').forEach(c => c.onclick = async () => {
         const i = +c.dataset.i, x = list[i];
         const r = await rwAnnotatePhoto(x.f, { okLabel: 'OK' });
-        if(r && r.file){ URL.revokeObjectURL(x.url); x.f = r.file; x.url = URL.createObjectURL(r.file); x.edited = true; draw(); }
+        if(r && r.file){ URL.revokeObjectURL(x.url); x.f = r.file; x.url = URL.createObjectURL(r.file); x.edited = true; if(x.meta) _rwFileMeta.set(x.f, x.meta); draw(); }
       });
     };
     draw();
@@ -20623,13 +20903,15 @@ async function _rwShrinkPhoto(file, maxDim, q){
 
 /* Envoie un lot de photos sur un chantier : réduites, 3 à la fois, une seule synchro et une seule notification à la fin. */
 let _rwUpRefreshT = null;
+let _rwReviewSiteId = null;
 async function _rwUploadSitePhotos(siteId, files){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site || !files || !files.length) return;
   if(files.length > RW_BURST_MAX){ showToast('📸 ' + RW_BURST_MAX + ' photos maxi par envoi : les ' + RW_BURST_MAX + ' premières sont envoyées'); files = files.slice(0, RW_BURST_MAX); }
   // v5.41.269 — relire avant l'envoi : annoter (flèches, cotes, texte…) ou retirer des photos
   if(!(files.length && files.every(f => /pdf/i.test(f.type || '')))){
-    const rv = await rwReviewPhotos(files, site.name);
+    _rwReviewSiteId = siteId;   // v5.41.446 — titre et hashtags à la relecture
+    let rv; try{ rv = await rwReviewPhotos(files, site.name); } finally { _rwReviewSiteId = null; }
     if(!rv || !rv.length){ showToast('Envoi annulé'); return; }
     files = rv;
   }
@@ -20640,7 +20922,7 @@ async function _rwUploadSitePhotos(siteId, files){
   const worker = async () => {
     while(next < total){
       const f = files[next++];
-      try{ await addSharedMediaToSite(siteId, await _rwShrinkPhoto(f), { silent: true, batch: true }); }
+      try{ const meta = _rwFileMeta.get(f) || null; await addSharedMediaToSite(siteId, await _rwShrinkPhoto(f), { silent: true, batch: true, meta }); }
       catch(e){ failed++; }
       done++;
       _mediaUploadShowProgress(done, total);
@@ -20718,12 +21000,14 @@ function galerieAddPhotos(siteId){
     <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
       <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter des photos à 🏗️ ${escapeHtml(site.name)}</div>
       <button class="action-sheet-item" data-act="burst"><span class="ico">📸</span>Prendre des photos (rafale, jusqu'à ${RW_BURST_MAX})</button>
+      <button class="action-sheet-item" data-act="scan"><span class="ico">📄</span>Scanner un document</button>
       <button class="action-sheet-item" data-act="pick"><span class="ico">🖼️</span>Choisir dans la galerie du téléphone</button>
       <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
     </div>`;
   const close = () => sheet.remove();
   sheet.onclick = e => { if(e.target === sheet) close(); };
   sheet.querySelector('[data-act="burst"]').onclick = () => { close(); rwSitePhotoBurst(siteId); };
+  sheet.querySelector('[data-act="scan"]').onclick = async () => { close(); await rwSitePhotoBurst(siteId); setTimeout(() => { try{ if(typeof camSetMode === 'function') camSetMode('scan'); }catch(_){} }, 400); };
   sheet.querySelector('[data-act="pick"]').onclick = () => { close(); _rwPickImages(true, files => _rwUploadSitePhotos(siteId, files)); };
   sheet.querySelector('[data-act="cancel"]').onclick = close;
   document.body.appendChild(sheet);
@@ -22087,6 +22371,8 @@ function scanFinish(){
   const files = _scan.pages.concat(_scan.result ? [_scan.result] : []);
   _scan = null; closeModal('camScan');
   if(!files.length) return;
+  { const grp = 'doc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);   // v5.41.446 — pages d'un même document
+    files.forEach((f, i) => _rwFileMeta.set(f, { doc:true, docGroup:grp, page:i + 1, pages:files.length })); }
   if(_camBurst){ _camBurst.files.push(...files); closeCameraCapture(); return; }
   const target = camTargetInputId;
   closeCameraCapture();
@@ -43626,9 +43912,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.445';
+const APP_VERSION = '5.41.446';
 
 const CHANGELOG = [
+  {
+    version: '5.41.446',
+    date: '13/10/2026',
+    entries: [
+      { icon: '📄', text: "Documents scannés : après le scan, donne un nom au document (Plan pergola, Bon de livraison…). Les pages restent groupées." },
+      { icon: '🏷️', text: "#Hashtags sur les photos et documents de chantier (#plan, #bon_de_livraison, #déchetterie…). Le chef, le conducteur et le patron en créent ; ils restent enregistrés et réutilisables." },
+      { icon: '🔎', text: "Galerie du chantier : filtres Tout / 📷 Photos / 📄 Documents, rangée Documents en haut, et un appui sur un #hashtag affiche tous les médias associés." },
+      { icon: '✏️', text: "Dans la visionneuse : bouton 🏷️ pour renommer, ajouter des hashtags ou marquer une photo comme document." }
+    ],
+  },
   {
     version: '5.41.445',
     date: '13/10/2026',
@@ -56964,10 +57260,12 @@ async function pushSharedSite(site){
     // push plus direct ne doit pas non plus faire disparaître un document
     // ajouté par un autre appareil entre-temps.
     const _mergeMediaLocal = (a, b) => {
-      const out = [], seen = new Set();
+      const out = [], seen = new Map();
       const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
       [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
-        const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+        const k = keyOf(m);
+        if(seen.has(k)){ const j = seen.get(k); if(m && out[j] && (m.metaAt || '') > (out[j].metaAt || '')) out[j] = m; return; }   // v5.41.446
+        seen.set(k, out.length); out.push(m);
       });
       // Exclut systématiquement toute photo définitivement supprimée (voir
       // DELETED_MEDIA_KEY) — sans ce filtre, l'union ci-dessus resuscite
@@ -57056,10 +57354,12 @@ function _applyRemoteSiteIfNewer(local, remote, fields){
    ne doit jamais disparaître. Centralisée elle aussi (même besoin répété à
    plusieurs endroits). */
 function _mergeSiteMediaUnion(a, b){
-  const out = [], seen = new Set();
+  const out = [], seen = new Map();
   const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
   [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
-    const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+    const k = keyOf(m);
+    if(seen.has(k)){ const j = seen.get(k); if(m && out[j] && (m.metaAt || '') > (out[j].metaAt || '')) out[j] = m; return; }   // v5.41.446
+    seen.set(k, out.length); out.push(m);
   });
   // Exclut toute photo/document définitivement supprimé (voir
   // DELETED_MEDIA_KEY) — cette fonction est réutilisée par plusieurs
@@ -57247,10 +57547,12 @@ async function syncAllSitesPushAll(){
     // être ressuscitée ici au prochain passage de syncAllSitesPushAll. Ajout
     // du filtre pour que ce chemin de fusion respecte lui aussi la tombstone.
     const _mergeMedia = (a, b) => {
-      const out = [], seen = new Set();
+      const out = [], seen = new Map();
       const keyOf = (m) => (m && (m.id || m.url || m.data || m.name)) || JSON.stringify(m);
       [ ...(Array.isArray(a)?a:[]), ...(Array.isArray(b)?b:[]) ].forEach(m => {
-        const k = keyOf(m); if(seen.has(k)) return; seen.add(k); out.push(m);
+        const k = keyOf(m);
+        if(seen.has(k)){ const j = seen.get(k); if(m && out[j] && (m.metaAt || '') > (out[j].metaAt || '')) out[j] = m; return; }   // v5.41.446
+        seen.set(k, out.length); out.push(m);
       });
       return _filterDeletedMedia(out);
     };
