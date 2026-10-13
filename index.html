@@ -26943,6 +26943,7 @@ async function _pointageMultiCalcZone(dateKey, workerId, i){
   const say = t => { if(hint) hint.textContent = t; };
   const addr = (row.customAddr || '').trim();
   if(!addr){ say('Tape une adresse avant de calculer.'); return; }
+  if(!data.settings.depotAddress && typeof trajetEnsure === 'function'){ say('Calcul en cours…'); try{ await trajetEnsure(true); }catch(e){} }   // v5.41.437 — dépôt partagé de l'entreprise
   if(!data.settings.depotAddress){ say("Renseigne l'adresse du dépôt dans Paramètres › Adresses."); return; }
   say('Calcul en cours…');
   try{
@@ -27378,7 +27379,7 @@ function _pointageSiteRowZone(row){
   if(!row) return '';
   if(row.siteId === '__custom__') return row.customZone || '';
   const site = (data.sites || []).find(s => s.id === row.siteId);
-  return (site && site.trajetZone) || '';
+  return (site && site.trajetZone) || row.zoneHint || '';   // v5.41.437 — zone reçue du chef si ce téléphone ne la connaît pas
 }
 
 /* Infos du PREMIER chantier d'une entrée multi — sert à calculer la prime
@@ -34349,16 +34350,52 @@ async function trajetEnsure(force){
   }catch(e){}
   await _trajetAutoFillZones();
 }
+/* v5.41.437 — adresse → { km, zone } par rapport au dépôt (partagé) */
+async function _trajetZoneForAddress(addr){
+  addr = String(addr || '').trim();
+  if(!addr) return null;
+  const st = data.settings || {};
+  if(!st.depotAddress && !_trajetAutoBusy && typeof trajetEnsure === 'function'){ try{ await trajetEnsure(true); }catch(e){} }
+  if(!st.depotAddress) return null;
+  if(!st.depotCoords){ const g = await geocodeAddress(st.depotAddress); if(g){ st.depotCoords = g; saveData(); } }
+  if(!st.depotCoords) return null;
+  const geo = await geocodeAddress(addr);
+  if(!geo) return null;
+  const km = Math.round(haversineKm(st.depotCoords.lat, st.depotCoords.lng, geo.lat, geo.lng) * 10) / 10;
+  return { km, zone: findTrajetZone(km) || '' };
+}
+/* v5.41.437 — lignes « chantier libre » du pointage (120 derniers jours) qui ont
+   une adresse mais pas de zone (ex. dépannage reçu d'un chef) : zone calculée. */
+async function _trajetAutoFillAttendance(){
+  const att = data.attendance || {};
+  const lim = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
+  let n = 0;
+  for(const dk of Object.keys(att)){
+    if(dk < lim) continue;
+    const ws = (att[dk] && att[dk].workers) || {};
+    for(const wid of Object.keys(ws)){
+      const rows = (ws[wid] && ws[wid].mode === 'multi' && Array.isArray(ws[wid].sites)) ? ws[wid].sites : [];
+      for(const row of rows){
+        if(!row || row.siteId !== '__custom__' || row.customZone || !row.customAddr || _trajetAutoFailed.has('a|' + row.customAddr)) continue;
+        const z = await _trajetZoneForAddress(row.customAddr);
+        if(z && z.zone){ row.customZone = z.zone; row.customKm = z.km; n++; }
+        else _trajetAutoFailed.add('a|' + row.customAddr);
+      }
+    }
+  }
+  if(n){ saveData(); if(typeof schedulePointageSync === 'function') schedulePointageSync(); }
+  return n;
+}
 /* Calcule en silence la zone des chantiers qui ont une adresse mais pas de zone */
 async function _trajetAutoFillZones(){
   if(_trajetAutoBusy) return 0;
   const st = data.settings || {};
   if(!st.depotAddress) return 0;
   const todo = (data.sites || []).filter(s => s && s.address && String(s.address).trim() && !s.trajetZone && !_trajetAutoFailed.has(s.id + '|' + s.address));
-  if(!todo.length) return 0;
   _trajetAutoBusy = true;
   let n = 0;
   try{
+    try{ n += await _trajetAutoFillAttendance(); }catch(e){}
     for(const s of todo){
       await calculateSiteTrajetZone(s.id, { silent:true, noRender:true });
       if(s.trajetZone) n++; else _trajetAutoFailed.add(s.id + '|' + s.address);
@@ -43541,9 +43578,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.436';
+const APP_VERSION = '5.41.437';
 
 const CHANGELOG = [
+  {
+    version: '5.41.437',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🚐', text: "Feuille de route : quand le chef pointe aussi pour un collègue, le nom, l'adresse et la zone de trajet du chantier lui sont transmis. Il touche bien sa prime de trajet, même pour un dépannage qui n'existe que sur la feuille de route." },
+      { icon: '🔧', text: "Rattrapage automatique : les journées déjà reçues sans zone (chantier libre avec adresse) sont recalculées à l'ouverture des Fiches / du Récap." }
+    ],
+  },
   {
     version: '5.41.436',
     date: '13/10/2026',
@@ -67577,6 +67622,40 @@ async function _pointageSuggestWrite(authId, obj){
 /* Dépose UNE proposition de pointage dans la boîte de l'ouvrier `authId`
    (lecture → ajout → écriture, jamais d'écrasement aveugle des propositions
    déjà en attente pour lui). */
+/* v5.41.437 — la proposition envoyée au collègue emporte le NOM, l'ADRESSE
+   et la ZONE de trajet du chantier : un dépannage n'existe souvent que sur
+   la feuille de route du chef, le téléphone du collègue ne pouvait donc pas
+   retrouver la zone → pas de prime de trajet pour lui. srcRow = ma propre
+   ligne du jour (adresse / zone déjà connues de mon côté). */
+async function _pointageSuggestTrajetInfo(item, srcRow){
+  try{
+    if(item.realSite){
+      const st = (data.sites || []).find(x => x.id === item.siteId);
+      if(st){
+        if(!st.trajetZone && st.address && data.settings.depotAddress) await calculateSiteTrajetZone(st.id, { silent:true, noRender:true });
+        item.siteName = st.name || item.customName || '';
+        item.siteAddr = st.address || '';
+        item.siteZone = st.trajetZone || '';
+        item.siteKm = (st.trajetDistanceKm != null) ? st.trajetDistanceKm : null;
+        if(!item.customName) item.customName = st.name || '';
+        if(!item.customAddr) item.customAddr = st.address || '';
+      }
+    } else {
+      if(srcRow){
+        if(!item.customAddr && srcRow.customAddr) item.customAddr = srcRow.customAddr;
+        if(srcRow.customZone){ item.customZone = srcRow.customZone; item.customKm = (srcRow.customKm != null) ? srcRow.customKm : null; }
+      }
+      if(!item.customZone && item.customAddr){
+        const z = await _trajetZoneForAddress(item.customAddr);
+        if(z && z.zone){
+          item.customZone = z.zone; item.customKm = z.km;
+          if(srcRow && !srcRow.customZone){ srcRow.customZone = z.zone; srcRow.customKm = z.km; saveData(); if(typeof schedulePointageSync === 'function') schedulePointageSync(); }
+        }
+      }
+    }
+  }catch(e){}
+  return item;
+}
 async function _pointageSuggestAdd(authId, item){
   const d = await _pointageSuggestPull(authId);
   d.items.push(item);
@@ -67603,11 +67682,17 @@ async function _pointageSuggestApplyPending(){
     const entry = today.workers[myWorkerId];
     entry.mode = 'multi';
     if(!Array.isArray(entry.sites)) entry.sites = [];
-    const row = item.realSite
-      ? { siteId: item.siteId, hours: item.hours, task: item.task, routeNote: item.routeNote || '' }
-      : { siteId: '__custom__', customName: item.customName || 'Chantier libre', customAddr: item.customAddr || '', customZone: '', hours: item.hours, task: item.task, routeNote: item.routeNote || '' };
+    // v5.41.437 — chantier connu de CE téléphone → ligne chantier ; sinon (dépannage
+    // qui n'existe que sur la feuille du chef) → chantier libre avec nom, adresse et zone reçus.
+    const localSite = item.realSite && item.siteId && (data.sites || []).find(x => x.id === item.siteId);
+    const row = localSite
+      ? { siteId: item.siteId, hours: item.hours, task: item.task, routeNote: item.routeNote || '', zoneHint: item.siteZone || '' }
+      : { siteId: '__custom__', customName: item.siteName || item.customName || 'Chantier libre', customAddr: item.siteAddr || item.customAddr || '',
+          customZone: item.siteZone || item.customZone || '', hours: item.hours, task: item.task, routeNote: item.routeNote || '' };
+    if(!localSite){ const km = (item.siteKm != null) ? item.siteKm : item.customKm; if(km != null) row.customKm = km; }
+    if(localSite && !localSite.trajetZone && item.siteZone){ localSite.trajetZone = item.siteZone; if(item.siteKm != null) localSite.trajetDistanceKm = item.siteKm; }
     entry.sites.push(row);
-    if(!item.realSite && row.customAddr && typeof _pointageMultiCalcZone === 'function'){
+    if(!localSite && row.customAddr && !row.customZone && typeof _pointageMultiCalcZone === 'function'){
       _pointageMultiCalcZone(dateKey, myWorkerId, entry.sites.length - 1);
     }
     added++;
@@ -67978,6 +68063,7 @@ async function _routeOfferPointage(stop, route){
       customName: stop.name || 'Chantier libre', customAddr: stop.address || '',
       fromName, createdAt: new Date().toISOString(),
     };
+    if((team || []).length) await _pointageSuggestTrajetInfo(suggestItem, myRow);   // v5.41.437 — adresse + zone transmises
     const notified = [];
     for(const u of (team||[])){
       if(!u || !u.authId) continue;
@@ -67995,8 +68081,8 @@ async function _routeOfferPointage(stop, route){
 
     // Zone auto pour un chantier libre avec adresse — même logique que la
     // saisie manuelle du multi-chantier (_pointageMultiCalcZone).
-    if(!realSite && myRow.customAddr && typeof _pointageMultiCalcZone === 'function'){
-      const idx = entry.sites.length - 1;
+    if(!realSite && myRow.customAddr && !myRow.customZone && typeof _pointageMultiCalcZone === 'function'){
+      const idx = entry.sites.indexOf(myRow);
       _pointageMultiCalcZone(dateKey, myWorkerId, idx);
     }
   });
@@ -75105,8 +75191,10 @@ async function _carPtOffer(){
       let ok = false;
       for(let i = 0; i < todo.rows.length; i++){
         const r = todo.rows[i], realSite = !!(r.siteId && (data.sites || []).some(x => x.id === r.siteId));
-        ok = (await _pointageSuggestAdd(u.authId, { dateKey: todo.date, hours: r.hours, task: tasks[i], routeNote: '', realSite, siteId: realSite ? r.siteId : null,
-          customName: r.name || 'Chantier', customAddr: '', fromName, createdAt: new Date().toISOString() })) || ok;
+        const srcRow = (e && e.mode === 'multi' && Array.isArray(e.sites)) ? e.sites.find(s => r.siteId ? s.siteId === r.siteId : s.customName === r.name) : null;
+        const it = await _pointageSuggestTrajetInfo({ dateKey: todo.date, hours: r.hours, task: tasks[i], routeNote: '', realSite, siteId: realSite ? r.siteId : null,
+          customName: r.name || 'Chantier', customAddr: '', fromName, createdAt: new Date().toISOString() }, srcRow);   // v5.41.437
+        ok = (await _pointageSuggestAdd(u.authId, it)) || ok;
       }
       if(ok) notified.push(u.name || 'Ouvrier');
     }
