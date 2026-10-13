@@ -20412,7 +20412,12 @@ function _rwAnCSS(){
   + '#rwReview .rv-mh{font-weight:800;font-size:13.5px;color:#E8AC3D;margin-bottom:6px;}'
   + '#rwReview .rv-mt{width:100%;box-sizing:border-box;background:#222;border:1px solid #444;border-radius:9px;color:#fff;padding:9px 10px;font-size:15px;font-family:inherit;}'
   + '#rwReview .rv-sugg{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}#rwReview .rv-sugg button{background:#2a2a2a;border:1px solid #444;color:#ddd;border-radius:14px;padding:4px 9px;font-size:12px;}'
-  + '#rwReview .rv-doc{position:absolute;left:4px;top:4px;background:rgba(0,0,0,.75);color:#fff;font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 5px;}';
+  + '#rwReview .rv-doc{position:absolute;left:4px;top:4px;background:rgba(0,0,0,.75);color:#fff;font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 5px;}'
+  + '#rwReview .rv-dt{position:absolute;left:4px;top:4px;width:34px;height:30px;border-radius:8px;border:1.5px solid rgba(255,255,255,.6);background:rgba(0,0,0,.55);font-size:15px;opacity:.75;}'
+  + '#rwReview .rv-dt.on{background:#E8AC3D;border-color:#E8AC3D;opacity:1;}'
+  + '#rwReview .rv-seg{display:flex;gap:5px;margin-bottom:8px;}#rwReview .rv-seg button{flex:1;padding:8px 4px;border-radius:9px;border:1px solid #444;background:#222;color:#ddd;font-weight:700;font-size:12.5px;}#rwReview .rv-seg button.on{background:#E8AC3D;color:#1a0d00;border-color:#E8AC3D;}'
+  + '#rwReview .rv-drow{display:flex;gap:8px;align-items:center;margin-bottom:6px;}#rwReview .rv-drow img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto;}'
+  + '#rwReview .rv-hint{font-size:12px;color:rgba(255,255,255,.6);padding:6px 0 2px;}';
   document.head.appendChild(st);
 }
 
@@ -20816,57 +20821,74 @@ const RW_DOC_SUGG = ['Plan', 'Devis', 'Bon de livraison', 'Bon de commande', 'Fa
 function rwReviewPhotos(files, title){
   return new Promise(resolve => {
     _rwAnCSS();
-    let list = files.map(f => ({ f, url: URL.createObjectURL(f), edited: false, meta: _rwFileMeta.get(f) || null }));
-    // v5.41.446 — groupes à nommer : un par document scanné + un pour les photos
+    let list = files.map(f => { const mt = _rwFileMeta.get(f) || null; return { f, url: URL.createObjectURL(f), edited: false, meta: mt, isDoc: !!(mt && mt.doc), dtitle: '' }; });
+    // v5.41.450 — hashtags communs à toutes les photos ; titre seulement pour les documents,
+    // soit le même pour tous (recherche groupée), soit un titre par document.
     const siteId = (typeof _rwReviewSiteId !== 'undefined') ? _rwReviewSiteId : null;
-    const groups = {};
-    const gKey = x => (x.meta && x.meta.doc) ? ('d:' + (x.meta.docGroup || 'doc')) : 'photos';
-    const ensureGroups = () => { list.forEach(x => { const k = gKey(x); if(!groups[k]) groups[k] = { title:'', tags:[], doc: k !== 'photos' }; }); };
+    const common = { tags: [] };
+    let docMode = 'same', sameTitle = '';
     const ex = document.getElementById('rwReview'); if(ex) ex.remove();
     const root = document.createElement('div');
     root.id = 'rwReview';
     document.body.appendChild(root);
     const close = val => { list.forEach(x => URL.revokeObjectURL(x.url)); root.remove(); resolve(val); };
+    const sugg = (key) => `<div class="rv-sugg">${RW_DOC_SUGG.map(t => `<button type="button" data-k="${key}" data-t="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}</div>`;
     const draw = () => {
-      ensureGroups();
-      const present = [...new Set(list.map(gKey))];
-      let dn = 0;
-      const metaHtml = siteId ? `<div class="rv-meta">${present.map(k => { const g = groups[k], n = list.filter(x => gKey(x) === k).length; const pid = 'rv' + k.replace(/[^a-z0-9]/gi, '');
-        return `<div class="rv-mg">
-          <div class="rv-mh">${g.doc ? '📄 Document ' + (++dn) + ' · ' + n + ' page' + (n > 1 ? 's' : '') : '📷 ' + n + ' photo' + (n > 1 ? 's' : '')}</div>
-          <input class="rv-mt" data-g="${escapeHtml(k)}" value="${escapeHtml(g.title)}" placeholder="${g.doc ? 'Nom du document (ex. Plan pergola)' : 'Titre (facultatif)'}" maxlength="80">
-          ${g.doc ? `<div class="rv-sugg">${RW_DOC_SUGG.map(t => `<button type="button" data-g="${escapeHtml(k)}" data-t="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}</div>` : ''}
-          ${rwTagPickerHtml(pid, siteId, g, true)}
-        </div>`; }).join('')}</div>` : '';
+      const docs = list.filter(x => x.isDoc), nd = docs.length;
+      const docHtml = !nd ? `<div class="rv-hint">Astuce : touche <b>📄</b> sur une photo pour en faire un document avec un titre (plan, bon de livraison…).</div>`
+        : `<div class="rv-mg">
+            <div class="rv-mh">📄 ${nd} document${nd > 1 ? 's' : ''}</div>
+            ${nd > 1 ? `<div class="rv-seg"><button type="button" data-m="same" class="${docMode === 'same' ? 'on' : ''}">🔗 Même titre pour les ${nd}</button><button type="button" data-m="each" class="${docMode === 'each' ? 'on' : ''}">✂️ Un titre par document</button></div>` : ''}
+            ${(docMode === 'same' || nd === 1)
+              ? `<input class="rv-mt" data-k="same" value="${escapeHtml(sameTitle)}" placeholder="Nom du document (ex. Plan pergola)" maxlength="80">${sugg('same')}${nd > 1 ? '<div class="rv-hint" style="padding:6px 0 0;">Les ' + nd + ' documents seront regroupés sous ce titre.</div>' : ''}`
+              : docs.map((x, j) => `<div class="rv-drow"><img src="${x.url}" alt=""><input class="rv-mt" data-k="d${list.indexOf(x)}" value="${escapeHtml(x.dtitle)}" placeholder="Titre du document ${j + 1}" maxlength="80"></div>`).join('')}
+          </div>`;
+      const metaHtml = siteId ? `<div class="rv-meta">
+          <div class="rv-mg"><div class="rv-mh">🏷️ Hashtags · pour ${list.length > 1 ? 'les ' + list.length + ' photos' : 'la photo'}</div>${rwTagPickerHtml('rvall', siteId, common, true)}</div>
+          ${docHtml}
+        </div>` : '';
       root.innerHTML = `
         <div class="rv-top">
           <button class="rv-b" data-a="cancel">✕</button>
           <div style="flex:1;min-width:0;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📸 ${list.length} photo${list.length > 1 ? 's' : ''}${title ? ' · ' + escapeHtml(title) : ''}</div>
         </div>
-        <div style="padding:8px 12px 0;font-size:12.5px;color:rgba(255,255,255,.7);">Touche une photo pour l'annoter (flèches, cotes, texte…) · ✕ pour la retirer</div>
+        <div style="padding:8px 12px 0;font-size:12.5px;color:rgba(255,255,255,.7);">Touche une photo pour l'annoter · ✕ pour la retirer${siteId ? ' · 📄 = document' : ''}</div>
         <div class="rv-grid">${list.map((x, i) => `
           <div class="rv-cell" data-i="${i}">
             <img src="${x.url}" alt="">
             ${x.edited ? '<span class="rv-done">✏️ annotée</span>' : ''}
             <button class="rv-x" data-x="${i}">✕</button>
             <button class="rv-pen" data-i="${i}">✏️ Annoter</button>
-            ${x.meta && x.meta.doc ? '<span class="rv-doc">📄 p. ' + (x.meta.page || 1) + '</span>' : ''}
+            ${siteId ? `<button class="rv-dt${x.isDoc ? ' on' : ''}" data-d="${i}" title="Document">📄</button>` : ''}
           </div>`).join('')}</div>
         ${metaHtml}
         <div class="rv-bottom"><button class="rv-b rv-ok" data-a="send" style="width:100%;height:52px;font-size:16px;" ${list.length ? '' : 'disabled'}>⬆️ Envoyer ${list.length} photo${list.length > 1 ? 's' : ''}</button></div>`;
       root.querySelector('[data-a="cancel"]').onclick = () => { if(confirm('Annuler l\'envoi de ces photos ?')) close(null); };
-      root.querySelectorAll('.rv-mt').forEach(inp => inp.oninput = () => { groups[inp.dataset.g].title = inp.value; });
-      root.querySelectorAll('.rv-sugg button').forEach(b => b.onclick = () => { const g = groups[b.dataset.g]; g.title = b.dataset.t + ' '; const inp = [...root.querySelectorAll('.rv-mt')].find(i => i.dataset.g === b.dataset.g); if(inp){ inp.value = g.title; inp.focus(); } });
+      const setK = (k, v) => { if(k === 'same') sameTitle = v; else { const x = list[+k.slice(1)]; if(x) x.dtitle = v; } };
+      root.querySelectorAll('.rv-mt').forEach(inp => inp.oninput = () => setK(inp.dataset.k, inp.value));
+      root.querySelectorAll('.rv-sugg button').forEach(b => b.onclick = () => { setK(b.dataset.k, b.dataset.t + ' '); const inp = [...root.querySelectorAll('.rv-mt')].find(i => i.dataset.k === b.dataset.k); if(inp){ inp.value = b.dataset.t + ' '; inp.focus(); } });
+      root.querySelectorAll('.rv-seg button').forEach(b => b.onclick = () => {
+        const m = b.dataset.m; if(m === docMode) return;
+        if(m === 'each' && sameTitle.trim()) list.forEach(x => { if(x.isDoc && !x.dtitle) x.dtitle = sameTitle; });
+        if(m === 'same' && !sameTitle.trim()){ const f = list.find(x => x.isDoc && x.dtitle.trim()); if(f) sameTitle = f.dtitle; }
+        docMode = m; draw();
+      });
+      root.querySelectorAll('.rv-dt').forEach(b => b.onclick = ev => { ev.stopPropagation(); const x = list[+b.dataset.d]; x.isDoc = !x.isDoc; draw(); });
       root.querySelector('[data-a="send"]').onclick = () => {
         if(siteId){
-          const used = [];
+          const docs = list.filter(x => x.isDoc), grouped = docMode === 'same' || docs.length === 1;
+          const stamp = Date.now().toString(36), grp = 'doc_' + stamp + Math.random().toString(36).slice(2, 6);
           list.forEach(x => {
-            const g = groups[gKey(x)] || {};
-            const m = Object.assign({}, x.meta || {}, { title: String(g.title || '').trim(), tags: (g.tags || []).slice() });
+            const m = Object.assign({}, x.meta || {}, { tags: common.tags.slice() });
+            delete m.title;
+            if(x.isDoc){
+              m.doc = true;
+              if(grouped){ m.docGroup = grp; m.page = docs.indexOf(x) + 1; m.title = sameTitle.trim(); }
+              else { m.docGroup = 'doc_' + stamp + '_' + docs.indexOf(x) + Math.random().toString(36).slice(2, 5); m.page = 1; m.title = String(x.dtitle || '').trim(); }
+            } else { delete m.doc; delete m.docGroup; delete m.page; }
             _rwFileMeta.set(x.f, m);
-            used.push(...m.tags);
           });
-          if(used.length){ rwTagRemember(siteId, used); saveData(); }
+          if(common.tags.length){ rwTagRemember(siteId, common.tags); saveData(); }
         }
         close(list.map(x => x.f));
       };
@@ -43919,9 +43941,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.449';
+const APP_VERSION = '5.41.450';
 
 const CHANGELOG = [
+  {
+    version: '5.41.450',
+    date: '13/10/2026',
+    entries: [
+      { icon: '🏷️', text: "Rafale photo, avant l'envoi : les #hashtags s'appliquent à toutes les photos. Le titre est réservé aux documents." },
+      { icon: '📄', text: "Touche 📄 sur une photo pour en faire un document. Plusieurs documents : « 🔗 Même titre » (ex. 4 pages « Plan pergola », retrouvées ensemble) ou « ✂️ Un titre par document » (4 plans différents)." }
+    ],
+  },
   {
     version: '5.41.449',
     date: '13/10/2026',
