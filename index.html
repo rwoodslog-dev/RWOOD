@@ -12237,7 +12237,7 @@ function goTo(viewName, siteId){
     dev:         ['Dev', 'Outils et réglages réservés au développeur'],
     utilisateurs: ['Utilisateurs', 'Informations personnelles des comptes de l\'entreprise'],
     notesdashboard: ['Notes', 'Tableau de bord des notes de tous les chantiers'],
-    remontees:   ['Entretien', 'Prépare ton entretien — tes notes restent sur ce téléphone'],
+    remontees:   ['Entretien', 'Prépare ton entretien — tes notes restent privées'],
     detail:      [null, null],
     simpleDash:  ['Accueil', 'Tes onglets']
   };
@@ -43941,9 +43941,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.450';
+const APP_VERSION = '5.41.451';
 
 const CHANGELOG = [
+  {
+    version: '5.41.451',
+    date: '14/10/2026',
+    entries: [
+      { icon: '🔄', text: "Entretien : tes réponses et tes notes se retrouvent sur tous tes appareils connectés au même compte (PC et téléphone). Elles restent privées et chiffrées : ni l'équipe ni le patron ne les voient." }
+    ],
+  },
   {
     version: '5.41.450',
     date: '13/10/2026',
@@ -74223,7 +74230,83 @@ const RM_RISKY = ['con','conne','connard','nul','nulle','incapable','fainéant',
 function _rmUid(){ return (data && data.settings && data.settings.auth && data.settings.auth.authId) || 'local'; }
 function _rmKey(k){ return 'rwood-remontees.' + k + '.v1:' + _rmUid(); }
 function rmItems(){ try{ const a = JSON.parse(localStorage.getItem(_rmKey('items')) || '[]'); return Array.isArray(a) ? a : []; }catch(e){ return []; } }
-function rmSaveItems(a){ try{ localStorage.setItem(_rmKey('items'), JSON.stringify(a)); }catch(e){ showToast('⚠️ Stockage plein : exporte tes remontées'); } _rmPushCounts(); }
+function rmSaveItems(a, opts){
+  const fromSync = !!(opts && opts.fromSync);
+  const prev = fromSync ? null : rmItems();
+  try{ localStorage.setItem(_rmKey('items'), JSON.stringify(a)); }catch(e){ showToast('⚠️ Stockage plein : exporte tes remontées'); }
+  if(!fromSync){
+    // v5.41.451 — suppressions mémorisées (pour qu'elles se propagent à tes autres appareils)
+    const ids = new Set(a.map(i => i && i.id)), tomb = _rmTomb(); let ch = false;
+    (prev || []).forEach(i => { if(i && i.id && !ids.has(i.id)){ tomb[i.id] = Date.now(); ch = true; } });
+    if(ch) _rmTombSave(tomb);
+    _rmCloudSoon();
+  }
+  _rmPushCounts();
+}
+/* ═══ v5.41.451 — Entretien : synchro privée entre TES appareils (même compte) ═══
+   Une ligne rwood_sync propre au compte (entretien_v1_<id du compte>), contenu
+   CHIFFRÉ dans le téléphone (AES-GCM) avant l'envoi : ni l'équipe ni le patron
+   ne la lisent dans l'appli. Fusion élément par élément (le plus récent gagne),
+   suppressions propagées. */
+function _rmTomb(){ try{ return JSON.parse(localStorage.getItem(_rmKey('tomb')) || '{}') || {}; }catch(e){ return {}; } }
+function _rmTombSave(t){ try{ localStorage.setItem(_rmKey('tomb'), JSON.stringify(t)); }catch(e){} }
+let _rmCloudT = null, _rmCloudBusy = false, _rmCloudAt = 0, _rmCloudAgain = false;
+function _rmCloudSoon(){ clearTimeout(_rmCloudT); _rmCloudT = setTimeout(() => rmCloudSync(true), 2500); }
+function _rmB64(buf){ let s = ''; const b = new Uint8Array(buf); for(let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); }
+function _rmUnB64(t){ const s = atob(t); const b = new Uint8Array(s.length); for(let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; }
+async function _rmCryptoKey(uid){
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey('raw', enc.encode('notybat-entretien|' + uid + '|' + _rmUid()), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name:'PBKDF2', salt:enc.encode('ntb-entretien-v1'), iterations:100000, hash:'SHA-256' }, km, { name:'AES-GCM', length:256 }, false, ['encrypt', 'decrypt']);
+}
+async function rmCloudSync(force){
+  if(_rmCloudBusy){ if(force) _rmCloudAgain = true; return false; }
+  if(!force && Date.now() - _rmCloudAt < 20000) return false;
+  const uid = (typeof getSupaUserId === 'function') ? getSupaUserId() : null;
+  if(!uid || !navigator.onLine || !(window.crypto && crypto.subtle)) return false;
+  _rmCloudBusy = true; _rmCloudAt = Date.now();
+  let changed = false;
+  try{
+    const rowKey = 'entretien_v1_' + uid;
+    const key = await _rmCryptoKey(uid);
+    let remote = { items:[], tomb:{} }, remoteRaw = '';
+    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(rowKey) + '&select=data', { headers:{ 'Prefer':'' } });
+    if(!res.ok) return false;
+    const rows = await res.json();
+    if(rows && rows.length){
+      const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+      if(d && d.iv && d.ct){
+        try{
+          const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv:_rmUnB64(d.iv) }, key, _rmUnB64(d.ct));
+          remoteRaw = new TextDecoder().decode(pt); remote = JSON.parse(remoteRaw) || remote;
+        }catch(e){ return false; }   // illisible : on ne touche à rien
+      }
+    }
+    const stamp = i => +(i && (i.maj || i.cree)) || 0;
+    const tomb = Object.assign({}, remote.tomb || {});
+    Object.entries(_rmTomb()).forEach(([k, v]) => { if(!tomb[k] || v > tomb[k]) tomb[k] = v; });
+    const lim = Date.now() - 180 * 864e5; Object.keys(tomb).forEach(k => { if(tomb[k] < lim) delete tomb[k]; });
+    const map = new Map();
+    [].concat(remote.items || [], rmItems()).forEach(i => { if(!i || !i.id) return; const o = map.get(i.id); if(!o || stamp(i) > stamp(o)) map.set(i.id, i); });
+    const merged = [...map.values()].filter(i => !(tomb[i.id] && tomb[i.id] >= stamp(i)));
+    merged.sort((a, b) => (+a.cree || 0) - (+b.cree || 0));
+    const localJson = JSON.stringify(rmItems()), mergedJson = JSON.stringify(merged);
+    if(mergedJson !== localJson){ rmSaveItems(merged, { fromSync:true }); changed = true; }
+    _rmTombSave(tomb);
+    const outRaw = JSON.stringify({ items:merged, tomb });
+    if(outRaw !== remoteRaw){
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(outRaw));
+      await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({ user_id:rowKey, updated_at:new Date().toISOString(), data:JSON.stringify({ v:1, iv:_rmB64(iv), ct:_rmB64(ct) }) }) });
+    }
+  }catch(e){ console.warn('entretien sync', e); }
+  finally{ _rmCloudBusy = false; if(_rmCloudAgain){ _rmCloudAgain = false; setTimeout(() => rmCloudSync(true), 50); } }
+  if(changed && document.querySelector('#view-remontees.active') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) rmRender();
+  return changed;
+}
+setTimeout(() => { try{ rmCloudSync(true); }catch(e){} }, 7000);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') try{ rmCloudSync(); }catch(e){} });
 function rmCfg(){ try{ return Object.assign({ nom:'', pers:[], apiKey:'', gModel:'', modeBilan:'simple' }, JSON.parse(localStorage.getItem(_rmKey('cfg')) || '{}')); }catch(e){ return { nom:'', pers:[], apiKey:'', gModel:'', modeBilan:'simple' }; } }
 function rmSaveCfg(c){ try{ localStorage.setItem(_rmKey('cfg'), JSON.stringify(c)); }catch(e){} }
 
@@ -74433,6 +74516,7 @@ function rmRender(){
   else if(_rmTab === 'notes') _rmRenderNotes(box);
   else _rmRenderReglages(box);
   try{ rmQSync(); }catch(e){}
+  try{ rmCloudSync(); }catch(e){}   // v5.41.451 — tes notes sur tous tes appareils
   const ad = rmItems().filter(i => i.statut === 'ouvert').length;
   const b = document.getElementById('rmTabBadge'); if(b){ b.textContent = ad; b.style.display = ad ? '' : 'none'; }
 }
@@ -74585,7 +74669,7 @@ function _rmRenderIdees(box){
           <button type="button" class="btn btn-primary btn-sm rm-ib-sv" style="display:none;" onclick="rmAnswerSave('${escapeHtml(q.id)}')">💾 Enregistrer</button>
         </div>
       </div>`; }).join('')}`).join('')}
-  <div class="rm-priv">🔒 Tes réponses restent sur ce téléphone</div>`;
+  <div class="rm-priv">🔒 Privé : visible seulement sur tes appareils (chiffré)</div>`;
   if(_rmFocusQ){ const el = document.getElementById('rmIb_' + _rmFocusQ); _rmFocusQ = null; if(el) setTimeout(() => { el.scrollIntoView({ block:'center' }); const t = el.querySelector('textarea'); if(t) t.focus(); }, 60); }
 }
 let _rmFocusQ = null;
@@ -74641,7 +74725,7 @@ function _rmRenderNotes(box){
       <button class="btn btn-outline" onclick="rmBilanShare()">↗ Partager</button>
     </div>
     <div class="rm-btnrow"><button class="btn btn-outline" onclick="rmBilanAllDit()">✔ Après l'entretien : tout marquer « dit »</button></div>` : '';
-  foot.innerHTML += '<div class="rm-priv">🔒 Reste sur ce téléphone</div>';
+  foot.innerHTML += '<div class="rm-priv">🔒 Privé : visible seulement sur tes appareils (chiffré)</div>';
   box.innerHTML = '';
   [head, lbl, f, l, foot].forEach(x => box.appendChild(x));
   _rmPaintSeg();
@@ -75213,7 +75297,7 @@ function rmEntretienPopupMaybe(tries){
       <div class="rm-pop-l"><span>💡</span><div><b>Idées</b> : des questions pour t'aider à réfléchir. Réponds à celles qui te parlent.</div></div>
       <div class="rm-pop-l"><span>📝</span><div><b>Notes</b> : retrouve tes réponses et note ce que tu veux dire.</div></div>
       <div class="rm-pop-l"><span>📤</span><div>Le jour J : relis tes notes ou envoie-les au patron.</div></div>
-      <div class="rm-priv">🔒 Tes notes restent sur ton téléphone</div>
+      <div class="rm-priv">🔒 Tes notes restent privées</div>
       <button class="btn btn-primary btn-block rm-pop-go" onclick="rmEntretienPopupClose(true)">🗣️ Préparer mon entretien</button>
       <button class="btn btn-block rm-pop-later" onclick="rmEntretienPopupClose(false)">Plus tard</button>
     </div>`;
@@ -75626,7 +75710,7 @@ const RH_HELP = {
   ]},
   remontees: { t:'Entretien', l:[
     { i:'💡', x:"<b>Idées</b> : des questions pour t'aider à réfléchir. Réponds sous celles qui te parlent : la réponse arrive dans Notes." },
-    { i:'📝', x:"<b>Notes</b> : en haut tes réponses aux questions, dessous tes notes libres avec leur gravité. Tout reste sur ton téléphone." },
+    { i:'📝', x:"<b>Notes</b> : en haut tes réponses aux questions, dessous tes notes libres avec leur gravité. Privé : tu les retrouves sur ton PC et ton téléphone, personne d'autre ne les voit." },
     { i:'📤', x:"Le jour de l'entretien : copie tes notes ou envoie-les au patron (bas de Notes)." }
   ]}
 };
