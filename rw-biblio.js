@@ -165,7 +165,8 @@ add({ id:'s_scellement', f:'serr', sf:'Ancrages', l:'Scellement chimique (tige +
 add({ id:'s_tirefond', f:'serr', sf:'Boulonnerie', l:'Tire-fond', kind:'tige', views:['long'], src:'DIN 571', tirefond:true, sizes:[6,8,10,12].map(d => SZ('Ø ' + d, { d })) });
 
 /* ═══ C. COUVERTURE ════════════════════════════════════════════════ */
-add({ id:'c_tmeca', f:'couv', sf:'Tuiles', l:'Tuile mécanique (coupe)', kind:'tuileMeca', views:['section'], ind:true, sizes:[SZ('grand moule · pureau 340', { pur:340, e:35 }), SZ('petit moule · pureau 280', { pur:280, e:30 })] });
+add({ id:'c_tmeca', f:'couv', sf:'Tuiles', l:'Tuile mécanique seule (coupe)', kind:'tuileMeca', views:['section'], ind:true,
+  sizes:[SZ('grand moule · L 470', { L:470, e:18, n:25 }), SZ('moule moyen · L 420', { L:420, e:16, n:22 }), SZ('petit moule · L 360', { L:360, e:15, n:20 })] });
 add({ id:'c_tcanal', f:'couv', sf:'Tuiles', l:'Tuile canal (coupe transversale)', kind:'tuileCanal', views:['section'], ind:true, sizes:[SZ('canal 150', { w:150, e:70 }), SZ('canal 180', { w:180, e:80 })] });
 add({ id:'c_tplate', f:'couv', sf:'Tuiles', l:'Tuile plate (pureau)', kind:'plate', views:['section'], ind:true, sizes:[SZ('17×27 · pureau 100', { pur:100, e:12 }), SZ('16×24 · pureau 85', { pur:85, e:12 })] });
 add({ id:'c_ardoise', f:'couv', sf:'Ardoises', l:'Ardoise (pureau)', kind:'plate', views:['section'], ind:true, ardoise:true, sizes:[SZ('32×22 · pureau 130', { pur:130, e:5 }), SZ('40×24 · pureau 170', { pur:170, e:5 })] });
@@ -322,7 +323,7 @@ function dims(it, p, view, L){
     case 'tige': return { w:Math.max(L, p.d * 3), h:p.d };
     case 'ecrou': return { w:p.s * 1.155, h:p.s };
     case 'ancrage': return { w:p.L, h:p.d * 1.6 };
-    case 'tuileMeca': return { w:L, h:p.e * 2 };
+    case 'tuileMeca': return { w:p.L, h:p.e + p.n };
     case 'tuileCanal': return { w:L, h:p.e * 1.6 };
     case 'plate': return { w:L, h:p.e * 3 };
     case 'bac': case 'jointDebout': case 'tasseauZinc': return { w:L, h:p.h + 2 };
@@ -556,7 +557,14 @@ function draw(ctx, it, p, view, W, H, u, s){
     rect(ctx, -d * .25, y - d * .9, d * .25, d * 1.8, COL.galva, T, lwT); rect(ctx, -d * 1.05, y - d * .8, d * .8, d * 1.6, COL.acier, T, lw);
     return;
   }
-  if(k === 'tuileMeca'){ const pur = p.pur, e = p.e; ctx.lineWidth = lw; for(let x = 0; x < W; x += pur){ poly(ctx, [[x, H * .7], [x + pur * 1.12, H * .25], [x + pur * 1.12, H * .45], [x, H]], COL.tuile, '#6e2c1b', lwT); rect(ctx, x + pur * .05, H * .55, e * .5, e * .6, COL.tuile, '#6e2c1b', lwT); } return; }
+  if(k === 'tuileMeca'){
+    // une tuile seule : corps (épaisseur e) + ergot d'accroche sous la tête (n × n), comme vue en coupe
+    const e = p.e, n = p.n, x0 = n * .6;
+    rect(ctx, 0, 0, W, e, COL.tuile, '#6e2c1b', lw);
+    rect(ctx, x0, e, n, n, COL.tuile, '#6e2c1b', lw);
+    line(ctx, W * .08, e * .5, W * .97, e * .5, 'rgba(110,44,27,.25)', lwT);
+    return;
+  }
   if(k === 'tuileCanal'){ const w = p.w; for(let x = 0, i = 0; x < W; x += w * .85, i++){ ctx.beginPath(); if(i % 2){ ctx.arc(x + w / 2, H * .55, w / 2, Math.PI, 0); } else { ctx.arc(x + w / 2, H * .15, w / 2, 0, Math.PI); } ctx.strokeStyle = '#6e2c1b'; ctx.lineWidth = Math.max(lw * 2.5, 10); ctx.stroke(); ctx.strokeStyle = COL.tuile; ctx.lineWidth = Math.max(lw * 2.5, 10) * .75; ctx.stroke(); } return; }
   if(k === 'plate'){ const pur = p.pur, e = p.e, col = it.ardoise ? COL.ardoise : COL.tuile; for(let x = 0; x < W; x += pur){ poly(ctx, [[x, H - e * .2], [x + pur * 2.6, H * .1], [x + pur * 2.6, H * .1 + e], [x, H]], col, '#333', lwT); } return; }
   if(k === 'bac' || k === 'sandwich'){
@@ -636,7 +644,7 @@ function search(q, fam){
 }
 /* Paramètres modifiables (pour la saisie « Autre dimension ») */
 const PARAM_LABELS = { b:'Largeur b', h:'Hauteur h', e:'Épaisseur', tw:'Âme tw', tf:'Aile tf', t:'Épaisseur t', a:'Aile a', d:'Diamètre', c:'Lèvre / aile', L:'Portée', pente:'Pente (°)', H:'Hauteur', w:'Largeur', pur:'Pureau', pas:'Entraxe / pas', j:'Jour', n:'Nb trous', s:'Sur plats', p:'Profondeur', g:'Hérisson' };
-function editableParams(it, p){ return Object.keys(p || {}).filter(k => typeof p[k] === 'number' && PARAM_LABELS[k]).map(k => ({ k, l:PARAM_LABELS[k], v:p[k] })); }
+function editableParams(it, p){ const lab = k => (it && it.kind === 'tuileMeca') ? ({ n:'Ergot', L:'Longueur' })[k] || PARAM_LABELS[k] : PARAM_LABELS[k]; return Object.keys(p || {}).filter(k => typeof p[k] === 'number' && lab(k)).map(k => ({ k, l:lab(k), v:p[k] })); }
 function viewLabel(v){ return ({ section:'Coupe (section)', long:'Vue en long', elev:'Élévation', face:'Vue de face', plan:'Vue de dessus' })[v] || v; }
 function needsLength(it, view){ const d0 = dims(it, it.sizes[0].p, view, 1000), d1 = dims(it, it.sizes[0].p, view, 2000); return d0.w !== d1.w || d0.h !== d1.h; }
 
