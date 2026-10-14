@@ -4595,6 +4595,13 @@
     -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
     transition:transform .15s ease, opacity .15s ease;
   }
+  /* v5.41.460 — tuile « ⋯ Plus » */
+  .simple-tile.tile-plus{ border-style:dashed !important; }
+  .tile-plus-dots{ font-size:40px; font-weight:900; line-height:1; color:var(--wood); }
+  .dash-pin{ position:absolute; top:6px; left:8px; z-index:2; font-size:20px; color:var(--wood); line-height:1; padding:2px 4px; cursor:pointer; }
+  .pc-nav-plus .ico{ font-size:20px; font-weight:900; color:var(--wood); }
+  .pc-nav-more{ opacity:.92; } .pc-nav-more .lbl{ flex:1; }
+  .pc-nav-pin{ margin-left:auto; color:var(--wood); font-size:15px; padding:0 4px; cursor:pointer; }
   .simple-tile-badge{
     position:absolute; top:8px; right:8px; z-index:2;
     background:#E05555; color:#fff;
@@ -44123,9 +44130,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.459';
+const APP_VERSION = '5.41.460';
 
 const CHANGELOG = [
+  {
+    version: '5.41.460',
+    date: '14/10/2026',
+    entries: [
+      { icon: '🏠', text: "Accueil allégé : chaque rôle ne voit plus que ses onglets essentiels. Tous les autres sont dans la nouvelle tuile « ⋯ Plus » (2e page). Touche ☆ sur un onglet pour l'épingler à l'accueil." },
+      { icon: '🔴', text: "Un message ou une notification non lue dans un onglet rangé dans « Plus » : le point rouge s'affiche sur la tuile Plus, puis sur l'onglet concerné." },
+      { icon: '🛠️', text: "Nouvelle icône pour l'onglet Dépannages." }
+    ],
+  },
   {
     version: '5.41.459',
     date: '14/10/2026',
@@ -61551,7 +61567,7 @@ const SIMPLE_ALL_TILES = [
   { view:'dev', img:'icons/dev.png', icon:'🔧', label:'Dev' },
   { view:'alertes-conducteur', img:'icons/messagerie.png', icon:'💬', label:'Messagerie' },
   { view:'remontees', img:'icons/entretien.png', icon:'🗣️', label:'Entretien' },   // v5.41.438 — ex « Remontées »
-  { view:'depannages', icon:'🛠️', label:'Dépannages' },   // v5.41.459
+  { view:'depannages', img:'icons/depannage.png', icon:'🛠️', label:'Dépannages' },   // v5.41.459
 ];
 /* ═══════════════════════════════════════════════════════════════════
    BADGES DE NOTIFICATION SUR LES TUILES DU DASHBOARD
@@ -61710,24 +61726,28 @@ const SIMPLE_DEFAULT_TILES = ['chantiers','notes','heures','itineraires'];
    Appliquées une fois à chaque compte (et de nouveau si son rôle change) ;
    chacun peut ensuite les modifier dans Paramètres. */
 const ROLE_TILES = {
-  ouvrier:    ['chantiers','notes','heures','remontees','suivi','calcul','magasin','alertes-conducteur','galerie'],
-  chef:       ['chantiers','notes','heures','remontees','suivi','calcul','magasin','stock','alertes-conducteur','agenda','galerie','planning'],
-  conducteur: ['chantiers','notes','heures','suivi','calcul','magasin','alertes-conducteur','agenda','notesdashboard','galerie','planning'],
-  patron:     ['chantiers','heures','suivi','alertes-conducteur','magasin','notesdashboard','planning'],
-  comptable:  ['chantiers','galerie','suivi','heures','zone-chantier']
+  // v5.41.460 — l'essentiel par rôle ; tout le reste est dans la tuile « ⋯ Plus »
+  ouvrier:    ['chantiers','heures','notes','calcul','magasin','galerie','remontees'],
+  chef:       ['chantiers','heures','notes','calcul','magasin','planning','depannages','galerie'],
+  conducteur: ['chantiers','planning','depannages','heures','alertes-conducteur','notesdashboard','galerie'],
+  patron:     ['chantiers','planning','heures','suivi','depannages','alertes-conducteur','galerie','notesdashboard'],
+  comptable:  ['heures','chantiers','suivi','galerie']
 };
 function _roleTilesPreset(){
   try{
     if(!data.settings) return;
     const role = data.settings.myProfile && data.settings.myProfile.role;
     const preset = ROLE_TILES[role]; if(!preset) return;
-    const tag = 'v299:' + role;
+    const tag = 'v460:' + role;   // v5.41.460 — nouveau tri, appliqué une fois à chaque compte
     if(data.settings.tilesPreset === tag) return;
     const had = Array.isArray(data.settings.simpleTiles) ? data.settings.simpleTiles : [];
-    const tiles = preset.slice();
+    const tiles = preset.filter(v => _simpleTileAllowedForRole(v));
     if(had.includes('dev')) tiles.push('dev');   // les comptes DEV gardent leur tuile Dev
     data.settings.simpleTiles = tiles;
     data.settings.tilesPreset = tag;
+    // les anciennes migrations « ajoute l'onglet X » ne doivent plus rien rajouter par-dessus
+    data.settings.suiviTileV315 = true; data.settings.entretienTileV441 = role; data.settings.depTileV459 = role;
+    try{ localStorage.setItem('rwood-croquis-tile-migration-done', '1'); localStorage.setItem('rwood-remontees-tile-migration', '1'); }catch(_){}
     saveData();
   }catch(e){}
 }
@@ -61930,7 +61950,11 @@ function simpleModeRenderDash(){
   // disparaisse proprement au lieu de laisser une tuile fantôme (icône
   // générique + libellé brut) toujours cliquable.
   tiles = tiles.filter(v => v !== 'quincaillerie');
-  const n = tiles.length;
+  // v5.41.460 — tuile « ⋯ Plus » : les onglets non épinglés sont sur une 2e page
+  const _plusList = (_dashReorderTileId || _dashManage) ? [] : _tabsHiddenList().map(d => d.view).sort((x, y) => (_tileBadge(y) > 0) - (_tileBadge(x) > 0));   // non lus en premier
+  if(_dashPlus && !_plusList.length) _dashPlus = false;
+  if(_dashPlus){ grid.classList.remove('cols-1','cols-3'); grid.classList.remove('has-tab-manage','has-reorder-editing'); grid.innerHTML = _dashPlusPageHtml(_plusList); grid.scrollTop = 0; if(typeof renderPcSidebarNav === 'function') renderPcSidebarNav(); return; }
+  const n = tiles.length + (_plusList.length ? 1 : 0);
   // Adapter les colonnes : 1→1col, 2→2col, 3→3col, 4+→2col (scroll si > 6)
   grid.classList.remove('cols-1','cols-3');
   if(n === 1) grid.classList.add('cols-1');
@@ -61945,7 +61969,7 @@ function simpleModeRenderDash(){
     const iconHtml = (def && def.img)
       ? `<img src="${encodeURI(def.img)}" alt="" class="simple-tile-img" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${icon}'}))">`
       : icon;
-    const unseen = viewId === 'heures' ? (typeof _absBadgeCount === 'function' ? _absBadgeCount() : 0) : DASH_BADGE_VIEWS.includes(viewId) ? _dashUnseenCount(viewId) : 0;
+    const unseen = _tileBadge(viewId);
     const badgeHtml = unseen > 0 ? `<span class="simple-tile-badge">${unseen > 9 ? '9+' : unseen}</span>` : '';
     const isEditing = viewId === _dashReorderTileId;
     // En édition : pas d'ouverture au clic (le pointerdown gère la validation),
@@ -61967,6 +61991,8 @@ function simpleModeRenderDash(){
       ${arrowsHtml}
     </div>`;
   }).join('')
+  + (_plusList.length ? (() => { const b = _plusList.reduce((a, v) => a + _tileBadge(v), 0);
+      return `<div class="simple-tile tile-plus" role="button" tabindex="0" onclick="dashPlusOpen(true)" style="position:relative;">${b > 0 ? `<span class="simple-tile-badge">${b > 9 ? '9+' : b}</span>` : ''}<span class="simple-tile-icon"><span class="tile-plus-dots">⋯</span></span><span class="simple-tile-label">Plus</span></div>`; })() : '')
   // v5.41.401 — onglets masqués (grisés + Afficher), visibles pendant l'édition
   + ((_dashReorderTileId || _dashManage) ? _tabsHiddenList().map(def => `<div class="simple-tile tile-hidden" data-hidden-id="${def.view}">
       <span class="simple-tile-icon">${_tabIconHtml(def, 'simple-tile-img')}</span>
@@ -61994,6 +62020,38 @@ function simpleModeRenderDash(){
    sur la tuile elle-même (ou ailleurs) pour figer la position.
    Ordre persistant dans data.settings.simpleTiles.
    ═══════════════════════════════════════════════════════════════════ */
+
+/* ═══ v5.41.460 — Tuile « ⋯ Plus » : 2e page avec les onglets non épinglés ═══ */
+let _dashPlus = false, _pcNavPlus = false;
+function _tileBadge(v){
+  try{
+    if(v === 'heures') return typeof _absBadgeCount === 'function' ? _absBadgeCount() : 0;
+    return DASH_BADGE_VIEWS.includes(v) ? (_dashUnseenCount(v) || 0) : 0;
+  }catch(e){ return 0; }
+}
+function dashPlusOpen(on){
+  _dashPlus = !!on;
+  simpleModeRenderDash();
+}
+function dashPlusGo(v){ _dashPlus = false; simpleModeOpen(v); }
+function dashPin(v){
+  tabShow(v);
+  const def = SIMPLE_ALL_TILES.find(t => t.view === v);
+  showToast('⭐ « ' + (def ? def.label : v) + ' » épinglé à l\'accueil');
+}
+function _dashPlusPageHtml(list){
+  return `<div class="simple-tile tile-plus tile-back" role="button" tabindex="0" onclick="dashPlusOpen(false)"><span class="simple-tile-icon"><span class="tile-plus-dots">‹</span></span><span class="simple-tile-label">Accueil</span></div>`
+    + list.map(v => {
+      const def = SIMPLE_ALL_TILES.find(t => t.view === v) || { icon:'📁', label:v };
+      const b = _tileBadge(v);
+      return `<div class="simple-tile" role="button" tabindex="0" onclick="dashPlusGo('${v}')" style="position:relative;">
+        ${b > 0 ? `<span class="simple-tile-badge">${b > 9 ? '9+' : b}</span>` : ''}
+        <span class="dash-pin" role="button" title="Épingler à l'accueil" onclick="event.stopPropagation();dashPin('${v}')">☆</span>
+        <span class="simple-tile-icon">${_tabIconHtml(def, 'simple-tile-img')}</span>
+        <span class="simple-tile-label">${escapeHtml(def.label)}</span></div>`;
+    }).join('');
+}
+function pcNavPlusToggle(){ _pcNavPlus = !_pcNavPlus; renderPcSidebarNav(); }
 let _dashReorderTileId = null; // viewId de la tuile actuellement en édition (ou null)
 /* v5.41.401 — Masquer / afficher un onglet directement depuis le menu tuiles et la sidebar PC.
    Pendant l'édition (appui long), la tuile a un bouton « Masquer » ; les onglets masqués
@@ -62187,7 +62245,7 @@ function renderPcSidebarNav(){
       ? `<img src="${encodeURI(def.img)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${icon}'}))">`
       : icon;
     const isDev = viewId === 'dev';
-    const unseen = viewId === 'heures' ? (typeof _absBadgeCount === 'function' ? _absBadgeCount() : 0) : DASH_BADGE_VIEWS.includes(viewId) ? _dashUnseenCount(viewId) : 0;
+    const unseen = _tileBadge(viewId);
     const badgeHtml = unseen > 0 ? `<span class="pc-nav-badge">${unseen > 9 ? '9+' : unseen}</span>` : '';
     const isEditing = idx === editIdx;
     // En édition : le clic normal est désactivé (on affiche les flèches au
@@ -62209,7 +62267,18 @@ function renderPcSidebarNav(){
   const hiddenHtml = (editIdx !== -1 || _pcNavManage) ? _tabsHiddenList().map(def => `<button type="button" class="nav-btn pc-nav-hidden" tabindex="-1">
       <span class="ico">${_tabIconHtml(def)}</span><span class="lbl">${escapeHtml(def.label)}</span>
       <span class="pc-nav-show" role="button" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation();tabShow('${def.view}')">Afficher</span></button>`).join('') : '';
-  nav.innerHTML = tileBtns + (hiddenHtml ? '<div class="pc-nav-hidden-t">Onglets masqués</div>' + hiddenHtml : '');
+  // v5.41.460 — « ⋯ Plus » : onglets non épinglés, dépliés sous la liste
+  let plusHtml = '';
+  if(!hiddenHtml){
+    const pl = _tabsHiddenList();
+    if(pl.length){
+      const pb = pl.reduce((a, d) => a + _tileBadge(d.view), 0);
+      plusHtml = `<button type="button" class="nav-btn pc-nav-plus${_pcNavPlus ? ' open' : ''}" onclick="pcNavPlusToggle()"><span class="ico">⋯</span><span class="lbl">${_pcNavPlus ? 'Moins' : 'Plus'}</span>${!_pcNavPlus && pb > 0 ? `<span class="pc-nav-badge">${pb > 9 ? '9+' : pb}</span>` : ''}</button>`
+        + (_pcNavPlus ? pl.map(def => { const b = _tileBadge(def.view);
+          return `<button type="button" class="nav-btn pc-nav-more" data-view="${def.view}" onclick="simpleModeOpen('${def.view}')"><span class="ico">${_tabIconHtml(def)}</span><span class="lbl">${escapeHtml(def.label)}</span>${b > 0 ? `<span class="pc-nav-badge">${b > 9 ? '9+' : b}</span>` : ''}<span class="pc-nav-pin" role="button" title="Épingler" onclick="event.stopPropagation();dashPin('${def.view}')">☆</span></button>`; }).join('') : '');
+    }
+  }
+  nav.innerHTML = tileBtns + plusHtml + (hiddenHtml ? '<div class="pc-nav-hidden-t">Onglets masqués</div>' + hiddenHtml : '');
   nav.classList.toggle('pc-nav-has-reorder', editIdx !== -1 || _pcNavManage);
   _pcNavLongPressInit(nav);
 
