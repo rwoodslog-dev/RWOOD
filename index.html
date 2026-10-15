@@ -337,7 +337,7 @@
   .gpv-top button{ width:40px; height:40px; border-radius:50%; border:none; background:rgba(255,255,255,.12); color:#fff; font-size:18px; cursor:pointer; }
   .gpv-img{ flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; } .gpv-img img{ max-width:100%; max-height:100%; object-fit:contain; }
   .gpv-ar{ position:absolute; top:50%; transform:translateY(-50%); width:44px; height:44px; border-radius:50%; border:none; background:rgba(255,255,255,.14); color:#fff; font-size:26px; cursor:pointer; z-index:2; } .gpv-ar.l{ left:8px; } .gpv-ar.r{ right:8px; }
-  .gpv-acts{ display:flex; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom,0px)); } .gpv-acts button{ flex:1; padding:13px 4px; border-radius:13px; border:1.5px solid #3b3354; background:#1a1526; color:#fff; font-weight:800; font-size:13px; cursor:pointer; } .gpv-acts button.x{ flex:0 0 56px; }
+  .gpv-acts{ display:flex; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom,0px)); } .gpv-acts button{ flex:1; padding:13px 4px; border-radius:13px; border:1.5px solid #3b3354; background:#1a1526; color:#fff; font-weight:800; font-size:13px; cursor:pointer; } .gpv-acts button.x{ flex:0 0 52px; } .gpv-acts button.p{ background:#9B7BE0; border-color:#9B7BE0; }
   #gpSiteSheet{ position:fixed; inset:0; z-index:1300; background:rgba(0,0,0,.6); display:flex; align-items:flex-end; justify-content:center; }
   .gp-sheet{ width:100%; max-width:460px; background:var(--bg-elev,#181210); border-radius:20px 20px 0 0; padding:16px 14px calc(16px + env(safe-area-inset-bottom,0px)); max-height:75vh; overflow-y:auto; }
   .gp-sheet > b{ display:block; font-size:16px; } .gp-sheet > small{ display:block; color:var(--ink-soft); font-size:12.5px; margin:4px 0 10px; }
@@ -13617,13 +13617,30 @@ async function gpView(i){
   if(!ov){ ov = document.createElement('div'); ov.id = 'gpViewer'; document.body.appendChild(ov); }
   ov.innerHTML = `<div class="gpv-top"><button onclick="gpViewClose()">✕</button><span>🔒 Photo perso · ${i + 1}/${items.length}</span></div>
     <div class="gpv-img">${i > 0 ? `<button class="gpv-ar l" onclick="gpView(${i - 1})">‹</button>` : ''}<img id="gpvImg" alt=""><span class="gp-ld" id="gpvLd">🔓</span>${i < items.length - 1 ? `<button class="gpv-ar r" onclick="gpView(${i + 1})">›</button>` : ''}</div>
-    <div class="gpv-acts"><button onclick="gpSave(${i})">⬇️ Enregistrer</button><button onclick="gpToSite(${i})">🏗️ Vers un chantier</button><button class="x" onclick="gpDelete(${i})">🗑️</button></div>`;
+    <div class="gpv-acts"><button class="p" onclick="gpShare(${i})">📤 Partager</button><button onclick="gpSave(${i})">⬇️ Enregistrer</button><button onclick="gpToSite(${i})">🏗️ Chantier</button><button class="x" onclick="gpDelete(${i})">🗑️</button></div>`;
   ov.style.display = 'flex';
   try{ const u = await _gpUrl(it, false); const im = document.getElementById('gpvImg'); if(im && _gpView === i){ im.src = u; const l = document.getElementById('gpvLd'); if(l) l.remove(); } }catch(e){ const l = document.getElementById('gpvLd'); if(l) l.textContent = '⚠️ Photo introuvable'; }
 }
 function gpViewClose(){ const ov = document.getElementById('gpViewer'); if(ov) ov.style.display = 'none'; _gpView = -1; }
+/* v5.41.469 — partager une photo perso vers n'importe quelle appli (WhatsApp, SMS, mail…) */
+async function _gpFile(it){
+  const raw = await _gpDec(await _gpGet(it.path));
+  const nm = (it.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + (it.kind === 'pdf' ? '.pdf' : '.jpg');
+  return new File([raw], nm, { type:it.mime || (it.kind === 'pdf' ? 'application/pdf' : 'image/jpeg') });
+}
+async function gpShare(i){
+  const it = (_gpIdx || [])[i]; if(!it) return;
+  let f; try{ f = await _gpFile(it); }catch(e){ showToast('❌ Photo introuvable'); return; }
+  try{
+    if(typeof RWOOD_NATIVE !== 'undefined' && RWOOD_NATIVE && typeof _rnShareFiles === 'function'){ await _rnShareFiles([f], f.name); return; }
+    if(navigator.share && navigator.canShare && navigator.canShare({ files:[f] })){ await navigator.share({ files:[f], title:f.name }); return; }
+  }catch(e){ if(e && /abort|cancel/i.test(String(e.name || e.message || e))) return; }
+  showToast('Partage indisponible ici : la photo est enregistrée, envoie-la depuis tes fichiers');
+  gpSave(i);
+}
 async function gpSave(i){
   const it = (_gpIdx || [])[i]; if(!it) return;
+  if(typeof RWOOD_NATIVE !== 'undefined' && RWOOD_NATIVE && typeof _rnSaveBlob === 'function'){ try{ const f = await _gpFile(it); await _rnSaveBlob(f, f.name); }catch(e){ if(!(e && /cancel/i.test(String(e.message || e)))) showToast('❌ Enregistrement impossible'); } return; }
   try{ const u = await _gpUrl(it, false); const a = document.createElement('a'); a.href = u; a.download = (it.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + (it.kind === 'pdf' ? '.pdf' : '.jpg'); document.body.appendChild(a); a.click(); a.remove(); }
   catch(e){ showToast('❌ Enregistrement impossible'); }
 }
@@ -44558,9 +44575,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.468';
+const APP_VERSION = '5.41.469';
 
 const CHANGELOG = [
+  {
+    version: '5.41.469',
+    date: '15/10/2026',
+    entries: [
+      { icon: '📤', text: "Ma galerie perso : bouton « Partager » sur chaque photo ou PDF, vers toutes les applis du téléphone (WhatsApp, SMS, mail, Messenger…). La photo est envoyée en clair seulement à la personne choisie." }
+    ],
+  },
   {
     version: '5.41.468',
     date: '15/10/2026',
