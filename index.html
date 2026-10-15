@@ -407,6 +407,9 @@
   .spp-t img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
   .spp-t.on{ outline:3px solid var(--wood); outline-offset:-3px; } .spp-t.had{ opacity:.45; cursor:default; }
   .spp-t i{ position:absolute; top:5px; right:5px; min-width:24px; height:24px; border-radius:99px; background:var(--wood); color:#1a1000; font-style:normal; font-weight:900; display:flex; align-items:center; justify-content:center; padding:0 6px; font-size:12px; } .spp-t i.h{ background:rgba(0,0,0,.6); color:#fff; }
+  .spp-bts{ display:flex; gap:8px; } .spp-bts .spp-go{ flex:1; } .spp-go.an{ background:var(--card) !important; color:var(--ink) !important; border:1.5px solid var(--wood) !important; }
+  .dep-mg button.an{ top:auto; bottom:-5px; right:-5px; background:var(--wood); color:#1a1000; font-size:11px; }
+  .dep-mg .anb{ position:absolute; left:4px; bottom:4px; font-style:normal; font-size:11px; background:rgba(0,0,0,.6); border-radius:6px; padding:1px 4px; pointer-events:none; }
   .spp-go{ margin-top:10px; width:100%; border:none; border-radius:13px; padding:14px; background:var(--wood); color:#1a1000; font-weight:900; font-size:15px; cursor:pointer; } .spp-go:disabled{ opacity:.45; }
   /* v5.41.465 — fenêtre « Dépannage fini » */
   .rfd{ position:relative; padding-top:14px !important; }
@@ -44682,9 +44685,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.472';
+const APP_VERSION = '5.41.473';
 
 const CHANGELOG = [
+  {
+    version: '5.41.473',
+    date: '15/10/2026',
+    entries: [
+      { icon: '✏️', text: "Dépannages : annoter les photos jointes à une tâche ou à une feuille de route (flèches, texte, dessin). Bouton ✏️ sur chaque photo, ou « Joindre et annoter » quand on les choisit dans la galerie du chantier. L'original du chantier reste intact." }
+    ],
+  },
   {
     version: '5.41.472',
     date: '15/10/2026',
@@ -70555,9 +70565,22 @@ function depOpenEdit(id, direct){
   _depEditRender();
 }
 function depCloseEdit(){ const m = document.getElementById('modal-depEdit'); if(m) m.remove(); _depEdit = null; }
-function _depMediaGrid(arr, rm){
-  return (arr || []).length ? `<div class="dep-mg">${arr.map((m, j) => `<div>${m.type === 'photo' ? `<img src="${escapeHtml(m.url)}" onclick="_pfsNavList=[];_pfsNavIndex=-1;openPhotoFullscreen(${_routeJsArg(m.url)},'')">` : `<a href="${escapeHtml(m.url)}" target="_blank">📄</a>`}${rm ? `<button onclick="${rm}(${j})">×</button>` : ''}</div>`).join('')}</div>` : '';
+function _depMediaGrid(arr, rm, an){
+  return (arr || []).length ? `<div class="dep-mg">${arr.map((m, j) => `<div>${m.type === 'photo' ? `<img src="${escapeHtml(m.url)}" onclick="_pfsNavList=[];_pfsNavIndex=-1;openPhotoFullscreen(${_routeJsArg(m.url)},'')">` : `<a href="${escapeHtml(m.url)}" target="_blank">📄</a>`}${rm ? `<button onclick="${rm}(${j})">×</button>` : ''}${an && m.type === 'photo' ? `<button class="an" title="Annoter" onclick="${an}(${j})">✏️</button>` : ''}${m.annotated ? '<i class="anb">✏️</i>' : ''}</div>`).join('')}</div>` : '';
 }
+/* v5.41.473 — annoter une photo jointe (prise, importée ou choisie dans la galerie du chantier).
+   La version annotée remplace la photo dans la tâche ; l'original du chantier n'est pas touché. */
+async function _depAnnot(m, siteId){
+  if(!m || !m.url || typeof rwAnnotatePhoto !== 'function') return null;
+  const an = await rwAnnotatePhoto(m.url, { okLabel:'Garder l\'annotation' });
+  if(!an || !an.file){ if(an) showToast('Rien de dessiné'); return null; }
+  showToast('⬆️ Enregistrement de la photo annotée…');
+  try{ const url = await _depUpload(new File([an.file], String(m.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + ' (annotée).jpg', { type:'image/jpeg' }), siteId);
+    showToast('✅ Photo annotée'); return Object.assign({}, m, { url, thumbUrl:undefined, annotated:true, orig:m.orig || m.url, fromSite:false, uploadedAt:new Date().toISOString() }); }
+  catch(e){ showToast('❌ Échec de l\'enregistrement (connexion ?)'); return null; }
+}
+async function depAnnotMedia(j){ const e = _depEdit; if(!e) return; const n = await _depAnnot(e.media[j], e.siteId); if(n && _depEdit === e){ e.media[j] = n; _depEditRender(); } }
+async function dreAnnot(i, j){ const r = _dre; if(!r) return; const s = r.stops[i]; const n = await _depAnnot(s.media[j], s.siteId); if(n && _dre === r){ s.media[j] = n; _dreRender(); } }
 function _depEditRender(){
   const box = document.getElementById('depEditBody'), e = _depEdit; if(!box || !e) return;
   const ro = e.id && e.status && e.status !== 'todo';   // envoyée / terminée : lecture + compte-rendu
@@ -70602,7 +70625,7 @@ function _depEditRender(){
     ${(e.mat || []).map((m, j) => `<div class="dep-act dep-mat"><span>🧰 ${escapeHtml(m.label)}</span><button onclick="depRmMat(${j})">×</button></div>`).join('')}
     <div style="display:flex;gap:6px;margin-top:8px;"><input type="text" id="depMatIn" placeholder="Ex : vis 6×120 dans le rack, pied de poteau…" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();depAddMat();}"><button class="btn btn-outline" onclick="depAddMat()">＋</button></div>
     <div class="dep-step">4 · Photos</div>
-    ${_depMediaGrid(e.media, 'depRmMedia')}
+    ${_depMediaGrid(e.media, 'depRmMedia', 'depAnnotMedia')}
     <div class="dep-big2 sm"><button onclick="depPickMedia('media')"><span>📷</span>Photos</button>${e.mode === 'site' && e.siteId ? `<button onclick="depSitePhotos()"><span>🏗️</span>Du chantier</button>` : ''}<button onclick="depAddSketch()"><span>📐</span>Croquis</button></div>
     <div class="dep-big2 sm" style="margin-top:12px;"><button class="${e.prio !== 'urgent' ? 'on' : ''}" style="--c:#8a7a66" onclick="_depEdit.prio='normal';_depEditRender()">Normale</button><button class="${e.prio === 'urgent' ? 'on' : ''}" style="--c:#E07A63" onclick="_depEdit.prio='urgent';_depEditRender()">🔥 Urgente</button></div>
     <button class="btn btn-primary btn-block dep-save" onclick="depSaveEdit()">${window._depDirect ? '➕ Ajouter à la feuille de route' : '💾 Enregistrer'}</button>
@@ -70622,10 +70645,10 @@ function _depSitePhotoPicker(siteId, already, onDone){
   const st = (data.sites || []).find(x => x.id === siteId); if(!st){ showToast('Chantier introuvable'); return; }
   const ph = (st.sharedMedia || []).filter(m => m && m.url && (m.type === 'photo' || /^image\//.test(m.mimeType || ''))).sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
   if(!ph.length){ showToast('Aucune photo dans la galerie de ce chantier'); return; }
-  _spp = { ph, sel:new Set(), onDone, have:new Set(already || []) };
+  _spp = { ph, sel:new Set(), onDone, have:new Set(already || []), siteId };
   let ov = document.getElementById('sppOv'); if(ov) ov.remove();
   ov = document.createElement('div'); ov.id = 'sppOv';
-  ov.innerHTML = `<div class="spp"><div class="spp-h"><b>🏗️ Photos de ${escapeHtml(st.name || 'chantier')}</b><button onclick="_sppClose()">×</button></div><div class="hint" style="margin:0 2px 8px;">Touche les photos à joindre (${ph.length} dans la galerie).</div><div class="spp-g" id="sppG"></div><button class="spp-go" id="sppGo" onclick="_sppOk()" disabled>Joindre</button></div>`;
+  ov.innerHTML = `<div class="spp"><div class="spp-h"><b>🏗️ Photos de ${escapeHtml(st.name || 'chantier')}</b><button onclick="_sppClose()">×</button></div><div class="hint" style="margin:0 2px 8px;">Touche les photos à joindre (${ph.length} dans la galerie).</div><div class="spp-g" id="sppG"></div><div class="spp-bts"><button class="spp-go" id="sppGo" onclick="_sppOk()" disabled>Joindre</button><button class="spp-go an" id="sppGoA" onclick="_sppOk(true)" disabled>✏️ Joindre et annoter</button></div></div>`;
   ov.addEventListener('click', e => { if(e.target === ov) _sppClose(); });
   document.body.appendChild(ov); _sppRender();
 }
@@ -70634,10 +70657,16 @@ function _sppRender(){
   g.innerHTML = p.ph.map((m, i) => { const on = p.sel.has(i), had = p.have.has(m.url);
     return `<div class="spp-t${on ? ' on' : ''}${had ? ' had' : ''}" onclick="_sppTap(${i})"><img src="${escapeHtml(m.thumbUrl || m.url)}" loading="lazy" alt="">${on ? '<i>✓</i>' : had ? '<i class="h">déjà</i>' : ''}</div>`; }).join('');
   const b = document.getElementById('sppGo'); if(b){ b.disabled = !p.sel.size; b.textContent = p.sel.size ? 'Joindre ' + p.sel.size + ' photo' + (p.sel.size > 1 ? 's' : '') : 'Joindre'; }
+  const ba = document.getElementById('sppGoA'); if(ba) ba.disabled = !p.sel.size;
 }
 function _sppTap(i){ const p = _spp; if(!p) return; if(p.have.has(p.ph[i].url)) return; if(p.sel.has(i)) p.sel.delete(i); else p.sel.add(i); _sppRender(); }
 function _sppClose(){ const o = document.getElementById('sppOv'); if(o) o.remove(); _spp = null; }
-function _sppOk(){ const p = _spp; if(!p) return; const list = [...p.sel].sort((a, b) => a - b).map(i => p.ph[i]); _sppClose(); p.onDone(list.map(m => ({ url:m.url, thumbUrl:m.thumbUrl || undefined, name:m.title || m.name || 'Photo du chantier', type:'photo', uploadedAt:m.uploadedAt || new Date().toISOString(), fromSite:true }))); }
+async function _sppOk(annot){
+  const p = _spp; if(!p) return; const list = [...p.sel].sort((a, b) => a - b).map(i => p.ph[i]); _sppClose();
+  let out = list.map(m => ({ url:m.url, thumbUrl:m.thumbUrl || undefined, name:m.title || m.name || 'Photo du chantier', type:'photo', uploadedAt:m.uploadedAt || new Date().toISOString(), fromSite:true }));
+  if(annot){ for(let k = 0; k < out.length; k++){ const n = await _depAnnot(out[k], p.siteId); if(n) out[k] = n; } }   // une après l'autre
+  p.onDone(out);
+}
 function depSitePhotos(){
   const e = _depEdit; if(!e || !e.siteId) return;
   _depSitePhotoPicker(e.siteId, (e.media || []).map(m => m.url), list => { if(_depEdit !== e) return; e.media = (e.media || []).concat(list); showToast('✅ ' + list.length + ' photo' + (list.length > 1 ? 's' : '') + ' jointe' + (list.length > 1 ? 's' : '')); _depEditRender(); });
@@ -71164,7 +71193,7 @@ function _dreRender(){
           return `<div class="dre-t${fixed ? ' f' : ''}"><span>${fixed ? (t.report && t.report.result === 'ko' ? '⛔' : '✅') : '⏳'} ${escapeHtml(t.label)}${(t.media || []).length ? ' <small>📷 ' + t.media.length + '</small>' : ''}</span>
             ${fixed || sd ? '' : `<button title="Ajouter une photo à cette tâche" onclick="drePickMedia(${i},${j})">📷</button><button title="Retirer" onclick="dreRmTask(${i},${j})">×</button>`}</div>`; }).join('')}
         ${sd ? '' : `<textarea rows="2" placeholder="📝 Note pour ce chantier…" oninput="_dre.stops[${i}].notes=this.value">${escapeHtml(s.notes || '')}</textarea>
-        ${(s.media || []).length ? `<div class="dep-mg">${s.media.map((m, j) => `<div>${m.type === 'photo' ? `<img src="${escapeHtml(m.url)}">` : '<a>📄</a>'}<button onclick="_dre.stops[${i}].media.splice(${j},1);_dreRender()">×</button></div>`).join('')}</div>` : ''}
+        ${(s.media || []).length ? `<div class="dep-mg">${s.media.map((m, j) => `<div>${m.type === 'photo' ? `<img src="${escapeHtml(m.url)}">` : '<a>📄</a>'}<button onclick="_dre.stops[${i}].media.splice(${j},1);_dreRender()">×</button>${m.type === 'photo' ? `<button class="an" onclick="dreAnnot(${i},${j})">✏️</button>` : ''}${m.annotated ? '<i class="anb">✏️</i>' : ''}</div>`).join('')}</div>` : ''}
         ${(s.mat || []).map((m, j) => `<div class="dre-t"><span>🧰 ${escapeHtml(m.label)}${m.done ? ' <small>✓ pris</small>' : ''}</span>${m.done ? '' : `<button onclick="_dre.stops[${i}].mat.splice(${j},1);_dreRender()">×</button>`}</div>`).join('')}
         <div class="dre-bt"><button onclick="drePickMedia(${i},-1)">📷 Photos</button>${s.siteId ? `<button onclick="dreSitePhotos(${i})">🏗️ Du chantier</button>` : ''}<button onclick="dreSketch(${i})">📐 Croquis</button></div>
         <div class="dre-bt"><button onclick="dreNewTask(${i})">＋ Tâche</button><button onclick="dreAddMat(${i})">🧰 ＋ Matériel</button></div>`}
