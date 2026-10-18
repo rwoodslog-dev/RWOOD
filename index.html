@@ -726,6 +726,10 @@
   .gal-dc .n{ font-size:12px; font-weight:800; padding:5px 6px 0; line-height:1.2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .gal-dc .d{ font-size:10.5px; color:var(--ink-soft); padding:1px 6px 6px; }
   /* v5.41.486 — correction multi-chantiers + barre de comparaison */
+  .ce-corr{ display:block; font-size:9.5px; font-weight:800; color:#E8AC3D; margin-top:2px; }
+  .ce-libre{ display:grid; grid-template-columns:1fr 150px; gap:6px; margin-top:6px; }
+  .ce-libre input, .ce-libre select{ width:100%; box-sizing:border-box; background:var(--card); border:1.5px dashed var(--wood); border-radius:9px; padding:8px 10px; color:var(--ink); font-size:14px; }
+  @media (max-width:500px){ .ce-libre{ grid-template-columns:1fr; } }
   .ce-modes{ margin:0 0 12px; } .ce-modes button{ flex:1; }
   .ce-row{ background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:10px; margin-bottom:8px; }
   .ce-rh{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; font-size:12.5px; }
@@ -8182,7 +8186,8 @@
         </div>
         <div class="ce-field">
           <label>Chantier</label>
-          <select id="comptaEditSite"></select>
+          <select id="comptaEditSite" onchange="ceLibreToggle()"></select>
+          <div id="ceLibre" class="ce-libre" style="display:none;"><input type="text" id="ceLibreName" placeholder="Nom du chantier libre (ex : Dépôt, client M. Martin…)"><select id="ceLibreZone"></select></div>
         </div>
         <div class="ce-field">
           <label>Tâche</label>
@@ -27960,6 +27965,7 @@ function setHeuresMode(mode){
   if(mode === 'fiches') renderFiches();
   if(mode === 'recap')  renderRecapPerso();
   if(mode === 'equipe') equipeRender();   // v5.41.482
+  try{ comptaEditApplyToMe(); }catch(e){}   // v5.41.490 — corrections de la compta
   if(mode === 'paie')   renderPaie();
   if(mode === 'compta') renderComptaPaie();
 }
@@ -28124,12 +28130,13 @@ function _rplCell(ctx, day, entry){
   }
   const parts = [];
   if(typeof _entryHasMultiSites === 'function' && _entryHasMultiSites(entry)){
-    entry.sites.forEach(r => { const h = parseFloat(String(r && r.hours != null ? r.hours : '').replace(',', '.')) || 0; if(!r) return; const si = _rplSiteInfo(ctx, r.siteId, r.customSite || r.siteName || entry.customSite); parts.push(Object.assign({ h, task:r.task || '' }, si)); });
+    entry.sites.forEach(r => { const h = parseFloat(String(r && r.hours != null ? r.hours : '').replace(',', '.')) || 0; if(!r) return; const si = _rplSiteInfo(ctx, r.siteId, r.customName || r.siteName || (entry.customSite && entry.customSite.name)); parts.push(Object.assign({ h, task:r.task || '' }, si)); });
   } else {
     const h = typeof _entryTotalHours === 'function' ? _entryTotalHours(entry) : (parseFloat(entry.hours) || 0);
     if(!h && !entry.task) return null;
     const sid = entry._siteId != null ? entry._siteId : day.siteId;
-    parts.push(Object.assign({ h, task:entry.task || '' }, _rplSiteInfo(ctx, entry.customSite ? '__custom__' : sid, entry.customSite || day.customSite)));
+    const _cs = (entry.customSite && entry.customSite.name) ? entry.customSite.name : (!sid && day.customSite && day.customSite.name ? day.customSite.name : '');
+    parts.push(Object.assign({ h, task:entry.task || '' }, _rplSiteInfo(ctx, _cs ? '__custom__' : sid, _cs)));
   }
   return parts.length ? { parts, h: parts.reduce((a, p) => a + p.h, 0) } : null;
 }
@@ -33481,6 +33488,7 @@ function renderFiches(){
         trajetRates,
         voiturePerso: !!(entryDay && entryDay.voiturePerso),
         voiturePersoKm: entryDay && entryDay.voiturePersoKm ? entryDay.voiturePersoKm : null,
+        corr: !!entry._comptaTs,   // v5.41.490
         typeJournee: tj,
         isAbsence: !!hasTypeJournee,
         tjInfo
@@ -33490,7 +33498,7 @@ function renderFiches(){
     const _absCell = (c) => `<td style="text-align:center;font-size:11px;font-weight:700;color:${c.tjInfo.color};background:${c.tjInfo.color}12;">${c.tjInfo.emoji} ${c.tjInfo.short}</td>`;
     const rowEdit = cells.map(c => `<td><button class="edit-cell-btn" onclick="openFichesEdit('${w.id}','${c.key}')" title="Modifier ce jour"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4 17.5l1-4L15.5 3l3.5 3.5L8.5 17l-4 1z"/><path d="M13 5.5l3.5 3.5"/></svg></button></td>`).join('');
     const rowSite = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? _absCell(c) : `<td class="site-cell" style="${c.color ? `background:${colorWithAlpha(c.color, 0.2)}; border-left:3px solid ${c.color};` : ''}">${c.siteIsHtml ? c.site : escapeHtml(c.site)}</td>`).join('');
-    const rowHours = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">${c.hoursIsHtml ? c.hours : escapeHtml(String(c.hours))+'h'}</td>`).join('');
+    const rowHours = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="hours-cell">${c.hoursIsHtml ? c.hours : escapeHtml(String(c.hours))+'h'}${c.corr ? '<span class="ce-corr" title="Corrigé par la comptabilité">✏️ compta</span>' : ''}</td>`).join('');
     const rowPanier = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td>${c.panier ? '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M4.5 12.5l4.5 4.5L19.5 6"/></svg>' : '—'}</td>`).join('');
     const rowTask = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${(c.taskIsHtml ? c.task : escapeHtml(c.task)) || '—'}</td>`).join('');
     const rowTrajet = cells.map(c => {
@@ -34079,15 +34087,20 @@ function renderComptableFichesContent(rows){
   const allWorkers = [];
   const workerSeenNames = new Map(); // nom normalisé → déjà ajouté
 
-  rows.forEach(device => {
+  // v5.41.489 — fiabilité : la fiche d'une personne vient d'abord de SON propre téléphone (propriétaire = cette personne),
+  // jamais d'une copie restée sur le téléphone d'un collègue ; les copies ne servent qu'en dernier recours.
+  const _nrm = x => (x||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+  const _isOwn = (device, w) => (w.authId && device.ownerAuthId && w.authId === device.ownerAuthId) || (_nrm(w.name) && _nrm(w.name) === _nrm(device.ownerName)) || (device.workers || []).length === 1;   // un téléphone n'envoie que la fiche de son propriétaire
+  [true, false].forEach(ownPass => rows.forEach(device => {
     (device.workers||[]).forEach(w => {
-      const workerNorm = (w.name||'').trim().toLowerCase().replace(/\s+/g, ' ');
+      if(_isOwn(device, w) !== ownPass) return;
+      const workerNorm = _nrm(w.name);
       if(!workerNorm) return;
-      if(workerSeenNames.has(workerNorm)) return; // doublon — déjà le plus récent (rows triés)
+      if(workerSeenNames.has(workerNorm)) return; // doublon — déjà retenu (son téléphone d'abord, puis le plus récent)
       workerSeenNames.set(workerNorm, true);
       allWorkers.push({ key: _workerKey(device.deviceId, w.id), workerId: w.id, name: w.name, device });
     });
-  });
+  }));
   allWorkers.sort((a,b)=> a.name.localeCompare(b.name, 'fr'));
 
   if(!allWorkers.length){
@@ -34226,10 +34239,33 @@ function _bfWeekTable(aw, offset){
   const rTr = dayRows.map(r => { if(!r.hasContent || r.isAbsence || !r.trajetRates) return E; const amt = r.trajetRates.trajet * (r.voiturePerso ? 2 : 1); trTot += amt; return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.', ',')}${r.voiturePerso ? ' ×2' : ''}</td>`; }).join('');
   const rT = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="task-cell">${r.multiLines.map(l => escapeHtml(l.task || '—')).join('<br>')}</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
   const rE = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour">✎</button></td>`).join('') : '';
-  return { weekTotal, html:`<div class="bf-wk">Semaine ${weekNum} · du ${fs(days[0])} au ${fs(days[6])}</div><div class="timesheet-table-wrap"><table class="timesheet"><thead><tr><th></th>${days.map((d, i) => `<th>${lbl[i]}<br>${fs(d)}</th>`).join('')}</tr></thead><tbody>
+  return { weekTotal, dayRows, html:`<div class="bf-wk">Semaine ${weekNum} · du ${fs(days[0])} au ${fs(days[6])}</div><div class="timesheet-table-wrap"><table class="timesheet"><thead><tr><th></th>${days.map((d, i) => `<th>${lbl[i]}<br>${fs(d)}</th>`).join('')}</tr></thead><tbody>
     <tr><td class="row-label">Chantier</td>${rS}</tr><tr><td class="row-label">Heures</td>${rH}</tr><tr><td class="row-label">Panier</td>${rP}</tr>
     ${hasTr ? `<tr><td class="row-label">Trajet</td>${rTr}</tr>` : ''}<tr><td class="row-label">Tâche</td>${rT}</tr>${editEnabled ? `<tr><td class="row-label">Corriger</td>${rE}</tr>` : ''}</tbody></table></div>
     <div class="timesheet-total">Total semaine : ${weekTotal}h${hasTr ? ' · Trajet ' + trTot.toFixed(2) + '€' : ''}</div>` };
+}
+/* v5.41.489 — récap calculé à partir des MÊMES lignes que le tableau affiché (une seule source) :
+   heures, h sup, paniers, zones et primes de trajet, absences ne peuvent plus diverger du tableau. */
+function _bfRecapFromWeeks(tabs){
+  const base = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
+  let totalHeures = 0, heuresSup = 0, paniers = 0;
+  const zc = {}, zcP = {}, parMotif = {}, zonesMissing = [], rateOf = {};
+  tabs.forEach(t => {
+    let wk = 0;
+    (t.dayRows || []).forEach(r => {
+      if(!r.hasContent) return;
+      if(r.isAbsence){ const lbl = (TYPE_JOURNEE[r.typeJournee] && TYPE_JOURNEE[r.typeJournee].label) || r.typeJournee; parMotif[lbl] = (parMotif[lbl] || 0) + 1; return; }
+      const h = parseFloat(r.h) || 0; wk += h; totalHeures += h;
+      if(r.panier) paniers++;
+      if(r.trajetRates){ const z = String(r.trajetRates.zone); rateOf[z] = r.trajetRates.trajet; zc[z] = (zc[z] || 0) + 1; if(r.voiturePerso) zcP[z] = (zcP[z] || 0) + 1; }
+      else if(h > 0 && String(r.zone || '') !== 'GD') zonesMissing.push(r.dateKey);
+    });
+    heuresSup += Math.max(0, wk - base);
+  });
+  let cumulTrajet = 0;
+  const lines = m => Object.keys(m).sort((a, b) => a.localeCompare(b, 'fr', { numeric:true })).map(z => { const rate = rateOf[z] || 0, sous = rate * m[z]; cumulTrajet += sous; return { z, n:m[z], rate, sous }; });
+  const zonesLignes = lines(zc), zonesLignesPerso = lines(zcP);
+  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing };
 }
 function _bfRender(rows, allWorkers){
   const container = document.getElementById('fichesContent');
@@ -34254,7 +34290,7 @@ function _bfRender(rows, allWorkers){
   const cards = list.map(aw => {
     const tabs = offs.map(o => _bfWeekTable(aw, o));
     const tot = tabs.reduce((a, t) => a + (parseFloat(t.weekTotal) || 0), 0); grand += tot;
-    let r = null; try{ r = _computeRecap(aw.workerId, buckets, ctx); }catch(e){}
+    let r = null; try{ r = _bfRecapFromWeeks(tabs); }catch(e){}   // v5.41.489 — même source que le tableau
     const w = (aw.device.workers || []).find(x => x.id === aw.workerId) || {};
     const sig = w.signature ? '<span class="bf-sig ok">✅ Signée</span>' : `<button type="button" class="bf-sig" onclick="comptaRequestSignature('${aw.device.deviceId}','${escapeHtml(aw.name)}','${escapeHtml(aw.device.ownerAuthId || '')}')">✍️ Demander la signature</button>`;
     return `<div class="card bf-card" id="comptableWorker-${aw.key}">
@@ -34709,7 +34745,8 @@ async function generateSalaryXlsx(){
     const att = (typeof _attendanceWithOverridesForWorker === 'function')
       ? _attendanceWithOverridesForWorker(w.device, w.workerId)
       : ((w.device && w.device.attendance) || {});
-    const sites = (w.device && w.device.sites) || [];
+    // v5.41.489 — mêmes chantiers que le tableau des fiches (ceux de l'appareil qui connaissent leur zone, puis la liste officielle)
+    const sites = ((w.device && w.device.sites) || []).filter(x => x && x.trajetZone).concat(data.sites || []);
     const perWeekHours = weekKeys.map(()=>0);
     const perWeekWorked = weekKeys.map(()=>false); // au moins un jour pointé (normal) dans la semaine
     const perWeekAbs = weekKeys.map(()=>({})); // {type: nbJours} des jours d'absence (cp/css/maladie/...)
@@ -46038,9 +46075,32 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.487';
+const APP_VERSION = '5.41.490';
 
 const CHANGELOG = [
+  {
+    version: '5.41.490',
+    date: '18/10/2026',
+    entries: [
+      { icon: '✏️', text: "Le patron et la comptabilité ont la main sur les heures : quand ils corrigent une journée, la correction s'applique aussi sur le téléphone de la personne (pointage, fiche d'heures, récap), qui est prévenue. Les deux côtés affichent toujours les mêmes heures." },
+      { icon: '🛡️', text: "Fiabilité : les corrections du patron et de la comptable ne s'écrasent plus entre elles ; une correction annulée ne revient plus toute seule. Le patron peut corriger les fiches comme la comptable." }
+    ],
+  },
+  {
+    version: '5.41.489',
+    date: '18/10/2026',
+    entries: [
+      { icon: '🐛', text: "Fiches d'heures (patron et comptabilité) : le récap sous chaque fiche pouvait donner d'autres chiffres que le tableau (heures, paniers, zones de trajet) quand une personne avait des fiches sur plusieurs téléphones. Le récap est maintenant calculé exactement à partir des jours affichés dans le tableau : les deux sont toujours identiques." },
+      { icon: '🛡️', text: "Fiabilité : la fiche de chaque personne vient d'abord de son propre téléphone, plus jamais d'une ancienne copie restée sur le téléphone d'un collègue. L'export Excel des salaires utilise aussi les mêmes zones de trajet que le tableau." }
+    ],
+  },
+  {
+    version: '5.41.488',
+    date: '18/10/2026',
+    entries: [
+      { icon: '✏️', text: "Corriger une journée (patron et comptabilité) : on peut choisir « Chantier libre » (nom + zone de trajet), en mode 1 chantier comme en plusieurs chantiers." }
+    ],
+  },
   {
     version: '5.41.487',
     date: '18/10/2026',
@@ -70029,7 +70089,7 @@ let _comptaEditPulled = false;     // calque déjà tiré du cloud ?
 })();
 
 /* ── Flag & calque ───────────────────────────────────────────────── */
-function comptaEditEnabled(){ return !!(data.settings && data.settings.comptableCanEdit); }
+function comptaEditEnabled(){ const r = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; return r === 'patron' || r === 'comptable' || !!(data.settings && data.settings.comptableCanEdit); }   // v5.41.490 — patron et comptable ont la main sur les heures
 function _comptaEditOverrides(){
   if(!data.settings) data.settings = {};
   if(!data.settings.comptableOverrides) data.settings.comptableOverrides = {};
@@ -70065,14 +70125,14 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
     const suffix = '::' + workerId + '::' + dateKey;
     let best = null;
     Object.keys(all).forEach(k => {
-      if(k.endsWith(suffix)){
+      if(k.endsWith(suffix) && !(all[k] && all[k].deleted)){
         const cand = all[k];
         if(!best || (cand.ts||0) > (best.ts||0)) best = cand;
       }
     });
     ov = best;
   }
-  if(!ov) return null;
+  if(!ov || ov.deleted) return null;
   const newEntry = Object.assign({}, entry || {}, {
     hours:  (ov.hours  != null ? ov.hours  : (entry ? entry.hours  : '')),
     task:   (ov.task   != null ? ov.task   : (entry ? entry.task   : '')),
@@ -70082,6 +70142,8 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
   // v5.41.486 — correction d'une journée multi-chantiers : chaque chantier (nom, heures, tâche)
   if(ov.mode === 'multi' && Array.isArray(ov.sites) && ov.sites.length){ newEntry.mode = 'multi'; newEntry.sites = ov.sites.map(r => Object.assign({}, r)); }
   else if(ov.mode === 'simple'){ delete newEntry.mode; delete newEntry.sites; }
+  if(ov.customSite && (ov.customSite.name || ov.customSite.zone)) newEntry.customSite = Object.assign({}, ov.customSite);   // v5.41.488 — chantier libre
+  else if(ov.customSite === null) delete newEntry.customSite;
   const newEd = Object.assign({}, ed || {}, {
     siteId: (ov.siteId != null ? ov.siteId : (ed ? ed.siteId : null)),
     siteName: (ov.siteName != null ? ov.siteName : (ed ? ed.siteName : undefined)),
@@ -70143,6 +70205,13 @@ function comptaEditOpen(deviceId, workerId, dateKey){
         '<option value="'+s.id+'"'+(s.id===curSite?' selected':'')+'>'+escapeHtml(s.name)+'</option>'
       ).join('');
 
+  // v5.41.488 — chantier libre
+  { const cs = entry && entry.customSite && (entry.customSite.name || entry.customSite.zone) ? entry.customSite : null;
+    siteSel.insertAdjacentHTML('beforeend', '<option value="__libre__">✏️ Chantier libre…</option>');
+    if(cs && !_entryHasMultiSites(entry)) siteSel.value = '__libre__';
+    document.getElementById('ceLibreName').value = cs ? (cs.name || '') : '';
+    document.getElementById('ceLibreZone').innerHTML = _ceZoneOpts(cs ? cs.zone : '');
+    ceLibreToggle(); }
   // Chips de tâche (même liste que le pointage)
   const curTask = entry ? (entry.task||'') : '';
   document.getElementById('comptaEditTask').value = curTask;
@@ -70164,6 +70233,9 @@ function comptaEditOpen(deviceId, workerId, dateKey){
   openModal('comptaEdit');
 }
 
+/* v5.41.488 — chantier libre dans la correction (patron / comptable) */
+function _ceZoneOpts(cur){ const zs = (typeof _recapZoneList === 'function' ? _recapZoneList() : []); return `<option value="">Pas de zone</option>` + zs.map(z => `<option value="${escapeHtml(z)}" ${String(cur || '') === z ? 'selected' : ''}>Zone ${escapeHtml(z)}</option>`).join(''); }
+function ceLibreToggle(){ const sel = document.getElementById('comptaEditSite'), b = document.getElementById('ceLibre'); if(b) b.style.display = sel && sel.value === '__libre__' ? '' : 'none'; }
 /* v5.41.486 — correction multi-chantiers (patron / comptable) */
 let _ceRows = [], _ceMode = 'one';
 function ceSetMode(m, init){
@@ -70175,23 +70247,23 @@ function ceSetMode(m, init){
   if(one) one.style.display = m === 'one' ? '' : 'none';
   if(mu) mu.style.display = m === 'multi' ? '' : 'none';
   if(m === 'multi') ceRenderRows();
-  else if(!init && _ceRows[0]){ const r = _ceRows[0]; const sel = document.getElementById('comptaEditSite'); if(sel && r.siteId && [...sel.options].some(o => o.value === r.siteId)) sel.value = r.siteId; document.getElementById('comptaEditHours').value = _ceRows.reduce((a, x) => a + (parseFloat(String(x.hours).replace(',', '.')) || 0), 0) || ''; document.getElementById('comptaEditTask').value = r.task || ''; }
+  else if(!init && _ceRows[0]){ const r = _ceRows[0]; const sel = document.getElementById('comptaEditSite'); if(sel && r.siteId === '__custom__'){ sel.value = '__libre__'; document.getElementById('ceLibreName').value = r.customName || ''; document.getElementById('ceLibreZone').innerHTML = _ceZoneOpts(r.customZone); ceLibreToggle(); } else if(sel && r.siteId && [...sel.options].some(o => o.value === r.siteId)){ sel.value = r.siteId; ceLibreToggle(); } document.getElementById('comptaEditHours').value = _ceRows.reduce((a, x) => a + (parseFloat(String(x.hours).replace(',', '.')) || 0), 0) || ''; document.getElementById('comptaEditTask').value = r.task || ''; }
 }
 function _ceSyncFromSingle(){
   if(_ceMode !== 'one') return;
   const sel = document.getElementById('comptaEditSite');
   const v = sel ? sel.value : '';
   if(!_ceRows.length) _ceRows.push({});
-  _ceRows[0] = Object.assign({}, _ceRows[0], { siteId:(v && v !== '__free__') ? v : (_ceRows[0].siteId || ''), hours:document.getElementById('comptaEditHours').value, task:document.getElementById('comptaEditTask').value });
+  const lib = v === '__libre__';
+  _ceRows[0] = Object.assign({}, _ceRows[0], { siteId:lib ? '__custom__' : ((v && v !== '__free__') ? v : (_ceRows[0].siteId || '')), customName:lib ? document.getElementById('ceLibreName').value : _ceRows[0].customName, customZone:lib ? document.getElementById('ceLibreZone').value : _ceRows[0].customZone, hours:document.getElementById('comptaEditHours').value, task:document.getElementById('comptaEditTask').value });
 }
 function ceRenderRows(){
   const box = document.getElementById('ceMultiRows'); if(!box) return;
   const sites = _comptaEditAllSites();
   box.innerHTML = _ceRows.map((r, i) => {
-    const known = sites.some(s => s.id === r.siteId);
-    const extra = (r.siteId && !known) ? `<option value="${escapeHtml(r.siteId)}" selected>${escapeHtml(r.name || r.customName || 'Chantier libre')}</option>` : '';
     return `<div class="ce-row"><div class="ce-rh"><b>Chantier ${i + 1}</b>${_ceRows.length > 1 ? `<button type="button" onclick="ceDelRow(${i})" title="Retirer">✕</button>` : ''}</div>
-      <select onchange="_ceRows[${i}].siteId=this.value;_ceRows[${i}].name=this.options[this.selectedIndex].text">${extra}<option value="" ${!r.siteId ? 'selected' : ''}>— Choisir le chantier —</option>${sites.map(s => `<option value="${s.id}" ${s.id === r.siteId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>
+      <select onchange="_ceRows[${i}].siteId=this.value;_ceRows[${i}].name=this.options[this.selectedIndex].text;ceRenderRows()"><option value="" ${!r.siteId ? 'selected' : ''}>— Choisir le chantier —</option>${sites.map(s => `<option value="${s.id}" ${s.id === r.siteId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}<option value="__custom__" ${r.siteId === '__custom__' ? 'selected' : ''}>✏️ Chantier libre…</option></select>
+      ${r.siteId === '__custom__' ? `<div class="ce-libre"><input type="text" placeholder="Nom du chantier libre" value="${escapeHtml(r.customName || '')}" oninput="_ceRows[${i}].customName=this.value"><select onchange="_ceRows[${i}].customZone=this.value">${_ceZoneOpts(r.customZone)}</select></div>` : ''}
       <div class="ce-rr"><input type="number" step="0.5" min="0" inputmode="decimal" placeholder="Heures" value="${escapeHtml(String(r.hours || ''))}" oninput="_ceRows[${i}].hours=this.value;ceTot()" onchange="this.value=roundHoursToHalf(this.value);_ceRows[${i}].hours=this.value;ceTot()"><input type="text" placeholder="Tâche" value="${escapeHtml(r.task || '')}" oninput="_ceRows[${i}].task=this.value"></div></div>`;
   }).join('');
   ceTot();
@@ -70283,7 +70355,7 @@ async function comptaEditSave(){
   const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
   const ovData = { hours, task, panier, typeJournee, voiturePerso, ts: Date.now() };
-  if(rawSel && rawSel !== '__free__'){
+  if(rawSel && rawSel !== '__free__' && rawSel !== '__libre__'){
     const chosen = _comptaEditAllSites().find(s => s.id === rawSel);
     ovData.siteId = rawSel;                              // ID synchronisé officiel
     if(chosen) ovData.siteName = chosen.name;            // nom propre (écrase l'ancien texte)
@@ -70296,13 +70368,20 @@ async function comptaEditSave(){
     if(!rows.length){ showToast('Choisis au moins un chantier'); return; }
     const all = _comptaEditAllSites();
     ovData.mode = 'multi';
-    ovData.sites = rows.map(r => { const o = { siteId:r.siteId, hours:r.hours === '' ? '' : String(roundHoursToHalf(r.hours)), task:r.task || '' }; if(r.siteId === '__custom__'){ o.customName = r.customName || r.name || ''; if(r.customZone) o.customZone = r.customZone; } if(r.zoneHint) o.zoneHint = r.zoneHint; return o; });
+    ovData.sites = rows.map(r => { const o = { siteId:r.siteId, hours:r.hours === '' ? '' : String(roundHoursToHalf(r.hours)), task:r.task || '' }; if(r.siteId === '__custom__'){ o.customName = (r.customName || '').trim() || 'Chantier libre'; if(r.customZone) o.customZone = r.customZone; } if(r.zoneHint) o.zoneHint = r.zoneHint; return o; });
     ovData.hours = String(ovData.sites.reduce((a, r) => a + (parseFloat(r.hours) || 0), 0));
     ovData.task = ovData.sites.map(r => r.task).filter(Boolean).join(' / ');
     const first = all.find(x => x.id === rows[0].siteId);
     ovData.siteId = rows[0].siteId === '__custom__' ? null : rows[0].siteId; if(first) ovData.siteName = first.name;
+    ovData.customSite = null;
   } else {
     ovData.mode = 'simple'; ovData.sites = null;
+    if(rawSel === '__libre__'){   // v5.41.488 — chantier libre
+      const nm = document.getElementById('ceLibreName').value.trim();
+      if(!nm){ showToast('Donne un nom au chantier libre'); return; }
+      ovData.customSite = { name:nm, zone:document.getElementById('ceLibreZone').value || '' };
+      ovData.siteId = null; ovData.siteName = nm;
+    } else ovData.customSite = null;
   }
   const key = _comptaEditKey(deviceId, workerId, dateKey);
   const prev = ov[key] || {};
@@ -70335,7 +70414,7 @@ function comptaEditReset(){
   if(!_comptaEditCtx) return;
   const { deviceId, workerId, dateKey } = _comptaEditCtx;
   const ov = _comptaEditOverrides();
-  delete ov[_comptaEditKey(deviceId, workerId, dateKey)];
+  ov[_comptaEditKey(deviceId, workerId, dateKey)] = { deleted:true, ts:Date.now() };   // v5.41.490 — marqueur (sinon un autre appareil la ferait revenir)
   saveData();
   closeModal('comptaEdit');
   _comptaEditCtx = null;
@@ -70349,6 +70428,7 @@ function comptaEditReset(){
 /* ── Synchro du calque (canal dédié, fusion par horodatage) ──────── */
 async function comptaEditPush(){
   if(!navigator.onLine) return;
+  try{ await comptaEditPull(); }catch(e){}   // v5.41.490 — fusion avant envoi : patron et comptable ne s'écrasent plus
   const payload = {
     user_id: COMPTAEDIT_SYNC_KEY,
     updated_at: new Date().toISOString(),
@@ -70387,6 +70467,54 @@ async function comptaEditPull(){
     return true;
   } catch(e){ return false; }
 }
+
+/* ═══ v5.41.490 — Les corrections du patron / de la comptable s'appliquent sur le téléphone de l'utilisateur.
+   Patron et comptable ont la main : la fiche de l'ouvrier (son pointage, ses fiches, son récap) reprend
+   exactement la journée corrigée, puis est renvoyée → les deux côtés affichent les mêmes heures. ═══ */
+let _ceMineBusy = false, _ceMineAt = 0;
+async function comptaEditApplyToMe(force){
+  const prof = (data.settings && data.settings.myProfile) || {};
+  if(!prof.workerId || prof.role === 'patron' || prof.role === 'comptable' || !navigator.onLine) return 0;
+  if(typeof RW_TEST !== 'undefined' && RW_TEST && !force) return 0;
+  if(_ceMineBusy || (!force && Date.now() - _ceMineAt < 60000)) return 0;
+  _ceMineBusy = true; _ceMineAt = Date.now();
+  let changed = [];
+  try{
+    await comptaEditPull();
+    const wid = prof.workerId, all = _comptaEditOverrides(), best = {};
+    Object.keys(all).forEach(k => { const m = k.split('::'); if(m.length !== 3 || m[1] !== wid) return; const o = all[k]; if(!o) return; const d = m[2]; if(!best[d] || (o.ts || 0) > (best[d].ts || 0)) best[d] = o; });
+    if(!data.attendance) data.attendance = {};
+    Object.keys(best).forEach(dk => {
+      const o = best[dk]; if(o.deleted) return;
+      let day = data.attendance[dk];
+      if(!day){ day = data.attendance[dk] = { siteId:null, workers:{} }; }
+      if(!day.workers) day.workers = {};
+      const before = JSON.stringify(day.workers[wid] || null) + '|' + day.siteId + '|' + !!day.voiturePerso;
+      const ap = comptaEditApplyOverride('me', wid, dk, day.workers[wid] || { hours:'', panier:false, task:'' }, day);
+      if(!ap) return;
+      const e = ap.entry;
+      e._comptaTs = o.ts || 0;
+      const alone = Object.keys(day.workers).filter(x => x !== wid).length === 0;
+      if(o.siteId !== undefined){ e._siteId = o.siteId; if(alone) day.siteId = o.siteId; }
+      if(o.voiturePerso != null && alone) day.voiturePerso = !!o.voiturePerso;
+      day.workers[wid] = e;
+      const after = JSON.stringify(e) + '|' + day.siteId + '|' + !!day.voiturePerso;
+      if(before !== after) changed.push(dk);
+    });
+    if(changed.length){
+      saveData();
+      try{ if(typeof pushPointageToSupabase === 'function') await pushPointageToSupabase(); }catch(e){}
+      const f = k => new Date(k + 'T00:00:00').toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
+      showToast('✏️ La comptabilité a corrigé ta fiche : ' + changed.sort().slice(0, 3).map(f).join(', ') + (changed.length > 3 ? '…' : ''));
+      try{ if(typeof currentHeuresMode !== 'undefined' && document.querySelector('#view-heures.active')){ if(currentHeuresMode === 'fiches') renderFiches(); else if(currentHeuresMode === 'pointage' && typeof renderPointage === 'function') renderPointage(); else if(currentHeuresMode === 'recap') renderRecapPerso(); } }catch(e){}
+    }
+  }catch(e){}
+  _ceMineBusy = false;
+  return changed.length;
+}
+setTimeout(() => { try{ comptaEditApplyToMe(); }catch(e){} }, 7000);
+setInterval(() => { try{ comptaEditApplyToMe(); }catch(e){} }, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') setTimeout(() => { try{ comptaEditApplyToMe(); }catch(e){} }, 2500); });
 
 /* [comptaedit] Tire le calque avant chaque refresh comptable. */
 async function comptaEditEnsurePulled(){
