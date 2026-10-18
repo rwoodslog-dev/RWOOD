@@ -725,7 +725,14 @@
   .gal-dc .pg{ position:absolute; right:4px; top:4px; background:rgba(0,0,0,.72); color:#fff; font-size:10.5px; font-weight:800; border-radius:6px; padding:1px 5px; }
   .gal-dc .n{ font-size:12px; font-weight:800; padding:5px 6px 0; line-height:1.2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .gal-dc .d{ font-size:10.5px; color:var(--ink-soft); padding:1px 6px 6px; }
+  /* v5.41.495 — Notes en Kanban */
+  #nvRoot .nv-kb .dep-colb .nv-sec:first-child{ margin-top:0; }
+  #nvRoot .nv-kb .dep-col{ background:rgba(0,0,0,.14); }
+  @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
   /* v5.41.492 — Dépannages : Kanban + épingles initiales */
+  @keyframes rwNudge{ 0%,100%{ transform:translateX(0); } 30%{ transform:translateX(-5px); } 60%{ transform:translateX(5px); } }
+  .modal.rw-nudge{ animation:rwNudge .25s ease; }
+  .dep-arch{ margin-top:6px; } .dep-unarch{ flex-shrink:0; background:var(--bg-elev); border:1px solid var(--line); color:var(--ink); border-radius:9px; padding:6px 10px; font-size:12px; font-weight:800; cursor:pointer; }
   .dep-kbnav{ display:flex; gap:6px; margin:4px 0 8px; }
   .dep-kbnav button{ flex:1; display:flex; align-items:center; justify-content:center; gap:6px; background:var(--card); border:1.5px solid var(--line); border-top:3px solid var(--c); border-radius:12px; padding:8px 4px; color:var(--ink); font-weight:800; font-size:13px; cursor:pointer; position:relative; }
   .dep-kbnav i{ width:9px; height:9px; border-radius:50%; background:var(--c); } .dep-kbnav b{ background:var(--bg-elev); border-radius:99px; padding:0 7px; font-size:12px; }
@@ -46215,9 +46222,31 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.492';
+const APP_VERSION = '5.41.495';
 
 const CHANGELOG = [
+  {
+    version: '5.41.495',
+    date: '18/10/2026',
+    entries: [
+      { icon: '🗂️', text: "Notes de chantier en Kanban : 3 colonnes ⚠️ À faire (à prévoir, à vérifier) · 📌 Infos & consignes · ✅ Fait. Côte à côte sur PC, on glisse de l'une à l'autre sur téléphone. Cocher une note la fait passer dans « Fait »." }
+    ],
+  },
+  {
+    version: '5.41.494',
+    date: '18/10/2026',
+    entries: [
+      { icon: '🛡️', text: "Plus de fermeture par erreur : toucher à côté d'une fenêtre (nouvelle tâche, correction, message…) ne la ferme plus et ne fait plus perdre ce qui a été écrit. On ferme uniquement avec la croix ×." },
+      { icon: '📦', text: "Nouvelle tâche de dépannage : la liste des chantiers propose aussi les chantiers terminés / archivés (rangés à part), pour pouvoir revenir y faire un dépannage." }
+    ],
+  },
+  {
+    version: '5.41.493',
+    date: '18/10/2026',
+    entries: [
+      { icon: '📦', text: "Dépannages › Archivées : même visuel que le Kanban (chantier avec initiales et couleur, état de chaque tâche, date d'archivage) et bouton « ↩︎ Ressortir » sur chaque tâche." }
+    ],
+  },
   {
     version: '5.41.492',
     date: '18/10/2026',
@@ -67801,12 +67830,19 @@ function notesViewRender(keepSeen){
     const verif = rest.filter(x => x.kind === 'verif').sort((a, b) => (a.n.done ? 1 : 0) - (b.n.done ? 1 : 0));
     const terr = rest.filter(x => x.kind === 'terrain');
     const bur = rest.filter(x => x.bureau);
-    body = sec('⚠️ À prévoir pour la suite', att)
-      + sec(boss ? '📌 Important · vu par l\'équipe' : '📌 À retenir', imp)
+    // v5.41.495 — Kanban : ⚠️ À faire · 📌 Infos & consignes · ✅ Fait (glisser sur téléphone)
+    const todoA = att.filter(x => !x.n.done), todoV = verif.filter(x => !x.n.done);
+    const doneL = att.filter(x => x.n.done).concat(verif.filter(x => x.n.done));
+    const infoHtml = sec(boss ? '📌 Important · vu par l\'équipe' : '📌 À retenir', imp)
       + sec(role === 'ouvrier' && !boss ? 'Infos utiles' : 'Infos chantier', infos)
-      + sec('✅ À vérifier', verif)
       + sec(boss ? '💬 Remarques de l\'équipe' : '💬 Remarques terrain', terr)
       + sec('🔒 Bureau', bur);
+    const todoHtml = sec('⚠️ À prévoir pour la suite', todoA) + sec('✅ À vérifier', todoV);
+    const doneHtml = doneL.map(x => _nvNoteHtml(x, ctx)).join('');
+    const nInfo = imp.length + infos.length + terr.length + bur.length;
+    const cols = [['todo', '⚠️ À faire', '#E8AC3D', todoA.length + todoV.length, todoHtml, 'Rien à faire 👍'], ['info', '📌 Infos & consignes', '#5B8DEF', nInfo, infoHtml, 'Aucune info pour l\'instant'], ['done', '✅ Fait', '#4FAE6C', doneL.length, doneHtml, 'Rien de terminé pour l\'instant']];
+    body = (todoA.length + todoV.length + nInfo + doneL.length) ? `<div class="dep-kbnav nv-kbnav">${cols.map(([k, l, c, n]) => `<button style="--c:${c}" onclick="nvKbGo('${k}')"><i></i>${l}<b>${n}</b></button>`).join('')}</div>
+      <div class="dep-kb nv-kb" id="nvKb">${cols.map(([k, l, c, n, h, e]) => `<div class="dep-col" id="nvCol_${k}" style="--c:${c}"><div class="dep-colh"><i></i>${l}<b>${n}</b></div><div class="dep-colb">${h || `<div class="hint" style="text-align:center;padding:16px 6px;">${e}</div>`}</div></div>`).join('')}</div>` : '';
   }
   if(!body) body = `<div class="hint" style="text-align:center;padding:26px 10px;">${boss ? 'Aucune note sur ce chantier. Écris la première ci-dessus.' : role === 'chef' ? 'Pas encore de consigne sur ce chantier.' : 'Aucune note sur ce chantier pour l\'instant.'}</div>`;
 
@@ -67822,6 +67858,7 @@ function notesViewRender(keepSeen){
   const ni = document.getElementById('nvAddInput'); if(ni){ ni.value = draft; if(focus) ni.focus(); }
   _nvTyping(focus);
 }
+function nvKbGo(k){ const kb = document.getElementById('nvKb'), c = document.getElementById('nvCol_' + k); if(kb && c){ kb.scrollTo({ left:c.offsetLeft - kb.offsetLeft, behavior:'smooth' }); } }
 function _nvAttAddHtml(){
   if(_nvAddKind !== 'attention') return '';
   return `<div class="nv-att-add">${_nvAttPreview ? `<img src="${_nvAttPreview}" alt=""><span>Photo jointe</span><button onclick="nvAttClearPhoto()">✕</button>` : `<button class="nv-att-cam" onclick="nvAttAddPhoto()">📷 Ajouter une photo</button><span class="hint" style="margin:0;">pour montrer ce qu'il faut prévoir</span>`}</div>`;
@@ -72342,6 +72379,16 @@ function depRender(){
     if(window._depFocusRoute){ const id = window._depFocusRoute; window._depFocusRoute = null; setTimeout(() => { depKbGo('done'); const e = document.getElementById('depRep_' + id); if(e) e.scrollIntoView({ block:'start', behavior:'smooth' }); }, 120); }
     return;
   }
+  if(_depFilter === 'arch'){   // v5.41.493 — archives au même visuel que le Kanban
+    const al = all.filter(t => t.archived && _depPoleOf(t) === _depPole).sort((a, b) => (b.archivedAt || b.updatedAt || '').localeCompare(a.archivedAt || a.updatedAt || ''));
+    const groups = new Map(); al.forEach(t => { const k = _depGroupKey(t); if(!groups.has(k)) groups.set(k, []); groups.get(k).push(t); });
+    const cards = [...groups.values()].map(g => _depArchCardHtml(g)).join('') || `<div class="dep-empty"><span>📦</span>Rien dans les archives.</div>`;
+    box.innerHTML = `<div class="dep2" style="--pc:${P.c}">
+      <div class="dep-pole">${Object.entries(DEP_POLES).map(([k, p]) => { const n = cnt('todo', k); return `<button class="${k === _depPole ? 'on' : ''}" style="--c:${p.c}" onclick="depSetPole('${k}')">${_depPoleIc(k)} ${p.l}${n ? '<small>' + n + '</small>' : ''}</button>`; }).join('')}</div>
+      <div class="dep-actions"><button class="p" onclick="depSetFilter('todo')">‹ Retour aux tâches</button></div>
+      <div class="dep-col dep-arch" style="--c:#8b7a62"><div class="dep-colh"><i></i>📦 Archivées<b>${al.length}</b></div><div class="dep-colb">${cards}</div></div></div>`;
+    return;
+  }
   if(_depFilter === 'done') body = _depReportsHtml();
   else if(_depFilter === 'sent') body = _depSentHtml();   // v5.41.464 — groupé par feuille de route
   else {
@@ -72367,6 +72414,29 @@ function depRender(){
   if(window._depFocusRoute){ const id = window._depFocusRoute; window._depFocusRoute = null; setTimeout(() => { const e = document.getElementById('depRep_' + id); if(e) e.scrollIntoView({ block:'start', behavior:'smooth' }); }, 120); }
 }
 function depSetTab(t){ _depTab = t; depRender(); _depLoad(true).then(() => depRender()); }
+/* v5.41.494 — une fenêtre ne se ferme plus en touchant à côté (perte de saisie) : uniquement avec sa croix ×.
+   Bloque, avant tout autre gestionnaire, un clic qui tombe sur le fond assombri d'une fenêtre qui a une croix. */
+(function(){
+  const guard = e => {
+    const t = e.target;
+    if(!t || !t.classList || !t.classList.contains('modal-overlay') || !t.classList.contains('open')) return;
+    if(!t.querySelector('.modal-close, .cam-icon-btn, [data-close]')) return;   // fenêtre sans croix : on laisse fermer
+    e.stopImmediatePropagation(); e.preventDefault();
+    const m = t.querySelector('.modal'); if(m && e.type === 'click'){ m.classList.remove('rw-nudge'); void m.offsetWidth; m.classList.add('rw-nudge'); }
+  };
+  ['click', 'mousedown', 'pointerdown', 'touchstart'].forEach(ev => window.addEventListener(ev, guard, true));
+})();
+/* v5.41.493 — carte chantier des archives : initiales + couleur, état de chaque tâche, « Ressortir » */
+function _depArchCardHtml(g){
+  const t0 = g[0], look = _depSiteLook(g), addr = (look.s && look.s.address) || t0.address || '';
+  return `<div class="dep-scard" style="--sc:${look.col}">
+    <div class="h"><span class="dep-ini" style="background:${look.col}">${escapeHtml(_depSiteIni(t0.siteName || 'Chantier'))}</span>${_depPicHtml(look, t0, 'pic')}
+      <div class="tx"><b>${escapeHtml(t0.siteName || 'Chantier')}</b><small>${escapeHtml(addr || 'Adresse non renseignée')}</small></div></div>
+    ${g.map(t => { const st = DEP_ST[t.status] || DEP_ST.todo; const by = t.report && t.report.by ? ' · ' + escapeHtml(t.report.by) : '';
+      return `<div class="t" onclick="depOpenEdit('${t.id}')"><span class="i">${_depKindIcon(t)}</span><span class="l">${escapeHtml(t.title || 'Tâche')}<small style="display:block;opacity:.7;">${t.status === 'done' ? '✅ Fait' : t.status === 'ko' ? '⛔ Impossible' : st.l}${by}${t.archivedAt ? ' · archivée le ' + _depFmtD(t.archivedAt) : ''}</small></span>
+        <button class="dep-unarch" onclick="event.stopPropagation();depArchive('${t.id}', false)" title="Ressortir des archives">↩︎ Ressortir</button></div>`; }).join('')}
+  </div>`;
+}
 function depKbGo(k){ const kb = document.getElementById('depKb'), c = document.getElementById('depCol_' + k); if(kb && c){ kb.scrollTo({ left:c.offsetLeft - kb.offsetLeft, behavior:'smooth' }); c.scrollIntoView({ block:'nearest', behavior:'smooth' }); } }
 /* v5.41.492 — « ＋ Ajouter une tâche à ce chantier » (chantier déjà choisi) */
 function depAddToSite(k){
@@ -72514,7 +72584,12 @@ async function dreAnnot(i, j){ const r = _dre; if(!r) return; const s = r.stops[
 function _depEditRender(){
   const box = document.getElementById('depEditBody'), e = _depEdit; if(!box || !e) return;
   const ro = e.id && e.status && e.status !== 'todo';   // envoyée / terminée : lecture + compte-rendu
-  const sites = (data.sites || []).filter(s => s && s.status !== 'termine').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
+  // v5.41.494 — tous les chantiers, y compris terminés / archivés (on peut revenir y dépanner)
+  const _byN = (a, b) => String(a.name).localeCompare(String(b.name), 'fr');
+  const _okS = s => s && !s._deleted && s.name;
+  const sitesOn = (data.sites || []).filter(s => _okS(s) && s.status !== 'termine').sort(_byN);
+  const sitesOff = (data.sites || []).filter(s => _okS(s) && s.status === 'termine').sort(_byN);
+  const sites = sitesOn;
   const site = e.siteId && (data.sites || []).find(s => s.id === e.siteId);
   const rep = e.report ? `<div style="margin-bottom:10px;">${_depRepTaskHtml(e, false)}</div>` : '';
   const hist = (e.history || []).length ? `<details class="dep-hist"><summary>Anciens comptes-rendus (${e.history.length})</summary>${e.history.map(h => `<div>${h.result === 'done' ? '✅' : '⛔'} ${escapeHtml(h.by || '')} · ${_depFmtD(h.at, true)}${h.comment ? ' — « ' + escapeHtml(h.comment) + ' »' : ''}</div>`).join('')}</details>` : '';
@@ -72531,6 +72606,7 @@ function _depEditRender(){
     return;
   }
   const chips = sites.slice(0, 8);
+  if(site && !chips.some(x => x.id === site.id)) chips.push(site);   // chantier choisi (même terminé) visible en puce
   const more = sites.length > 8 ? sites.slice(8) : [];
   box.innerHTML = `${rep}${hist}<div class="dep-form">
     <div class="dep-step">1 · Pôle</div>
@@ -72538,7 +72614,7 @@ function _depEditRender(){
     <div class="dep-step">2 · Où ?</div>
     <div class="dep-chips2">${chips.map(x => `<button class="${e.mode === 'site' && e.siteId === x.id ? 'on' : ''}" onclick="_depEdit.mode='site';depPickSite('${x.id}')">🏗️ ${escapeHtml(x.name || 'Chantier')}</button>`).join('')}
       <button class="${e.mode === 'free' ? 'on' : ''}" onclick="_depEdit.mode='free';_depEdit.siteId='';_depEditRender()">📍 Autre adresse…</button></div>
-    ${more.length ? `<select onchange="if(this.value){_depEdit.mode='site';depPickSite(this.value);}" style="width:100%;box-sizing:border-box;margin-top:6px;"><option value="">Autres chantiers…</option>${more.map(x => `<option value="${x.id}" ${x.id === e.siteId ? 'selected' : ''}>${escapeHtml(x.name || 'Chantier')}</option>`).join('')}</select>` : ''}
+    ${more.length || sitesOff.length ? `<select onchange="if(this.value){_depEdit.mode='site';depPickSite(this.value);}" style="width:100%;box-sizing:border-box;margin-top:6px;"><option value="">${sitesOff.length ? 'Autres chantiers (y compris terminés / archivés)…' : 'Autres chantiers…'}</option>${more.length ? `<optgroup label="Chantiers en cours">${more.map(x => `<option value="${x.id}" ${x.id === e.siteId ? 'selected' : ''}>${escapeHtml(x.name || 'Chantier')}</option>`).join('')}</optgroup>` : ''}${sitesOff.length ? `<optgroup label="📦 Terminés / archivés">${sitesOff.map(x => `<option value="${x.id}" ${x.id === e.siteId ? 'selected' : ''}>📦 ${escapeHtml(x.name || 'Chantier')}</option>`).join('')}</optgroup>` : ''}</select>` : ''}
     ${e.mode === 'site' && site ? `<div class="hint" style="font-size:12px;margin:6px 2px 0;">📍 ${escapeHtml(site.address || 'adresse non renseignée')}${e.keybox ? ' · 🔑 ' + escapeHtml(e.keybox) : ''}</div>` : ''}
     ${e.mode === 'free' ? `<input type="text" placeholder="Nom (client, lieu…)" value="${escapeHtml(e.siteName)}" oninput="_depEdit.siteName=this.value" style="width:100%;margin-top:8px;">
       <input type="text" placeholder="Adresse exacte" value="${escapeHtml(e.address)}" oninput="_depEdit.address=this.value" style="width:100%;margin-top:6px;">
