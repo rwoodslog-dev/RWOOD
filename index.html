@@ -725,6 +725,27 @@
   .gal-dc .pg{ position:absolute; right:4px; top:4px; background:rgba(0,0,0,.72); color:#fff; font-size:10.5px; font-weight:800; border-radius:6px; padding:1px 5px; }
   .gal-dc .n{ font-size:12px; font-weight:800; padding:5px 6px 0; line-height:1.2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .gal-dc .d{ font-size:10.5px; color:var(--ink-soft); padding:1px 6px 6px; }
+  /* v5.41.483 — résumé visuel des fiches + comparaison au format fiche */
+  .fs-sum{ display:grid; grid-template-columns:minmax(220px,1.6fr) repeat(4,minmax(90px,1fr)); gap:8px; margin-bottom:14px; }
+  @media (max-width:700px){ .fs-sum{ grid-template-columns:repeat(2,1fr); } .fs-hero{ grid-column:1 / -1; } }
+  .fs-hero{ display:flex; align-items:center; gap:12px; background:linear-gradient(135deg,rgba(232,172,61,.16),var(--bg-elev)); border:1px solid var(--line); border-radius:14px; padding:10px 12px; }
+  .fs-ring{ width:70px; height:70px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .fs-ring > div{ width:56px; height:56px; border-radius:50%; background:var(--bg-elev); display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .fs-ring b{ font-size:16px; line-height:1.1; } .fs-ring small{ font-size:9px; color:var(--ink-soft); }
+  .fs-ht b{ display:block; font-size:14px; } .fs-ht span{ display:block; font-size:12px; color:var(--ink-soft); }
+  .fs-ht em{ display:inline-block; margin-top:3px; font-style:normal; font-size:11.5px; font-weight:900; background:var(--wood); color:#201913; border-radius:99px; padding:1px 8px; }
+  .fs-t{ background:var(--bg-elev); border:1px solid var(--line); border-radius:14px; padding:8px 12px; }
+  .fs-t i{ font-style:normal; font-size:17px; } .fs-t b{ display:block; font-size:17px; } .fs-t small{ font-size:11px; color:var(--ink-soft); font-weight:700; }
+  .fs-bar{ display:flex; align-items:center; gap:12px; margin-top:8px; }
+  .fs-bar > b{ font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); white-space:nowrap; }
+  .fs-bar .sb{ flex:1; display:flex; height:10px; border-radius:99px; overflow:hidden; gap:2px; }
+  .fs-leg{ display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:6px; font-size:12px; color:var(--ink-soft); }
+  .fs-leg span{ display:flex; align-items:center; gap:5px; } .fs-leg i{ width:10px; height:10px; border-radius:3px; } .fs-leg b{ color:var(--ink); }
+  .eq-cmp{ margin-top:12px; }
+  .eq-badge{ margin-left:auto; font-size:12px; font-weight:900; border-radius:99px; padding:3px 10px; background:rgba(63,191,106,.15); color:#3fbf6a; }
+  .eq-badge.w{ background:rgba(232,172,61,.18); color:#E8AC3D; }
+  table.timesheet tr.eq-rb td{ background:rgba(91,141,239,.08); } table.timesheet tr.eq-rc td{ background:rgba(255,255,255,.03); }
+  table.rpl tr.eq-sel td{ background:rgba(232,172,61,.1); } table.rpl tr.eq-sel td.n{ box-shadow:inset 3px 0 0 var(--wood); }
   /* v5.41.482 — Mon équipe + tableau / comparaison des heures */
   .eq-head{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
   .eq-head b{ display:block; font-size:18px; } .eq-head small{ font-size:12px; color:var(--ink-soft); }
@@ -28245,38 +28266,88 @@ async function equipeRender(){
   if(!window._ctRegCache) box.innerHTML = '<div class="hint" style="text-align:center;padding:30px 0;">⏳ Chargement de l\'équipe…</div>';
   await Promise.all([_ctReg(), _eqLoad(false)]);
   if(currentHeuresMode !== 'equipe') return;
-  if(role === 'chef') _eqChefRender(box); else _eqOuvrierRender(box);
+  _eqChefRender(box);   // v5.41.483 — même vue pour le chef et l'ouvrier
 }
 /* ── Chef ── */
-function _eqTeam(){
-  const reg = window._ctRegCache || [], me = _eqMe(), sel = (data.settings.myTeamIds || []);
-  const out = [];
-  sel.forEach(id => { const u = reg.find(x => x.authId === id); if(u) out.push({ authId:u.authId, name:u.name, auto:false }); });
-  reg.filter(u => u.followedChefTodoId === me && u.authId !== me && !sel.includes(u.authId)).forEach(u => out.push({ authId:u.authId, name:u.name, auto:true }));
-  return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+function _eqTeam(){   // v5.41.483 — uniquement les personnes choisies (chef comme ouvrier)
+  const reg = window._ctRegCache || [];
+  return (data.settings.myTeamIds || []).map(id => reg.find(x => x.authId === id)).filter(Boolean).map(u => ({ authId:u.authId, name:u.name, role:u.role })).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
+/* v5.41.483 — fiche au format « Fiches d'heures » (Chantier / Heures / Panier / Trajet / Tâche),
+   seule ou comparée avec une autre personne (lignes « X » + « Comparaison »). */
+function _eqFicheHtml(days, A, B, bName){
+  const lbl = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  const fs = d => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+  const get = (P, x) => { const it = P && P.days[x.k]; return it ? { it, c:_rplCell(P.ctx, it.day, it.entry) } : null; };
+  let tA = 0, tB = 0, trA = 0;
+  const E = '<td class="empty-cell">—</td>';
+  const site = g => { if(!g || !g.c) return E; const c = g.c;
+    if(c.abs) return `<td style="text-align:center;font-size:11px;font-weight:700;color:${c.abs.color};background:${c.abs.color}12;">${c.abs.emoji} ${escapeHtml(c.abs.short || c.abs.label)}</td>`;
+    const col = c.parts[0].color; return `<td class="site-cell" style="background:${colorWithAlpha(col, 0.2)};border-left:3px solid ${col};">${c.parts.map(p => escapeHtml(p.name)).join('<br>')}</td>`; };
+  const hrs = (g, acc) => { if(!g || !g.c || g.c.abs) return E; acc(g.c.h); return `<td class="hours-cell">${_rplFmtH(g.c.h)}h</td>`; };
+  const rowA = days.map(x => get(A, x)), rowB = B ? days.map(x => get(B, x)) : null;
+  const rSite = rowA.map(site).join('');
+  const rH = rowA.map(g => hrs(g, h => tA += h)).join('');
+  const rB = B ? rowB.map((g, i) => { if(!g || !g.c) return E; if(g.c.abs) return site(g); tB += g.c.h; const a = rowA[i];
+      const same = a && a.c && a.c.parts && a.c.parts.map(p => p.key).sort().join('|') === g.c.parts.map(p => p.key).sort().join('|');
+      return `<td class="hours-cell">${same ? '' : `<small style="display:block;font-weight:600;color:${g.c.parts[0].color};">${escapeHtml(g.c.parts.map(p => p.name).join(' + '))}</small>`}${_rplFmtH(g.c.h)}h</td>`; }).join('') : '';
+  let nDiff = 0;
+  const rCmp = B ? days.map((x, i) => { const a = rowA[i], b = rowB[i];
+      if(!(a && a.c) && !(b && b.c)) return E;
+      if(!(a && a.c) || !(b && b.c)){ if(!x.past) return E; nDiff++; return `<td><span class="eq-df m">${!(a && a.c) ? 'toi ?' : escapeHtml(bName.split(' ')[0]) + ' ?'}</span></td>`; }
+      if(a.c.abs || b.c.abs) return `<td><span class="eq-df">—</span></td>`;
+      if(a.c.parts.map(p => p.key).sort().join('|') !== b.c.parts.map(p => p.key).sort().join('|')){ nDiff++; return `<td><span class="eq-df s">🔀 chantier</span></td>`; }
+      const dh = Math.round((a.c.h - b.c.h) * 100) / 100;
+      if(dh){ nDiff++; return `<td><span class="eq-df h">${dh > 0 ? '+' : ''}${_rplFmtH(dh)} h</span></td>`; }
+      return `<td><span class="eq-df ok">✓</span></td>`; }).join('') : '';
+  const rPan = rowA.map(g => (!g || !g.c || g.c.abs) ? E : `<td>${g.it.entry.panier ? '✓' : '—'}</td>`).join('');
+  const rTr = rowA.map(g => { if(!g || !g.c || g.c.abs) return E; let t = null; try{ t = _dayEntryTrajet(g.it.day, g.it.entry, A.ctx.sites); }catch(e){} if(!t || !t.rates) return E; trA += t.amount; return `<td class="hours-cell">Z${escapeHtml(String(t.zone))}/${t.amount.toFixed(2).replace('.', ',')}${t.factor > 1 ? ' ×2' : ''}</td>`; }).join('');
+  const rT = rowA.map(g => (!g || !g.c || g.c.abs) ? E : `<td class="task-cell">${escapeHtml(g.c.parts.map(p => p.task).filter(Boolean).join(' / ')) || '—'}</td>`).join('');
+  const hasTr = rTr.includes('hours-cell');
+  const dt = Math.round((tA - tB) * 100) / 100;
+  return { nDiff, tA, tB, html:`<div class="timesheet-table-wrap"><table class="timesheet"><thead><tr><th></th>${days.map((x, i) => `<th>${lbl[i]}<br>${fs(x.d)}</th>`).join('')}</tr></thead><tbody>
+    <tr><td class="row-label">Chantier</td>${rSite}</tr>
+    <tr><td class="row-label">${B ? 'Mes heures' : 'Heures'}</td>${rH}</tr>
+    ${B ? `<tr class="eq-rb"><td class="row-label">${escapeHtml(bName)}</td>${rB}</tr><tr class="eq-rc"><td class="row-label">Comparaison</td>${rCmp}</tr>` : ''}
+    <tr><td class="row-label">Panier</td>${rPan}</tr>
+    ${hasTr ? `<tr><td class="row-label">Trajet</td>${rTr}</tr>` : ''}
+    <tr><td class="row-label">Tâche</td>${rT}</tr></tbody></table></div>
+    <div class="timesheet-total">${B ? `Moi ${_rplFmtH(tA)} h · ${escapeHtml(bName.split(' ')[0])} ${_rplFmtH(tB)} h · écart ${dt > 0 ? '+' : ''}${_rplFmtH(dt)} h` : `Total semaine : ${_rplFmtH(tA)}h${hasTr ? ' · Trajet ' + trA.toFixed(2) + '€' : ''}`}</div>` };
+}
+let _eqSel = null;
+function eqSelect(id){ _eqSel = id; equipeRender(); }
 function _eqChefRender(box){
   const team = _eqTeam(), days = _eqWeekDays(); _eqStore = [];
-  const head = `<div class="eq-head"><div><b>👥 Mon équipe</b><small>${team.length ? team.length + ' ouvrier' + (team.length > 1 ? 's' : '') : 'aucun ouvrier pour l\'instant'}</small></div><button type="button" class="btn btn-outline btn-sm" onclick="eqPickTeam()">✏️ Choisir mon équipe</button></div>`;
-  if(!team.length){ box.innerHTML = head + `<div class="eq-empty"><div style="font-size:40px;">👷‍♂️👷</div><b>Compose ton équipe</b><p>Choisis les ouvriers qui travaillent avec toi : tu verras leurs fiches d'heures d'un coup d'œil, jour par jour.</p><button type="button" class="btn btn-primary" onclick="eqPickTeam()">＋ Choisir mes ouvriers</button></div>`; return; }
+  const head = `<div class="eq-head"><div><b>👥 Mon équipe</b><small>${team.length ? team.length + ' personne' + (team.length > 1 ? 's' : '') + ' affichée' + (team.length > 1 ? 's' : '') : 'personne d\'affiché pour l\'instant'}</small></div><button type="button" class="btn btn-outline btn-sm" onclick="eqPickTeam()">✏️ Choisir les personnes</button></div>`;
+  if(!team.length){ box.innerHTML = head + `<div class="eq-empty"><div style="font-size:40px;">👷‍♂️👷</div><b>Choisis qui afficher</b><p>Ton chef, tes collègues… Tu verras leurs fiches d'heures de la semaine et tu pourras comparer avec les tiennes.</p><button type="button" class="btn btn-primary" onclick="eqPickTeam()">＋ Choisir les personnes</button></div>`; return; }
+  if(!_eqSel || !team.some(t => t.authId === _eqSel)) _eqSel = team[0].authId;
   const people = [{ authId:_eqMe(), name:_eqMyName(), me:true }].concat(team);
   let gtot = 0; const missAll = [];
-  const rows = people.map(p => { const r = _eqRowCells(p, days, _eqStore); gtot += r.tot; if(!p.me) r.miss.forEach(x => missAll.push({ p, x })); return `<tr>${_eqNameCell(p, p.me ? 'moi' : (p.auto ? 'm\'a choisi comme chef' : 'ouvrier'))}${r.cells.join('')}<td class="tot"><b>${_rplFmtH(r.tot)} h</b></td></tr>`; }).join('');
-  const missHtml = missAll.length ? `<div class="eq-miss"><b>⚠️ ${missAll.length} fiche${missAll.length > 1 ? 's' : ''} manquante${missAll.length > 1 ? 's' : ''}</b>${[...new Set(missAll.map(m => m.p.authId))].map(id => { const ms = missAll.filter(m => m.p.authId === id); return `<div class="eq-mr"><span>${escapeHtml(ms[0].p.name)} · ${ms.map(m => m.x.d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric' })).join(', ')}</span><button type="button" class="btn btn-sm" onclick="_eqRelance('${_ctJs(id)}')">💬 Relancer</button></div>`; }).join('')}</div>` : (days.some(x => x.past) ? '<div class="eq-ok">✅ Toutes les fiches de la semaine sont remplies.</div>' : '');
+  const rows = people.map(p => { const r = _eqRowCells(p, days, _eqStore); gtot += r.tot; if(!p.me) r.miss.forEach(x => missAll.push({ p, x }));
+    const sub = p.me ? 'moi' : (p.authId === _eqSel ? '▾ comparé' : (_ctRoleLabel(p.role) || ''));
+    return `<tr class="${!p.me && p.authId === _eqSel ? 'eq-sel' : ''}" ${p.me ? '' : `onclick="eqSelect('${_ctJs(p.authId)}')" style="cursor:pointer;"`}>${_eqNameCell(p, sub)}${r.cells.join('')}<td class="tot"><b>${_rplFmtH(r.tot)} h</b></td></tr>`; }).join('');
+  const missHtml = missAll.length ? `<div class="eq-miss"><b>⚠️ ${missAll.length} fiche${missAll.length > 1 ? 's' : ''} manquante${missAll.length > 1 ? 's' : ''}</b>${[...new Set(missAll.map(m => m.p.authId))].map(id => { const ms = missAll.filter(m => m.p.authId === id); return `<div class="eq-mr"><span>${escapeHtml(ms[0].p.name)} · ${ms.map(m => m.x.d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric' })).join(', ')}</span><button type="button" class="btn btn-sm" onclick="_eqRelance('${_ctJs(id)}')">💬 Relancer</button></div>`; }).join('')}</div>` : '';
+  const sel = team.find(t => t.authId === _eqSel);
+  const F = _eqFicheHtml(days, _eqDaysOf(_eqMe()), _eqDaysOf(sel.authId), sel.name);
   box.innerHTML = head + _eqNavHtml(days)
-    + `<div class="rpl-kpi"><span><b>${_rplFmtH(gtot)} h</b>équipe cette semaine</span><span><b>${people.length}</b>personnes</span><span><b style="color:${missAll.length ? '#E5484D' : 'inherit'}">${missAll.length}</b>fiches manquantes</span></div>`
-    + `<div class="rpl-w"><table class="rpl"><thead>${_eqHead(days, 'Équipe')}</thead><tbody>${rows}</tbody></table></div>` + missHtml
-    + `<div class="hint" style="margin-top:8px;">Les heures viennent des fiches que chacun envoie. Clique une case pour le détail.</div>`;
+    + `<div class="rpl-w"><table class="rpl"><thead>${_eqHead(days, 'Équipe')}</thead><tbody>${rows}</tbody></table></div>
+      <div class="hint" style="margin:6px 2px 0;">Touche un nom pour comparer ses heures avec les tiennes.</div>`
+    + `<div class="card eq-cmp"><div class="worker-sheet-header" style="gap:10px;">${_chatAvatarHtml({ authId:sel.authId, name:sel.name, role:sel.role }, 36)}<h3 class="worker-sheet-name" style="margin:0;">Moi ↔ ${escapeHtml(sel.name)}</h3><span class="eq-badge${F.nDiff ? ' w' : ''}">${F.nDiff ? F.nDiff + ' jour' + (F.nDiff > 1 ? 's' : '') + ' différent' + (F.nDiff > 1 ? 's' : '') : '✓ identique'}</span></div>${F.html}
+      <div class="rpl-leg"><span>✓ identique</span><span>🔀 pas le même chantier</span><span>+1 h / −1 h écart (moi − ${escapeHtml(sel.name.split(' ')[0])})</span><span>« ? » fiche manquante</span></div></div>`
+    + missHtml;
 }
 function _eqRelance(authId){ if(typeof _openChatWithAuthId === 'function') _openChatWithAuthId(authId); }
 function eqPickTeam(){
-  const reg = (window._ctRegCache || []).filter(u => u.role === 'ouvrier' && u.authId !== _eqMe()).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-  const sel = new Set(data.settings.myTeamIds || []), me = _eqMe();
+  const me = _eqMe(), ord = { chef:0, ouvrier:1 };
+  const reg = (window._ctRegCache || []).filter(u => (u.role === 'ouvrier' || u.role === 'chef') && u.authId !== me).sort((a, b) => (ord[a.role] - ord[b.role]) || a.name.localeCompare(b.name, 'fr'));
+  const sel = new Set(data.settings.myTeamIds || []);
   let d = document.getElementById('modal-eqPick'); if(d) d.remove();
   d = document.createElement('div'); d.id = 'modal-eqPick'; d.className = 'modal-overlay open'; d.style.zIndex = 1150;
-  d.innerHTML = `<div class="modal"><div class="modal-header"><h2>👥 Mon équipe</h2><button class="modal-close" onclick="document.getElementById('modal-eqPick').remove()">×</button></div>
-    <div class="hint" style="margin-bottom:10px;">Coche les ouvriers qui travaillent avec toi.</div>
-    ${reg.length ? reg.map(u => `<label class="eq-pk"><input type="checkbox" value="${escapeHtml(u.authId)}" ${sel.has(u.authId) ? 'checked' : ''}>${_chatAvatarHtml({ authId:u.authId, name:u.name, role:u.role }, 36)}<span><b>${escapeHtml(u.name)}</b><small>${u.followedChefTodoId === me ? 't\'a choisi comme chef' : (u.followedChefTodoId ? 'suit un autre chef' : 'ouvrier')}</small></span></label>`).join('') : '<div class="hint">Aucun ouvrier dans l\'entreprise pour le moment.</div>'}
+  let last = '';
+  d.innerHTML = `<div class="modal"><div class="modal-header"><h2>👥 Qui afficher ?</h2><button class="modal-close" onclick="document.getElementById('modal-eqPick').remove()">×</button></div>
+    <div class="hint" style="margin-bottom:6px;">Coche les personnes dont tu veux voir les heures dans « Mon équipe ».</div>
+    ${reg.length ? reg.map(u => { const h = u.role !== last ? `<div class="ct-sec"><span>${u.role === 'chef' ? 'Chefs d\'équipe' : 'Ouvriers'}</span></div>` : ''; last = u.role;
+      return h + `<label class="eq-pk"><input type="checkbox" value="${escapeHtml(u.authId)}" ${sel.has(u.authId) ? 'checked' : ''}>${_chatAvatarHtml({ authId:u.authId, name:u.name, role:u.role }, 36)}<span><b>${escapeHtml(u.name)}</b><small>${_ctRoleLabel(u.role)}</small></span></label>`; }).join('') : '<div class="hint">Personne d\'autre dans l\'entreprise pour le moment.</div>'}
     <button type="button" class="btn btn-primary btn-block" style="margin-top:12px;" onclick="eqSaveTeam()">✅ Enregistrer</button></div>`;
   document.body.appendChild(d);
 }
@@ -28285,7 +28356,7 @@ function eqSaveTeam(){
   data.settings.myTeamIds = ids; saveData();
   try{ pushMyUserRegistration(); }catch(e){}
   const m = document.getElementById('modal-eqPick'); if(m) m.remove();
-  showToast('✅ Équipe enregistrée (' + ids.length + ')'); equipeRender();
+  showToast('✅ ' + ids.length + ' personne' + (ids.length > 1 ? 's' : '') + ' affichée' + (ids.length > 1 ? 's' : '')); equipeRender();
 }
 /* ── Ouvrier ── */
 function _eqOuvrierRender(box){
@@ -33228,11 +33299,7 @@ function renderFiches(){
   if(profile.role === 'ouvrier' && profile.workerId){
     fichesWorkers = data.workers.filter(w => w.id === profile.workerId);
   } else if(profile.role === 'chef' && profile.workerId){
-    fichesWorkers = data.workers.slice().sort((a,b)=>{
-      if(a.id === profile.workerId) return -1;
-      if(b.id === profile.workerId) return 1;
-      return 0;
-    });
+    fichesWorkers = data.workers.filter(w => w.id === profile.workerId);   // v5.41.483 — chacun ne voit que ses heures (comparaison : Heures › Mon équipe)
   }
 
   if(fichesWorkers.length === 0){
@@ -33336,6 +33403,16 @@ function renderFiches(){
     const hasAnyVoiture = cells.some(c => !c.empty && c.voiturePerso);
     const hasAnyTrajet = cells.some(c=>c.trajetRates);   // v5.41.436 — affiché même si ce téléphone n'a pas l'adresse du dépôt
 
+    // v5.41.483 — résumé visuel au-dessus de la fiche (heures, h sup, paniers, trajet, absences) + répartition par chantier
+    const _wb = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
+    const _nPan = cells.filter(c => !c.empty && !c.isAbsence && c.panier).length, _nAbs = cells.filter(c => !c.empty && c.isAbsence).length, _nJ = cells.filter(c => !c.empty && !c.isAbsence).length;
+    const _sup = Math.max(0, Math.round((totalHours - _wb) * 100) / 100);
+    const _byS = {}; cells.forEach(c => { if(c.empty || c.isAbsence || c.siteIsHtml) return; const k = c.site; if(!_byS[k]) _byS[k] = { n:k, col:c.color || 'var(--wood)', h:0 }; _byS[k].h += parseFloat(String(c.hours).replace(',', '.')) || 0; });
+    const _sl = Object.values(_byS).filter(x => x.h > 0).sort((a, b) => b.h - a.h);
+    const _pct = Math.min(100, Math.round(totalHours / _wb * 100));
+    const _sumHtml = `<div class="fs-sum"><div class="fs-hero"><div class="fs-ring" style="background:conic-gradient(var(--wood) 0 ${_pct}%, var(--line) ${_pct}% 100%)"><div><b>${_rplFmtH(totalHours)} h</b><small>sur ${_wb} h</small></div></div><div class="fs-ht"><b>${totalHours >= _wb ? 'Semaine complète 👍' : (_nJ ? 'Semaine en cours' : 'Rien de saisi')}</b><span>${_nJ} jour${_nJ > 1 ? 's' : ''}${_sl.length ? ' · ' + _sl.length + ' chantier' + (_sl.length > 1 ? 's' : '') : ''}</span>${_sup ? `<em>+${_rplFmtH(_sup)} h sup</em>` : ''}</div></div>
+      <div class="fs-t"><i>🍽️</i><b>${_nPan}</b><small>panier${_nPan > 1 ? 's' : ''}</small></div><div class="fs-t"><i>🚗</i><b>${totalTrajet.toFixed(2).replace('.', ',')} €</b><small>trajet</small></div><div class="fs-t"><i>⏱️</i><b>${_sup ? '+' + _rplFmtH(_sup) + ' h' : '0'}</b><small>heures sup</small></div><div class="fs-t"><i>🏖️</i><b>${_nAbs}</b><small>absence${_nAbs > 1 ? 's' : ''}</small></div></div>`;
+    const _barHtml = _sl.length ? `<div class="fs-bar"><b>Mes chantiers</b><div class="sb">${_sl.map(x => `<i style="flex:${x.h};background:${x.col}" title="${escapeHtml(x.n)} · ${_rplFmtH(x.h)} h"></i>`).join('')}</div></div><div class="fs-leg">${_sl.map(x => `<span><i style="background:${x.col}"></i>${escapeHtml(x.n)} <b>${_rplFmtH(x.h)} h</b></span>`).join('')}</div>` : '';
     const workerColor = w.color || siteColors[0];
     const avatarHtml = w.photo
       ? `<img class="worker-avatar" ${photoImgAttrs(w.photo)} alt="${escapeHtml(w.name)}">`
@@ -33343,6 +33420,7 @@ function renderFiches(){
 
     return `
       <div class="card">
+        ${_sumHtml}
         <div class="worker-sheet-header">
           ${avatarHtml}
           <h3 class="worker-sheet-name" style="margin:0;">
@@ -33369,6 +33447,7 @@ function renderFiches(){
           </table>
         </div>
         <div class="timesheet-total">Total semaine : ${totalHours}h${hasAnyTrajet ? ` · Trajet ${totalTrajet.toFixed(2)}€` : ''}</div>
+        ${_barHtml}
         <div class="row-actions" style="margin-top:10px;">
           <button class="btn btn-outline" onclick='downloadFichePDF(${JSON.stringify(w.id)}, ${weekNum}, ${year})'><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M9.5 12h5M9.5 15.5h5"/></svg> Télécharger</button>
           <button class="btn btn-outline" onclick='shareFichePDF(${JSON.stringify(w.id)}, ${weekNum}, ${year})'><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M12 14V4"/><path d="M8 8l4-4 4 4"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg> Partager</button>
@@ -45705,9 +45784,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.482';
+const APP_VERSION = '5.41.483';
 
 const CHANGELOG = [
+  {
+    version: '5.41.483',
+    date: '18/10/2026',
+    entries: [
+      { icon: '🔒', text: "Fiches d'heures : le chef comme l'ouvrier ne voient plus que leurs propres heures. La fiche garde son tableau habituel, avec en plus un résumé au-dessus (heures, h sup, paniers, trajet, absences) et la répartition par chantier en dessous." },
+      { icon: '👥', text: "Mon équipe (chef et ouvrier) : chacun choisit lui-même les personnes qu'il veut afficher. Touche un nom pour comparer ses heures avec les tiennes, au format de la fiche habituelle (lignes « Mes heures », la personne, « Comparaison »)." }
+    ],
+  },
   {
     version: '5.41.482',
     date: '18/10/2026',
