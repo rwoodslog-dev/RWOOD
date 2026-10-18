@@ -725,6 +725,16 @@
   .gal-dc .pg{ position:absolute; right:4px; top:4px; background:rgba(0,0,0,.72); color:#fff; font-size:10.5px; font-weight:800; border-radius:6px; padding:1px 5px; }
   .gal-dc .n{ font-size:12px; font-weight:800; padding:5px 6px 0; line-height:1.2; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .gal-dc .d{ font-size:10.5px; color:var(--ink-soft); padding:1px 6px 6px; }
+  /* v5.41.486 — correction multi-chantiers + barre de comparaison */
+  .ce-modes{ margin:0 0 12px; } .ce-modes button{ flex:1; }
+  .ce-row{ background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:10px; margin-bottom:8px; }
+  .ce-rh{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; font-size:12.5px; }
+  .ce-rh button{ background:none; border:none; color:#E5484D; font-size:15px; cursor:pointer; }
+  .ce-row select, .ce-row input{ width:100%; box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:9px; padding:8px 10px; color:var(--ink); font-size:14px; }
+  .ce-rr{ display:grid; grid-template-columns:90px 1fr; gap:6px; margin-top:6px; }
+  .ce-mtot{ text-align:right; font-weight:900; color:var(--wood); margin:8px 2px 12px; }
+  .bf-cmpbar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:rgba(232,172,61,.12); border:1.5px solid var(--wood); border-radius:12px; padding:9px 12px; margin-bottom:10px; font-size:13.5px; }
+  .bf-cmpbar b{ flex:1; }
   /* v5.41.485 — fiches + récap (patron / compta) */
   .bf-rng{ display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink-soft); }
   .bf-rng select{ background:var(--card); border:1px solid var(--line); border-radius:9px; padding:6px 8px; color:var(--ink); font-size:13px; }
@@ -8161,12 +8171,14 @@
         <h2>Corriger la fiche</h2>
         <p id="comptaEditSub" style="color:var(--ink-soft);font-size:13px;margin:-4px 0 14px;"></p>
         <div class="ce-field">
-          <label>Heures</label>
-          <input type="number" id="comptaEditHours" step="0.5" min="0" inputmode="decimal" placeholder="Ex : 7.5" onchange="this.value = roundHoursToHalf(this.value);">
-        </div>
-        <div class="ce-field">
           <label>Type de journée</label>
           <select id="comptaEditTypeJournee" class="fiche-type-journee"></select>
+        </div>
+        <div class="rb-seg sm ce-modes" id="ceModeSeg"><button type="button" data-m="one" onclick="ceSetMode('one')">1 chantier</button><button type="button" data-m="multi" onclick="ceSetMode('multi')">Plusieurs chantiers</button></div>
+        <div id="ceSingle">
+        <div class="ce-field">
+          <label>Heures</label>
+          <input type="number" id="comptaEditHours" step="0.5" min="0" inputmode="decimal" placeholder="Ex : 7.5" onchange="this.value = roundHoursToHalf(this.value);">
         </div>
         <div class="ce-field">
           <label>Chantier</label>
@@ -8176,6 +8188,12 @@
           <label>Tâche</label>
           <div class="ce-chips" id="comptaEditChips"></div>
           <input type="text" id="comptaEditTask" placeholder="Tâche (ou saisie libre)">
+        </div>
+        </div>
+        <div id="ceMulti" style="display:none;">
+          <div id="ceMultiRows"></div>
+          <button type="button" class="btn btn-outline btn-block btn-sm" onclick="ceAddRow()">＋ Ajouter un chantier</button>
+          <div class="ce-mtot" id="ceMultiTot"></div>
         </div>
         <div class="ce-field">
           <label>Panier</label>
@@ -33987,6 +34005,7 @@ function _computeWorkerWeekData(aw, offset){
       isMulti,
       siteId: ed ? (ed.siteId||'') : '',
       siteName: isMulti ? multiSiteName : ((custom && custom.name) ? custom.name : _ovName),
+      multiLines,   // v5.41.486
       siteColor,
       trajetRates,
       voiturePerso: !!(ed && ed.voiturePerso), // [voiturePerso] ×2 sur la prime de trajet de ce jour
@@ -34201,12 +34220,12 @@ function _bfWeekTable(aw, offset){
   const editEnabled = (typeof comptaEditEnabled === 'function' && comptaEditEnabled());
   const E = '<td class="empty-cell">—</td>';
   const absCell = r => { const info = (typeof TYPE_JOURNEE !== 'undefined' && TYPE_JOURNEE[r.typeJournee]) || { color:'#888', emoji:'', short:'Abs' }; return `<td style="text-align:center;font-size:11px;font-weight:700;color:${info.color};background:${info.color}18;">${info.emoji} ${info.short}</td>`; };
-  const rS = dayRows.map(r => !r.hasContent ? E : r.isAbsence ? absCell(r) : `<td class="site-cell" style="${r.siteColor ? `background:${colorWithAlpha(r.siteColor, 0.2)};border-left:3px solid ${r.siteColor};` : ''}">${r.siteName ? escapeHtml(r.siteName) : '—'}</td>`).join('');
-  const rH = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
+  const rS = dayRows.map(r => !r.hasContent ? E : r.isAbsence ? absCell(r) : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="site-cell" style="border-left:3px solid var(--wood);">${r.multiLines.map(l => escapeHtml(l.name)).join('<br>')}</td>` : `<td class="site-cell" style="${r.siteColor ? `background:${colorWithAlpha(r.siteColor, 0.2)};border-left:3px solid ${r.siteColor};` : ''}">${r.siteName ? escapeHtml(r.siteName) : '—'}</td>`).join('');
+  const rH = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="hours-cell">${r.multiLines.map(l => String(l.hours).replace('.', ',') + 'h').join('<br>')}<br><strong>Total ${String(r.h).replace('.', ',')}h</strong></td>` : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
   const rP = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : `<td>${r.panier ? '✓' : '—'}</td>`).join('');
   const hasTr = dayRows.some(r => r.trajetRates); let trTot = 0;
   const rTr = dayRows.map(r => { if(!r.hasContent || r.isAbsence || !r.trajetRates) return E; const amt = r.trajetRates.trajet * (r.voiturePerso ? 2 : 1); trTot += amt; return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.', ',')}${r.voiturePerso ? ' ×2' : ''}</td>`; }).join('');
-  const rT = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
+  const rT = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="task-cell">${r.multiLines.map(l => escapeHtml(l.task || '—')).join('<br>')}</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
   const rE = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour">✎</button></td>`).join('') : '';
   return { weekTotal, html:`<div class="bf-wk">Semaine ${weekNum} · du ${fs(days[0])} au ${fs(days[6])}</div><div class="timesheet-table-wrap"><table class="timesheet"><thead><tr><th></th>${days.map((d, i) => `<th>${lbl[i]}<br>${fs(d)}</th>`).join('')}</tr></thead><tbody>
     <tr><td class="row-label">Chantier</td>${rS}</tr><tr><td class="row-label">Heures</td>${rH}</tr><tr><td class="row-label">Panier</td>${rP}</tr>
@@ -34217,12 +34236,7 @@ function _bfRender(rows, allWorkers){
   const container = document.getElementById('fichesContent');
   if(!document.querySelector('#fichesWeekHeader .rb-bar')) _bfHeader();
   _bfSyncRecapPeriod();
-  if(_bfCmp){
-    _recapTableHtml();   // calcule les lignes de la période
-    let h = _recapCompareHtml();
-    h = h.replace('onclick="rtCompare(false)">‹ Tableau', 'onclick="bfCompareClose()">‹ Retour aux fiches');
-    container.innerHTML = h; return;
-  }
+  // v5.41.486 — Comparer = uniquement les fiches + récaps des personnes choisies (pas de graphique)
   if(_bfView === 'planning'){
     const g = _recapPlanningHtml();
     container.innerHTML = g.replace(/<div class="rpl-top">[\s\S]*?<\/div>/, `<div class="rpl-top" style="justify-content:flex-end;">${[['personne','👷 Par personne'],['chantier','🏗️ Par chantier']].map(([k, l]) => `<button type="button" class="pl-chip${_rplView === k ? ' on' : ''}" onclick="_rplView='${k}';renderComptableFichesContent(_comptableLiveData||[])">${l}</button>`).join('')}</div>`);
@@ -34232,7 +34246,7 @@ function _bfRender(rows, allWorkers){
   const ctx = _recapTeamContext();
   const buckets = weeks.map(mon => ({ keys:Array.from({ length:7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return _rplKey(d); }) }));
   const q = _eqNorm(_bfQ);
-  const list = allWorkers.filter(aw => !q || _eqNorm(aw.name).includes(q));
+  const list = allWorkers.filter(aw => (!q || _eqNorm(aw.name).includes(q)) && (!_bfCmp || _rtSel.has(aw.workerId)));
   const f = d => d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
   const last = new Date(weeks[weeks.length - 1]); last.setDate(last.getDate() + 6);
   const perLbl = weeks.length === 1 ? 'la semaine' : 'S' + getISOWeekNumber(weeks[0]) + ' → S' + getISOWeekNumber(weeks[weeks.length - 1]);
@@ -34252,7 +34266,8 @@ function _bfRender(rows, allWorkers){
       ${r ? `<div class="bf-recap"><div class="bf-rt">📊 Récap ${weeks.length === 1 ? 'de la semaine' : 'du ' + f(weeks[0]) + ' au ' + f(last)}</div>${_recapCardHtml(r, null, null)}</div>` : ''}
     </div>`;
   }).join('');
-  container.innerHTML = `<div class="bf-sum"><b>${list.length}</b> personne${list.length > 1 ? 's' : ''} · <b>${_rplFmtH(grand)} h</b> au total · ${weeks.length === 1 ? 'semaine ' + getISOWeekNumber(weeks[0]) : weeks.length + ' semaines (' + f(weeks[0]) + ' → ' + f(last) + ')'}</div>` + (cards || '<div class="hint" style="text-align:center;padding:24px 0;">Aucun résultat.</div>');
+  const cmpBar = _bfCmp ? `<div class="bf-cmpbar">⚖️ Comparaison : <b>${list.map(a => escapeHtml(a.name)).join(' · ')}</b><button type="button" class="pl-chip" onclick="bfComparePick()">✏️ Changer</button><button type="button" class="pl-chip" onclick="bfCompareClose()">✕ Tout le monde</button></div>` : '';
+  container.innerHTML = cmpBar + `<div class="bf-sum"><b>${list.length}</b> personne${list.length > 1 ? 's' : ''} · <b>${_rplFmtH(grand)} h</b> au total · ${weeks.length === 1 ? 'semaine ' + getISOWeekNumber(weeks[0]) : weeks.length + ' semaines (' + f(weeks[0]) + ' → ' + f(last) + ')'}</div>` + (cards || '<div class="hint" style="text-align:center;padding:24px 0;">Aucun résultat.</div>');
 }
 
 function toggleComptableWorker(key){
@@ -46023,9 +46038,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.485';
+const APP_VERSION = '5.41.486';
 
 const CHANGELOG = [
+  {
+    version: '5.41.486',
+    date: '18/10/2026',
+    entries: [
+      { icon: '⚖️', text: "Comparer (patron et comptabilité) : n'affiche plus que les fiches et le récap des personnes choisies, sans graphique." },
+      { icon: '✏️', text: "Corriger une journée : choix « 1 chantier » ou « Plusieurs chantiers ». En multi-chantiers, chaque chantier (nom, heures, tâche) se modifie séparément, autant de chantiers que nécessaire, avec le total de la journée. Les fiches affichent chaque chantier sur sa ligne." }
+    ],
+  },
   {
     version: '5.41.485',
     date: '18/10/2026',
@@ -70049,6 +70072,9 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
     panier: (ov.panier != null ? ov.panier : (entry ? entry.panier : false)),
     typeJournee: (ov.typeJournee != null ? ov.typeJournee : (entry ? entry.typeJournee : 'normal'))
   });
+  // v5.41.486 — correction d'une journée multi-chantiers : chaque chantier (nom, heures, tâche)
+  if(ov.mode === 'multi' && Array.isArray(ov.sites) && ov.sites.length){ newEntry.mode = 'multi'; newEntry.sites = ov.sites.map(r => Object.assign({}, r)); }
+  else if(ov.mode === 'simple'){ delete newEntry.mode; delete newEntry.sites; }
   const newEd = Object.assign({}, ed || {}, {
     siteId: (ov.siteId != null ? ov.siteId : (ed ? ed.siteId : null)),
     siteName: (ov.siteName != null ? ov.siteName : (ed ? ed.siteName : undefined)),
@@ -70117,6 +70143,11 @@ function comptaEditOpen(deviceId, workerId, dateKey){
 
   // Panier
   document.getElementById('comptaEditPanier').checked = entry ? !!entry.panier : false;
+  // v5.41.486 — journée multi-chantiers : une ligne par chantier, chacune modifiable
+  _ceRows = _entryHasMultiSites(entry)
+    ? entry.sites.filter(r => r && r.siteId).map(r => ({ siteId:r.siteId, customName:r.customName || '', customZone:r.customZone || '', zoneHint:r.zoneHint || '', name:_pointageSiteRowName(r), hours:r.hours != null ? String(r.hours) : '', task:r.task || '' }))
+    : [{ siteId:curSite || '', name:'', hours:entry && entry.hours != null ? String(entry.hours) : '', task:curTask }];
+  ceSetMode(_entryHasMultiSites(entry) ? 'multi' : 'one', true);
   // [voiturePerso] Calque déjà appliqué au-dessus (comptaEditApplyOverride) :
   // ed.voiturePerso reflète soit la correction précédente de la comptable,
   // soit le réglage d'origine de l'ouvrier pour ce jour.
@@ -70126,6 +70157,41 @@ function comptaEditOpen(deviceId, workerId, dateKey){
   openModal('comptaEdit');
 }
 
+/* v5.41.486 — correction multi-chantiers (patron / comptable) */
+let _ceRows = [], _ceMode = 'one';
+function ceSetMode(m, init){
+  if(!init) _ceSyncFromSingle();
+  _ceMode = m;
+  if(m === 'multi' && _ceRows.length < 2 && !init) _ceRows.push({ siteId:'', name:'', hours:'', task:'' });
+  document.querySelectorAll('#ceModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  const one = document.getElementById('ceSingle'), mu = document.getElementById('ceMulti');
+  if(one) one.style.display = m === 'one' ? '' : 'none';
+  if(mu) mu.style.display = m === 'multi' ? '' : 'none';
+  if(m === 'multi') ceRenderRows();
+  else if(!init && _ceRows[0]){ const r = _ceRows[0]; const sel = document.getElementById('comptaEditSite'); if(sel && r.siteId && [...sel.options].some(o => o.value === r.siteId)) sel.value = r.siteId; document.getElementById('comptaEditHours').value = _ceRows.reduce((a, x) => a + (parseFloat(String(x.hours).replace(',', '.')) || 0), 0) || ''; document.getElementById('comptaEditTask').value = r.task || ''; }
+}
+function _ceSyncFromSingle(){
+  if(_ceMode !== 'one') return;
+  const sel = document.getElementById('comptaEditSite');
+  const v = sel ? sel.value : '';
+  if(!_ceRows.length) _ceRows.push({});
+  _ceRows[0] = Object.assign({}, _ceRows[0], { siteId:(v && v !== '__free__') ? v : (_ceRows[0].siteId || ''), hours:document.getElementById('comptaEditHours').value, task:document.getElementById('comptaEditTask').value });
+}
+function ceRenderRows(){
+  const box = document.getElementById('ceMultiRows'); if(!box) return;
+  const sites = _comptaEditAllSites();
+  box.innerHTML = _ceRows.map((r, i) => {
+    const known = sites.some(s => s.id === r.siteId);
+    const extra = (r.siteId && !known) ? `<option value="${escapeHtml(r.siteId)}" selected>${escapeHtml(r.name || r.customName || 'Chantier libre')}</option>` : '';
+    return `<div class="ce-row"><div class="ce-rh"><b>Chantier ${i + 1}</b>${_ceRows.length > 1 ? `<button type="button" onclick="ceDelRow(${i})" title="Retirer">✕</button>` : ''}</div>
+      <select onchange="_ceRows[${i}].siteId=this.value;_ceRows[${i}].name=this.options[this.selectedIndex].text">${extra}<option value="" ${!r.siteId ? 'selected' : ''}>— Choisir le chantier —</option>${sites.map(s => `<option value="${s.id}" ${s.id === r.siteId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>
+      <div class="ce-rr"><input type="number" step="0.5" min="0" inputmode="decimal" placeholder="Heures" value="${escapeHtml(String(r.hours || ''))}" oninput="_ceRows[${i}].hours=this.value;ceTot()" onchange="this.value=roundHoursToHalf(this.value);_ceRows[${i}].hours=this.value;ceTot()"><input type="text" placeholder="Tâche" value="${escapeHtml(r.task || '')}" oninput="_ceRows[${i}].task=this.value"></div></div>`;
+  }).join('');
+  ceTot();
+}
+function ceTot(){ const t = _ceRows.reduce((a, r) => a + (parseFloat(String(r.hours).replace(',', '.')) || 0), 0); const e = document.getElementById('ceMultiTot'); if(e) e.textContent = 'Total de la journée : ' + String(t).replace('.', ',') + ' h'; }
+function ceAddRow(){ _ceRows.push({ siteId:'', name:'', hours:'', task:'' }); ceRenderRows(); }
+function ceDelRow(i){ _ceRows.splice(i, 1); ceRenderRows(); }
 function _comptaEditRenderChips(current){
   const box = document.getElementById('comptaEditChips');
   if(!box) return;
@@ -70216,6 +70282,20 @@ async function comptaEditSave(){
     if(chosen) ovData.siteName = chosen.name;            // nom propre (écrase l'ancien texte)
   } else if(rawSel === ''){
     ovData.siteId = null;                                // remis à "aucun chantier"
+  }
+  // v5.41.486 — plusieurs chantiers : chaque ligne (chantier, heures, tâche) est enregistrée
+  if(_ceMode === 'multi'){
+    const rows = _ceRows.filter(r => r.siteId);
+    if(!rows.length){ showToast('Choisis au moins un chantier'); return; }
+    const all = _comptaEditAllSites();
+    ovData.mode = 'multi';
+    ovData.sites = rows.map(r => { const o = { siteId:r.siteId, hours:r.hours === '' ? '' : String(roundHoursToHalf(r.hours)), task:r.task || '' }; if(r.siteId === '__custom__'){ o.customName = r.customName || r.name || ''; if(r.customZone) o.customZone = r.customZone; } if(r.zoneHint) o.zoneHint = r.zoneHint; return o; });
+    ovData.hours = String(ovData.sites.reduce((a, r) => a + (parseFloat(r.hours) || 0), 0));
+    ovData.task = ovData.sites.map(r => r.task).filter(Boolean).join(' / ');
+    const first = all.find(x => x.id === rows[0].siteId);
+    ovData.siteId = rows[0].siteId === '__custom__' ? null : rows[0].siteId; if(first) ovData.siteName = first.name;
+  } else {
+    ovData.mode = 'simple'; ovData.sites = null;
   }
   const key = _comptaEditKey(deviceId, workerId, dateKey);
   const prev = ov[key] || {};
