@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v1028';
+const CACHE_NAME = 'rwood-cache-v1030';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -193,6 +193,7 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(p.title||'Notybat', {
     body:p.body||'', icon:'./icons/icon-192.png', badge:'./icons/icon-192.png',
     tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
+    renotify: String(p.tag||'').startsWith('conv-'), // v5.41.475 — 1 notif par conversation, qui sonne à chaque message
   }));
 });
 
