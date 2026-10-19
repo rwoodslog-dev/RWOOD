@@ -730,6 +730,7 @@
   #nvRoot .nv-kb .dep-col{ background:rgba(0,0,0,.14); }
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
   .nv-chip.nv-done{ border-style:dashed !important; opacity:.85; } .nv-chip i{ font-style:normal; font-size:.8em; opacity:.7; }
+  .hub-t .hub-ic{ width:40px; height:40px; object-fit:contain; display:block; }
   /* v5.41.521 — ⚙️ Paramètres du chantier : seulement les réglages (plus les anciennes tuiles) */
   #view-detail.hub-params #detailCategoryGrid, #view-detail.hub-params #btnMainCumul, #view-detail.hub-params #detailCumulPanel, #view-detail.hub-params #detailSynchroPanel{ display:none !important; }
   #view-detail.hub-params .dset-head{ pointer-events:none; } #view-detail.hub-params #detailSettingsArrow{ display:none; }
@@ -13895,11 +13896,13 @@ function _ssRender(){
       <div class="nv-cfgf"><button onclick="ssClose()">Annuler</button><button class="p" onclick="ssSaveAll()">💾 Enregistrer</button></div>`;
 }
 function ssPickHtml(site){
+  if(!ssCanEdit()){ const st = siteStage(site); return `<div class="chip ss-chip selected" style="--c:${escapeHtml(st.color)};cursor:default;"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}</div><span class="hint" style="align-self:center;">🔒 changé par le patron ou un conducteur</span>`; }   // v5.41.523 — lecture seule
   return ssList().filter(st => !siteHiddenForMe({ status:_ssBaseOf(st.phase, st.id), stage:st.id })).map(st => { const on = siteStage(site).id === st.id;
     return `<div class="chip ss-chip${on ? ' selected' : ''}" style="--c:${escapeHtml(st.color)}" onclick="setSiteStage('${site.id}','${st.id}')"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}</div>`; }).join('')
     + (ssCanEdit() ? `<div class="chip" onclick="ssOpen()" title="Personnaliser les statuts">⚙️</div>` : '');
 }
 function setSiteStage(siteId, stId){
+  if(!ssCanEdit()){ showToast('🔒 Seuls le patron et les conducteurs changent le statut'); return; }   // v5.41.523
   const site = (data.sites || []).find(s => s.id === siteId); const st = ssList().find(x => x.id === stId); if(!site || !st) return;
   const base = _ssBaseOf(st.phase, st.id);
   if(st.base) delete site.stage; else site.stage = st.id;
@@ -13992,7 +13995,7 @@ function skbHtml(sorted){
   const q = _skbQ.trim().toLowerCase();
   const list = sorted.filter(s => !siteHiddenForMe(s) && (!q || ((s.name || '') + ' ' + (s.address || '')).toLowerCase().includes(q)));
   const cols = ssList().filter(st => !siteHiddenForMe({ status:_ssBaseOf(st.phase, st.id), stage:st.id }));
-  const can = _hubCanEdit();
+  const can = ssCanEdit();   // v5.41.523 — glisser = changer le statut : patron / conducteur
   const fd = d => { try{ return d ? new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''; }catch(e){ return ''; } };
   const card = s => { const ch = (s.assignedChefs || []).map(c => c && c.name).filter(Boolean)[0]; const city = (s.address || '').split(',').pop().replace(/\d{5}/, '').trim();
     return `<div class="skb-c" style="--sc:${escapeHtml(s.color || '#E8AC3D')}" ${can ? `draggable="true" ondragstart="_skbDrag='${s.id}'"` : ''} onclick="goTo('detail','${s.id}')"><b class="s-row">${siteIni(s, 24)}${escapeHtml(s.name || 'Chantier')}</b><small>${escapeHtml([city, ch ? '👷 ' + ch : '', s.dueDate ? 'fin ' + fd(s.dueDate) : ''].filter(Boolean).join(' · '))}</small>${(s.progress || 0) > 0 ? `<div class="skb-bar"><i style="width:${Math.min(100, s.progress)}%"></i></div>` : ''}</div>`; };
@@ -16614,6 +16617,7 @@ function _newSiteStageRender(){
   const el = document.getElementById('newSiteStageChips'); if(!el) return;
   const list = ssList().filter(st => !siteHiddenForMe({ status:_ssBaseOf(st.phase, st.id), stage:st.id }));
   if(!list.some(x => x.id === _newSiteStage)) _newSiteStage = (list.find(x => x.id === 'a-faire') || list[0] || {}).id || 'a-faire';
+  if(!ssCanEdit()){ _newSiteStage = (list.find(x => x.id === 'a-faire') || list[0] || {}).id || 'a-faire'; const st = list.find(x => x.id === _newSiteStage) || {}; el.innerHTML = `<div class="chip ss-chip selected" style="--c:${escapeHtml(st.color || '#9a9a9a')};cursor:default;"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + (st.name || 'À faire'))}</div><span class="hint" style="align-self:center;">🔒 le patron ou un conducteur choisit le statut</span>`; return; }   // v5.41.523
   el.innerHTML = list.map(st => `<div class="chip ss-chip${st.id === _newSiteStage ? ' selected' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_newSiteStage='${st.id}';_newSiteStageRender()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}</div>`).join('')
     + (ssCanEdit() ? `<div class="chip" onclick="ssOpen()" title="Personnaliser les statuts">⚙️</div>` : '');
 }
@@ -16875,14 +16879,14 @@ function hubRender(site){
   const tile = site.tileId && (data.tiles || []).find(t => t.id === site.tileId);
   h.innerHTML = `<div class="hub-back"><button class="btn btn-outline btn-sm" onclick="goTo('chantiers')">← Chantiers</button></div>
     <div class="hub-h" style="--sc:${escapeHtml(col)}"><b class="s-row">${siteIni(site, 34)}${escapeHtml(site.name || 'Chantier')}</b><small>${escapeHtml(site.address || 'Adresse non renseignée')}</small>
-      <div class="hub-st"><button class="hub-pill" style="background:${escapeHtml(st.color)}" onclick="document.getElementById('hubStPick').classList.toggle('on')">${escapeHtml(siteStageLabel(site))} ▾</button><span>${site.progress || 0} %${site.dueDate ? ' · fin ' + fd(site.dueDate) : ''}</span></div>
+      <div class="hub-st">${ssCanEdit() ? `<button class="hub-pill" style="background:${escapeHtml(st.color)}" onclick="document.getElementById('hubStPick').classList.toggle('on')">${escapeHtml(siteStageLabel(site))} ▾</button>` : `<span class="hub-pill" style="background:${escapeHtml(st.color)};cursor:default;">${escapeHtml(siteStageLabel(site))}</span>`}<span>${site.progress || 0} %${site.dueDate ? ' · fin ' + fd(site.dueDate) : ''}</span></div>
       <div class="hub-bar"><i style="width:${Math.max(0, Math.min(100, site.progress || 0))}%"></i></div>
-      <div id="hubStPick" class="chip-row hub-stpick">${_hubCanEdit() ? ssPickHtml(site) : '<div class="hint">Seuls le patron, les conducteurs et les chefs changent le statut.</div>'}</div></div>
+      <div id="hubStPick" class="chip-row hub-stpick">${ssCanEdit() ? ssPickHtml(site) : ''}</div></div>
     <div class="hub-g">
-      <button class="hub-t w" onclick="hubOpen('${site.id}','infos')"><span>📍</span><b>Infos chantier</b><small>${[chefs.length ? '👷 ' + chefs.join(', ') : '', site.keyboxCode ? '🔑 ' + site.keyboxCode : '', site.trajetZone ? 'Zone ' + site.trajetZone : '', tile ? '🏠 ' + tile.name : '', '3D'].filter(Boolean).map(escapeHtml).join(' · ')}</small></button>
-      <button class="hub-t" onclick="hubOpen('${site.id}','media')"><span>📁</span><b>Photos & Docs</b><small>📷 ${ph} · 📄 ${dc}</small></button>
-      <button class="hub-t" onclick="hubOpen('${site.id}','notes')"><span>📝</span><b>Notes</b><small>${nN} note${nN > 1 ? 's' : ''}${nTodo ? ' · ⚠️ ' + nTodo : ''}</small></button>
-      ${_hubBoss() ? `<button class="hub-t w adm" onclick="hubOpen('${site.id}','params')"><span>⚙️</span><b>Paramètres</b><small>couleur · chefs · avancement · réunion · suppression — patron / conducteur</small></button>` : ''}
+      <button class="hub-t w" onclick="hubOpen('${site.id}','infos')"><span><img src="icons/hub-infos.png" alt="" class="hub-ic" onerror="this.replaceWith(document.createTextNode('📍'))"></span><b>Infos chantier</b><small>${[chefs.length ? '👷 ' + chefs.join(', ') : '', site.keyboxCode ? '🔑 ' + site.keyboxCode : '', site.trajetZone ? 'Zone ' + site.trajetZone : '', tile ? '🏠 ' + tile.name : '', '3D'].filter(Boolean).map(escapeHtml).join(' · ')}</small></button>
+      <button class="hub-t" onclick="hubOpen('${site.id}','media')"><span><img src="icons/photos-docs.png" alt="" class="hub-ic" onerror="this.replaceWith(document.createTextNode('📁'))"></span><b>Photos & Docs</b><small>📷 ${ph} · 📄 ${dc}</small></button>
+      <button class="hub-t" onclick="hubOpen('${site.id}','notes')"><span><img src="icons/note.png" alt="" class="hub-ic" onerror="this.replaceWith(document.createTextNode('📝'))"></span><b>Notes</b><small>${nN} note${nN > 1 ? 's' : ''}${nTodo ? ' · ⚠️ ' + nTodo : ''}</small></button>
+      ${_hubBoss() ? `<button class="hub-t w adm" onclick="hubOpen('${site.id}','params')"><span><img src="icons/hub-params.png" alt="" class="hub-ic" onerror="this.replaceWith(document.createTextNode('⚙️'))"></span><b>Paramètres</b><small>couleur · chefs · avancement · réunion · suppression — patron / conducteur</small></button>` : ''}
     </div>`;
 }
 function hubEdit(id, field, label){
@@ -47906,9 +47910,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.522';
+const APP_VERSION = '5.41.524';
 
 const CHANGELOG = [
+  {
+    version: '5.41.524',
+    date: '19/10/2026',
+    entries: [
+      { icon: '🎨', text: "Fiche chantier : nouvelles icônes des tuiles — 📍 punaise pour Infos chantier, Photos & Docs, la même icône que l'onglet Notes, et l'engrenage pour Paramètres." }
+    ],
+  },
+  {
+    version: '5.41.523',
+    date: '19/10/2026',
+    entries: [
+      { icon: '🔒', text: "Statut des chantiers : seuls le patron et les conducteurs peuvent le changer (fiche, Kanban PC, nouveau chantier). Les autres voient le statut sans pouvoir le modifier." }
+    ],
+  },
   {
     version: '5.41.522',
     date: '19/10/2026',
