@@ -729,6 +729,23 @@
   #nvRoot .nv-kb .dep-colb .nv-sec:first-child{ margin-top:0; }
   #nvRoot .nv-kb .dep-col{ background:rgba(0,0,0,.14); }
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  /* v5.41.504 — Ajouter : Photos | Scanner */
+  .ga-two{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .ga-two.four{ grid-template-columns:1fr 1fr; }
+  .ga-big{ display:flex; flex-direction:column; align-items:center; gap:4px; padding:18px 8px; border-radius:16px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; min-height:0; }
+  .ga-big span{ font-size:34px; line-height:1; } .ga-big b{ font-size:14.5px; text-align:center; } .ga-big small{ font-size:11.5px; color:var(--ink-soft); text-align:center; line-height:1.25; }
+  .ga-big:active{ transform:scale(.97); }
+  .ga-more{ display:flex; flex-direction:column; gap:2px; margin-top:12px; }
+  .ga-more button{ background:none; border:0; color:var(--ink-soft); font:inherit; font-size:13.5px; font-weight:700; padding:9px; cursor:pointer; min-height:0; text-decoration:underline; text-underline-offset:3px; }
+  /* v5.41.503 — Choisir dans la galerie du chantier */
+  .gf-spg{ display:grid; grid-template-columns:repeat(auto-fill,minmax(92px,1fr)); gap:6px; max-height:60vh; overflow-y:auto; }
+  .gf-spc{ position:relative; aspect-ratio:1; border-radius:9px; overflow:hidden; cursor:pointer; background:var(--card); }
+  .gf-spc img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .gf-spc small{ position:absolute; left:3px; bottom:3px; right:3px; font-size:9.5px; background:rgba(0,0,0,.6); color:#fff; border-radius:5px; padding:1px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gf-spc .dc{ position:absolute; top:4px; left:4px; font-style:normal; font-size:14px; }
+  .gf-spc.sel{ outline:3px solid var(--wood); outline-offset:-3px; }
+  .gf-spc .gf-ck:empty{ background:rgba(0,0,0,.35); }
+  .gf-spc.sel .gf-ck{ background:var(--wood); border-color:var(--wood); color:#1a0d00; }
   /* v5.41.502 — Statuts personnalisés · Dossiers de la galerie */
   .badge.ss-b{ color:#fff; text-shadow:0 1px 1px rgba(0,0,0,.25); white-space:nowrap; }
   .chip.ss-chip{ display:inline-flex; align-items:center; gap:6px; }
@@ -8714,6 +8731,11 @@
       <label>Adresse</label>
       <input type="text" id="newSiteAddress" placeholder="Ex : 12 rue des Tilleuls, Mérignac">
     </div>
+    <!-- v5.41.506 — statuts de l'entreprise (personnalisés compris) -->
+    <div class="field">
+      <label>Statut</label>
+      <div class="chip-row" id="newSiteStageChips"></div>
+    </div>
 
     <!-- Champs conducteur uniquement — affichés via JS selon le rôle -->
     <div id="addSiteConducteurFields" style="display:none;">
@@ -8746,7 +8768,7 @@
 
     <!-- Champs standard (non-conducteur) -->
     <div id="addSiteStandardFields">
-      <div class="field">
+      <div class="field" style="display:none;">
         <label>Statut</label>
         <div class="chip-row" id="newSiteStatusChips">
           <div class="chip selected" data-status="a-faire">À faire</div>
@@ -13692,6 +13714,7 @@ async function ssSaveAll(){
   const list = _ssDraft.map(c => Object.assign({}, c, { name:(c.name || '').trim() || 'Statut', roles:Array.from(new Set(['patron'].concat(c.roles || SS_ALL))) }));
   if(!(await ssSave(list))) return;
   _ssDirty = false; showToast('✅ Statuts enregistrés pour toute l\'entreprise'); ssClose(true);
+  try{ _newSiteStageRender(); }catch(e){}
   try{ renderSites(); }catch(e){}
   try{ if(typeof currentDetailId !== 'undefined' && currentDetailId && document.getElementById('view-detail').classList.contains('active')) renderDetail(currentDetailId); }catch(e){}
 }
@@ -14620,7 +14643,7 @@ function _galerieRenderFolder(root, siteId){
       <span class="t">${escapeHtml((_curF.icon || '📁') + ' ' + _curF.name)}</span>
       <span class="n">· ${escapeHtml(site.name)} · ${photos.length}</span>
       ${rwTagCanCreate() ? `<button class="gf-hb" onclick="gfEdit('${_curF.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gfDelete('${_curF.id}')" title="Supprimer le dossier">🗑</button>` : ''}
-    </div>` : `
+    </div><div class="gf-bact"><button class="btn btn-primary btn-sm" onclick="galerieAddPhotos('${site.id}','${_curF.id}')">＋ Ajouter</button></div>` : `
     <div class="galerie-head1">
       <button onclick="galerieCloseFolder()" title="Tous les dossiers">←</button>
       <span class="t">${escapeHtml(site.name)}</span>
@@ -14631,7 +14654,7 @@ function _galerieRenderFolder(root, siteId){
   if(!photos.length){
     const _pd = (typeof rwUpqPendingFor === 'function') ? rwUpqPendingFor(siteId) : [];
     if(_pd.length){ root.innerHTML = backBar + `<div class="gal-pend"><div class="gal-pend-h">⏳ ${_pd.length} photo${_pd.length > 1 ? 's' : ''} en attente de réseau <span>· envoi automatique</span></div><div class="gal-pend-l">${_pd.map(r => `<img src="${rwUpqThumb(r)}" alt="">`).join('')}</div></div>`; return; }
-    root.innerHTML = backBar + (_curF ? '<div class="empty" style="padding:36px 20px;"><div class="icon" style="font-size:34px;">📁</div><h3>Dossier vide</h3><p>Ajoute des photos avec 📷 (elles iront dans ce dossier), ou sélectionne des photos du chantier puis « 📁 Ranger ».</p></div>'
+    root.innerHTML = backBar + (_curF ? '<div class="empty" style="padding:36px 20px;"><div class="icon" style="font-size:34px;">📁</div><h3>Dossier vide</h3><p>« ＋ Ajouter » : rafale, scan, photos ou fichiers du téléphone / PC, ou photos déjà dans la galerie du chantier.</p></div>'
       : _allPh.length ? '<div class="hint" style="text-align:center;padding:18px 10px;">Toutes les photos sont rangées dans des dossiers.</div>' : '<div class="empty" style="padding:36px 20px;"><div class="icon" style="font-size:34px;">🖼️</div><h3>Aucune photo pour ce chantier</h3><p>Appuie sur 📷 pour en ajouter.</p></div>');
     return;
   }
@@ -15000,11 +15023,11 @@ function gfBurRender(root, site, fid){
   root.innerHTML = `<div class="galerie-head1 gf-head"><button onclick="gfOpen(null)" title="Retour au chantier">←</button><span class="t">${escapeHtml((f.icon || '📁') + ' ' + f.name)} 🔒</span><span class="n">· ${escapeHtml(site.name)} · ${items.length}</span>
       <button class="gf-hb" onclick="gfEdit('b:${f.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gfDelete('b:${f.id}')" title="Supprimer">🗑</button></div>
     <div class="hint" style="margin:0 2px 10px;">🔒 Visible seulement par le patron, les conducteurs et la compta.</div>
-    <div class="gf-bact"><button class="btn btn-primary btn-sm" onclick="gfBurAdd('${f.id}')">📷 Ajouter</button>${items.length ? `<button class="btn btn-outline btn-sm" onclick="_gbSel=_gbSel?null:new Set();galerieRender()">${sel ? 'Annuler' : 'Sélectionner'}</button>` : ''}
+    <div class="gf-bact"><button class="btn btn-primary btn-sm" onclick="galerieAddPhotos('${site.id}','b:${f.id}')">＋ Ajouter</button>${items.length ? `<button class="btn btn-outline btn-sm" onclick="_gbSel=_gbSel?null:new Set();galerieRender()">${sel ? 'Annuler' : 'Sélectionner'}</button>` : ''}
       ${sel ? `<span class="galerie-actionbar-count">${sel.size}</span><button class="btn btn-outline btn-sm" ${sel.size ? '' : 'disabled'} onclick="_gfPick(${sel.size},'bur')">📁 Ranger / sortir</button><button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);" ${sel.size ? '' : 'disabled'} onclick="gfBurDel()">🗑</button>` : ''}</div>
     ${items.length ? `<div class="galerie-grid gf-bgrid">${items.map((m, i) => { const ph = m.type === 'photo' || /^image\//.test(m.mimeType || ''); const on = sel && sel.has(m.id);
       return `<div class="galerie-cell gf-bc${on ? ' sel' : ''}" onclick="gfBurTap(${i},'${m.id}')">${ph ? `<img src="${escapeHtml(m.thumbUrl || m.url)}" alt="" loading="lazy">` : `<div class="gf-doc">📄<small>${escapeHtml(m.title || m.name || 'Document')}</small></div>`}${sel ? `<span class="gf-ck">${on ? '✓' : ''}</span>` : ''}</div>`; }).join('')}</div>`
-      : '<div class="empty" style="padding:30px 20px;"><div class="icon" style="font-size:34px;">🔒</div><h3>Dossier vide</h3><p>Ajoute des photos ou des documents, ou range ici des photos du chantier (Sélectionner › 📁 Ranger).</p></div>'}`;
+      : '<div class="empty" style="padding:30px 20px;"><div class="icon" style="font-size:34px;">🔒</div><h3>Dossier vide</h3><p>« ＋ Ajouter » : rafale, scan, photos ou fichiers du téléphone / PC, ou photos déjà dans la galerie du chantier.</p></div>'}`;
   window._gbItems = items;
 }
 function gfBurTap(i, id){
@@ -15671,6 +15694,15 @@ function removeChefFromNewSite(idx){
   renderNewSiteChefsList();
 }
 
+/* v5.41.506 — choix du statut à la création (statuts personnalisés de l'entreprise) */
+let _newSiteStage = 'a-faire';
+function _newSiteStageRender(){
+  const el = document.getElementById('newSiteStageChips'); if(!el) return;
+  const list = ssList().filter(st => !siteHiddenForMe({ status:_ssBaseOf(st.phase, st.id), stage:st.id }));
+  if(!list.some(x => x.id === _newSiteStage)) _newSiteStage = (list.find(x => x.id === 'a-faire') || list[0] || {}).id || 'a-faire';
+  el.innerHTML = list.map(st => `<div class="chip ss-chip${st.id === _newSiteStage ? ' selected' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_newSiteStage='${st.id}';_newSiteStageRender()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}</div>`).join('')
+    + (ssCanEdit() ? `<div class="chip" onclick="ssOpen()" title="Personnaliser les statuts">⚙️</div>` : '');
+}
 function renderNewSiteChefsList(){
   const el = document.getElementById('newSiteChefsList');
   if(!el) return;
@@ -15693,6 +15725,7 @@ function setupAddSiteModal(){
   document.getElementById('addSiteConducteurFields').style.display = isConducteur ? '' : 'none';
   document.getElementById('addSiteStandardFields').style.display = isConducteur ? 'none' : '';
   document.getElementById('btnPutOnHold').style.display = isConducteur ? '' : 'none';
+  _newSiteStage = 'a-faire'; _newSiteStageRender(); try{ ssFetch().then(() => _newSiteStageRender()); }catch(e){}
   _newSiteChefs = [];
   renderNewSiteChefsList();
   document.getElementById('newSiteName').value = '';
@@ -15768,6 +15801,11 @@ function _buildSiteFromForm(status){
     const statusChip = document.querySelector('#newSiteStatusChips .chip.selected');
     site.status = statusChip ? statusChip.dataset.status : 'a-faire';
     site.progress = Math.max(0, Math.min(100, parseInt(document.getElementById('newSiteProgress').value)||0));
+  }
+  // v5.41.506 — statut choisi (de base ou personnalisé) ; « Enregistrer en brouillon » garde le brouillon
+  if(status !== 'brouillon'){
+    const st = ssList().find(x => x.id === _newSiteStage);
+    if(st){ site.status = _ssBaseOf(st.phase, st.id); if(st.base) delete site.stage; else site.stage = st.id; if(site.status === 'termine') site.progress = 100; }
   }
 
   return site;
@@ -21227,9 +21265,9 @@ async function addSharedMediaToSite(siteId, file, opts){
       uploadedAt:  new Date().toISOString(),
       siteId
     });
-    // v5.41.502 — ajout depuis un dossier ouvert de la galerie : la photo y est rangée
-    { const e0 = site.sharedMedia[site.sharedMedia.length - 1], gF = window._galFilt;
-      if(e0 && gF && gF.siteId === siteId && _galerieOpenSiteId === siteId && gF.folder && !String(gF.folder).startsWith('b:')){ e0.folder = gF.folder; e0.metaAt = new Date().toISOString(); } }
+    // v5.41.503 — ajout dans un dossier de la galerie (choisi au moment de l'ajout)
+    { const e0 = site.sharedMedia[site.sharedMedia.length - 1], fo = (opts && (opts.folder || (opts.meta && opts.meta.folder))) || null;
+      if(e0 && fo && !String(fo).startsWith('b:')){ e0.folder = fo; e0.metaAt = new Date().toISOString(); } }
     // v5.41.446 — titre / hashtags / document (choisis à la relecture ou au scan)
     { const mt = (opts && opts.meta) || null;
       if(mt){ const e = site.sharedMedia[site.sharedMedia.length - 1];
@@ -22757,7 +22795,7 @@ const RW_DOC_SUGG = ['Plan', 'Devis', 'Bon de livraison', 'Bon de commande', 'Fa
 function rwReviewPhotos(files, title){
   return new Promise(resolve => {
     _rwAnCSS();
-    let list = files.map(f => { const mt = _rwFileMeta.get(f) || null; return { f, url: URL.createObjectURL(f), edited: false, meta: mt, isDoc: !!(mt && mt.doc), dtitle: '' }; });
+    let list = files.map(f => { const mt = _rwFileMeta.get(f) || null; return { f, url: URL.createObjectURL(f), edited: false, meta: mt, isDoc: !!(mt && mt.doc), canDoc: !!(mt && mt.doc), dtitle: '' }; });   // v5.41.503 — document / regroupement seulement pour les scans et « Document en photos »
     // v5.41.450 — hashtags communs à toutes les photos ; titre seulement pour les documents,
     // soit le même pour tous (recherche groupée), soit un titre par document.
     const siteId = (typeof _rwReviewSiteId !== 'undefined') ? _rwReviewSiteId : null;
@@ -22771,12 +22809,12 @@ function rwReviewPhotos(files, title){
     const sugg = (key) => `<div class="rv-sugg">${RW_DOC_SUGG.map(t => `<button type="button" data-k="${key}" data-t="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}</div>`;
     const draw = () => {
       const docs = list.filter(x => x.isDoc), nd = docs.length;
-      const docHtml = !nd ? `<div class="rv-hint">Astuce : touche <b>📄</b> sur une photo pour en faire un document avec un titre (plan, bon de livraison…).</div>`
+      const docHtml = !nd ? ''
         : `<div class="rv-mg">
-            <div class="rv-mh">📄 ${nd} document${nd > 1 ? 's' : ''}</div>
-            ${nd > 1 ? `<div class="rv-seg"><button type="button" data-m="same" class="${docMode === 'same' ? 'on' : ''}">🔗 Même titre pour les ${nd}</button><button type="button" data-m="each" class="${docMode === 'each' ? 'on' : ''}">✂️ Un titre par document</button></div>` : ''}
+            <div class="rv-mh">📄 Document${nd > 1 ? ' · ' + nd + ' pages' : ''}</div>
+            ${nd > 1 ? `<div class="rv-seg"><button type="button" data-m="same" class="${docMode === 'same' ? 'on' : ''}">🔗 Un seul document (${nd} pages)</button><button type="button" data-m="each" class="${docMode === 'each' ? 'on' : ''}">✂️ Séparer les pages</button></div>` : ''}
             ${(docMode === 'same' || nd === 1)
-              ? `<input class="rv-mt" data-k="same" value="${escapeHtml(sameTitle)}" placeholder="Nom du document (ex. Plan pergola)" maxlength="80">${sugg('same')}${nd > 1 ? '<div class="rv-hint" style="padding:6px 0 0;">Les ' + nd + ' documents seront regroupés sous ce titre.</div>' : ''}`
+              ? `<input class="rv-mt" data-k="same" value="${escapeHtml(sameTitle)}" placeholder="Nom du document (ex. Plan pergola)" maxlength="80">${sugg('same')}`
               : docs.map((x, j) => `<div class="rv-drow"><img src="${x.url}" alt=""><input class="rv-mt" data-k="d${list.indexOf(x)}" value="${escapeHtml(x.dtitle)}" placeholder="Titre du document ${j + 1}" maxlength="80"></div>`).join('')}
           </div>`;
       const metaHtml = siteId ? `<div class="rv-meta">
@@ -22788,14 +22826,14 @@ function rwReviewPhotos(files, title){
           <button class="rv-b" data-a="cancel">✕</button>
           <div style="flex:1;min-width:0;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📸 ${list.length} photo${list.length > 1 ? 's' : ''}${title ? ' · ' + escapeHtml(title) : ''}</div>
         </div>
-        <div style="padding:8px 12px 0;font-size:12.5px;color:rgba(255,255,255,.7);">Touche une photo pour l'annoter · ✕ pour la retirer${siteId ? ' · 📄 = document' : ''}</div>
+        <div style="padding:8px 12px 0;font-size:12.5px;color:rgba(255,255,255,.7);">Touche une photo pour l'annoter · ✕ pour la retirer${siteId && list.some(x => x.canDoc) ? ' · 📄 = page du document' : ''}</div>
         <div class="rv-grid">${list.map((x, i) => `
           <div class="rv-cell" data-i="${i}">
             <img src="${x.url}" alt="">
             ${x.edited ? '<span class="rv-done">✏️ annotée</span>' : ''}
             <button class="rv-x" data-x="${i}">✕</button>
             <button class="rv-pen" data-i="${i}">✏️ Annoter</button>
-            ${siteId ? `<button class="rv-dt${x.isDoc ? ' on' : ''}" data-d="${i}" title="Document">📄</button>` : ''}
+            ${siteId && x.canDoc ? `<button class="rv-dt${x.isDoc ? ' on' : ''}" data-d="${i}" title="Page du document">📄</button>` : ''}
           </div>`).join('')}</div>
         ${metaHtml}
         <div class="rv-bottom"><button class="rv-b rv-ok" data-a="send" style="width:100%;height:52px;font-size:16px;" ${list.length ? '' : 'disabled'}>⬆️ Envoyer ${list.length} photo${list.length > 1 ? 's' : ''}</button></div>`;
@@ -22869,7 +22907,9 @@ async function _rwShrinkPhoto(file, maxDim, q){
 /* Envoie un lot de photos sur un chantier : réduites, 3 à la fois, une seule synchro et une seule notification à la fin. */
 let _rwUpRefreshT = null;
 let _rwReviewSiteId = null;
-async function _rwUploadSitePhotos(siteId, files){
+async function _rwUploadSitePhotos(siteId, files, upOpts){
+  const _fo = (upOpts && upOpts.folder) || null;   // v5.41.503 — dossier de la galerie visé
+  if(_fo && String(_fo).startsWith('b:')) return gfBurUpload(siteId, _fo.slice(2), files);
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site || !files || !files.length) return;
   if(files.length > RW_BURST_MAX){ showToast('📸 ' + RW_BURST_MAX + ' photos maxi par envoi : les ' + RW_BURST_MAX + ' premières sont envoyées'); files = files.slice(0, RW_BURST_MAX); }
@@ -22884,7 +22924,7 @@ async function _rwUploadSitePhotos(siteId, files){
   // v5.41.452 — pas de réseau : les photos sont gardées dans le téléphone et partiront toutes seules
   if(!navigator.onLine){
     let q = 0;
-    for(const f of files){ try{ await rwUpqAdd(siteId, await _rwShrinkPhoto(f), _rwFileMeta.get(f) || null); q++; }catch(e){ console.warn('upq', e); } }
+    for(const f of files){ try{ await rwUpqAdd(siteId, await _rwShrinkPhoto(f), Object.assign({}, _rwFileMeta.get(f) || {}, _fo ? { folder:_fo } : {})); q++; }catch(e){ console.warn('upq', e); } }
     showToast(q ? '📴 Pas de réseau : ' + q + ' photo' + (q > 1 ? 's gardées' : ' gardée') + ' dans le téléphone. Envoi automatique dès le retour du réseau.' : '⚠️ Impossible de garder les photos');
     _rwAfterSitePhotos(siteId);
     return;
@@ -22895,7 +22935,7 @@ async function _rwUploadSitePhotos(siteId, files){
   const worker = async () => {
     while(next < total){
       const f = files[next++];
-      const meta = Object.assign({ at: Date.now() }, _rwFileMeta.get(f) || {});
+      const meta = Object.assign({ at: Date.now() }, _rwFileMeta.get(f) || {}, _fo ? { folder:_fo } : {});
       let small = f;
       try{ small = await _rwShrinkPhoto(f); await addSharedMediaToSite(siteId, small, { silent: true, batch: true, meta }); }
       catch(e){
@@ -23013,12 +23053,19 @@ function _rwPickImages(multiple, cb){
 }
 
 /* Rafale : prendre 2 à 20 photos d'affilée pour un chantier, puis tout est envoyé d'un coup. */
-async function rwSitePhotoBurst(siteId){
+async function rwSitePhotoBurst(siteId, bOpts){
   const site = (data.sites || []).find(s => s.id === siteId);
   if(!site){ showToast('Choisis d\'abord un chantier'); return; }
+  if(bOpts && bOpts.folder){ openCameraCapture(null, { burst: files => _rwUploadSitePhotos(siteId, files, bOpts), max: RW_BURST_MAX }); return; }
   // v5.41.271 — appareil photo DE Notybat (dans l'appli) : les photos ne passent plus par la galerie du téléphone,
   // elles vont directement sur le chantier. La caméra reste ouverte entre les photos (compteur + « ✓ Terminer »).
   openCameraCapture(null, { burst: files => _rwUploadSitePhotos(siteId, files), max: RW_BURST_MAX });
+}
+/* v5.41.504 — Scanner un document (appareil de Notybat en mode scan uniquement) : chaque scan = un document de plusieurs pages */
+function rwSiteScan(siteId, sOpts){
+  const site = (data.sites || []).find(s => s.id === siteId);
+  if(!site){ showToast('Choisis d\'abord un chantier'); return; }
+  openCameraCapture(null, { burst: files => _rwUploadSitePhotos(siteId, files, sOpts), max: RW_BURST_MAX, scan:true, forceWeb:true });
 }
 /* Retour de l'appareil photo complet : toutes les photos prises depuis l'ouverture vont sur le chantier. */
 async function _rwCamCollectSite(p){
@@ -23035,31 +23082,90 @@ async function _rwCamCollectSite(p){
   await _rwUploadSitePhotos(p.siteId, files);
 }
 
-/* Galerie d'un chantier : bouton « + » → rafale ou import depuis la galerie du téléphone. */
-function galerieAddPhotos(siteId){
+/* Galerie d'un chantier : bouton « + » → rafale, scan, photos / fichiers du téléphone ou du PC, document en plusieurs pages,
+   photos déjà dans la galerie du chantier (v5.41.503 — tout ça aussi DANS un dossier, y compris 🔒 bureau). */
+function galerieAddPhotos(siteId, folder){
   const ex = document.getElementById('mediaFabSheet'); if(ex) ex.remove();
   const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+  if(folder === undefined){ const F = window._galFilt; folder = (F && F.siteId === siteId && _galerieOpenSiteId === siteId && F.folder) ? F.folder : null; }
+  const isB = folder && String(folder).startsWith('b:');
+  const fo = folder ? (isB ? gbFolders(siteId).find(x => x.id === folder.slice(2)) : gfTeamFolders(site).find(x => x.id === folder)) : null;
+  if(folder && !fo) folder = null;
+  const o = folder ? { folder } : {};
   const sheet = document.createElement('div');
   sheet.id = 'mediaFabSheet';
-  sheet.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
   sheet.innerHTML = `
-    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
-      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter des photos à 🏗️ ${escapeHtml(site.name)}</div>
-      <button class="action-sheet-item" data-act="burst"><span class="ico">📸</span>Prendre des photos (rafale, jusqu'à ${RW_BURST_MAX})</button>
-      <button class="action-sheet-item" data-act="scan"><span class="ico">📄</span>Scanner un document</button>
-      <button class="action-sheet-item" data-act="pick"><span class="ico">🖼️</span>Choisir dans la galerie du téléphone</button>
-      <button class="action-sheet-item" data-act="cancel" style="color:var(--ink-soft);margin-top:6px;justify-content:center;">Annuler</button>
+    <div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;max-width:640px;margin:0 auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));max-height:90vh;overflow-y:auto;">
+      <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter à 🏗️ ${escapeHtml(site.name)}${fo ? ' › ' + escapeHtml((fo.icon || '📁') + ' ' + fo.name) + (isB ? ' 🔒' : '') : ''}</div>
+      <div class="ga-two${fo ? ' four' : ''}">
+        <button class="ga-big" data-act="file"><span>📥</span><b>Importer</b><small>photos et documents du téléphone ou du PC</small></button>
+        <button class="ga-big" data-act="burst"><span>📸</span><b>Photos</b><small>une ou plusieurs d'affilée</small></button>
+        <button class="ga-big" data-act="scan"><span>📄</span><b>Scanner un document</b><small>plans, bons, factures…</small></button>
+        ${fo ? `<button class="ga-big" data-act="site"><span>🏗️</span><b>Galerie du chantier</b><small>photos déjà prises</small></button>` : ''}
+      </div>
     </div>`;
   const close = () => sheet.remove();
   sheet.onclick = e => { if(e.target === sheet) close(); };
-  sheet.querySelector('[data-act="burst"]').onclick = () => { close(); rwSitePhotoBurst(siteId); };
-  sheet.querySelector('[data-act="scan"]').onclick = async () => { close(); await rwSitePhotoBurst(siteId); setTimeout(() => { try{ if(typeof camSetMode === 'function') camSetMode('scan'); }catch(_){} }, 400); };
-  sheet.querySelector('[data-act="pick"]').onclick = () => { close(); _rwPickImages(true, files => _rwUploadSitePhotos(siteId, files)); };
-  sheet.querySelector('[data-act="cancel"]').onclick = close;
+  const on = (k, fn) => { const b = sheet.querySelector('[data-act="' + k + '"]'); if(b) b.onclick = () => { close(); fn(); }; };
+  on('burst', () => rwSitePhotoBurst(siteId, o));
+  on('scan', () => rwSiteScan(siteId, o));
+  on('file', () => { if(isB) _gfPickFiles(files => gfBurUpload(siteId, folder.slice(2), files)); else _mediaFabPickFile(siteId, { accept:'application/pdf,image/*', multiple:true, folder }); });
+  on('site', () => gfPickFromSite(siteId, folder));
   document.body.appendChild(sheet);
 }
+function _gfPickFiles(cb){ const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true; inp.accept = 'application/pdf,image/*'; inp.style.display = 'none'; document.body.appendChild(inp); inp.onchange = () => { const f = [...(inp.files || [])]; inp.remove(); if(f.length) cb(f); }; inp.click(); }
+/* Choisir des photos déjà dans la galerie du chantier pour les mettre dans un dossier */
+let _gfpk = null;
+function gfPickFromSite(siteId, folder){
+  const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+  const tf = gfTeamFolders(site);
+  const items = (site.sharedMedia || []).filter(m => m && m.url && (m.type === 'photo' || /^image\//.test(m.mimeType || '') || m.doc) && m.folder !== folder).sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
+  _gfpk = { siteId, folder, sel:new Set() };
+  let d = document.getElementById('modal-gfsp'); if(d) d.remove();
+  d = document.createElement('div'); d.id = 'modal-gfsp'; d.className = 'modal-overlay open'; d.style.zIndex = 1200;
+  const fname = id => { const f = tf.find(x => x.id === id); return f ? (f.icon || '📁') + ' ' + f.name : ''; };
+  d.innerHTML = `<div class="modal" style="max-width:640px;"><div class="modal-header"><h2>🏗️ Galerie du chantier</h2><button class="modal-close" onclick="document.getElementById('modal-gfsp').remove()">×</button></div>
+    <div class="hint" style="margin:0 0 8px;">Coche les photos à mettre dans le dossier.</div>
+    ${items.length ? `<div class="gf-spg">${items.map(m => `<div class="gf-spc" data-id="${escapeHtml(m.id)}" onclick="gfSpToggle(this)"><img src="${escapeHtml(m.thumbUrl || m.url)}" alt="" loading="lazy">${m.folder && fname(m.folder) ? `<small>${escapeHtml(fname(m.folder))}</small>` : ''}${m.doc ? '<i class="dc">📄</i>' : ''}<span class="gf-ck"></span></div>`).join('')}</div>` : '<div class="hint" style="text-align:center;padding:20px;">Aucune autre photo dans ce chantier.</div>'}
+    <button class="btn btn-primary btn-block" id="gfSpOk" style="margin-top:12px;" disabled onclick="gfSpDone()">📁 Ajouter au dossier</button></div>`;
+  document.body.appendChild(d);
+}
+function gfSpToggle(el){ if(!_gfpk) return; const id = el.dataset.id; if(_gfpk.sel.has(id)){ _gfpk.sel.delete(id); el.classList.remove('sel'); el.querySelector('.gf-ck').textContent = ''; } else { _gfpk.sel.add(id); el.classList.add('sel'); el.querySelector('.gf-ck').textContent = '✓'; } const b = document.getElementById('gfSpOk'); if(b){ b.disabled = !_gfpk.sel.size; b.textContent = '📁 Ajouter ' + (_gfpk.sel.size || '') + ' au dossier'; } }
+async function gfSpDone(){
+  if(!_gfpk || !_gfpk.sel.size) return;
+  const { siteId, folder, sel } = _gfpk; const m = document.getElementById('modal-gfsp'); if(m) m.remove();
+  _galerieSelected.clear(); sel.forEach(id => _galerieSelected.add(siteId + '|' + id));
+  const prev = _galerieOpenSiteId; _galerieOpenSiteId = siteId;
+  await gfMoveTo(folder, 'team');
+  _galerieOpenSiteId = prev || siteId;
+}
+/* Envoi direct dans un dossier 🔒 bureau (photos, scans, PDF) */
+async function gfBurUpload(siteId, fid, files){
+  const site = (data.sites || []).find(s => s.id === siteId); if(!site || !files || !files.length) return;
+  if(!_nvBoss()){ showToast('Dossier réservé au bureau'); return; }
+  showToast('⬆️ Envoi de ' + files.length + ' fichier' + (files.length > 1 ? 's' : '') + ' dans le dossier bureau…');
+  const me = _nvMe().name, out = [];
+  _mediaUploadShowProgress(0, files.length); let n = 0;
+  for(const f0 of files){
+    try{
+      const isImg = (f0.type || '').startsWith('image/'), isPdf = f0.type === 'application/pdf';
+      const mt = _rwFileMeta.get(f0) || null;
+      let f = f0; if(isImg){ try{ f = await _rwShrinkPhoto(f0); }catch(e){} }
+      const [url, thumb] = await Promise.all([uploadFileToSupabase(f, site.id, { skipDropbox:true }), isImg ? uploadThumbnailToSupabase(f, site.id).catch(() => null) : Promise.resolve(null)]);
+      const e = { id:'gbm' + uid(), name:f0.name || 'photo.jpg', url, thumbUrl:thumb || null, type:isPdf ? 'pdf' : isImg ? 'photo' : 'file', mimeType:f.type || f0.type, uploadedBy:me, uploadedAt:new Date().toISOString(), siteId:site.id, folder:fid };
+      if(mt && mt.doc){ e.doc = true; e.docGroup = mt.docGroup; e.page = mt.page || 1; if(mt.title) e.title = mt.title; }
+      out.push(e);
+    }catch(e){}
+    _mediaUploadShowProgress(++n, files.length);
+  }
+  _mediaUploadHideProgress();
+  if(!out.length){ showToast('⚠️ Envoi impossible (réseau ?)'); return; }
+  if(await gbSave(dd => { _gbS(dd, site.id).media.push(...out); })){ showToast('✅ ' + out.length + ' ajouté' + (out.length > 1 ? 's' : '') + ' dans le dossier bureau'); galerieRender(); }
+}
 
-function _mediaFabPickFile(siteId, { accept, capture, multiple }){
+function _mediaFabPickFile(siteId, { accept, capture, multiple, folder }){
+  const _fo = folder ? { folder } : undefined;
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = accept;
@@ -23073,18 +23179,18 @@ function _mediaFabPickFile(siteId, { accept, capture, multiple }){
     // Un seul fichier → comportement direct
     if(files.length === 1){
       input.remove();
-      if(String(files[0].type || '').startsWith('image/')){ await _rwUploadSitePhotos(siteId, files); return; }   // v5.41.269 : relecture / annotation
-      await addSharedMediaToSite(siteId, files[0]);
+      if(String(files[0].type || '').startsWith('image/')){ await _rwUploadSitePhotos(siteId, files, _fo); return; }   // v5.41.269 : relecture / annotation
+      await addSharedMediaToSite(siteId, files[0], _fo);
       _rwAfterSitePhotos(siteId);
       return;
     }
     // v5.41.267 — plusieurs photos → envoi rapide (réduites, 3 à la fois, une seule synchro)
-    if(files.every(f => String(f.type || '').startsWith('image/'))){ input.remove(); await _rwUploadSitePhotos(siteId, files); return; }
+    if(files.every(f => String(f.type || '').startsWith('image/'))){ input.remove(); await _rwUploadSitePhotos(siteId, files, _fo); return; }
     // Plusieurs → upload séquentiel + barre de progression
     _mediaUploadShowProgress(0, files.length);
     let done = 0, failed = 0;
     for(const file of files){
-      try{ await addSharedMediaToSite(siteId, file, { silent:true }); }
+      try{ await addSharedMediaToSite(siteId, file, Object.assign({ silent:true }, _fo || {})); }
       catch(e){ failed++; }
       done++;
       _mediaUploadShowProgress(done, files.length);
@@ -23122,6 +23228,7 @@ function openMediaFabSheet(siteId){
         <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16l-5-5-7 7"/></svg></span>
         Choisir depuis la galerie
       </button>
+      <button class="action-sheet-item" data-act="scan2"><span class="ico">📄</span>Scanner un document</button>
 
       ${_canImportFromDropbox() ? `<button class="action-sheet-item" data-act="dropbox">
         <span class="ico"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M6 2l6 3.8L6 9.6 0 5.8 6 2zm12 0l6 3.8-6 3.8-6-3.8L18 2zM0 13.4l6-3.8 6 3.8-6 3.8-6-3.8zm18-3.8l6 3.8-6 3.8-6-3.8 6-3.8zM6 18.6l6-3.8 6 3.8-6 3.8-6-3.8z"/></svg></span>
@@ -23148,6 +23255,7 @@ function openMediaFabSheet(siteId){
   sheet.querySelector('[data-act="gallery"]').onclick = () => {
     close(); _mediaFabPickFile(siteId, { accept: 'image/*', multiple: true });
   };
+  sheet.querySelector('[data-act="scan2"]').onclick = () => { close(); rwSiteScan(siteId); };
   const _dbxBtn1 = sheet.querySelector('[data-act="dropbox"]');
   if(_dbxBtn1) _dbxBtn1.onclick = async () => {
     close();
@@ -23516,6 +23624,7 @@ async function openCameraCapture(targetInputId, opts){
   updateCamWatermarkChip();
   setupCamPinchZoom();
   _camWireStage(); _camMode = (opts && opts.scan) ? 'scan' : 'photo'; _camDigital = 1; _scan = null;
+  { const cm = document.getElementById('camModes'); if(cm) cm.style.visibility = _camBurst ? 'hidden' : ''; }   // v5.41.504 — Photos OU Scan, pas de mélange
   document.getElementById('camSettings').classList.remove('on');
   document.getElementById('camZoomSliderWrap').style.display = 'none'; document.getElementById('camZoomBtn').classList.remove('active');
   document.getElementById('camZoomPills').style.display = 'none';
@@ -46793,9 +46902,38 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.502';
+const APP_VERSION = '5.41.506';
 
 const CHANGELOG = [
+  {
+    version: '5.41.506',
+    date: '19/10/2026',
+    entries: [
+      { icon: '🏷️', text: "Nouveau chantier : on choisit directement parmi les statuts de l'entreprise, y compris ceux créés par le patron ou les conducteurs (⚙️ pour en ajouter)." }
+    ],
+  },
+  {
+    version: '5.41.505',
+    date: '19/10/2026',
+    entries: [
+      { icon: '🧩', text: "Ajouter dans la galerie : trois grandes tuiles — 📥 Importer (photos et documents du téléphone ou du PC), 📸 Photos, 📄 Scanner un document (+ 🏗️ Galerie du chantier dans un dossier)." }
+    ],
+  },
+  {
+    version: '5.41.504',
+    date: '19/10/2026',
+    entries: [
+      { icon: '📸', text: "Ajouter dans la galerie : deux choix simples — « Photos » (photos classiques, une ou plusieurs) ou « Scanner un document » (chaque page devient un document, avec « Un seul document » ou « ✂️ Séparer les pages » à la relecture). Plus de mélange des deux dans l'appareil photo." }
+    ],
+  },
+  {
+    version: '5.41.503',
+    date: '19/10/2026',
+    entries: [
+      { icon: '➕', text: "Dossiers de la galerie : bouton « ＋ Ajouter » dans chaque dossier (bureau compris) — rafale, scan, photos ou fichiers / PDF du téléphone ou du PC, document en plusieurs pages, ou photos déjà dans la galerie du chantier." },
+      { icon: '📄', text: "Les pages groupées (un plan de plusieurs pages…) ne se font plus que pour les documents : scan, ou « Document en photos ». Une rafale de photos normales n'a plus le bouton 📄." }
+    ],
+  },
   {
     version: '5.41.502',
     date: '19/10/2026',
