@@ -729,6 +729,17 @@
   #nvRoot .nv-kb .dep-colb .nv-sec:first-child{ margin-top:0; }
   #nvRoot .nv-kb .dep-col{ background:rgba(0,0,0,.14); }
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  /* v5.41.513 — galerie perso : dossiers / par chantier, présentation */
+  .gp-mode{ display:flex; gap:6px; margin-bottom:10px; } .gp-mode button{ flex:1; padding:10px 6px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font-weight:800; font-size:13.5px; cursor:pointer; }
+  .gp-mode button.on{ border-color:#9B7BE0; background:rgba(155,123,224,.18); color:#e4d9ff; }
+  .gf-f.gp-f{ border-color:rgba(155,123,224,.45); } .gf-f.gp-f .i .s-ini{ margin:0 auto; }
+  .gp-sec{ font-size:12px; font-weight:900; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:12px 2px 6px; } .gp-sec small{ display:block; text-transform:none; letter-spacing:0; font-weight:600; margin-top:2px; }
+  .gp-fi{ width:24px; text-align:center; font-size:18px; flex:none; } .gp-sites button.gp-new{ border-style:dashed; color:#c9b5ff; }
+  #gpIntro{ position:fixed; inset:0; z-index:1400; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; padding:16px; }
+  .gpi{ width:100%; max-width:400px; background:linear-gradient(170deg,#2a2240,var(--bg-elev,#181210) 60%); border:2px solid #9B7BE0; border-radius:20px; padding:18px 16px 14px; color:var(--ink); text-align:center; }
+  .gpi-ic{ font-size:44px; } .gpi > b{ display:block; font-size:19px; margin:4px 0 6px; } .gpi p{ font-size:14px; line-height:1.45; color:var(--ink-soft); margin:0 0 10px; }
+  .gpi ul{ list-style:none; padding:0; margin:0 0 14px; text-align:left; } .gpi li{ display:flex; gap:9px; align-items:flex-start; font-size:13.5px; line-height:1.4; padding:5px 2px; }
+  .gpi-p{ width:100%; padding:13px; border-radius:13px; border:none; background:#9B7BE0; color:#fff; font-weight:900; font-size:15px; cursor:pointer; } .gpi-s{ width:100%; margin-top:8px; padding:11px; border-radius:13px; border:1.5px solid var(--line); background:transparent; color:var(--ink); font-weight:800; cursor:pointer; }
   /* v5.41.512 — rond chantier + sélecteur commun */
   .dep-hid, .dep-chips2 button.dep-hid, .dep-sg.dep-hid, #modal-depEdit .dep-hid{ display:none !important; }
   .s-ini{ flex:none; display:inline-grid; place-items:center; border-radius:50%; color:#fff; font-weight:900; letter-spacing:-.02em; text-shadow:0 1px 1px rgba(0,0,0,.35); box-shadow:0 0 0 2px rgba(255,255,255,.12); line-height:1; vertical-align:middle; }
@@ -14385,6 +14396,7 @@ function _galerieCaption(m){
    appareils du même compte. Jamais dans les chantiers, le Dropbox ou les exports.
    Hors réseau : la photo attend dans le téléphone (IndexedDB) et part toute seule.
    ═══════════════════════════════════════════════════════════════════ */
+let _gpFolders = [], _gpCur = null, _gpVis = [], _gpMode = (() => { try{ return localStorage.getItem('rwood-gp-mode') || 'dos'; }catch(e){ return 'dos'; } })();
 let _gpIdx = null, _gpTomb = {}, _gpKeyC = null, _gpKeyFor = '', _gpUrls = new Map(), _gpBusy = false, _gpMem = new Map(), _gpView = -1, _gpLoading = false;
 function _gpAcc(){ return (data && data.settings && data.settings.auth && data.settings.auth.authId) || ''; }
 function _gpRow(){ return 'perso_gallery_v1_' + _gpAcc(); }
@@ -14416,7 +14428,7 @@ async function _gpLoad(force){
   try{
     let r = null; try{ r = await _gpFetchIdx(); }catch(e){}
     if(!r){ try{ const c = JSON.parse(localStorage.getItem('rwood-perso-cache:' + _gpAcc()) || 'null'); if(c && c.ct) r = JSON.parse(new TextDecoder().decode(await _gpDec(_rmUnB64(c.ct)))); }catch(e){} }
-    if(r){ _gpTomb = r.tomb || {}; _gpIdx = (r.items || []).filter(i => !_gpTomb[i.id]); }
+    if(r){ _gpTomb = r.tomb || {}; _gpIdx = (r.items || []).filter(i => !_gpTomb[i.id]); _gpFolders = (r.folders || []).filter(f => f && !_gpTomb[f.id]); }
     else if(!_gpIdx) _gpIdx = [];
   }finally{ _gpLoading = false; }
 }
@@ -14424,15 +14436,18 @@ async function _gpSaveIdx(add, delIds){
   let cur = null; try{ cur = await _gpFetchIdx(); }catch(e){}
   if(!cur){ showToast('⚠️ Pas de connexion : réessaie'); return false; }
   const tomb = Object.assign({}, cur.tomb || {}, _gpTomb); (delIds || []).forEach(id => { tomb[id] = Date.now(); });
-  const map = new Map(); (cur.items || []).concat(_gpIdx || [], add || []).forEach(i => { if(i && i.id && !tomb[i.id]) map.set(i.id, i); });
+  const newer = (a, b) => !a ? b : ((b.mAt || b.at || '') >= (a.mAt || a.at || '') ? b : a);   // v5.41.513 — dernier rangement gagne
+  const map = new Map(); (cur.items || []).concat(_gpIdx || [], add || []).forEach(i => { if(i && i.id && !tomb[i.id]) map.set(i.id, newer(map.get(i.id), i)); });
   const items = [...map.values()].sort((a, b) => (b.at || '').localeCompare(a.at || ''));
-  const ct = await _gpEnc(new TextEncoder().encode(JSON.stringify({ items, tomb })));
+  const fm = new Map(); (cur.folders || []).concat(_gpFolders || []).forEach(f => { if(f && f.id && !tomb[f.id]) fm.set(f.id, newer(fm.get(f.id), f)); });
+  const folders = [...fm.values()];
+  const ct = await _gpEnc(new TextEncoder().encode(JSON.stringify({ items, tomb, folders })));
   const out = { v:1, ct:_rmB64(ct) };
   const res = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
     body:JSON.stringify({ user_id:_gpRow(), updated_at:new Date().toISOString(), data:JSON.stringify(out) }) });
   if(!res || !res.ok){ showToast('⚠️ Envoi impossible : réessaie'); return false; }
   try{ localStorage.setItem('rwood-perso-cache:' + _gpAcc(), JSON.stringify(out)); }catch(e){}
-  _gpIdx = items; _gpTomb = tomb; return true;
+  _gpIdx = items; _gpTomb = tomb; _gpFolders = folders; return true;
 }
 /* ── Fichiers chiffrés dans le stockage ── */
 async function _gpPut(path, bytes){
@@ -14485,7 +14500,8 @@ async function gpAddFiles(files){
       const full = isImg ? await _gpShrink(f, 1600, 0.8) : f;
       const thumb = isImg ? await _gpShrink(f, 360, 0.7) : null;
       const fullEnc = await _gpEnc(await full.arrayBuffer()), thEnc = thumb ? await _gpEnc(await thumb.arrayBuffer()) : null;
-      const item = { id, name:f.name || (isImg ? 'Photo' : 'Document'), mime:isImg ? (full.type || 'image/jpeg') : (f.type || 'application/pdf'), kind:isImg ? 'photo' : 'pdf', at:now,
+      const _ctx = _gpCtx();
+      const item = { id, folder:_ctx.folder, site:_ctx.site, name:f.name || (isImg ? 'Photo' : 'Document'), mime:isImg ? (full.type || 'image/jpeg') : (f.type || 'application/pdf'), kind:isImg ? 'photo' : 'pdf', at:now,
         path:`${pre}perso/${dir}/${id}.bin`, tpath:thEnc ? `${pre}perso/${dir}/${id}.t.bin` : '' };
       try{ if(!navigator.onLine && !window.RW_TEST) throw new Error('offline'); await _gpPut(item.path, fullEnc); if(thEnc) await _gpPut(item.tpath, thEnc); add.push(item);
         if(thumb) _gpUrls.set(id + ':t', URL.createObjectURL(thumb)); }
@@ -14505,34 +14521,138 @@ async function gpCopyFromUrl(url, name){
     await gpAddFiles([new File([b], (name || 'photo') + '.' + ((b.type || '').split('/')[1] || 'jpg').replace('svg+xml', 'svg'), { type:b.type || 'image/jpeg' })]); }
   catch(e){ showToast('❌ Copie impossible'); }
 }
+/* v5.41.513 — où ranger une nouvelle photo perso : le dossier ouvert, sinon classée sous le chantier ouvert / actif */
+function _gpCtx(){
+  const inPerso = _galerieOpenSiteId === '__perso__', isS = inPerso && _gpCur && String(_gpCur).startsWith('site:');
+  const folder = inPerso && _gpMode === 'dos' && _gpCur && !isS ? _gpCur : '';
+  let site = isS ? _gpCur.slice(5) : (!inPerso && _galerieOpenSiteId) ? _galerieOpenSiteId : '';
+  if(!site){ try{ const a = getActiveSiteId(); const st = (data.sites || []).find(x => x.id === a); if(st && st.status !== 'termine') site = a; }catch(e){} }
+  return { folder, site:site || '' };
+}
 /* ── Affichage ── */
-function gpOpen(){ _gpSel = null; _galerieOpenSiteId = '__perso__'; _galerieLastCount = -1; gpRender(); _gpLoad(true).then(() => { if(_galerieOpenSiteId === '__perso__') gpRender(); }); }
+function gpOpen(){ _gpSel = null; _gpCur = null; _galerieOpenSiteId = '__perso__'; _galerieLastCount = -1; gpRender(); _gpLoad(true).then(() => { if(_galerieOpenSiteId === '__perso__') gpRender(); }); }
 function _gpDayLbl(iso){ const d = new Date(iso), t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const n = Math.round((t - x) / 864e5);
   return n <= 0 ? "Aujourd'hui" : n === 1 ? 'Hier' : n < 7 ? 'Cette semaine' : n < 14 ? 'Semaine dernière' : d.toLocaleDateString('fr-FR', { month:'long', year:'numeric' }); }
 async function gpRender(){
   const root = document.getElementById('galerieContent'); if(!root || _galerieOpenSiteId !== '__perso__') return;
   { const fab = document.getElementById('galerieFab'); if(fab) fab.style.display = 'none'; const sb = document.getElementById('galerieSelectBtn'); if(sb) sb.style.display = 'none'; }
   let q = []; try{ q = (await _gpQ('all')).filter(x => x.acc === _gpAcc()); }catch(e){}
-  const items = _gpIdx || [];
-  const groups = []; items.forEach((it, i) => { const l = _gpDayLbl(it.at); let g = groups.find(x => x.l === l); if(!g){ g = { l, a:[] }; groups.push(g); } g.a.push(i); });
-  root.innerHTML = `<div class="gp">
-    <div class="gp-top"><button class="gp-back" onclick="_galerieOpenSiteId=null;galerieRender()">‹ Galerie</button><b>🔒 Ma galerie perso</b></div>
-    <div class="gp-lock">🔐 <span>Photos <b>chiffrées</b> sur ton téléphone avant l'envoi. Tu les retrouves sur tes appareils connectés à ton compte. Personne d'autre ne peut les ouvrir, ni l'équipe ni le patron.</span></div>
-    <div class="gp-btns"><button class="p" onclick="gpPick(true)">📷 Prendre</button><button onclick="gpPick(false)">🖼️ Importer</button>${items.length ? `<button class="${_gpSel ? 'on' : ''}" onclick="gpSelToggle()">${_gpSel ? '✕ Annuler' : '☑ Choisir'}</button>` : ''}</div>
-    ${_gpSel ? `<div class="gp-selhint">Touche les photos à partager · <a onclick="gpSelAll()">${_gpSel.size === items.length ? 'Tout décocher' : 'Tout sélectionner'}</a></div>` : ''}
+  const items = _gpIdx || [], fold = (_gpFolders || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric:true }));
+  const siteOf = id => id ? (data.sites || []).find(s => s.id === id) : null;
+  const isS = _gpCur && String(_gpCur).startsWith('site:');
+  if(isS && _gpMode !== 'site') _gpCur = null;
+  if(_gpCur && !isS && (_gpMode !== 'dos' || !fold.some(f => f.id === _gpCur))) _gpCur = null;
+  const cur = _gpCur && !String(_gpCur).startsWith('site:') ? fold.find(f => f.id === _gpCur) : null, curS = _gpCur && String(_gpCur).startsWith('site:') ? siteOf(_gpCur.slice(5)) : null;
+  if(_gpCur && String(_gpCur).startsWith('site:') && !curS) _gpCur = null;
+  const inF = it => it.folder && fold.some(f => f.id === it.folder) ? it.folder : '';
+  const inS = it => siteOf(it.site) ? it.site : '';
+  const vis = []; items.forEach((it, i) => { const ok = _gpMode === 'site' ? (curS ? inS(it) === curS.id : !inS(it)) : (cur ? inF(it) === cur.id : !inF(it)); if(ok) vis.push(i); });
+  _gpVis = vis;
+  const groups = []; vis.forEach(i => { const l = _gpDayLbl(items[i].at); let g = groups.find(x => x.l === l); if(!g){ g = { l, a:[] }; groups.push(g); } g.a.push(i); });
+  const atRoot = !cur && !curS;
+  let strip = '';
+  if(atRoot && _gpMode === 'dos') strip = `<div class="gf-strip">${fold.map(f => `<button class="gf-f gp-f" onclick="gpGo('${f.id}')"><span class="i">${escapeHtml(f.icon || '📁')}</span><b>${escapeHtml(f.name)}</b><small>${items.filter(it => it.folder === f.id).length}</small></button>`).join('')}<button class="gf-f add" onclick="gpFolderNew()"><span class="i">＋</span><b>Dossier</b></button></div>`;
+  if(atRoot && _gpMode === 'site'){ const cnt = {}; items.forEach(it => { const k = inS(it); if(k) cnt[k] = (cnt[k] || 0) + 1; });
+    const ss = Object.keys(cnt).map(siteOf).filter(Boolean).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr'));
+    strip = ss.length ? `<div class="gf-strip">${ss.map(st => `<button class="gf-f gp-f" onclick="gpGo('site:${st.id}')"><span class="i">${siteIni(st, 30)}</span><b>${escapeHtml(st.name || 'Chantier')}</b><small>${cnt[st.id]}</small></button>`).join('')}</div>`
+      : (items.length ? '<div class="hint" style="margin:0 2px 8px;">Les photos prises pendant qu\'un chantier est actif sont classées sous ce chantier.</div>' : ''); }
+  const head = atRoot ? `<div class="gp-top"><b>🔒 Ma galerie perso</b></div>
+    <div class="gp-mode"><button class="${_gpMode === 'dos' ? 'on' : ''}" onclick="gpSetMode('dos')">📁 Mes dossiers</button><button class="${_gpMode === 'site' ? 'on' : ''}" onclick="gpSetMode('site')">🏗️ Par chantier</button></div>`
+    : `<div class="galerie-head1 gf-head"><button onclick="gpGo(null)" title="Retour">←</button><span class="t">${cur ? escapeHtml((cur.icon || '📁') + ' ' + cur.name) : `<span class="s-row">${siteIni(curS, 26)}${escapeHtml(curS.name || 'Chantier')}</span>`}</span><span class="n">· 🔒 ${vis.length}</span>${cur ? `<button class="gf-hb" onclick="gpFolderRename('${cur.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gpFolderDel('${cur.id}')" title="Supprimer le dossier">🗑</button>` : ''}</div>`;
+  const looseLbl = atRoot && strip && vis.length ? `<div class="rm-lbl" style="margin:10px 2px 0;">${_gpMode === 'site' ? 'Sans chantier' : 'Sans dossier'}</div>` : '';
+  root.innerHTML = `<div class="gp">${head}
+    ${atRoot ? `<div class="gp-lock">🔐 <span>Photos <b>chiffrées</b>, visibles que par toi (ni l'équipe ni le patron). Tu les retrouves sur tes appareils, sans encombrer ton téléphone.</span></div>` : ''}
+    <div class="gp-btns"><button class="p" onclick="gpPick(true)">📷 Prendre</button><button onclick="gpPick(false)">🖼️ Importer</button>${vis.length ? `<button class="${_gpSel ? 'on' : ''}" onclick="gpSelToggle()">${_gpSel ? '✕ Annuler' : '☑ Choisir'}</button>` : ''}</div>
+    ${_gpSel ? `<div class="gp-selhint">Touche les photos · <a onclick="gpSelAll()">${_gpSel.size && _gpSel.size === vis.length ? 'Tout décocher' : 'Tout sélectionner'}</a></div>` : ''}
     ${q.length ? `<div class="gp-q">📶 ${q.length} en attente de réseau · ${q.length > 1 ? 'elles partiront' : 'elle partira'} toute${q.length > 1 ? 's' : ''} seule${q.length > 1 ? 's' : ''}</div>` : ''}
+    ${strip}${looseLbl}
     ${_gpIdx === null ? '<div class="hint" style="text-align:center;padding:24px;">🔓 Déchiffrement…</div>'
       : !items.length ? `<div class="gp-empty"><span>🔒</span>Ta galerie perso est vide.<br>Prends ou importe une photo : elle sera visible <b>que par toi</b>.</div>`
+      : !vis.length ? (atRoot ? '' : `<div class="gp-empty"><span>${cur ? '📁' : '🏗️'}</span>Rien ici pour l'instant.<br>${cur ? '📷 Prendre ou importer ici, ou « ☑ Choisir » des photos puis « 📁 Déplacer ».' : ''}</div>`)
       : groups.map(g => `<div class="gp-day">${g.l}</div><div class="gp-grid">${g.a.map(i => { const it = items[i];
         return `<div class="gp-th${_gpSel && _gpSel.has(it.id) ? ' sel' : ''}" data-i="${i}" onclick="gpTap(${i})" onpointerdown="_gpLpStart(${i})" onpointerup="_gpLpEnd()" onpointerleave="_gpLpEnd()" oncontextmenu="return false">${_gpSel ? `<i class="gp-ck">${_gpSel.has(it.id) ? '✓' : ''}</i>` : ''}${it.kind === 'pdf' ? '<span class="gp-pdf">📄<small>' + escapeHtml(it.name || 'PDF') + '</small></span>' : '<span class="gp-ld">🔒</span>'}</div>`; }).join('')}</div>`).join('')}
   </div>${_gpSel ? `<div class="gp-bar"><b>${_gpSel.size} sélectionnée${_gpSel.size > 1 ? 's' : ''}</b>
-    <div><button class="p" ${_gpSel.size ? '' : 'disabled'} onclick="gpShareSel()">📤 Partager</button><button ${_gpSel.size ? '' : 'disabled'} onclick="gpSaveSel()">⬇️</button><button ${_gpSel.size ? '' : 'disabled'} onclick="gpToSiteSel()">🏗️</button><button class="x" ${_gpSel.size ? '' : 'disabled'} onclick="gpDeleteSel()">🗑️</button></div></div>` : ''}`;
+    <div><button class="p" ${_gpSel.size ? '' : 'disabled'} onclick="gpShareSel()">📤</button><button ${_gpSel.size ? '' : 'disabled'} onclick="gpMoveSel()">📁 Déplacer</button><button ${_gpSel.size ? '' : 'disabled'} onclick="gpSaveSel()">⬇️</button><button class="x" ${_gpSel.size ? '' : 'disabled'} onclick="gpDeleteSel()">🗑️</button></div></div>` : ''}`;
   _gpThumbs();
+}
+/* v5.41.513 — présentation de la galerie perso à la première ouverture (une fois par compte) */
+let _gpIntroTry = 0;
+function gpIntroMaybe(){
+  if(!window.RW_NEW || _gpIntroTry++ > 12) return;
+  const acc = _gpAcc(); if(!acc){ setTimeout(gpIntroMaybe, 10000); return; }
+  const k = 'rwood-gp-intro:' + acc; try{ if(localStorage.getItem(k)) return; }catch(e){ return; }
+  if(document.querySelector('.modal-overlay.open') || document.getElementById('rwReview') || document.getElementById('gpIntro') || document.getElementById('camCapture')){ setTimeout(gpIntroMaybe, 8000); return; }
+  try{ localStorage.setItem(k, '1'); }catch(e){}
+  const d = document.createElement('div'); d.id = 'gpIntro';
+  d.innerHTML = `<div class="gpi"><div class="gpi-ic">🔒</div><b>Ta galerie perso</b>
+    <p>Pour les photos prises au travail qui ne servent pas forcément aux infos du chantier : un repère, une idée, un modèle vu ailleurs, un ticket…</p>
+    <ul><li>📵 <span>Pas besoin de les garder sur ton téléphone</span></li><li>🔐 <span>Chiffrées, visibles <b>que par toi</b> (ni l'équipe ni le patron)</span></li><li>📁 <span>Range-les dans tes dossiers ou trie-les par chantier</span></li><li>🏗️ <span>Une photo devient utile ? Déplace-la dans le chantier</span></li></ul>
+    <button class="gpi-p" onclick="document.getElementById('gpIntro').remove();goTo('galerie')">🔒 Ouvrir ma galerie perso</button><button class="gpi-s" onclick="document.getElementById('gpIntro').remove()">Compris</button></div>`;
+  d.addEventListener('click', e => { if(e.target === d) d.remove(); });
+  document.body.appendChild(d);
+}
+setTimeout(gpIntroMaybe, 7000);
+/* v5.41.513 — dossiers perso / tri par chantier, déplacer vers un dossier ou vers un chantier */
+function gpSetMode(m){ _gpMode = m; _gpCur = null; _gpSel = null; try{ localStorage.setItem('rwood-gp-mode', m); }catch(e){} gpRender(); }
+function gpGo(id){ _gpCur = id || null; _gpSel = null; const r = document.getElementById('galerieContent'); if(r) r.scrollTop = 0; gpRender(); }
+async function gpFolderNew(thenIds){
+  const name = (prompt('Nom du dossier perso :') || '').trim(); if(!name) return null;
+  if((_gpFolders || []).some(f => (f.name || '').trim().toLowerCase() === name.toLowerCase())){ showToast('Ce dossier existe déjà'); return null; }
+  const now = new Date().toISOString(), f = { id:'pf' + uid(), name, icon:'📁', at:now, mAt:now };
+  _gpFolders = (_gpFolders || []).concat([f]);
+  if(thenIds && thenIds.length) (_gpIdx || []).forEach(it => { if(thenIds.includes(it.id)){ it.folder = f.id; it.mAt = now; } });
+  if(!(await _gpSaveIdx())){ _gpFolders = _gpFolders.filter(x => x.id !== f.id); return null; }
+  showToast('📁 Dossier « ' + name + ' » créé' + (thenIds && thenIds.length ? ' · ' + thenIds.length + ' photo' + (thenIds.length > 1 ? 's' : '') + ' rangée' + (thenIds.length > 1 ? 's' : '') : ''));
+  _gpSel = null; gpRender(); return f;
+}
+async function gpFolderRename(id){
+  const f = (_gpFolders || []).find(x => x.id === id); if(!f) return;
+  const name = (prompt('Nouveau nom du dossier :', f.name) || '').trim(); if(!name || name === f.name) return;
+  f.name = name; f.mAt = new Date().toISOString();
+  if(await _gpSaveIdx()){ showToast('✅ Dossier renommé'); gpRender(); }
+}
+async function gpFolderDel(id){
+  const f = (_gpFolders || []).find(x => x.id === id); if(!f) return;
+  if(!confirm('Supprimer le dossier « ' + f.name + ' » ?\nSes photos restent dans ta galerie perso (sans dossier).')) return;
+  const now = new Date().toISOString();
+  (_gpIdx || []).forEach(it => { if(it.folder === id){ it.folder = ''; it.mAt = now; } });
+  _gpFolders = _gpFolders.filter(x => x.id !== id);
+  if(await _gpSaveIdx([], [id])){ _gpCur = null; showToast('🗑 Dossier supprimé'); gpRender(); }
+}
+function gpMoveSel(){ const ids = _gpSelItems().map(x => x.id); if(ids.length) _gpMoveSheet(ids); }
+function _gpMoveSheet(ids){
+  const ex = document.getElementById('gpSiteSheet'); if(ex) ex.remove();
+  const list = (_gpIdx || []).filter(it => ids.includes(it.id)), n = list.length; if(!n) return;
+  const fold = (_gpFolders || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric:true }));
+  const allIn = fid => list.every(it => (it.folder || '') === fid);
+  const sh = document.createElement('div'); sh.id = 'gpSiteSheet'; window._gpMvIds = ids;
+  sh.innerHTML = `<div class="gp-sheet"><b>📁 Déplacer ${n} photo${n > 1 ? 's' : ''}</b>
+    <div class="gp-sec">🔒 Dans un dossier perso</div>
+    <div class="gp-sites">${list.some(it => it.folder) ? `<button onclick="gpMoveTo('')"><span class="gp-fi">🗂️</span>Sans dossier</button>` : ''}${fold.filter(f => !allIn(f.id)).map(f => `<button onclick="gpMoveTo('${f.id}')"><span class="gp-fi">${escapeHtml(f.icon || '📁')}</span>${escapeHtml(f.name)}</button>`).join('')}
+      <button class="gp-new" onclick="document.getElementById('gpSiteSheet').remove();gpFolderNew(window._gpMvIds)"><span class="gp-fi">＋</span>Nouveau dossier…</button></div>
+    <div class="gp-sec">🏗️ Dans un chantier <small>visible par l'équipe · retirée${n > 1 ? 's' : ''} de ta galerie perso</small></div>
+    <div class="gp-sites"><button onclick="gpMoveSitePick()"><span class="gp-fi">🏗️</span>Choisir un chantier…</button></div>
+    <button class="gp-cancel" onclick="document.getElementById('gpSiteSheet').remove()">Annuler</button></div>`;
+  sh.addEventListener('click', e => { if(e.target === sh) sh.remove(); });
+  document.body.appendChild(sh);
+}
+async function gpMoveTo(fid){
+  const sh = document.getElementById('gpSiteSheet'); if(sh) sh.remove();
+  const ids = window._gpMvIds || [], now = new Date().toISOString(); let n = 0;
+  (_gpIdx || []).forEach(it => { if(ids.includes(it.id)){ it.folder = fid || ''; it.mAt = now; n++; } });
+  if(!n || !(await _gpSaveIdx())) return;
+  const f = (_gpFolders || []).find(x => x.id === fid);
+  _gpSel = null; gpViewClose(); showToast('📁 ' + n + ' rangée' + (n > 1 ? 's' : '') + ' dans ' + (f ? '« ' + f.name + ' »' : 'Sans dossier')); gpRender();
+}
+function gpMoveSitePick(){
+  const sh = document.getElementById('gpSiteSheet'); if(sh) sh.remove();
+  const ids = window._gpMvIds || [], first = (_gpIdx || []).find(it => ids.includes(it.id));
+  sitePicker({ title:'Envoyer dans quel chantier ?', current:(first && first.site) || '', sites:(data.sites || []).filter(s => s && s.status !== 'termine'), onPick: v => gpToSiteGo(ids, v) });
 }
 /* v5.41.470 — sélection multiple : partager / enregistrer / copier vers un chantier / supprimer plusieurs photos d'un coup */
 let _gpSel = null, _gpLpT = null, _gpLpDone = false;
 function gpSelToggle(){ _gpSel = _gpSel ? null : new Set(); gpRender(); }
-function gpSelAll(){ const it = _gpIdx || []; if(_gpSel && _gpSel.size === it.length) _gpSel.clear(); else _gpSel = new Set(it.map(x => x.id)); gpRender(); }
+function gpSelAll(){ const it = (_gpVis || []).map(i => (_gpIdx || [])[i]).filter(Boolean); if(_gpSel && _gpSel.size && _gpSel.size === it.length) _gpSel.clear(); else _gpSel = new Set(it.map(x => x.id)); gpRender(); }
 function _gpLpStart(i){ _gpLpDone = false; clearTimeout(_gpLpT); _gpLpT = setTimeout(() => { if(_gpSel) return; const it = (_gpIdx || [])[i]; if(!it) return; _gpSel = new Set([it.id]); _gpLpDone = true; try{ navigator.vibrate && navigator.vibrate(30); }catch(e){} gpRender(); }, 480); }
 function _gpLpEnd(){ clearTimeout(_gpLpT); }
 function gpTap(i){
@@ -14542,7 +14662,7 @@ function gpTap(i){
   if(_gpSel.has(it.id)) _gpSel.delete(it.id); else _gpSel.add(it.id);
   const el = document.querySelector('.gp-th[data-i="' + i + '"]'); if(el){ el.classList.toggle('sel', _gpSel.has(it.id)); const ck = el.querySelector('.gp-ck'); if(ck) ck.textContent = _gpSel.has(it.id) ? '✓' : ''; }
   const bar = document.querySelector('.gp-bar'); if(bar){ const n = _gpSel.size; bar.querySelector('b').textContent = n + ' sélectionnée' + (n > 1 ? 's' : ''); bar.querySelectorAll('button').forEach(b => b.disabled = !n); }
-  const h = document.querySelector('.gp-selhint a'); if(h) h.textContent = _gpSel.size === (_gpIdx || []).length ? 'Tout décocher' : 'Tout sélectionner';
+  const h = document.querySelector('.gp-selhint a'); if(h) h.textContent = _gpSel.size && _gpSel.size === (_gpVis || []).length ? 'Tout décocher' : 'Tout sélectionner';
 }
 function _gpSelItems(){ return (_gpIdx || []).filter(it => _gpSel && _gpSel.has(it.id)); }
 async function _gpFiles(list){
@@ -14571,13 +14691,18 @@ async function gpSaveSel(){
   }
   showToast('⬇️ ' + files.length + ' enregistrée' + (files.length > 1 ? 's' : ''));
 }
-function gpToSiteSel(){ const ids = _gpSelItems().map(x => x.id); if(ids.length) _gpSiteSheet(ids); }
+function gpToSiteSel(){ gpMoveSel(); }
 async function gpDeleteSel(){
   const list = _gpSelItems(); if(!list.length) return;
   if(!confirm('Supprimer ' + list.length + ' photo' + (list.length > 1 ? 's' : '') + ' de ta galerie perso ?')) return;
-  if(!(await _gpSaveIdx([], list.map(x => x.id)))) return;
-  list.forEach(it => [it.path, it.tpath].filter(Boolean).forEach(p => { if(window.RW_TEST) _gpMem.delete(p); else fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${p}`, { method:'DELETE', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } }).catch(() => {}); }));
+  if(!(await _gpRemove(list))) return;
   _gpSel = null; showToast('🗑️ ' + list.length + ' supprimée' + (list.length > 1 ? 's' : '')); gpRender();
+}
+async function _gpRemove(list){
+  if(!(await _gpSaveIdx([], list.map(x => x.id)))) return false;
+  list.forEach(it => [it.path, it.tpath].filter(Boolean).forEach(p => { if(window.RW_TEST) _gpMem.delete(p); else fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${p}`, { method:'DELETE', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } }).catch(() => {}); }));
+  list.forEach(it => { try{ ['t', 'f'].forEach(k => { const u = _gpUrls.get(it.id + ':' + k); if(u){ URL.revokeObjectURL(u); _gpUrls.delete(it.id + ':' + k); } }); }catch(e){} });
+  return true;
 }
 async function _gpThumbs(){
   const els = [...document.querySelectorAll('.gp-th')], items = _gpIdx || [];
@@ -14588,12 +14713,13 @@ async function _gpThumbs(){
 }
 async function gpView(i){
   const items = _gpIdx || [], it = items[i]; if(!it) return; _gpView = i;
+  const V = (_gpVis && _gpVis.includes(i)) ? _gpVis : items.map((_, k) => k), pos = V.indexOf(i), prev = pos > 0 ? V[pos - 1] : -1, next = pos < V.length - 1 ? V[pos + 1] : -1;
   if(it.kind === 'pdf'){ try{ showToast('🔓 Ouverture…'); const u = await _gpUrl(it, false); window.open(u, '_blank'); }catch(e){ showToast('❌ Ouverture impossible'); } return; }
   let ov = document.getElementById('gpViewer');
   if(!ov){ ov = document.createElement('div'); ov.id = 'gpViewer'; document.body.appendChild(ov); }
-  ov.innerHTML = `<div class="gpv-top"><button onclick="gpViewClose()">✕</button><span>🔒 Photo perso · ${i + 1}/${items.length}</span></div>
-    <div class="gpv-img">${i > 0 ? `<button class="gpv-ar l" onclick="gpView(${i - 1})">‹</button>` : ''}<img id="gpvImg" alt=""><span class="gp-ld" id="gpvLd">🔓</span>${i < items.length - 1 ? `<button class="gpv-ar r" onclick="gpView(${i + 1})">›</button>` : ''}</div>
-    <div class="gpv-acts"><button class="p" onclick="gpShare(${i})">📤 Partager</button><button onclick="gpSave(${i})">⬇️ Enregistrer</button><button onclick="gpToSite(${i})">🏗️ Chantier</button><button class="x" onclick="gpDelete(${i})">🗑️</button></div>`;
+  ov.innerHTML = `<div class="gpv-top"><button onclick="gpViewClose()">✕</button><span>🔒 Photo perso · ${pos + 1}/${V.length}</span></div>
+    <div class="gpv-img">${prev >= 0 ? `<button class="gpv-ar l" onclick="gpView(${prev})">‹</button>` : ''}<img id="gpvImg" alt=""><span class="gp-ld" id="gpvLd">🔓</span>${next >= 0 ? `<button class="gpv-ar r" onclick="gpView(${next})">›</button>` : ''}</div>
+    <div class="gpv-acts"><button class="p" onclick="gpShare(${i})">📤 Partager</button><button onclick="gpSave(${i})">⬇️ Enregistrer</button><button onclick="gpToSite(${i})">📁 Déplacer</button><button class="x" onclick="gpDelete(${i})">🗑️</button></div>`;
   ov.style.display = 'flex';
   try{ const u = await _gpUrl(it, false); const im = document.getElementById('gpvImg'); if(im && _gpView === i){ im.src = u; const l = document.getElementById('gpvLd'); if(l) l.remove(); } }catch(e){ const l = document.getElementById('gpvLd'); if(l) l.textContent = '⚠️ Photo introuvable'; }
 }
@@ -14620,7 +14746,7 @@ async function gpSave(i){
   try{ const u = await _gpUrl(it, false); const a = document.createElement('a'); a.href = u; a.download = (it.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + (it.kind === 'pdf' ? '.pdf' : '.jpg'); document.body.appendChild(a); a.click(); a.remove(); }
   catch(e){ showToast('❌ Enregistrement impossible'); }
 }
-function gpToSite(i){ const it = (_gpIdx || [])[i]; if(it) _gpSiteSheet([it.id]); }
+function gpToSite(i){ const it = (_gpIdx || [])[i]; if(it) _gpMoveSheet([it.id]); }
 function _gpSiteSheet(ids){
   const sites = (data.sites || []).filter(s => s && s.status !== 'termine').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
   const sh = document.createElement('div'); sh.id = 'gpSiteSheet';
@@ -14634,12 +14760,14 @@ async function gpToSiteGo(ids, siteId){
   const sh = document.getElementById('gpSiteSheet'); if(sh) sh.remove();
   if(!Array.isArray(ids)) ids = [(_gpIdx || [])[ids] && (_gpIdx || [])[ids].id];
   const list = (_gpIdx || []).filter(x => ids.includes(x.id)); if(!list.length) return;
-  let ok = 0;
-  for(const it of list){ try{ showToast('⏳ Envoi au chantier ' + (ok + 1) + '/' + list.length + '…'); await addSharedMediaToSite(siteId, await _gpFile(it)); ok++; }catch(e){} }
-  try{ _rwAfterSitePhotos(siteId); }catch(e){}
   const s = (data.sites || []).find(x => x.id === siteId);
-  showToast(ok ? '✅ ' + ok + ' copiée' + (ok > 1 ? 's' : '') + ' dans ' + ((s && s.name) || 'le chantier') : '❌ Envoi impossible');
-  if(_gpSel){ _gpSel = null; gpRender(); }
+  if(!confirm('Envoyer ' + list.length + ' photo' + (list.length > 1 ? 's' : '') + ' dans « ' + ((s && s.name) || 'le chantier') + ' » ?\nElle' + (list.length > 1 ? 's seront visibles' : ' sera visible') + ' par l\'équipe et retirée' + (list.length > 1 ? 's' : '') + ' de ta galerie perso.')) return;
+  const done = [];
+  for(const it of list){ try{ showToast('⏳ Envoi au chantier ' + (done.length + 1) + '/' + list.length + '…'); await addSharedMediaToSite(siteId, await _gpFile(it)); done.push(it); }catch(e){} }
+  try{ _rwAfterSitePhotos(siteId); }catch(e){}
+  if(done.length) await _gpRemove(done);
+  showToast(done.length ? '✅ ' + done.length + ' envoyée' + (done.length > 1 ? 's' : '') + ' dans ' + ((s && s.name) || 'le chantier') : '❌ Envoi impossible');
+  _gpSel = null; gpViewClose(); if(_galerieOpenSiteId === '__perso__') gpRender();
 }
 async function gpDelete(i){
   const it = (_gpIdx || [])[i]; if(!it) return;
@@ -14824,17 +14952,17 @@ function _galerieRenderFolder(root, siteId){
   if(_gc){
     if(!_F0.drawer){ gcRootRender(root, site); return; }
     if(_F0.drawer === 'doc'){ gcDocRender(root, site); return; }
-    _F0.folder = null; _F0.kind = 'photo';
+    _F0.kind = 'photo'; _F0.tag = null;   // v5.41.513 — dossiers comme dans Documents (plus de #hashtags)
   }
   // v5.41.502 — 📁 dossiers (équipe + 🔒 bureau) : rangée en haut, contenu filtré
-  const _tf = _gc ? [] : gfTeamFolders(site);
+  const _tf = gfTeamFolders(site, _gc ? 'ph' : 'doc');
   if(_F0.folder && String(_F0.folder).startsWith('b:')){ if(_nvBoss()){ gfBurRender(root, site, _F0.folder.slice(2)); return; } _F0.folder = null; }
   if(_F0.folder && !_tf.some(f => f.id === _F0.folder)) _F0.folder = null;
   const _inF = m => (m.folder && _tf.some(f => f.id === m.folder)) ? m.folder : null;
   const _allPh = photos;
   photos = photos.filter(m => _inF(m) === (_F0.folder || null));
   const _curF = _F0.folder ? _tf.find(f => f.id === _F0.folder) : null;
-  const foldHtml = (_curF || _gc) ? '' : gfStripHtml(site, _allPh);
+  const foldHtml = _curF ? '' : gfStripHtml(site, _gc ? _allPh.filter(m => !m.doc) : _allPh, _gc ? 'ph' : 'doc');
 
   // Bouton "Sélectionner" visible dans un dossier
   const selBtn = document.getElementById('galerieSelectBtn');
@@ -14845,13 +14973,13 @@ function _galerieRenderFolder(root, siteId){
       <button onclick="gfOpen(null)" title="Retour au chantier">←</button>
       <span class="t">${escapeHtml((_curF.icon || '📁') + ' ' + _curF.name)}</span>
       <span class="n">· ${escapeHtml(site.name)} · ${photos.length}</span>
-      ${rwTagCanCreate() ? `<button class="gf-hb" onclick="gfEdit('${_curF.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gfDelete('${_curF.id}')" title="Supprimer le dossier">🗑</button>` : ''}
-    </div><div class="gf-bact"><button class="btn btn-primary btn-sm" onclick="galerieAddPhotos('${site.id}','${_curF.id}')">＋ Ajouter</button></div>` : _gc ? `
+      ${rwTagCanCreate() ? `<button class="gf-hb" onclick="gfEdit('${_curF.id}')" title="Renommer">✏️</button>` : ''}${(_gc ? _gcCanDel() : rwTagCanCreate()) ? `<button class="gf-hb" onclick="gfDelete('${_curF.id}')" title="Supprimer le dossier">🗑</button>` : ''}
+    </div>${_gc ? '' : `<div class="gf-bact"><button class="btn btn-primary btn-sm" onclick="galerieAddPhotos('${site.id}','${_curF.id}')">＋ Ajouter</button></div>`}` : _gc ? `
     <div class="galerie-head1 gf-head">
       <button onclick="gcDrawer(null)" title="Retour au classeur">←</button>
       <span class="t">📷 Photos</span>
       <span class="n">· ${escapeHtml(site.name)} · ${_allPh.filter(m => !m.doc).length}</span>
-    </div>` : `
+    </div>` + foldHtml + (foldHtml && photos.some(m => !m.doc) ? '<div class="rm-lbl" style="margin:10px 2px 6px;">Sans dossier</div>' : '') : `
     <div class="galerie-head1">
       <button onclick="galerieCloseFolder()" title="Tous les dossiers">←</button>
       <span class="t">${escapeHtml(site.name)}</span>
@@ -14878,7 +15006,7 @@ function _galerieRenderFolder(root, siteId){
   if(F.tag) shown = shown.filter(m => (m.tags || []).includes(F.tag));
   const nDocs = _galDocGroups(photos.filter(m => m.doc)).length;
   const tags = Object.keys(tagCnt).sort((a, b) => (tagCnt[b] - tagCnt[a]) || a.localeCompare(b, 'fr'));
-  const filtHtml = _gc ? (tags.length ? `<div class="gal-tagbar">${tags.map(t => `<button class="rw-tag${F.tag === t ? ' on' : ''}" onclick="_galSet('tag','${escapeHtml(t)}')">#${escapeHtml(t)}<small>${tagCnt[t]}</small></button>`).join('')}</div>` : '') : `
+  const filtHtml = _gc ? '' : `
     <div class="gal-filt">
       <button class="${F.kind === 'all' ? 'on' : ''}" onclick="_galSet('kind','all')">Tout</button>
       <button class="${F.kind === 'photo' ? 'on' : ''}" onclick="_galSet('kind','photo')">📷 Photos</button>
@@ -15085,9 +15213,70 @@ function galerieTogglePhoto(key){
    jamais copiés dans les données du chantier envoyées à l'équipe (ranger une photo en bureau la retire du chantier). */
 const GB_KEY = 'rwood_gal_bureau';
 let _gb = (() => { try{ return JSON.parse(localStorage.getItem('rwood-gal-bureau') || 'null'); }catch(e){ return null; } })(), _gbAt = 0;
-function gfTeamFolders(site){ return (site.mediaFolders || []).filter(f => f && !f.deleted).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr')); }
+/* ═══ v5.41.513 — Dossiers communs à toute l'entreprise ═══
+   Un dossier créé dans un chantier existe dans TOUS les chantiers (même nom, même icône, même tri).
+   Ligne partagée CF_KEY = { folders:[{ id, name, icon, kind:'ph'|'doc', bur, aliases:[], deleted, updatedAt }] }.
+   kind : 📷 Photos ou 📄 Documents · bur : 🔒 bureau (le contenu reste dans GB_KEY, par chantier).
+   Les anciens dossiers propres à un chantier (site.mediaFolders, dossiers bureau par chantier) sont repris
+   automatiquement : même nom = même dossier (alias). */
+const CF_KEY = 'company_media_folders_v1';
+let _cf = (() => { try{ return JSON.parse(localStorage.getItem('rwood-media-folders') || 'null'); }catch(e){ return null; } })(), _cfAt = 0, _cfNormAt = 0, _cfPersisting = false;
+function _cfRaw(){ return (_cf && Array.isArray(_cf.folders)) ? _cf.folders : []; }
+function _cfMerged(){
+  const out = _cfRaw().map(f => Object.assign({}, f, { aliases:(f.aliases || []).slice() }));
+  const known = new Set(); out.forEach(f => { known.add(f.id); f.aliases.forEach(a => known.add(a)); });
+  const add = (lf, kind, bur) => { if(!lf || !lf.id || known.has(lf.id)) return; known.add(lf.id); if(lf.deleted) return;
+    const nm = (lf.name || '').trim().toLowerCase();
+    const same = out.find(f => !f.deleted && (f.kind || 'doc') === kind && !!f.bur === bur && (f.name || '').trim().toLowerCase() === nm);
+    if(same){ same.aliases.push(lf.id); same._mig = true; }
+    else out.push({ id:lf.id, name:lf.name || 'Dossier', icon:lf.icon || '📁', kind, bur, aliases:[], createdBy:lf.createdBy || '', createdAt:lf.createdAt || '', updatedAt:lf.updatedAt || '', _mig:true }); };
+  (data.sites || []).forEach(s => (s && s.mediaFolders || []).forEach(f => add(f, 'doc', false)));
+  if(_gb && _gb.sites) Object.values(_gb.sites).forEach(x => (x && x.folders || []).forEach(f => add(f, 'doc', true)));
+  return out;
+}
+function _cfSort(a, b){ return (a.name || '').localeCompare(b.name || '', 'fr', { numeric:true }); }
+function _cfKindNow(site){ const F = window._galFilt; return (F && site && F.siteId === site.id && F.drawer === 'ph') ? 'ph' : 'doc'; }
+/* les médias rangés dans un ancien dossier (alias) pointent vers le dossier commun */
+function _cfNorm(){
+  if(Date.now() - _cfNormAt < 2000) return; _cfNormAt = Date.now();
+  const map = {}; _cfMerged().forEach(f => f.aliases.forEach(a => { map[a] = f.id; }));
+  if(!Object.keys(map).length) return;
+  (data.sites || []).forEach(s => (s && s.sharedMedia || []).forEach(m => { if(m && m.folder && map[m.folder]) m.folder = map[m.folder]; }));
+  if(_gb && _gb.sites) Object.values(_gb.sites).forEach(x => (x && x.media || []).forEach(m => { if(m && m.folder && map[m.folder]) m.folder = map[m.folder]; }));
+}
+function gfTeamFolders(site, kind){ kind = kind || _cfKindNow(site); _cfNorm(); return _cfMerged().filter(f => !f.deleted && !f.bur && (f.kind || 'doc') === kind).sort(_cfSort); }
+async function cfFetch(){
+  try{
+    const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(CF_KEY) + '&select=data', { headers:{ 'Prefer':'' } });
+    if(!r || !r.ok) return null;
+    const rows = await r.json(); _cfAt = Date.now(); if(!rows || !rows.length) return _cf;
+    let d = rows[0].data; if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } }
+    if(d && Array.isArray(d.folders)){ const ch = JSON.stringify(d) !== JSON.stringify(_cf); _cf = d; _cfNormAt = 0; try{ localStorage.setItem('rwood-media-folders', JSON.stringify(d)); }catch(e){}
+      if(ch && _galerieOpenSiteId && _galerieOpenSiteId !== '__perso__' && document.getElementById('galerieContent')){ try{ galerieRender(); }catch(e){} } }
+    return _cf;
+  }catch(e){ return null; }
+}
+setTimeout(() => { try{ cfFetch(); }catch(e){} }, 4500);
+async function cfSave(mut){
+  await cfFetch();
+  const list = _cfMerged().map(f => { const c = Object.assign({}, f); delete c._mig; return c; });
+  if(mut) mut(list);
+  const cfg = { folders:list, updatedAt:new Date().toISOString() };
+  try{
+    const r = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' }, body:JSON.stringify({ user_id:CF_KEY, updated_at:cfg.updatedAt, data:JSON.stringify(cfg) }) });
+    if(r && r.ok === false){ showToast('❌ Enregistrement impossible, réessaie'); return false; }
+  }catch(e){ showToast('❌ Réseau indisponible, réessaie'); return false; }
+  _cf = cfg; _cfNormAt = 0; try{ localStorage.setItem('rwood-media-folders', JSON.stringify(cfg)); }catch(e){}
+  return true;
+}
+/* enregistre une fois la reprise des anciens dossiers (fait par un chef / conducteur / patron) */
+function _cfMaybePersist(){
+  if(_cfPersisting || !_cfAt || !rwTagCanCreate()) return;
+  if(!_cfMerged().some(f => f._mig)) return;
+  _cfPersisting = true; cfSave(null).finally(() => { _cfPersisting = false; });
+}
 function _gbSite(sid){ return (_gb && _gb.sites && _gb.sites[sid]) || { folders:[], media:[] }; }
-function gbFolders(sid){ return (_gbSite(sid).folders || []).filter(f => f && !f.deleted).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr')); }
+function gbFolders(sid, kind){ kind = kind || _cfKindNow((data.sites || []).find(s => s.id === sid)); _cfNorm(); return _cfMerged().filter(f => !f.deleted && f.bur && (f.kind || 'doc') === kind).sort(_cfSort); }
 async function gbFetch(force){
   if(!_nvBoss()) return _gb;
   if(!force && _gb && Date.now() - _gbAt < 30000) return _gb;
@@ -15109,8 +15298,8 @@ async function gbSave(mut){
   return true;
 }
 function _gbS(d, sid){ if(!d.sites[sid]) d.sites[sid] = { folders:[], media:[] }; const x = d.sites[sid]; if(!x.folders) x.folders = []; if(!x.media) x.media = []; return x; }
-function gfStripHtml(site, all){
-  const tf = gfTeamFolders(site), boss = _nvBoss(), bf = boss ? gbFolders(site.id) : [];
+function gfStripHtml(site, all, kind){
+  const tf = gfTeamFolders(site, kind), boss = _nvBoss(), bf = boss ? gbFolders(site.id, kind) : [];
   if(boss && (!_gb || Date.now() - _gbAt > 30000)) gbFetch().then(() => { if(_galerieOpenSiteId === site.id && !(_galF(site.id).folder)) galerieRender(); });
   const can = rwTagCanCreate();
   if(!tf.length && !bf.length && !can) return '';
@@ -15134,6 +15323,7 @@ function gfEdit(id){
     <div class="gf-ics">${ics.map(x => `<button type="button" class="${(f ? f.icon : '📁') === x ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on');">${x}</button>`).join('')}</div>
     ${!f && _nvBoss() ? `<label class="gf-bur"><input type="checkbox" id="gfBur"><span><b>🔒 Dossier bureau</b><small>Visible seulement par le patron, les conducteurs et la compta. Les photos rangées dedans sont retirées du chantier de l'équipe.</small></span></label>` : ''}
     ${f && isB ? '<div class="hint">🔒 Dossier bureau</div>' : ''}
+    <div class="hint" style="margin-top:8px;">🏗️ ${f ? 'Le changement s\'applique' : 'Le dossier est créé'} dans <b>tous les chantiers</b>${_galF(site.id).drawer === 'ph' ? ' (📷 Photos)' : ' (📄 Documents)'}.</div>
     <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="gfSaveEdit(${f ? `'${escapeHtml(id)}'` : 'null'})">${f ? '💾 Enregistrer' : '＋ Créer le dossier'}</button></div>`;
   document.body.appendChild(d); setTimeout(() => { const i = document.getElementById('gfName'); if(i) i.focus(); }, 50);
 }
@@ -15142,35 +15332,33 @@ async function gfSaveEdit(id){
   const name = ((document.getElementById('gfName') || {}).value || '').trim(); if(!name){ showToast('Donne un nom au dossier'); return; }
   const icon = ((document.querySelector('#modal-gf .gf-ics button.on') || {}).textContent || '📁').trim();
   const bur = !id && document.getElementById('gfBur') && document.getElementById('gfBur').checked;
-  const now = new Date().toISOString(), me = _nvMe().name;
-  if(bur || (id && String(id).startsWith('b:'))){
-    const fid = id ? id.slice(2) : 'gb' + uid();
-    const ok = await gbSave(dd => { const x = _gbS(dd, site.id); const f = x.folders.find(z => z.id === fid); if(f){ f.name = name; f.icon = icon; f.updatedAt = now; } else x.folders.push({ id:fid, name, icon, createdBy:me, createdAt:now, updatedAt:now }); });
-    if(!ok) return;
-    if(!id) _galF(site.id).folder = 'b:' + fid;
-  } else {
-    if(!Array.isArray(site.mediaFolders)) site.mediaFolders = [];
-    let f = id ? site.mediaFolders.find(z => z.id === id) : null;
-    if(f){ f.name = name; f.icon = icon; f.updatedAt = now; } else { f = { id:'gf' + uid(), name, icon, createdBy:me, createdAt:now, updatedAt:now }; site.mediaFolders.push(f); }
-    site.updatedAt = now; saveData(); try{ if(typeof pushSharedSite === 'function') pushSharedSite(site); }catch(e){} try{ syncAllSitesCycle(); }catch(e){}
-  }
+  const fid = id ? (String(id).startsWith('b:') ? id.slice(2) : id) : null;
+  const kind = _galF(site.id).drawer === 'ph' ? 'ph' : 'doc', now = new Date().toISOString(), me = _nvMe().name, nm = name.toLowerCase();
+  if(_cfMerged().some(f => !f.deleted && f.id !== fid && (f.kind || 'doc') === kind && !!f.bur === !!(fid ? (_cfMerged().find(z => z.id === fid) || {}).bur : bur) && (f.name || '').trim().toLowerCase() === nm)){ showToast('Un dossier « ' + name + ' » existe déjà'); return; }
+  let newId = null;
+  const ok = await cfSave(list => {
+    if(fid){ const f = list.find(z => z.id === fid); if(f){ f.name = name; f.icon = icon; f.updatedAt = now; } }
+    else { newId = 'gf' + uid(); list.push({ id:newId, name, icon, kind, bur:!!bur, aliases:[], createdBy:me, createdAt:now, updatedAt:now }); }
+  });
+  if(!ok) return;
+  if(newId && bur) _galF(site.id).folder = 'b:' + newId;
   const m = document.getElementById('modal-gf'); if(m) m.remove();
-  showToast(id ? '✅ Dossier modifié' : '📁 Dossier créé'); galerieRender();
+  showToast(id ? '✅ Dossier modifié dans tous les chantiers' : '📁 Dossier créé dans tous les chantiers'); galerieRender();
 }
 async function gfDelete(id){
   const site = (data.sites || []).find(s => s.id === _galerieOpenSiteId); if(!site) return;
+  if(!_gcCanDel()){ showToast('Réservé au patron et aux conducteurs'); return; }
   const isB = String(id).startsWith('b:'), fid = isB ? id.slice(2) : id;
-  const f = isB ? gbFolders(site.id).find(x => x.id === fid) : gfTeamFolders(site).find(x => x.id === fid); if(!f) return;
+  const f = _cfMerged().find(x => x.id === fid && !x.deleted); if(!f) return;
   if(isB){
-    const n = (_gbSite(site.id).media || []).filter(m => m.folder === fid).length;
-    if(n){ showToast('Vide d\'abord le dossier (sélectionne les photos › Sortir ou Supprimer)'); return; }
-    if(!confirm('Supprimer le dossier « ' + f.name + ' » ?')) return;
-    if(!(await gbSave(dd => { const x = _gbS(dd, site.id); x.folders = x.folders.filter(z => z.id !== fid); }))) return;
-  } else {
-    if(!confirm('Supprimer le dossier « ' + f.name + ' » ?\nSes photos restent dans le chantier (hors dossier).')) return;
-    const now = new Date().toISOString(); f.deleted = true; f.updatedAt = now; site.updatedAt = now;
-    saveData(); try{ if(typeof pushSharedSite === 'function') pushSharedSite(site); }catch(e){} try{ syncAllSitesCycle(); }catch(e){}
+    await gbFetch(true); _cfNormAt = 0; _cfNorm();
+    const ids = [fid].concat(f.aliases || []);
+    const n = Object.values((_gb && _gb.sites) || {}).reduce((a, x) => a + ((x && x.media) || []).filter(m => ids.includes(m.folder)).length, 0);
+    if(n){ showToast('Vide d\'abord ce dossier dans tous les chantiers (' + n + ' élément' + (n > 1 ? 's' : '') + ')'); return; }
   }
+  if(!confirm('Supprimer le dossier « ' + f.name + ' » de TOUS les chantiers ?' + (isB ? '' : '\nLes photos et documents restent dans chaque chantier (hors dossier).'))) return;
+  const now = new Date().toISOString();
+  if(!(await cfSave(list => { const z = list.find(q => q.id === fid); if(z){ z.deleted = true; z.updatedAt = now; } }))) return;
   _galF(site.id).folder = null; showToast('🗑 Dossier supprimé'); galerieRender();
 }
 /* Ranger la sélection (photos du chantier) */
@@ -15291,20 +15479,22 @@ function _gcDocGroups(list){
   return [...map.values()].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 }
 function gcRootRender(root, site){
-  const ph = gcPhotos(site), dg = _gcDocGroups(gcDocs(site)), tf = gfTeamFolders(site), bf = _nvBoss() ? gbFolders(site.id) : [];
+  if(!_cfAt || Date.now() - _cfAt > 30000){ _cfAt = _cfAt || 1; cfFetch().then(() => _cfMaybePersist()); } else _cfMaybePersist();
+  const ph = gcPhotos(site), dg = _gcDocGroups(gcDocs(site)), tf = gfTeamFolders(site, 'doc'), bf = _nvBoss() ? gbFolders(site.id, 'doc') : [];
+  const nfp = gfTeamFolders(site, 'ph').length + (_nvBoss() ? gbFolders(site.id, 'ph').length : 0);
   if(_nvBoss() && (!_gb || Date.now() - _gbAt > 30000)) gbFetch().then(() => { if(_galerieOpenSiteId === site.id && !_galF(site.id).drawer) galerieRender(); });
   { const sb = document.getElementById('galerieSelectBtn'); if(sb) sb.style.display = 'none'; const fab = document.getElementById('galerieFab'); if(fab){ fab.style.display = ''; fab.textContent = '＋'; } }
   const cov = ph.slice(0, 4);
   const ago = d => { if(!d) return ''; try{ return _galShortDate(d); }catch(e){ return ''; } };
   root.innerHTML = `<div class="galerie-head1"><button onclick="galerieCloseFolder()" title="Tous les chantiers">←</button><span class="t">${escapeHtml(site.name)}</span></div>
     <div class="gc-two">
-      <button class="gc-drw" onclick="gcDrawer('ph')"><div class="gc-im">${[0, 1, 2, 3].map(i => cov[i] ? `<img src="${escapeHtml(cov[i].thumbUrl || cov[i].url)}" alt="" loading="lazy">` : '<i></i>').join('')}</div><div class="gc-lb"><b>📷 Photos</b><small>${ph.length}${ph[0] ? ' · ' + ago(ph[0].uploadedAt) : ''}</small></div></button>
+      <button class="gc-drw" onclick="gcDrawer('ph')"><div class="gc-im">${[0, 1, 2, 3].map(i => cov[i] ? `<img src="${escapeHtml(cov[i].thumbUrl || cov[i].url)}" alt="" loading="lazy">` : '<i></i>').join('')}</div><div class="gc-lb"><b>📷 Photos</b><small>${ph.length}${nfp ? ' · ' + nfp + ' dossier' + (nfp > 1 ? 's' : '') : ph[0] ? ' · ' + ago(ph[0].uploadedAt) : ''}</small></div></button>
       <button class="gc-drw" onclick="gcDrawer('doc')"><div class="gc-dc">📄</div><div class="gc-lb"><b>📄 Documents</b><small>${dg.length}${tf.length + bf.length ? ' · ' + (tf.length + bf.length) + ' dossier' + (tf.length + bf.length > 1 ? 's' : '') : ''}</small></div></button>
     </div>
     ${ph.length ? `<div class="rm-lbl" style="margin:14px 2px 6px;">Dernières photos</div><div class="gc-last">${ph.slice(0, 6).map((m, i) => `<img src="${escapeHtml(m.thumbUrl || m.url)}" alt="" loading="lazy" onclick="gcDrawer('ph')">`).join('')}</div>` : ''}`;
 }
 function gcDocRender(root, site){
-  const F = _galF(site.id), tf = gfTeamFolders(site);
+  const F = _galF(site.id), tf = gfTeamFolders(site, 'doc');
   if(F.folder && String(F.folder).startsWith('b:')){ if(_nvBoss()){ gfBurRender(root, site, F.folder.slice(2)); return; } F.folder = null; }
   if(F.folder && !tf.some(f => f.id === F.folder)) F.folder = null;
   { const sb = document.getElementById('galerieSelectBtn'); if(sb) sb.style.display = 'none'; const fab = document.getElementById('galerieFab'); if(fab){ fab.style.display = ''; fab.textContent = '＋'; } }
@@ -15314,8 +15504,8 @@ function gcDocRender(root, site){
   const groups = _gcDocGroups(list);
   window._gcGroups = groups;
   const can = rwTagCanCreate();
-  const head = cur ? `<div class="galerie-head1 gf-head"><button onclick="gfOpen(null)" title="Retour aux documents (dépose un document ici pour le sortir du dossier)" ondragover="if(_gcDragDoc!=null){event.preventDefault();this.classList.add('ov');}" ondragleave="this.classList.remove('ov')" ondrop="event.preventDefault();this.classList.remove('ov');gcDropDoc('')">←</button><span class="t">${escapeHtml((cur.icon || '📁') + ' ' + cur.name)}</span><span class="n">· Documents · ${groups.length}</span>${can ? `<button class="gf-hb" onclick="gfEdit('${cur.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gfDelete('${cur.id}')" title="Supprimer le dossier">🗑</button>` : ''}</div>`
-    : `<div class="galerie-head1 gf-head"><button onclick="gcDrawer(null)" title="Retour au classeur">←</button><span class="t">📄 Documents</span><span class="n">· ${escapeHtml(site.name)} · ${_gcDocGroups(all).length}</span></div>` + gfStripHtml(site, all);
+  const head = cur ? `<div class="galerie-head1 gf-head"><button onclick="gfOpen(null)" title="Retour aux documents (dépose un document ici pour le sortir du dossier)" ondragover="if(_gcDragDoc!=null){event.preventDefault();this.classList.add('ov');}" ondragleave="this.classList.remove('ov')" ondrop="event.preventDefault();this.classList.remove('ov');gcDropDoc('')">←</button><span class="t">${escapeHtml((cur.icon || '📁') + ' ' + cur.name)}</span><span class="n">· Documents · ${groups.length}</span>${can ? `<button class="gf-hb" onclick="gfEdit('${cur.id}')" title="Renommer">✏️</button>` : ''}${_gcCanDel() ? `<button class="gf-hb" onclick="gfDelete('${cur.id}')" title="Supprimer le dossier">🗑</button>` : ''}</div>`
+    : `<div class="galerie-head1 gf-head"><button onclick="gcDrawer(null)" title="Retour au classeur">←</button><span class="t">📄 Documents</span><span class="n">· ${escapeHtml(site.name)} · ${_gcDocGroups(all).length}</span></div>` + gfStripHtml(site, all, 'doc');
   const row = (g, i) => { const n = g.pages.length, pg = g.pages[0], img = _gcIsImg(pg);
     return `<div class="gc-doc" data-i="${i}" ${can ? `draggable="true" ondragstart="_gcDragDoc=${i};event.dataTransfer.effectAllowed='move'" ondragend="setTimeout(()=>{_gcDragDoc=null},50)"` : ''}><div class="gc-st" onclick="gcOpenDoc(${i})">${img ? g.pages.slice(0, 3).map((p, j) => `<img src="${escapeHtml(p.thumbUrl || p.url)}" alt="" style="--j:${j}">`).join('') : '<span class="gc-pdf">PDF</span>'}</div>
       <div class="gc-dt" onclick="gcOpenDoc(${i})"><b>${escapeHtml(g.title || (img ? 'Document sans titre' : 'Fichier'))}</b><small>${n} page${n > 1 ? 's' : ''}${g.by ? ' · ' + escapeHtml(g.by) : ''}${g.date ? ' · ' + _galShortDate(g.date) : ''}</small></div>
@@ -15366,8 +15556,8 @@ function gcFolderMenu(fid, x, y){
     { i:'📂', l:'Ouvrir', fn:() => gfOpen(fid) },
     can && { i:'✏️', l:'Renommer', fn:() => gfEdit(fid) },
     _gcClip && can && !isB && { i:'📥', l:'Coller dans ce dossier (' + _gcClip.n + ')', fn:() => gcPaste(fid) },
-    can && '-',
-    can && { i:'🗑️', l:'Supprimer le dossier', danger:true, fn:() => gfDelete(fid) }
+    _gcCanDel() && '-',
+    _gcCanDel() && { i:'🗑️', l:'Supprimer le dossier', danger:true, fn:() => gfDelete(fid) }
   ]}, x, y);
 }
 function gcClip(mode, g){ _gcClip = { mode, siteId:_galerieOpenSiteId, ids:g.pages.map(p => p.id), n:1, title:g.title || 'Document' }; showToast((mode === 'cut' ? '✂️ Coupé' : '📋 Copié') + ' : ' + (g.title || 'document') + ' — ouvre un dossier puis « Coller »'); galerieRender(); }
@@ -15493,13 +15683,13 @@ function gcAddSheet(site, folder){
     : drawer === 'doc' ? tile('scan', '📄', 'Scanner', 'une ou plusieurs pages') + tile('impdoc', '📎', 'Importer un fichier', 'PDF ou photo d\'un document')
     : tile('take', '📸', 'Photos', 'une ou plusieurs') + tile('scan', '📄', 'Scanner un document', 'plans, bons, factures…');
   sheet.innerHTML = `<div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;max-width:640px;margin:0 auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
-    <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter dans ${drawer === 'ph' ? '📷 Photos' : drawer === 'doc' ? (fo ? escapeHtml((fo.icon || '📁') + ' ' + fo.name) + (isB ? ' 🔒' : '') : '📄 Documents') : '🏗️ ' + escapeHtml(site.name)}</div>
+    <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter dans ${drawer === 'ph' ? (fo ? escapeHtml((fo.icon || '📁') + ' ' + fo.name) + (isB ? ' 🔒' : '') : '📷 Photos') : drawer === 'doc' ? (fo ? escapeHtml((fo.icon || '📁') + ' ' + fo.name) + (isB ? ' 🔒' : '') : '📄 Documents') : '🏗️ ' + escapeHtml(site.name)}</div>
     <div class="ga-two four">${tiles}</div></div>`;
   const close = () => sheet.remove();
   sheet.onclick = e => { if(e.target === sheet) close(); };
   const on = (k, fn) => { const b = sheet.querySelector('[data-act="' + k + '"]'); if(b) b.onclick = () => { close(); fn(); }; };
-  on('take', () => rwSitePhotoBurst(site.id));
-  on('impph', () => _rwPickImages(true, files => _rwUploadSitePhotos(site.id, files)));
+  on('take', () => rwSitePhotoBurst(site.id, folder ? o : undefined));
+  on('impph', () => _rwPickImages(true, files => _rwUploadSitePhotos(site.id, files, o)));
   on('scan', () => rwSiteScan(site.id, o));
   on('impdoc', () => _gfPickFiles(files => gcImportDocs(site, files, folder)));
   document.body.appendChild(sheet);
@@ -15874,7 +16064,7 @@ function _galerieRenderLightbox(){
     <div class="galerie-lb-imgwrap"><img id="galerieLbImg" src="${escapeHtml(m.url)}" alt="photo"></div>
     ${m._croqId ? '' : `<button type="button" onclick='event.stopPropagation(); gpCopyFromUrl(${JSON.stringify(m.url).replace(/'/g, "&#39;")}, ${JSON.stringify(m.title || m.name || "photo").replace(/'/g, "&#39;")})' style="position:fixed;top:calc(114px + env(safe-area-inset-top,0px));right:14px;z-index:1002;height:40px;border-radius:20px;border:1.5px solid #9B7BE0;background:rgba(30,20,50,.75);color:#d8c9ff;font-weight:800;font-size:13px;padding:0 13px;cursor:pointer;">🔒 Ma galerie perso</button>`}
     ${hasNext ? `<button class="galerie-lb-arrow galerie-lb-arrow-right" onclick="event.stopPropagation(); galerieLightboxNext();">›</button>` : ''}
-    <button type="button" onclick="event.stopPropagation(); rwMediaMetaEdit('${_galerieOpenSiteId}','${escapeHtml(m.id || '')}')" style="position:fixed;top:calc(64px + env(safe-area-inset-top,0px));right:14px;z-index:1002;height:40px;border-radius:20px;border:none;background:rgba(255,255,255,.14);color:#fff;font-weight:800;font-size:14px;padding:0 14px;">🏷️ ${m.title || (m.tags && m.tags.length) ? 'Modifier' : 'Titre / #'}</button>
+    <button type="button" onclick="event.stopPropagation(); rwMediaMetaEdit('${_galerieOpenSiteId}','${escapeHtml(m.id || '')}')" style="position:fixed;top:calc(64px + env(safe-area-inset-top,0px));right:14px;z-index:1002;height:40px;border-radius:20px;border:none;background:rgba(255,255,255,.14);color:#fff;font-weight:800;font-size:14px;padding:0 14px;">${gcOn() ? '✏️ ' + (m.title ? 'Modifier' : 'Titre') : '🏷️ ' + (m.title || (m.tags && m.tags.length) ? 'Modifier' : 'Titre / #')}</button>
     ${(m.title || m.doc || (m.tags && m.tags.length)) ? `<div style="color:#fff;text-align:center;max-width:92vw;"><div style="font-weight:800;font-size:16px;">${m.doc ? '📄 ' : ''}${escapeHtml(m.title || (m.doc ? 'Document sans nom' : ''))}${m.doc && m.page ? ' <span style="opacity:.6;font-weight:600;font-size:13px;">· page ' + m.page + '</span>' : ''}</div>${(m.tags && m.tags.length) ? `<div style="color:#E8AC3D;font-weight:700;font-size:13px;margin-top:2px;">${m.tags.map(t => '#' + escapeHtml(t)).join(' ')}</div>` : ''}</div>` : ''}
     <div class="galerie-lb-cap">${escapeHtml(caption)} <span style="opacity:.6;">(${_galerieLbIndex+1}/${photos.length})</span></div>
   `;
@@ -15898,12 +16088,12 @@ function rwMediaMetaEdit(siteId, mediaId){
   let ex = document.getElementById('modal-rwMeta'); if(ex) ex.remove();
   ex = document.createElement('div'); ex.id = 'modal-rwMeta'; ex.className = 'modal-overlay open'; ex.style.zIndex = 1100;
   ex.innerHTML = `<div class="modal" style="max-width:440px;">
-    <div class="modal-header"><h2>🏷️ Titre et hashtags</h2><button class="modal-close" onclick="document.getElementById('modal-rwMeta').remove()">×</button></div>
+    <div class="modal-header"><h2>${gcOn() ? '✏️ Titre' : '🏷️ Titre et hashtags'}</h2><button class="modal-close" onclick="document.getElementById('modal-rwMeta').remove()">×</button></div>
     <div class="field" style="margin-bottom:8px;"><label>Titre</label><input id="rwMetaTitle" value="${escapeHtml(_rwMetaEd.title)}" maxlength="80" placeholder="ex. Plan pergola" oninput="_rwMetaEd.title=this.value" style="width:100%;box-sizing:border-box;"></div>
     <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin:6px 0 10px;"><input type="checkbox" id="rwMetaDoc" ${_rwMetaEd.doc ? 'checked' : ''} onchange="_rwMetaEd.doc=this.checked"> 📄 C'est un document (plan, bon, devis…)</label>
-    <div class="rm-lbl" style="margin-top:4px;">Hashtags</div>
+    ${gcOn() ? '' : `<div class="rm-lbl" style="margin-top:4px;">Hashtags</div>
     ${rwTagPickerHtml('meta', siteId, _rwMetaEd, false)}
-    ${!rwTagCanCreate() ? '<div class="hint" style="margin-top:6px;">Les nouveaux hashtags sont créés par le chef, le conducteur ou le patron.</div>' : ''}
+    ${!rwTagCanCreate() ? '<div class="hint" style="margin-top:6px;">Les nouveaux hashtags sont créés par le chef, le conducteur ou le patron.</div>' : ''}`}
     ${pages.length > 1 ? `<div class="hint" style="margin-top:8px;">S'applique aux ${pages.length} pages de ce document.</div>` : ''}
     <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="rwMediaMetaSave()">💾 Enregistrer</button>
   </div>`;
@@ -23345,7 +23535,7 @@ function rwReviewPhotos(files, title){
               ? `<input class="rv-mt" data-k="same" value="${escapeHtml(sameTitle)}" placeholder="Nom du document (ex. Plan pergola)" maxlength="80">${sugg('same')}`
               : docs.map((x, j) => `<div class="rv-drow"><img src="${x.url}" alt=""><input class="rv-mt" data-k="d${list.indexOf(x)}" value="${escapeHtml(x.dtitle)}" placeholder="Titre du document ${j + 1}" maxlength="80"></div>`).join('')}
           </div>`;
-      const metaHtml = siteId ? `<div class="rv-meta">
+      const metaHtml = (siteId && gcOn()) ? (docHtml ? `<div class="rv-meta">${docHtml}</div>` : '') : siteId ? `<div class="rv-meta">
           <div class="rv-mg"><div class="rv-mh">🏷️ Hashtags · pour ${list.length > 1 ? 'les ' + list.length + ' photos' : 'la photo'}</div>${rwTagPickerHtml('rvall', siteId, common, true)}</div>
           ${docHtml}
         </div>` : '';
@@ -47431,9 +47621,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.512';
+const APP_VERSION = '5.41.513';
 
 const CHANGELOG = [
+  {
+    version: '5.41.513',
+    date: '19/10/2026',
+    entries: [
+      { icon: '📁', text: "Photos & Docs : les 📷 Photos se rangent maintenant dans des dossiers, exactement comme les 📄 Documents (les #hashtags disparaissent). Ouvrir un dossier, ＋ pour ajouter dedans, « Ranger » pour y déplacer une sélection." },
+      { icon: '🏗️', text: "Un dossier créé dans un chantier est créé dans tous les chantiers (même nom, même icône, même ordre alphabétique). Renommer s'applique partout ; supprimer un dossier (patron, conducteur) le retire de tous les chantiers sans effacer les photos. Les anciens dossiers d'un seul chantier sont repris automatiquement." },
+      { icon: '🔒', text: "Galerie perso sur l'accueil de tous les rôles, avec une présentation à la première ouverture. Deux façons de ranger au choix : 📁 Mes dossiers ou 🏗️ Par chantier (les photos sont classées sous le chantier actif)." },
+      { icon: '📁', text: "Galerie perso : « ☑ Choisir » puis « 📁 Déplacer » vers un dossier perso, un nouveau dossier, ou un chantier (la photo part dans les Photos du chantier, visible par l'équipe, et sort de la galerie perso)." }
+    ],
+  },
   {
     version: '5.41.512',
     date: '19/10/2026',
@@ -65719,7 +65919,7 @@ function _simpleGetTiles(){
   // ne doit jamais apparaître sur le dashboard, même si un appareil l'avait
   // déjà sélectionnée avant son masquage.
   sel = sel.filter(v => !FORCE_HIDDEN_TABS.includes(v));
-  if(window.RW_NEW) sel = sel.filter(v => v !== 'galerie');   // v5.41.509 — MODE TEST : Galerie → Galerie perso dans « Plus »
+  if(window.RW_NEW && !sel.includes('galerie')){ const k = sel.indexOf('chantiers'); sel.splice(k >= 0 ? k + 1 : sel.length, 0, 'galerie'); }   // v5.41.513 — 🔒 Galerie perso sur l'accueil de tous les rôles
   return sel;
 }
 
