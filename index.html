@@ -729,6 +729,27 @@
   #nvRoot .nv-kb .dep-colb .nv-sec:first-child{ margin-top:0; }
   #nvRoot .nv-kb .dep-col{ background:rgba(0,0,0,.14); }
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  /* v5.41.512 — rond chantier + sélecteur commun */
+  .dep-hid, .dep-chips2 button.dep-hid, .dep-sg.dep-hid, #modal-depEdit .dep-hid{ display:none !important; }
+  .s-ini{ flex:none; display:inline-grid; place-items:center; border-radius:50%; color:#fff; font-weight:900; letter-spacing:-.02em; text-shadow:0 1px 1px rgba(0,0,0,.35); box-shadow:0 0 0 2px rgba(255,255,255,.12); line-height:1; vertical-align:middle; }
+  .s-row{ display:flex !important; align-items:center; gap:8px; min-width:0; }
+  .sp-modal{ max-width:520px; }
+  .sp-st{ display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; padding:2px 0 8px; } .sp-st::-webkit-scrollbar{ display:none; }
+  .sp-st button{ flex:none; display:inline-flex; align-items:center; gap:6px; min-height:0; border:1.5px solid var(--line); background:var(--card); color:var(--ink); border-radius:20px; padding:5px 11px; font:inherit; font-size:12.5px; font-weight:700; cursor:pointer; }
+  .sp-st button i{ width:9px; height:9px; border-radius:50%; background:var(--c, var(--wood)); } .sp-st button b{ font-size:11px; opacity:.75; }
+  .sp-st button.on{ border-color:var(--c, var(--wood)); background:color-mix(in srgb, var(--c, #E8AC3D) 22%, var(--card)); }
+  .sites-stf{ grid-column:1/-1; margin-top:6px; }
+  .sp-list{ max-height:62vh; overflow-y:auto; }
+  .sp-g{ margin-bottom:10px; } .sp-gh{ display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:900; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); margin:6px 2px; }
+  .sp-gh i{ width:10px; height:10px; border-radius:50%; background:var(--c); } .sp-gh em{ font-style:normal; background:var(--bg-elev); border-radius:99px; padding:0 7px; font-size:11px; color:var(--ink); }
+  .sp-g .sp-r{ border-left:3px solid var(--c); }
+  .sp-r{ display:flex; align-items:center; gap:10px; width:100%; min-height:0; text-align:left; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px; margin-bottom:5px; color:var(--ink); font:inherit; cursor:pointer; }
+  .sp-r:hover{ border-color:var(--wood); } .sp-r.on{ border-color:var(--wood); background:rgba(232,172,61,.12); }
+  .sp-r > span:not(.s-ini){ flex:1; min-width:0; } .sp-r b{ display:block; font-size:14px; } .sp-r small{ display:block; color:var(--ink-soft); font-size:12px; } .sp-r em{ font-style:normal; color:var(--wood); font-weight:900; }
+  .sp-x{ width:34px; height:34px; background:var(--bg-elev) !important; color:var(--ink); font-size:15px; }
+  .sp-ex{ margin-bottom:8px; }
+  .sp-dec{ display:inline-flex; vertical-align:middle; margin-right:6px; } select.sp-sel{ cursor:pointer; }
+  .pl-n .s-ini{ margin-right:6px; }
   /* v5.41.509 — MODE TEST : fiche chantier en tuiles · Kanban PC */
   .hub-back{ display:flex; align-items:center; gap:10px; margin-bottom:12px; } .hub-back span{ font-weight:800; color:var(--ink-soft); font-size:13.5px; }
   .hub-h{ background:var(--card); border:1px solid var(--line); border-top:4px solid var(--sc); border-radius:16px; padding:14px; margin-bottom:12px; }
@@ -13821,6 +13842,73 @@ function setSiteStage(siteId, stId){
   setSiteStatus(siteId, base);
 }
 
+/* ═══ v5.41.512 — Un chantier = un rond de sa couleur avec ses initiales, partout ═══ */
+function siteIniTxt(name){
+  const stop = ['le','la','les','l','de','des','du','d','et','au','aux','en','sur','a','à'];
+  const w = String(name || '?').trim().split(/[\s'’\-]+/).filter(Boolean); const k = w.filter(x => !stop.includes(x.toLowerCase())); const u = k.length ? k : w;
+  return ((u[0] || '?')[0] + (u[1] ? u[1][0] : '')).toUpperCase();
+}
+function siteIni(s, px){ const n = px || 26; return `<span class="s-ini" style="background:${escapeHtml((s && s.color) || '#8B5E34')};width:${n}px;height:${n}px;font-size:${Math.round(n * 0.4)}px;">${escapeHtml(siteIniTxt(s && s.name))}</span>`; }
+/* Sélecteur de chantier commun : recherche, filtre par statut, chantiers groupés par statut */
+let _sp = null;
+function sitePicker(o){
+  _sp = Object.assign({ title:'Choisir un chantier', st:'all', q:'' }, o);
+  let d = document.getElementById('modal-sp'); if(d) d.remove();
+  d = document.createElement('div'); d.id = 'modal-sp'; d.className = 'modal-overlay open'; d.style.zIndex = 1300;
+  d.innerHTML = `<div class="modal sp-modal"><div class="modal-header"><h2>🏗️ ${escapeHtml(_sp.title)}</h2><button class="modal-close" onclick="spClose()">×</button></div>
+    <div class="nv-srch" style="margin-bottom:8px;">🔍<input id="spQ" type="search" placeholder="Rechercher…" oninput="_sp.q=this.value;_spList()"></div>
+    <div class="sp-st" id="spSt"></div><div id="spList" class="sp-list"></div></div>`;
+  d.addEventListener('click', e => { if(e.target === d) spClose(); });
+  document.body.appendChild(d); _spList();
+  if(window.matchMedia && matchMedia('(pointer:fine)').matches) setTimeout(() => { const i = document.getElementById('spQ'); if(i) i.focus(); }, 50);
+}
+function spClose(){ const d = document.getElementById('modal-sp'); if(d) d.remove(); _sp = null; }
+function spPick(v){ const o = _sp; spClose(); if(o && o.onPick) o.onPick(v); }
+function _spList(){
+  if(!_sp) return;
+  const all = (_sp.sites || data.sites || []).filter(s => s && s.id && !siteHiddenForMe(s));
+  const L = ssList().filter(st => all.some(s => siteStage(s).id === st.id));
+  const stEl = document.getElementById('spSt');
+  if(stEl) stEl.innerHTML = L.length > 1 ? `<button class="${_sp.st === 'all' ? 'on' : ''}" onclick="_sp.st='all';_spList()">Tous <b>${all.length}</b></button>` + L.map(st => `<button class="${_sp.st === st.id ? 'on' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_sp.st='${st.id}';_spList()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)} <b>${all.filter(s => siteStage(s).id === st.id).length}</b></button>`).join('') : '';
+  const q = (_sp.q || '').trim().toLowerCase();
+  const ok = s => (_sp.st === 'all' || siteStage(s).id === _sp.st) && (!q || ((s.name || '') + ' ' + (s.address || '')).toLowerCase().includes(q));
+  const row = s => `<button class="sp-r${s.id === _sp.current ? ' on' : ''}" onclick="spPick('${escapeHtml(s.id)}')">${siteIni(s, 34)}<span><b>${escapeHtml(s.name || 'Chantier')}</b><small>${escapeHtml((s.address || '').split(',').slice(-1)[0].trim())}</small></span>${s.id === _sp.current ? '<em>✓</em>' : ''}</button>`;
+  const ex = (_sp.extras || []).filter(x => !q || (x.l || '').toLowerCase().includes(q));
+  const html = (ex.length ? `<div class="sp-ex">${ex.map(x => `<button class="sp-r${x.v === _sp.current ? ' on' : ''}" onclick="spPick('${escapeHtml(x.v)}')"><span class="s-ini sp-x">${x.ic || '·'}</span><span><b>${escapeHtml(x.l)}</b></span></button>`).join('')}</div>` : '')
+    + L.map(st => { const arr = all.filter(s => siteStage(s).id === st.id && ok(s)).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr')); if(!arr.length) return '';
+      return `<div class="sp-g" style="--c:${escapeHtml(st.color)}"><div class="sp-gh"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}<em>${arr.length}</em></div>${arr.map(row).join('')}</div>`; }).join('');
+  const box = document.getElementById('spList'); if(box) box.innerHTML = html || '<div class="hint" style="text-align:center;padding:20px;">Aucun chantier</div>';
+}
+/* Tous les menus déroulants de chantiers de l'appli ouvrent ce sélecteur (et affichent le rond du chantier choisi) */
+function _spIsSiteSelect(sel){
+  if(!sel || sel.tagName !== 'SELECT' || sel.dataset.spOff || sel.multiple) return false;
+  const ids = new Set((data.sites || []).map(s => s.id)); let n = 0;
+  for(const o of sel.options){ if(ids.has(o.value)) n++; if(n) break; }
+  return n > 0;
+}
+function _spOpenFor(sel){
+  const ids = new Set((data.sites || []).map(s => s.id));
+  const opts = [...sel.options];
+  const sites = opts.filter(o => ids.has(o.value)).map(o => (data.sites || []).find(s => s.id === o.value));
+  const extras = opts.filter(o => !ids.has(o.value) && !o.disabled && !(o.value === '' && /choisir|sélectionner|—\s*$/i.test(o.textContent) && opts.length > 1 && false)).map(o => ({ v:o.value, l:o.textContent.trim(), ic: o.value === '' ? '∅' : /libre|custom/i.test(o.value + o.textContent) ? '✏️' : '·' }));
+  const lab = (sel.closest('.field') && sel.closest('.field').querySelector('label')) ? sel.closest('.field').querySelector('label').textContent.trim() : 'Choisir un chantier';
+  sitePicker({ title: lab.length < 40 ? lab : 'Choisir un chantier', current: sel.value, sites, extras, onPick: v => { if(sel.value !== v){ sel.value = v; sel.dispatchEvent(new Event('input', { bubbles:true })); sel.dispatchEvent(new Event('change', { bubbles:true })); } _spDeco(sel); } });
+}
+(function(){
+  const h = e => { const sel = e.target && e.target.closest && e.target.closest('select'); if(!sel || !_spIsSiteSelect(sel)) return; if(e.type === 'keydown' && !['Enter', ' ', 'ArrowDown', 'F4'].includes(e.key)) return; e.preventDefault(); e.stopPropagation(); try{ sel.blur(); }catch(_){} if(e.type !== 'click') _spOpenFor(sel); };
+  document.addEventListener('mousedown', h, true); document.addEventListener('touchstart', h, { capture:true, passive:false }); document.addEventListener('keydown', h, true); document.addEventListener('click', h, true);
+})();
+function _spDeco(sel){
+  if(!_spIsSiteSelect(sel)) return;
+  sel.dataset.spDeco = '1'; sel.classList.add('sp-sel');
+  let ic = sel.previousElementSibling; if(!(ic && ic.classList && ic.classList.contains('sp-dec'))){ ic = document.createElement('span'); ic.className = 'sp-dec'; sel.parentNode.insertBefore(ic, sel); }
+  const s = (data.sites || []).find(x => x.id === sel.value);
+  ic.innerHTML = s ? siteIni(s, 24) : '';
+  ic.style.display = s ? '' : 'none';
+}
+setInterval(() => { try{ document.querySelectorAll('select').forEach(sel => { if(sel.offsetParent && _spIsSiteSelect(sel)) _spDeco(sel); }); }catch(e){} }, 1200);
+document.addEventListener('change', e => { if(e.target && e.target.tagName === 'SELECT') try{ _spDeco(e.target); }catch(_){} }, true);
+
 /* ═══ v5.41.509 — MODE TEST : Kanban des chantiers par statut (PC) ═══ */
 let _skbDone = false, _skbDrag = null, _skbQ = '';
 function skbHtml(sorted){
@@ -13830,7 +13918,7 @@ function skbHtml(sorted){
   const can = _hubCanEdit();
   const fd = d => { try{ return d ? new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''; }catch(e){ return ''; } };
   const card = s => { const ch = (s.assignedChefs || []).map(c => c && c.name).filter(Boolean)[0]; const city = (s.address || '').split(',').pop().replace(/\d{5}/, '').trim();
-    return `<div class="skb-c" style="--sc:${escapeHtml(s.color || '#E8AC3D')}" ${can ? `draggable="true" ondragstart="_skbDrag='${s.id}'"` : ''} onclick="goTo('detail','${s.id}')"><b>${escapeHtml(s.name || 'Chantier')}</b><small>${escapeHtml([city, ch ? '👷 ' + ch : '', s.dueDate ? 'fin ' + fd(s.dueDate) : ''].filter(Boolean).join(' · '))}</small>${(s.progress || 0) > 0 ? `<div class="skb-bar"><i style="width:${Math.min(100, s.progress)}%"></i></div>` : ''}</div>`; };
+    return `<div class="skb-c" style="--sc:${escapeHtml(s.color || '#E8AC3D')}" ${can ? `draggable="true" ondragstart="_skbDrag='${s.id}'"` : ''} onclick="goTo('detail','${s.id}')"><b class="s-row">${siteIni(s, 24)}${escapeHtml(s.name || 'Chantier')}</b><small>${escapeHtml([city, ch ? '👷 ' + ch : '', s.dueDate ? 'fin ' + fd(s.dueDate) : ''].filter(Boolean).join(' · '))}</small>${(s.progress || 0) > 0 ? `<div class="skb-bar"><i style="width:${Math.min(100, s.progress)}%"></i></div>` : ''}</div>`; };
   return `<div class="skb-wrap"><div class="skb-top"><div class="nv-srch" style="flex:1;max-width:420px;">🔍<input type="search" placeholder="Rechercher un chantier…" value="${escapeHtml(_skbQ)}" oninput="_skbQ=this.value;clearTimeout(window._skbT);window._skbT=setTimeout(()=>{renderSites();const i=document.querySelector('.skb-top input');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)"></div>
       <button class="btn btn-outline" onclick="sitesMapOpen()">🗺️ Carte</button>${ssCanEdit() ? `<button class="btn btn-outline" onclick="ssOpen()" title="Statuts">⚙️</button>` : ''}</div>
     <div class="skb">${cols.map(st => { const arr = list.filter(s => siteStage(s).id === st.id); const fold = st.phase === 'archive' && !_skbDone;
@@ -14082,7 +14170,7 @@ function renderSites(){
       ${cardBadgeHtml}
       <div class="card-row">
         <div>
-          <h3>${escapeHtml(site.name)}</h3>
+          <h3 class="s-row">${siteIni(site, 30)}${escapeHtml(site.name)}</h3>
           <div class="meta">${escapeHtml(site.address || 'Adresse non renseignée')}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -14159,6 +14247,7 @@ function _sitesApplyFilters(sites){
   const canSeeDraft = (myRole === 'conducteur' || myRole === 'patron');
   return sites.filter(s => {
     if(siteHiddenForMe(s)) return false;   // v5.41.502 — statut non ouvert à mon rôle (brouillon compris)
+    if(_sitesFilter.stage && !_sitesShowArchive && siteStage(s).id !== _sitesFilter.stage) return false;   // v5.41.512
     // Point 2b — Séparation Archive : la liste principale n'affiche jamais
     // les chantiers "Terminé" (ils vivent dans la vue Archive dédiée) ; à
     // l'inverse, la vue Archive n'affiche QUE les "Terminé".
@@ -14180,6 +14269,15 @@ function toggleSitesArchiveView(){
 }
 
 /* Barre HTML : titre section + recherche + select zone + bascule Archive. */
+/* v5.41.512 — filtre par statut (pastilles) */
+function _sitesStageChips(sites){
+  if(_sitesShowArchive) return '';
+  const vis = sites.filter(s => !siteHiddenForMe(s) && s.status !== 'termine');
+  const L = ssList().filter(st => vis.some(s => siteStage(s).id === st.id));
+  if(L.length < 2) return '';
+  const cur = _sitesFilter.stage || '';
+  return `<div class="sp-st sites-stf"><button class="${!cur ? 'on' : ''}" onclick="_sitesFilter.stage='';renderSites()">Tous <b>${vis.length}</b></button>${L.map(st => `<button class="${cur === st.id ? 'on' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_sitesFilter.stage='${st.id}';renderSites()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)} <b>${vis.filter(s => siteStage(s).id === st.id).length}</b></button>`).join('')}</div>`;
+}
 function _sitesFilterBarHtml(sites){
   const zones = _sitesFilterZones(sites);
   const zoneOpts = '<option value="">Toutes les zones</option>'
@@ -14200,6 +14298,7 @@ function _sitesFilterBarHtml(sites){
         <select id="filter-zone" onchange="_sitesFilterOnZone(this.value)">${zoneOpts}</select>
       </div>` : ''}
       ${_sitesSortBarHtml(_sitesApplyFilters(sites).length)}
+      ${_sitesStageChips(sites)}
     </div>`;
 }
 
@@ -16302,7 +16401,7 @@ function hubRender(site){
   const fd = d => { try{ return d ? new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''; }catch(e){ return ''; } };
   const tile = site.tileId && (data.tiles || []).find(t => t.id === site.tileId);
   h.innerHTML = `<div class="hub-back"><button class="btn btn-outline btn-sm" onclick="goTo('chantiers')">← Chantiers</button></div>
-    <div class="hub-h" style="--sc:${escapeHtml(col)}"><b>${escapeHtml(site.name || 'Chantier')}</b><small>${escapeHtml(site.address || 'Adresse non renseignée')}</small>
+    <div class="hub-h" style="--sc:${escapeHtml(col)}"><b class="s-row">${siteIni(site, 34)}${escapeHtml(site.name || 'Chantier')}</b><small>${escapeHtml(site.address || 'Adresse non renseignée')}</small>
       <div class="hub-st"><button class="hub-pill" style="background:${escapeHtml(st.color)}" onclick="document.getElementById('hubStPick').classList.toggle('on')">${escapeHtml(siteStageLabel(site))} ▾</button><span>${site.progress || 0} %${site.dueDate ? ' · fin ' + fd(site.dueDate) : ''}</span></div>
       <div class="hub-bar"><i style="width:${Math.max(0, Math.min(100, site.progress || 0))}%"></i></div>
       <div id="hubStPick" class="chip-row hub-stpick">${_hubCanEdit() ? ssPickHtml(site) : '<div class="hint">Seuls le patron, les conducteurs et les chefs changent le statut.</div>'}</div></div>
@@ -47332,9 +47431,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.511';
+const APP_VERSION = '5.41.512';
 
 const CHANGELOG = [
+  {
+    version: '5.41.512',
+    date: '19/10/2026',
+    entries: [
+      { icon: '🎯', text: "Chaque chantier est représenté par un rond de sa couleur avec ses initiales : liste et Kanban des chantiers, fiche, planning (noms et affectations), dépannages, notes." },
+      { icon: '🏗️', text: "Choix d'un chantier partout dans l'appli (pointage, fiches d'heures, bandeau chantier actif, tâches, croquis, messages…) : une fenêtre unique avec recherche, filtre par statut et chantiers rangés par statut. Liste des chantiers : pastilles pour filtrer par statut." },
+      { icon: '🔍', text: "Dépannages : recherche directe du chantier par son nom (ou sa ville) dans « Où ? »." },
+    ],
+  },
   {
     version: '5.41.511',
     date: '19/10/2026',
@@ -74204,11 +74312,18 @@ let _depSpOpen = {};
 function _depSitePickHtml(e, all){
   const L = ssList(), groups = [];
   L.forEach(st => { const arr = all.filter(s => !siteHiddenForMe(s) && siteStage(s).id === st.id); if(arr.length) groups.push({ st, arr }); });
-  const chip = x => `<button class="dep-sc${e.mode === 'site' && e.siteId === x.id ? ' on' : ''}" onclick="_depEdit.mode='site';depPickSite('${x.id}')"><span class="dep-ini" style="background:${escapeHtml(x.color || '#8B5E34')}">${escapeHtml(_depSiteIni(x.name || 'Chantier'))}</span>${escapeHtml(x.name || 'Chantier')}</button>`;
-  return groups.map(({ st, arr }) => { const fold = st.phase === 'archive' && !_depSpOpen[st.id] && !arr.some(x => x.id === e.siteId);
+  const chip = x => `<button class="dep-sc${e.mode === 'site' && e.siteId === x.id ? ' on' : ''}" data-q="${escapeHtml(((x.name || '') + ' ' + (x.address || '')).toLowerCase())}" onclick="_depEdit.mode='site';depPickSite('${x.id}')"><span class="dep-ini" style="background:${escapeHtml(x.color || '#8B5E34')}">${escapeHtml(_depSiteIni(x.name || 'Chantier'))}</span>${escapeHtml(x.name || 'Chantier')}</button>`;
+  return `<div class="nv-srch dep-srch" style="margin-bottom:8px;">🔍<input type="search" placeholder="Rechercher un chantier…" oninput="depSiteSearch(this)"></div>` + groups.map(({ st, arr }) => { const fold = st.phase === 'archive' && !_depSpOpen[st.id] && !arr.some(x => x.id === e.siteId);
     return `<div class="dep-sg" style="--c:${escapeHtml(st.color)}"><div class="dep-sgh" ${st.phase === 'archive' ? `onclick="_depSpOpen['${st.id}']=!_depSpOpen['${st.id}'];_depEditRender()" style="cursor:pointer;"` : ''}><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)}<em>${arr.length}</em>${st.phase === 'archive' ? `<small>${fold ? '▸ afficher' : '▾'}</small>` : ''}</div>
-      ${fold ? '' : `<div class="dep-chips2">${arr.map(chip).join('')}</div>`}</div>`; }).join('')
+      <div class="dep-chips2${fold ? ' dep-fz' : ''}"${fold ? ' style="display:none"' : ''}>${arr.map(chip).join('')}</div></div>`; }).join('')
     + `<div class="dep-chips2" style="margin-top:6px;"><button class="${e.mode === 'free' ? 'on' : ''}" onclick="_depEdit.mode='free';_depEdit.siteId='';_depEditRender()">📍 Autre adresse…</button></div>`;
+}
+function depSiteSearch(inp){
+  const q = (inp.value || '').trim().toLowerCase(), box = inp.closest('.dep-srch').parentNode;
+  box.querySelectorAll('.dep-sg').forEach(g => { let n = 0;
+    g.querySelectorAll('.dep-sc').forEach(b => { const ok = !q || (b.dataset.q || '').includes(q); b.classList.toggle('dep-hid', !ok); if(ok) n++; });
+    const fz = g.querySelector('.dep-fz'); if(fz) fz.style.display = q && n ? '' : 'none';
+    g.classList.toggle('dep-hid', !!q && !n); });
 }
 function depPickSite(id){
   const e = _depEdit, s = (data.sites || []).find(x => x.id === id);
@@ -83729,7 +83844,7 @@ function _plRenderGrid(days){
     const i1 = first(s.startDate < a ? a : s.startDate), i2 = last(e0 > b ? b : e0);
     const team = _plTeam(s);
     const names = team.map(p => (p.chef ? '👷 ' : '') + _absShort(p.name)).concat(_plSubs(s).map(x => '🏢 ' + x.name)).join(', ');
-    const nameCell = `<td class="pl-n${anon ? ' pl-anon' : ''}" onclick="planningOpenSite('${s.id}')"><i style="background:${col}"></i><b>${anon ? '🔒 ' : ''}${escapeHtml(_plName(s))}</b><small>${dr && !anon ? '<span class="pl-dtag">BROUILLON</span> ' : ''}${_absFmt(s.startDate, { day:'numeric', month:'short' })} → ${_absFmt(e0, { day:'numeric', month:'short' })} · ${team.length} pers.${_plSubs(s).length ? ' · ' + _plSubs(s).length + ' s-t' : ''}</small></td>`;
+    const nameCell = `<td class="pl-n${anon ? ' pl-anon' : ''}" onclick="planningOpenSite('${s.id}')">${anon ? '<i style="background:' + col + '"></i>' : siteIni(Object.assign({}, s, { color:col }), 26)}<b>${anon ? '🔒 ' : ''}${escapeHtml(_plName(s))}</b><small>${dr && !anon ? '<span class="pl-dtag">BROUILLON</span> ' : ''}${_absFmt(s.startDate, { day:'numeric', month:'short' })} → ${_absFmt(e0, { day:'numeric', month:'short' })} · ${team.length} pers.${_plSubs(s).length ? ' · ' + _plSubs(s).length + ' s-t' : ''}</small></td>`;
     if(i2 < i1) return `<tr>${nameCell}${empty(0, n)}</tr>`;
     // absents de l'équipe, jour par jour, sur la durée du chantier
     const absDays = {}, absWho = new Map();
@@ -84055,7 +84170,7 @@ function planningFreeClick(pi, k){
   document.getElementById('plSiteTitle').textContent = _absShort(p.name) + ' · libre ' + _absFmt(k, { weekday:'short', day:'numeric', month:'short' });
   document.getElementById('plSiteBody').innerHTML = cand.length ? '<div class="abs-l" style="margin-top:0;">Affecter à</div>' + cand.map((c, i) => {
     const col = _plColor(c.s, all.indexOf(c.s));
-    return `<div class="pl-asg"><div><i style="background:${col}"></i><b>${escapeHtml(c.s.name || 'Chantier')}${_plIsDraft(c.s) ? ' <span class="pl-dtag">BROUILLON</span>' : ''}</b><small>${c.t ? escapeHtml(c.t.name) + ' · ' + _absRange({ from:c.t.start, to:c.t.end }) : 'Tout le chantier · ' + _absRange({ from:c.s.startDate, to:c.s.dueDate || c.s.startDate })}</small></div>
+    return `<div class="pl-asg"><div class="s-row">${siteIni(Object.assign({}, c.s, { color:col }), 26)}<b>${escapeHtml(c.s.name || 'Chantier')}${_plIsDraft(c.s) ? ' <span class="pl-dtag">BROUILLON</span>' : ''}</b><small>${c.t ? escapeHtml(c.t.name) + ' · ' + _absRange({ from:c.t.start, to:c.t.end }) : 'Tout le chantier · ' + _absRange({ from:c.s.startDate, to:c.s.dueDate || c.s.startDate })}</small></div>
       <div class="abs-g2"><button class="btn btn-outline btn-block" onclick="planningAssign(${i},'day')">Ce jour seulement</button><button class="btn btn-primary btn-block" onclick="planningAssign(${i},'all')">${c.t ? 'Toute l\'étape' : 'Tout le chantier'}</button></div></div>`;
   }).join('') : '<div class="hint">Aucun chantier ni étape en cours ce jour-là. Ajoute d\'abord des dates ou des étapes à un chantier.</div>';
   openModal('plSite');
