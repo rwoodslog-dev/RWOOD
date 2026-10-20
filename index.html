@@ -731,6 +731,10 @@
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
   .nv-chip.nv-done{ border-style:dashed !important; opacity:.85; } .nv-chip i{ font-style:normal; font-size:.8em; opacity:.7; }
   .hub-t .hub-ic{ width:40px; height:40px; object-fit:contain; display:block; }
+  /* v5.41.525 — liste des chantiers épurée (téléphone) + statuts sur la carte */
+  .sites-top2{ display:flex; gap:8px; align-items:center; margin-bottom:10px; } .sites-top2 .nv-srch{ flex:1; margin:0 !important; min-width:0; } .sites-top2 .btn{ width:auto; white-space:nowrap; margin:0; padding:9px 14px; min-height:42px; }
+  .sites-stf{ flex-wrap:nowrap !important; overflow-x:auto; scrollbar-width:none; padding-bottom:4px; margin-bottom:6px; } .sites-stf button{ flex:none; }
+  .sm-st{ display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; padding:6px 10px; flex-wrap:nowrap !important; } .sm-st button{ flex:none; }
   /* v5.41.521 — ⚙️ Paramètres du chantier : seulement les réglages (plus les anciennes tuiles) */
   #view-detail.hub-params #detailCategoryGrid, #view-detail.hub-params #btnMainCumul, #view-detail.hub-params #detailCumulPanel, #view-detail.hub-params #detailSynchroPanel{ display:none !important; }
   #view-detail.hub-params .dset-head{ pointer-events:none; } #view-detail.hub-params #detailSettingsArrow{ display:none; }
@@ -14026,7 +14030,7 @@ function toggleFavSite(id){
 
 /* ═══ v5.41.431 — Chantiers : tri (zone, statut, A→Z, récents, anciens) + carte des chantiers (remplace l'onglet Zone) ═══ */
 const SITES_SORTS = [['zone', '📍 Zone'], ['statut', '🏷️ Statut'], ['az', '🔤 A → Z'], ['recent', '🆕 Récents'], ['ancien', '⏳ Anciens']];
-let _sitesSort = (() => { try{ const v = localStorage.getItem('rw-sites-sort'); return SITES_SORTS.some(x => x[0] === v) ? v : 'zone'; }catch(e){ return 'zone'; } })();
+let _sitesSort = (() => { if(window.RW_NEW) return 'statut'; try{ const v = localStorage.getItem('rw-sites-sort'); return SITES_SORTS.some(x => x[0] === v) ? v : 'zone'; }catch(e){ return 'zone'; } })();   // v5.41.525 — toujours par statut
 function sitesSetSort(k){ _sitesSort = k; try{ localStorage.setItem('rw-sites-sort', k); }catch(e){} renderSites(); }
 const _SITE_STATUS_ORDER = { 'brouillon':-1, 'en-cours':0, 'a-faire':1, 'termine':2 };
 function _siteAddedTs(s){ const t = Date.parse(s.createdAt || '') || 0; if(t) return t; const m = String(s.id || '').match(/([a-z0-9]{8,})$/); return m ? (parseInt(m[1].slice(8), 36) || 0) : 0; }
@@ -14122,6 +14126,7 @@ async function sitesMapOpen(focusId){
   if(!ov){
     ov = document.createElement('div'); ov.id = 'sitesMapOv';
     ov.innerHTML = `<div class="sm-top"><b id="smTitle">🗺️ Carte des chantiers</b><button type="button" class="cam-icon-btn" onclick="sitesMapClose()" title="Fermer">×</button></div>
+      <div class="sp-st sm-st" id="smSt"></div>
       <div id="sitesMap"></div>
       <div class="sm-bot"><div class="zone-strip" id="smStrip"></div>
         <details id="smTestBox"><summary>📍 Tester une adresse (zone et €/jour)</summary>
@@ -14130,6 +14135,16 @@ async function sitesMapOpen(focusId){
     document.body.appendChild(ov);
   }
   ov.classList.add('on');
+  // v5.41.525 — sélecteur de statut propre à la carte : Tous (hors terminés), chaque statut, Terminé
+  if(window._smStage === undefined) window._smStage = _sitesFilter.stage || '';
+  const _all = (data.sites || []).filter(s => !siteHiddenForMe(s));
+  const _L = ssList().filter(st => _all.some(s => siteStage(s).id === st.id));
+  if(window._smStage && window._smStage !== '*' && !_L.some(x => x.id === window._smStage)) window._smStage = '';
+  const _sb = document.getElementById('smSt'); if(_sb) _sb.innerHTML = `<button class="${!window._smStage ? 'on' : ''}" onclick="window._smStage='';sitesMapOpen()">Tous <b>${_all.filter(s => s.status !== 'termine').length}</b></button>`
+    + _L.map(st => `<button class="${window._smStage === st.id ? 'on' : ''}" style="--c:${escapeHtml(st.color)}" onclick="window._smStage='${st.id}';sitesMapOpen()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)} <b>${_all.filter(s => siteStage(s).id === st.id).length}</b></button>`).join('')
+    + `<button class="${window._smStage === '*' ? 'on' : ''}" onclick="window._smStage='*';sitesMapOpen()">Tout <b>${_all.length}</b></button>`;
+  const sites = _all.filter(s => window._smStage === '*' ? true : window._smStage ? siteStage(s).id === window._smStage : s.status !== 'termine');
+  document.getElementById('smTitle').textContent = '🗺️ Carte des chantiers (' + sites.length + ')';
   const bareme = data.settings.trajetBareme || [];
   document.getElementById('smStrip').innerHTML = bareme.map(z => `<span><i style="background:${_zoneColor(z.zone)}"></i><b>${escapeHtml(String(z.zone))}</b> ${z.trajet != null ? Number(z.trajet).toFixed(2).replace('.', ',') + ' €' : ''}</span>`).join('');
   const mapEl = document.getElementById('sitesMap');
@@ -14141,8 +14156,6 @@ async function sitesMapOpen(focusId){
     _smMap.on('zoomend', _smRelabel);
   }
   _smMarkers.forEach(m => m.remove()); _smMarkers = []; _smSiteMk = {};
-  // mêmes chantiers que la liste (filtres et archive compris)
-  const sites = _sitesApplyFilters([...(data.sites || [])]);
   document.getElementById('smTitle').textContent = '🗺️ Carte des chantiers (' + sites.length + ')';
   const depot = data.settings.depotCoords, bounds = [];
   if(depot && bareme.length){
@@ -14182,7 +14195,7 @@ function _smRelabel(){
   if(_smMap._smBig === big) return; _smMap._smBig = big;
   Object.values(_smSiteMk).forEach(mk => mk.setIcon(_smIcon(mk._site, big, mk._focus)));
 }
-function sitesMapClose(){ const ov = document.getElementById('sitesMapOv'); if(ov) ov.classList.remove('on'); }
+function sitesMapClose(){ const ov = document.getElementById('sitesMapOv'); if(ov) ov.classList.remove('on'); window._smStage = undefined; }
 
 function renderSites(){
   const container = document.getElementById('chantiersList');
@@ -14328,11 +14341,13 @@ function _sitesApplyFilters(sites){
   return sites.filter(s => {
     if(siteHiddenForMe(s)) return false;   // v5.41.502 — statut non ouvert à mon rôle (brouillon compris)
     if(_sitesFilter.stage && !_sitesShowArchive && siteStage(s).id !== _sitesFilter.stage) return false;   // v5.41.512
+    if(window.RW_NEW && !_sitesShowArchive){ if(!_sitesFilter.stage && s.status === 'termine') return false; }   // v5.41.525 — Terminé = une pastille
+    else{
     // Point 2b — Séparation Archive : la liste principale n'affiche jamais
     // les chantiers "Terminé" (ils vivent dans la vue Archive dédiée) ; à
     // l'inverse, la vue Archive n'affiche QUE les "Terminé".
     if(_sitesShowArchive){ if(s.status !== 'termine') return false; }
-    else { if(s.status === 'termine') return false; }
+    else { if(s.status === 'termine') return false; } }
     if(q){
       const hay = ((s.name||'') + ' ' + (s.address||'')).toLowerCase();
       if(!hay.includes(q)) return false;
@@ -14352,6 +14367,11 @@ function toggleSitesArchiveView(){
 /* v5.41.512 — filtre par statut (pastilles) */
 function _sitesStageChips(sites){
   if(_sitesShowArchive) return '';
+  if(window.RW_NEW){   // v5.41.525 — Tous (hors terminés) + chaque statut, Terminé compris
+    const all = sites.filter(s => !siteHiddenForMe(s)), act = all.filter(s => s.status !== 'termine');
+    const L = ssList().filter(st => all.some(s => siteStage(s).id === st.id)), cur = _sitesFilter.stage || '';
+    return `<div class="sp-st sites-stf"><button class="${!cur ? 'on' : ''}" onclick="_sitesFilter.stage='';renderSites()">Tous <b>${act.length}</b></button>${L.map(st => `<button class="${cur === st.id ? 'on' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_sitesFilter.stage='${st.id}';renderSites()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)} <b>${all.filter(s => siteStage(s).id === st.id).length}</b></button>`).join('')}</div>`;
+  }
   const vis = sites.filter(s => !siteHiddenForMe(s) && s.status !== 'termine');
   const L = ssList().filter(st => vis.some(s => siteStage(s).id === st.id));
   if(L.length < 2) return '';
@@ -14359,6 +14379,12 @@ function _sitesStageChips(sites){
   return `<div class="sp-st sites-stf"><button class="${!cur ? 'on' : ''}" onclick="_sitesFilter.stage='';renderSites()">Tous <b>${vis.length}</b></button>${L.map(st => `<button class="${cur === st.id ? 'on' : ''}" style="--c:${escapeHtml(st.color)}" onclick="_sitesFilter.stage='${st.id}';renderSites()"><i></i>${escapeHtml((st.icon ? st.icon + ' ' : '') + st.name)} <b>${vis.filter(s => siteStage(s).id === st.id).length}</b></button>`).join('')}</div>`;
 }
 function _sitesFilterBarHtml(sites){
+  if(window.RW_NEW){   // v5.41.525 — épuré : recherche + carte, puis les statuts (Terminé compris)
+    _sitesSort = 'statut'; _sitesShowArchive = false;
+    return `<div class="sites-top2" style="grid-column:1/-1;"><div class="nv-srch">🔍<input type="search" id="search-chantiers" placeholder="Rechercher un chantier…" value="${escapeHtml(_sitesFilter.text)}" oninput="_sitesFilterOnText(this.value)"></div>
+      <button class="btn btn-outline" onclick="sitesMapOpen()" title="Carte des chantiers">🗺️ Carte</button></div>
+      <div style="grid-column:1/-1;">${_sitesStageChips(sites)}</div>`;
+  }
   const zones = _sitesFilterZones(sites);
   const zoneOpts = '<option value="">Toutes les zones</option>'
     + zones.map(z => `<option value="${escapeHtml(z)}"${_sitesFilter.zone===z?' selected':''}>Zone ${escapeHtml(z)}</option>`).join('');
@@ -47910,9 +47936,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.524';
+const APP_VERSION = '5.41.525';
 
 const CHANGELOG = [
+  {
+    version: '5.41.525',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🧹', text: "Chantiers (téléphone) : en haut, juste la recherche et « 🗺️ Carte », puis les statuts (Tous, Pré-étude, En préparation, En cours… et ✅ Terminé). Plus de filtre de zone, plus de choix de tri (toujours par statut), plus de bouton Archive : les terminés sont dans leur pastille." },
+      { icon: '🗺️', text: "Carte des chantiers : choix du statut en haut — Tous (hors terminés), chaque statut séparé, Terminé, ou Tout." }
+    ],
+  },
   {
     version: '5.41.524',
     date: '19/10/2026',
