@@ -42919,9 +42919,9 @@ function _efLevels(H, mode){
     if(m < 1 || a > A1 + eps){ const lo = _efR(0.5 * Math.max(1, Math.floor((H - A1) / 0.5 + eps)) + A1), hi = _efR(0.5 * (m + 1) + A0); return { ok:false, lo: lo < H ? lo : null, hi }; }
     const decks = []; for(let y = H; y >= a + 0.95 - eps; y -= 2) decks.push(_efR(y));
     decks.reverse();
-    const npot = Math.ceil((H + 1 - a) / 2 - eps);
+    const npot = Math.ceil((H - a) / 2 - eps), npotV = Math.ceil((H + 2 - a) / 2 - eps);   // côté mur : jusqu'au dernier plancher · côté vide : + garde-corps / avant-toit
     const lv = [a].concat(decks), iv = []; for(let i = 1; i < lv.length; i++) iv.push([lv[i - 1], lv[i]]);
-    return { ok:true, a, decks, npot, iv, lifts:iv.length };
+    return { ok:true, a, decks, npot, npotV, iv, lifts:iv.length };
   }
   let best = null;
   for(const k of [0, 1]){ const n2 = Math.floor((H - k - A0 + eps) / 2); if(n2 < 0) continue; const a = _efR(H - k - 2 * n2);
@@ -42941,37 +42941,41 @@ function _efCalc(){
   if(L <= 0 || H <= 0) return null;
   const nt = Math.max(1, Math.ceil(L / EF_T - 1e-6)), np = nt + 1, lv = _efLevels(H, mode);
   if(!lv.ok) return { nt, np, L, H, mode, lv };
-  const nd = lv.decks.length, wall = !!s.wall, Q = [];
+  const nd = lv.decks.length, all = s.pf !== 'top', Q = [];   // v5.41.555 — plateaux à tous les étages ou au dernier seulement
+  const nPl = all ? nd : 1, nLow = nd - nPl;   // étages sans plateaux : seule la travée trappe est montée
   const add = (k, l, n, note) => { if(n > 0) Q.push({ k, l, n, note:note || '' }); };
   add('pied', 'Pieds réglables', 2 * np, 'réglés à ' + Math.round(lv.a * 100) + ' cm');
   if(mode === 'H'){
     add('h2', 'Cadres en H 2 m', np * lv.n2);
-    add('h1', 'Cadres en H 1 m', np * lv.k + np, (lv.k ? np + ' en bas pour la hauteur, ' : '') + np + ' en haut pour le garde-corps');
+    if(lv.k) add('h1', 'Cadres en H 1 m', np * lv.k, 'en bas, pour la hauteur');
+    add('pot', 'Poteaux 2 m', np, 'en haut, côté vide seulement (garde-corps / avant-toit)');
   } else {
-    add('pot', 'Poteaux 2 m (rosaces tous les 50 cm)', 2 * np * lv.npot);
+    add('pot', 'Poteaux 2 m (rosaces tous les 50 cm)', np * (lv.npot + lv.npotV), np * lv.npot + ' côté mur · ' + np * lv.npotV + ' côté vide (monte plus haut pour le garde-corps)');
     add('l08', 'Lisses 80 cm (liaison des poteaux)', np * (nd + 1), 'sous chaque plancher + 1 rang en pied');
   }
-  add('plat', 'Plateaux 3 m', nd * (nt - 1) * ppt);
-  add('trap', 'Plateaux trappe 3 m', nd, '1 travée complète par étage pour monter');
-  add('gc', 'Garde-corps 3 m', nd * nt * (wall ? 2 : 1), wall ? 'côté vide + côté mur' : 'côté vide');
-  const l3 = nd * nt * (wall ? 2 : 1) + (mode === 'P' ? nd * 2 * nt + 2 * nt : 0);
-  add('l3', 'Lisses 3 m', l3, mode === 'P' ? 'lisses intermédiaires + liaison au niveau des planchers et en pied' : 'lisses intermédiaires sous le garde-corps');
-  add('l08b', 'Lisses 80 cm (fermeture des bouts)', 4 * nd, '2 par étage et par côté');
-  if(s.pl !== false){ add('pl3', 'Plinthes 3 m', nd * nt * (wall ? 2 : 1)); add('pl08', 'Plinthes 80 cm (bouts)', 2 * nd); }
+  add('plat', 'Plateaux 3 m', nPl * (nt - 1) * ppt, all ? 'tous les étages' : 'dernier étage seulement');
+  add('trap', 'Plateaux trappe 3 m', nd, '1 travée d\'accès, trappes les unes au-dessus des autres sur toute la hauteur');
+  add('gc', 'Garde-corps 3 m', nPl * nt + nLow, 'côté vide seulement' + (nLow ? ' (travée d\'accès aux étages sans plateaux)' : ''));
+  if(mode === 'P') add('l3', 'Lisses 3 m', nd * 2 * nt + 2 * nt, '2 par travée au niveau des plateaux (côté vide + côté mur) + 2 en pied');
+  add('l08b', 'Lisses 80 cm (fermeture des bouts)', 4 * nPl + 2 * nLow, '2 par étage et par bout');
+  if(s.pl !== false){ add('pl3', 'Plinthes 3 m', nPl * nt + nLow); add('pl08', 'Plinthes 80 cm (bouts)', 2 * nPl + nLow); }
   if(s.dg !== false) add('dg', 'Diagonales 3 m × 2 m', Math.ceil(nt / 5) * lv.lifts, '1 travée sur 5, à chaque hauteur');
   const am = s.am !== false ? Math.max(1, Math.floor(H / 4)) * Math.ceil(np / 2) : 0;
   if(am) add('am', 'Amarrages (points d\'ancrage)', am, '1 file sur 2, tous les 4 m de haut — à vérifier');
-  return { nt, np, L, H, mode, lv, Q, ppt, wall };
+  return { nt, np, L, H, mode, lv, Q, ppt, all };
 }
 function efMount(){
   const host = document.getElementById('calcMode-echaf'); if(!host) return;
-  if(!ef){ const sv = _efStore(); ef = { s:Object.assign({ L:'12', H:'6', mode:'H', ppt:2, wall:false, pl:true, dg:true, am:true }, sv), cam:{ yaw:-0.75, pitch:0.42, dist:0 }, drag:null }; }
+  if(!ef){ const sv = _efStore(); ef = { s:Object.assign({ L:'12', H:'6,15', mode:'H', ppt:2, pf:'all', pl:true, dg:true, am:true }, sv), cam:{ yaw:-0.75, pitch:0.42, dist:0 }, drag:null }; }
   host.innerHTML = `<div class="card ef">
     <div class="ef-in"><label>↔️ Largeur à couvrir<span><input type="text" inputmode="decimal" id="efL" value="${escapeHtml(ef.s.L)}" oninput="ef.s.L=this.value;efUpd()"> m</span></label>
       <label>↕️ Hauteur du dernier plancher<span><input type="text" inputmode="decimal" id="efH" value="${escapeHtml(ef.s.H)}" oninput="ef.s.H=this.value;efUpd()"> m</span></label></div>
     <div class="ef-seg"><button class="${ef.s.mode !== 'P' ? 'on' : ''}" onclick="ef.s.mode='H';efMount()">🅷 Cadres en H</button><button class="${ef.s.mode === 'P' ? 'on' : ''}" onclick="ef.s.mode='P';efMount()">🔩 Tout en poteaux</button></div>
     <div class="ef-opt"><span>Plateaux par travée</span><button onclick="ef.s.ppt=Math.max(1,(ef.s.ppt||2)-1);efMount()">−</button><b>${ef.s.ppt || 2}</b><button onclick="ef.s.ppt=Math.min(4,(ef.s.ppt||2)+1);efMount()">＋</button></div>
-    <div class="ef-chk">${[['pl', 'Plinthes'], ['dg', 'Diagonales'], ['am', 'Amarrages'], ['wall', 'Garde-corps côté mur']].map(([k, l]) => `<label class="${(k === 'wall' ? ef.s.wall : ef.s[k] !== false) ? 'on' : ''}"><input type="checkbox" ${(k === 'wall' ? ef.s.wall : ef.s[k] !== false) ? 'checked' : ''} onchange="ef.s['${k}']=this.checked;efMount()">${l}</label>`).join('')}</div>
+    <div class="ef-opt" style="margin-bottom:-4px;"><span>Plateaux</span></div>
+    <div class="ef-seg" style="margin-top:6px;"><button class="${ef.s.pf !== 'top' ? 'on' : ''}" onclick="ef.s.pf='all';efMount()">Sur tous les étages</button><button class="${ef.s.pf === 'top' ? 'on' : ''}" onclick="ef.s.pf='top';efMount()">Au dernier étage</button></div>
+    <div class="hint" style="margin:6px 2px 0;font-size:12px;">Dans les deux cas : une travée d'accès avec des plateaux trappe sur toute la hauteur, les uns au-dessus des autres.</div>
+    <div class="ef-chk">${[['pl', 'Plinthes'], ['dg', 'Diagonales'], ['am', 'Amarrages']].map(([k, l]) => `<label class="${ef.s[k] !== false ? 'on' : ''}"><input type="checkbox" ${ef.s[k] !== false ? 'checked' : ''} onchange="ef.s['${k}']=this.checked;efMount()">${l}</label>`).join('')}</div>
   </div>
   <div id="efSum"></div>
   <div class="ef-3d"><canvas id="efCv"></canvas><div class="ef-3dh">🖐️ Glisse pour tourner · molette / pincer pour zoomer</div><button class="ef-rs" onclick="ef.cam={yaw:-0.75,pitch:0.42,dist:0};efDraw()">↺</button></div>
@@ -43033,21 +43037,23 @@ function efDraw(){
   const TUBE = '#C9CDD2', RED = '#E5484D';
   for(let i = 0; i <= r.nt; i++){ const x = i * EF_T;
     [0, D].forEach(z => { line([x, 0, z], [x, lv.a, z], '#E8AC3D', 3); quad([[x - .12, 0.005, z - .12], [x + .12, 0.005, z - .12], [x + .12, 0.005, z + .12], [x - .12, 0.005, z + .12]], '#8a7356'); });
-    [0, D].forEach(z => line([x, lv.a, z], [x, r.mode === 'P' ? lv.a + 2 * lv.npot : r.H + 1, z], TUBE, 3));
-    if(r.mode === 'H'){ for(let j = 1; j <= lv.n2; j++) line([x, lv.a + lv.k + 2 * j, 0], [x, lv.a + lv.k + 2 * j, D], TUBE, 3); if(lv.k) line([x, lv.a + 1, 0], [x, lv.a + 1, D], TUBE, 3); line([x, r.H + 1, 0], [x, r.H + 1, D], TUBE, 3); }
+    if(r.mode === 'P'){ line([x, lv.a, 0], [x, lv.a + 2 * lv.npot, 0], TUBE, 3); line([x, lv.a, D], [x, lv.a + 2 * lv.npotV, D], TUBE, 3); }
+    else { line([x, lv.a, 0], [x, r.H, 0], TUBE, 3); line([x, lv.a, D], [x, r.H, D], TUBE, 3); line([x, r.H, D], [x, r.H + 2, D], '#9fb3c8', 3); }
+    if(r.mode === 'H'){ for(let j = 1; j <= lv.n2; j++) line([x, lv.a + lv.k + 2 * j, 0], [x, lv.a + lv.k + 2 * j, D], TUBE, 3); if(lv.k) line([x, lv.a + 1, 0], [x, lv.a + 1, D], TUBE, 3); }
     else { line([x, lv.a + 0.5, 0], [x, lv.a + 0.5, D], '#9fb3c8', 2); lv.decks.forEach(y => line([x, y, 0], [x, y, D], '#9fb3c8', 2)); }
   }
   if(r.mode === 'P'){ [0, D].forEach(z => line([0, lv.a + 0.5, z], [Lx, lv.a + 0.5, z], '#9fb3c8', 2)); }
   lv.decks.forEach((y, di) => {
-    for(let t = 0; t < r.nt; t++){ const x0 = t * EF_T, x1 = x0 + EF_T, trap = t === (di % 2 ? r.nt - 1 : 0);
+    const full = r.all || di === lv.decks.length - 1;
+    for(let t = 0; t < r.nt; t++){ const x0 = t * EF_T, x1 = x0 + EF_T, trap = t === 0; if(!full && !trap) continue;
       if(trap) quad([[x0 + .03, y, .03], [x1 - .03, y, .03], [x1 - .03, y, D - .03], [x0 + .03, y, D - .03]], '#E8743B');
       else { const w = (D - .06) / r.ppt; for(let p = 0; p < r.ppt; p++){ const z0 = .03 + p * w; quad([[x0 + .03, y, z0 + .01], [x1 - .03, y, z0 + .01], [x1 - .03, y, z0 + w - .01], [x0 + .03, y, z0 + w - .01]], p % 2 ? '#B98A4E' : '#C8A26A'); } }
       if(ef.s.pl !== false) quad([[x0, y, D], [x1, y, D], [x1, y + .15, D], [x0, y + .15, D]], '#d9b98a');
     }
-    line([0, y + 1, D], [Lx, y + 1, D], '#4FAE6C', 3); line([0, y + .5, D], [Lx, y + .5, D], '#4FAE6C', 2);
-    if(r.wall){ line([0, y + 1, 0], [Lx, y + 1, 0], '#4FAE6C', 3); line([0, y + .5, 0], [Lx, y + .5, 0], '#4FAE6C', 2); }
+    const xe = full ? Lx : EF_T;
+    line([0, y + 1, D], [xe, y + 1, D], '#4FAE6C', 3); line([0, y + .5, D], [xe, y + .5, D], '#4FAE6C', 2);
     if(r.mode === 'P'){ [0, D].forEach(z => line([0, y, z], [Lx, y, z], '#9fb3c8', 2)); }
-    [0, Lx].forEach(x => { line([x, y + 1, 0], [x, y + 1, D], '#5B8DEF', 3); line([x, y + .5, 0], [x, y + .5, D], '#5B8DEF', 2); });
+    (full ? [0, Lx] : [0]).forEach(x => { line([x, y + 1, 0], [x, y + 1, D], '#5B8DEF', 3); line([x, y + .5, 0], [x, y + .5, D], '#5B8DEF', 2); });
   });
   if(ef.s.dg !== false) for(let t = 0; t < r.nt; t += 5) lv.iv.forEach(([ya, yb]) => line([t * EF_T, ya, D], [t * EF_T + EF_T, yb, D], '#D9579A', 2));
   if(ef.s.am !== false){ const rows = Math.max(1, Math.floor(r.H / 4)); for(let k = 1; k <= rows; k++){ const y = Math.min(r.H, 4 * k); for(let i = 0; i <= r.nt; i += 2){ const x = i * EF_T; line([x, y, 0], [x, y, -0.25], RED, 4); } } }
@@ -43062,7 +43068,7 @@ function efDraw(){
   P.forEach(p => { if(p.t === 'l'){ if(p.A[2] <= 0.1 || p.B[2] <= 0.1) return; g.strokeStyle = p.col; g.lineWidth = Math.max(1, p.w * Math.min(1.6, dist / p.d)); g.beginPath(); g.moveTo(p.A[0], p.A[1]); g.lineTo(p.B[0], p.B[1]); g.stroke(); }
     else { if(p.Q.some(q => q[2] <= 0.1)) return; g.fillStyle = p.col; g.beginPath(); p.Q.forEach((q, i) => i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])); g.closePath(); g.fill(); g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 0.6; g.stroke(); } });
   // légende
-  const lg = [['#C9CDD2', r.mode === 'P' ? 'Poteaux' : 'Cadres H'], ['#C8A26A', 'Plateaux'], ['#E8743B', 'Trappe'], ['#4FAE6C', 'Garde-corps / lisses 3 m'], ['#5B8DEF', 'Lisses 80 (bouts)'], ['#D9579A', 'Diagonales'], ['#E5484D', 'Amarrages']];
+  const lg = [['#C9CDD2', r.mode === 'P' ? 'Poteaux' : 'Cadres H'], ['#C8A26A', 'Plateaux'], ['#E8743B', 'Trappe'], ['#4FAE6C', 'Garde-corps (côté vide)'], ['#9fb3c8', r.mode === 'P' ? 'Lisses 3 m / 80' : 'Poteaux du haut'], ['#5B8DEF', 'Lisses 80 (bouts)'], ['#D9579A', 'Diagonales'], ['#E5484D', 'Amarrages']];
   g.font = '700 11px system-ui'; g.textAlign = 'left'; let yy = 14;
   lg.forEach(([c, l]) => { g.fillStyle = c; g.fillRect(10, yy - 8, 12, 8); g.fillStyle = 'rgba(240,230,210,.85)'; g.fillText(l, 27, yy); yy += 15; });
 }
@@ -48343,9 +48349,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.554';
+const APP_VERSION = '5.41.555';
 
 const CHANGELOG = [
+  {
+    version: '5.41.555',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🏗️', text: "Échafaudage : garde-corps toujours côté vide seulement (un par étage, plus de lisse intermédiaire ni d'option côté mur). En haut : poteaux 2 m côté vide seulement (garde-corps / avant-toit), rien côté mur. Tout en poteaux : 2 lisses 3 m au niveau des plateaux (côté vide + côté mur). Choix « Plateaux sur tous les étages » ou « Au dernier étage » — la travée d'accès en trappes, les unes au-dessus des autres, est toujours sur toute la hauteur." }
+    ]
+  },
   {
     version: '5.41.554',
     date: '20/10/2026',
