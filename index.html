@@ -35560,7 +35560,9 @@ function renderFiches(){
         </div>
         <div class="timesheet-total">Total semaine : ${totalHours}h${hasAnyTrajet ? ` · Trajet ${totalTrajet.toFixed(2)}€` : ''}</div>
         ${(() => { if(w.id !== profile.workerId) return ''; const st = _wkStatus(monday); const past = monday <= getMondayOfWeek(new Date(), 0) && _wkHasData(monday); if(!past) return '';
+          if(st && st.old) return '';
           if(st && st.ok) return `<div class="wk-ban ok">✅ Semaine vérifiée le ${new Date(st.at).toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' })}</div>`;
+          { const n = new Date(); if(dateKeyOf(monday) === dateKeyOf(getMondayOfWeek(n, 0)) && !((n.getDay() === 5 && n.getHours() >= 13) || n.getDay() === 6 || n.getDay() === 0)) return ''; }   // semaine en cours : à valider à partir du vendredi 13 h
           return `<div class="wk-ban">${st && st.changed ? '⚠️ Ta semaine a changé depuis ta vérification.' : '📋 Relis ta semaine et valide-la.'}<button type="button" class="btn btn-primary btn-sm" onclick="wkCheckOpen('${dateKeyOf(monday)}')">✅ Vérifier ma semaine</button></div>`; })()}
         <div class="row-actions" style="margin-top:10px;">
           <button class="btn btn-outline" onclick='downloadFichePDF(${JSON.stringify(w.id)}, ${weekNum}, ${year})'><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.15em;display:inline-block;flex-shrink:0;"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M9.5 12h5M9.5 15.5h5"/></svg> Télécharger</button>
@@ -36286,14 +36288,21 @@ function _wkSigDay(day, e){
 function _wkSig(att, wid, monday){
   return Array.from({ length:7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); const k = dateKeyOf(d); const day = att && att[k]; return _wkSigDay(day, day && day.workers && day.workers[wid]); }).join('|');
 }
+/* v5.41.561 — validation à partir de la semaine du 19/10/2026 : les semaines d'avant sont considérées validées.
+   Le vendredi dès 13 h, on demande de valider la semaine ; tant qu'elle ne l'est pas, on redemande (les jours suivants aussi). */
+const WK_VALID_FROM = '2026-10-19';
+function _wkBefore(monday){ return dateKeyOf(monday) < WK_VALID_FROM; }
 function _wkDue(){
   const n = new Date(), dow = n.getDay();
-  if(dow === 5 && n.getHours() >= 14 || dow === 6 || dow === 0) return getMondayOfWeek(n, 0);
-  if(dow >= 1 && dow <= 3) return getMondayOfWeek(n, -1);
+  const cur = (dow === 5 && n.getHours() >= 13) || dow === 6 || dow === 0 ? getMondayOfWeek(n, 0) : null;
+  const prev = getMondayOfWeek(n, -1);
+  // la semaine passée pas encore validée passe d'abord, puis la semaine en cours (vendredi 13 h →)
+  for(const m of [prev, cur]){ if(!m || _wkBefore(m) || !_wkHasData(m)) continue; const st = _wkStatus(m); if(!(st && st.ok)) return m; }
   return null;
 }
 function _wkStatus(monday){
   const wid = data.settings.myProfile && data.settings.myProfile.workerId; if(!wid) return null;
+  if(_wkBefore(monday)) return { ok:true, old:true };   // semaines d'avant : considérées validées
   const c = (data.settings.weekChecks || {})[dateKeyOf(monday)];
   if(!c) return { ok:false };
   return { ok: c.sig === _wkSig(data.attendance, wid, monday), at:c.at, changed: c.sig !== _wkSig(data.attendance, wid, monday) };
@@ -36331,8 +36340,8 @@ function wkCheckOpen(mondayKey){
     <div class="row-actions" style="margin-top:8px;"><button type="button" class="btn btn-outline" style="flex:1;" onclick="wkFix(${off})">✏️ Corriger un jour</button><button type="button" class="btn btn-outline" style="flex:1;" onclick="wkLater()">Plus tard</button></div></div>`;
   document.body.appendChild(d);
 }
-function wkLater(){ try{ localStorage.setItem('rwood-wk-snooze', dateKeyOf(new Date())); }catch(e){} const m = document.getElementById('modal-wkCheck'); if(m) m.remove(); }
-function wkFix(off){ const m = document.getElementById('modal-wkCheck'); if(m) m.remove(); try{ localStorage.setItem('rwood-wk-snooze', dateKeyOf(new Date())); }catch(e){} fichesWeekOffset = off; goTo('heures'); setTimeout(() => { try{ setHeuresMode('fiches'); }catch(e){} }, 250); showToast('Touche ✎ sous le jour à corriger, puis reviens valider ta semaine'); }
+function wkLater(){ try{ localStorage.setItem('rwood-wk-snooze', String(Date.now())); }catch(e){} const m = document.getElementById('modal-wkCheck'); if(m) m.remove(); }
+function wkFix(off){ const m = document.getElementById('modal-wkCheck'); if(m) m.remove(); try{ localStorage.setItem('rwood-wk-snooze', String(Date.now())); }catch(e){} fichesWeekOffset = off; goTo('heures'); setTimeout(() => { try{ setHeuresMode('fiches'); }catch(e){} }, 250); showToast('Touche ✎ sous le jour à corriger, puis reviens valider ta semaine'); }
 async function wkValidate(mk){
   const wid = data.settings.myProfile && data.settings.myProfile.workerId; if(!wid) return;
   const monday = new Date(mk + 'T00:00:00');
@@ -36349,10 +36358,10 @@ function wkAutoPrompt(){
     const prof = data.settings.myProfile || {};
     if(!prof.workerId || (prof.role !== 'ouvrier' && prof.role !== 'chef')) return;
     if(document.querySelector('.modal-overlay.open')) return;
-    const mon = _wkDue(); if(!mon || !_wkHasData(mon)) return;
+    const mon = _wkDue(); if(!mon) return;
     const st = _wkStatus(mon); if(st && st.ok) return;
     let sn = ''; try{ sn = localStorage.getItem('rwood-wk-snooze') || ''; }catch(e){}
-    if(sn === dateKeyOf(new Date())) return;
+    if(sn && /^\d+$/.test(sn) && Date.now() - +sn < 2 * 3600e3) return;   // « Plus tard » : on redemande 2 h après
     wkCheckOpen(dateKeyOf(mon));
   }catch(e){}
 }
@@ -36363,7 +36372,7 @@ function _wkBadgeFor(aw, offset){
   try{
     const monday = getMondayOfWeek(new Date(), offset), mk = dateKeyOf(monday);
     const c = aw.device && aw.device.weekChecks && aw.device.weekChecks[mk];
-    if(!c) return monday <= getMondayOfWeek(new Date(), -1) ? '<span class="wk-b no">⏳ Pas vérifiée par l\'ouvrier</span>' : '';
+    if(!c) return monday <= getMondayOfWeek(new Date(), -1) && mk >= WK_VALID_FROM ? '<span class="wk-b no">⏳ Pas vérifiée par l\'ouvrier</span>' : '';
     const same = c.sig === _wkSig(aw.device.attendance, aw.workerId, monday);
     const dt = new Date(c.at).toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
     return same ? `<span class="wk-b ok">✅ Vérifiée par l'ouvrier · ${dt}</span>` : `<span class="wk-b ch">⚠️ Vérifiée le ${dt}, modifiée depuis</span>`;
@@ -48394,9 +48403,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.560';
+const APP_VERSION = '5.41.561';
 
 const CHANGELOG = [
+  {
+    version: '5.41.561',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🔔', text: "Notifications : le centre part vide, il se remplit avec les prochaines notifications (pas les anciennes)." },
+      { icon: '✅', text: "Validation de la semaine (ouvriers et chefs) : demandée à partir du vendredi 13 h, et redemandée tant qu'elle n'est pas validée (« Plus tard » = on redemande 2 h après). Les semaines d'avant le 19 octobre 2026 sont considérées comme validées." }
+    ]
+  },
   {
     version: '5.41.560',
     date: '20/10/2026',
@@ -83819,10 +83836,13 @@ function _nfAcc(){ return (data && data.settings && data.settings.auth && data.s
 function _nfK(){ return 'rwood-notifs:' + _nfAcc(); }
 let _nf = null;
 function _nfLoad(){ if(_nf && _nf._acc === _nfAcc()) return _nf; let o = null; try{ o = JSON.parse(localStorage.getItem(_nfK()) || 'null'); }catch(e){}
-  _nf = Object.assign({ items:{}, gone:{}, seen:'' }, o || {}); _nf._acc = _nfAcc(); return _nf; }
+  _nf = Object.assign({ items:{}, gone:{}, seen:'' }, o || {}); _nf._acc = _nfAcc();
+  if(!_nf.since){ _nf.items = {}; _nf.since = new Date().toISOString(); try{ const x = Object.assign({}, _nf); delete x._acc; localStorage.setItem(_nfK(), JSON.stringify(x)); }catch(e){} }   // v5.41.561 — on part vide : seulement les prochaines notifs
+  return _nf; }
 function _nfSave(){ try{ const o = Object.assign({}, _nf); delete o._acc; localStorage.setItem(_nfK(), JSON.stringify(o)); }catch(e){} }
 function _nfAdd(n){ const S = _nfLoad(); if(!n || !n.id || S.items[n.id] || S.gone[n.id]) return false;
   if(Date.now() - new Date(n.at || 0).getTime() > NF_LIFE) return false;
+  if((n.at || '') <= (S.since || '')) return false;   // rien d'avant l'arrivée du centre de notifications
   S.items[n.id] = Object.assign({ pin:false, del:0 }, n); return true; }
 function _nfMyName(){ const p = data.settings && data.settings.myProfile; return (((p && p.firstName) || '') + ' ' + ((p && p.lastName) || '')).trim(); }
 function _nfCollect(){
