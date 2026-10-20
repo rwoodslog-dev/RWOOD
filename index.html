@@ -731,6 +731,9 @@
   @media (min-width:1000px){ #view-notesdashboard .nv-kb{ grid-template-columns:repeat(3,minmax(0,1fr)); } }
   .nv-chip.nv-done{ border-style:dashed !important; opacity:.85; } .nv-chip i{ font-style:normal; font-size:.8em; opacity:.7; }
   .hub-t .hub-ic{ width:40px; height:40px; object-fit:contain; display:block; }
+  .dep-plain.ro{ display:flex; gap:8px; align-items:flex-start; padding:6px 2px; font-size:14px; } .dep-plain.ro > span:first-child{ flex:none; }
+  .notes-route{ display:grid; grid-template-columns:1fr auto; align-items:center; gap:2px 10px; background:rgba(91,141,239,.12); border:1.5px solid #5B8DEF; border-radius:14px; padding:11px 14px; margin-bottom:10px; cursor:pointer; }
+  .notes-route b{ font-size:15px; } .notes-route small{ grid-column:1; color:var(--ink-soft); font-size:12.5px; } .notes-route span{ grid-row:1 / span 2; grid-column:2; font-size:22px; color:#5B8DEF; font-weight:900; }
   /* v5.41.529 — 🗓️ Ma semaine (chef) */
   .cw-who{ display:flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px; margin-bottom:10px; font-size:14px; } .cw-who span{ flex:1; } .cw-who button{ border:1.5px solid var(--line); background:transparent; color:var(--ink); border-radius:9px; padding:5px 10px; font-weight:800; font-size:12.5px; cursor:pointer; min-height:0; }
   .cw-chefs{ display:flex; flex-direction:column; gap:6px; margin-top:10px; } .cw-chefs button{ display:flex; align-items:center; gap:10px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); border-radius:12px; padding:9px 12px; font-size:15px; cursor:pointer; text-align:left; }
@@ -13416,7 +13419,7 @@ function goTo(viewName, siteId){
   pageTitleEl.textContent = titles[viewName][0];
   pageSubEl.textContent = titles[viewName][1];
   if(viewName === 'remontees' && typeof rmRoleCanSee === 'function' && !rmRoleCanSee() && !window._devRoleUnlocked){ goTo('chantiers'); return; }   // v5.41.438
-  if(viewName === 'depannages'){ if(typeof depCanSeeTab === 'function' && !depCanSeeTab()){ goTo('chantiers'); return; } try{ depRender(); if(depCanManage()) _depLoad(true).then(() => depRender()); else routeLoadMine().then(() => depRender()); }catch(_){} }   // v5.41.459 / 462
+  if(viewName === 'depannages'){ if(typeof depCanSeeTab === 'function' && !depCanSeeTab()){ goTo('chantiers'); return; } try{ depRender(); if(_depPrepMode()) _depLoad(true).then(() => depRender()); else routeLoadMine().then(() => depRender()); }catch(_){} }   // v5.41.459 / 462
   if(viewName === 'alertes-conducteur'){ try{ _depShortcutApply(); }catch(_){} }
   if(viewName === 'remontees' && typeof rmRender === 'function'){ try{ rmImportInbox(); }catch(_){} rmRender(); } // MODULE — Remontées
 
@@ -14634,6 +14637,26 @@ async function gpAddFiles(files){
   }finally{ _gpBusy = false; }
   if(_galerieOpenSiteId === '__perso__') gpRender();
 }
+/* v5.41.533 — même ＋ que Photos & Docs : prendre / importer des photos, scanner / importer un document */
+function gpAddSheet(){
+  const ex = document.getElementById('mediaFabSheet'); if(ex) ex.remove();
+  const sheet = document.createElement('div'); sheet.id = 'mediaFabSheet';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end;';
+  const tile = (k, ic, l, sub) => `<button class="ga-big" data-act="${k}"><span>${ic}</span><b>${l}</b>${sub ? `<small>${sub}</small>` : ''}</button>`;
+  const f = _gpCur && !String(_gpCur).startsWith('site:') ? (_gpFolders || []).find(x => x.id === _gpCur) : null;
+  sheet.innerHTML = `<div style="background:var(--bg-elev);border-radius:20px 20px 0 0;width:100%;max-width:640px;margin:0 auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));">
+    <div style="text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;font-weight:600;">Ajouter dans 🔒 ${f ? escapeHtml((f.icon || '📁') + ' ' + f.name) : 'Ma galerie perso'}</div>
+    <div class="ga-two four">${tile('take', '📸', 'Prendre des photos', 'avec l\'appareil') + tile('impph', '🖼️', 'Importer des photos', 'galerie du téléphone') + tile('scan', '📄', 'Scanner un document', 'une ou plusieurs pages') + tile('impdoc', '📎', 'Importer un fichier', 'PDF ou document')}</div></div>`;
+  const close = () => sheet.remove();
+  sheet.onclick = e => { if(e.target === sheet) close(); };
+  const on = (k, fn) => { const b = sheet.querySelector('[data-act="' + k + '"]'); if(b) b.onclick = () => { close(); fn(); }; };
+  const max = typeof RW_BURST_MAX !== 'undefined' ? RW_BURST_MAX : 20;
+  on('take', () => openCameraCapture(null, { burst: files => gpAddFiles(files), max }));
+  on('impph', () => _rwPickImages(true, files => gpAddFiles(files)));
+  on('scan', () => openCameraCapture(null, { burst: files => gpAddFiles(files.map((fl, i) => { try{ return new File([fl], 'Scan ' + new Date().toLocaleDateString('fr-FR').replace(/\//g, '-') + (files.length > 1 ? ' p' + (i + 1) : '') + '.jpg', { type:fl.type || 'image/jpeg' }); }catch(e){ return fl; } })), max, scan:true, forceWeb:true }));
+  on('impdoc', () => _gfPickFiles(files => gpAddFiles(files)));
+  document.body.appendChild(sheet);
+}
 function gpPick(cam){
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = cam ? 'image/*' : 'image/*,application/pdf'; inp.multiple = !cam; if(cam) inp.capture = 'environment'; inp.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
   document.body.appendChild(inp); inp.onchange = () => { const f = Array.from(inp.files || []); inp.remove(); if(f.length) gpAddFiles(f); }; inp.click();
@@ -14684,7 +14707,7 @@ async function gpRender(){
   const looseLbl = atRoot && strip && vis.length ? `<div class="rm-lbl" style="margin:10px 2px 0;">${_gpMode === 'site' ? 'Sans chantier' : 'Sans dossier'}</div>` : '';
   root.innerHTML = `<div class="gp">${head}
     ${atRoot ? `<div class="gp-lock">🔐 <span>Photos <b>chiffrées</b>, visibles que par toi (ni l'équipe ni le patron). Tu les retrouves sur tes appareils, sans encombrer ton téléphone.</span></div>` : ''}
-    <div class="gp-btns"><button class="p" onclick="gpPick(true)">📷 Prendre</button><button onclick="gpPick(false)">🖼️ Importer</button>${vis.length ? `<button class="${_gpSel ? 'on' : ''}" onclick="gpSelToggle()">${_gpSel ? '✕ Annuler' : '☑ Sélectionner'}</button>` : ''}</div>
+    <div class="gp-btns"><button class="p" onclick="gpAddSheet()">＋ Ajouter</button>${vis.length ? `<button class="${_gpSel ? 'on' : ''}" onclick="gpSelToggle()">${_gpSel ? '✕ Annuler' : '☑ Sélectionner'}</button>` : ''}</div>
     ${_gpClip && _gpMode === 'dos' ? `<div class="gc-clip">✂️ <b>${_gpClip.ids.length} photo${_gpClip.ids.length > 1 ? 's' : ''}</b><button class="btn btn-primary btn-sm" onclick="gpPaste(${cur ? `'${cur.id}'` : "''"})">📥 Coller ici</button><button class="btn btn-outline btn-sm" onclick="_gpClip=null;gpRender()">✕</button></div>` : ''}
     ${!_gpSel && vis.length ? `<div class="gp-selhint">${_mIsPC() ? '🖱️ Clic droit = actions · Ctrl + clic = sélection · glisse sur un dossier pour ranger' : 'Appui long sur une photo = actions'}</div>` : ''}
     ${_gpSel ? `<div class="gp-selhint">Touche les photos · <a onclick="gpSelAll()">${_gpSel.size && _gpSel.size === vis.length ? 'Tout décocher' : 'Tout sélectionner'}</a></div>` : ''}
@@ -47968,9 +47991,32 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.530';
+const APP_VERSION = '5.41.533';
 
 const CHANGELOG = [
+  {
+    version: '5.41.533',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🔒', text: "Galerie perso : même « ＋ Ajouter » que Photos & Docs — 📸 Prendre des photos (appareil de Notybat), 🖼️ Importer des photos, 📄 Scanner un document, 📎 Importer un fichier." }
+    ],
+  },
+  {
+    version: '5.41.532',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🦺', text: "Chef : « 📋 Préparer une feuille » ne montre que SES tâches (pas celles du conducteur) ; il les crée, fait sa feuille et se l'envoie (ou à un ouvrier). Le conducteur ne voit pas les tâches des chefs." },
+      { icon: '🚚', text: "La feuille de route est seulement dans Dépannages (plus dans « À faire »). L'ouvrier choisit son chef et voit sa feuille : chantiers, tâches, photos, 🧭 Waze, 📋 Détail et ⏱️ Pointer ; seul le chef coche les tâches et valide « Fini »." }
+    ],
+  },
+  {
+    version: '5.41.531',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🚚', text: "Chef d'équipe : Dépannages › « 📋 Préparer une feuille » — même système que le conducteur (tâches, chantiers, photos, carte) ; il l'envoie à n'importe qui, ou à lui-même (« … (moi) » en tête de liste). « Ma semaine » est retirée." },
+      { icon: '📋', text: "La feuille de route reçue s'affiche dans Dépannages et en tête de « À faire » : les ouvriers qui suivent la liste « À faire » de leur chef voient aussi sa feuille de route." }
+    ],
+  },
   {
     version: '5.41.530',
     date: '20/10/2026',
@@ -65628,7 +65674,12 @@ function notesRender(){
   const nDone  = tasks.length - undone;
   if(count) count.textContent = tasks.length ? (undone + ' à faire') : '';
 
-  if(!tasks.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
+  // v5.41.531 — la feuille de route du jour (la mienne ou celle de mon chef) en tête de « À faire »
+  const _rt = (typeof _routeCache !== 'undefined' && _routeCache) ? _routeCache : [];
+  if(false && !window._notesRtLoaded && typeof routeLoadMine === 'function'){ window._notesRtLoaded = true; routeLoadMine().then(() => { try{ notesRender(); }catch(_){} }).catch(() => {}); }
+  const rtHtml = _rt.map(r => { const st = r.stops || [], tk = st.reduce((a, x) => a.concat(x.tasks || []), []), dn = tk.filter(t => t.report || t.done).length, cur = _routeCurrentStop(r);
+    return `<div class="notes-route" style="display:none" onclick="_depChefTab='cond';goTo('depannages')"><b>🚚 Feuille de route${r.createdBy && r.createdBy.name ? ' · ' + escapeHtml(r.createdBy.name) : ''}</b><small>${st.length} arrêt${st.length > 1 ? 's' : ''} · ${dn}/${tk.length} tâche${tk.length > 1 ? 's' : ''}${cur ? ' · prochain : ' + escapeHtml(cur.name) : ''}</small><span>›</span></div>`; }).join('');
+  if(!tasks.length){ list.innerHTML = rtHtml; if(empty) empty.style.display = rtHtml ? 'none' : 'block'; return; }
   if(empty) empty.style.display='none';
   if(_notesSel && !tasks.some(t => t.id === _notesSel)) _notesSel = null;
 
@@ -65646,7 +65697,7 @@ function notesRender(){
       + '<button class="notes-clear-done" onclick="event.stopPropagation();notesClearDone()">Effacer les faites</button></div>';
     if(_notesDoneOpen) html += done.map(_notesItemHtml).join('');
   }
-  list.innerHTML = html;
+  list.innerHTML = rtHtml + html;
 }
 let _notesSel = null, _notesDoneOpen = false, _notesAttach = false;
 function notesSelect(id){
@@ -73538,6 +73589,7 @@ function _pinnedSwitchTab(tab){
 /* Appelée à l'ouverture du popup : affiche les onglets et choisit l'onglet. */
 async function routeOnPopupOpen(){
   const row = document.getElementById('pinnedTabsRow');
+  if(row) row.style.display = 'none'; _pinnedSwitchTab('list'); return;   // v5.41.532 — la feuille de route n'est plus dans « À faire » (seulement Dépannages)
   if(row) row.style.display = 'flex';
   _pinnedSwitchTab(_routeCache.length ? 'route' : 'list');
   await routeLoadMine();
@@ -74600,6 +74652,8 @@ let _depTasks = null, _depAt = 0, _depTab = 'taches', _depFilter = 'todo', _depS
 const DEP_ST = { todo:{ l:'À FAIRE', c:'a' }, sent:{ l:'EN COURS', c:'e' }, done:{ l:'FAIT', c:'t' }, ko:{ l:'IMPOSSIBLE', c:'x' } };
 function _depRole(){ return (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; }
 function depCanManage(){ const r = _depRole(); if(r === 'chef' || r === 'ouvrier') return false; return r === 'patron' || r === 'conducteur' || !!window._devRoleUnlocked; }   // v5.41.474 — un compte DEV en rôle chef voit l'écran chef (déverrouillage dev asynchrone au démarrage)   // v5.41.462 — tâches : conducteurs et patron seulement
+function depCanPrep(){ return depCanManage() || _depRole() === 'chef'; }   // v5.41.531 — le chef prépare et envoie des feuilles de route (à lui-même ou à n'importe qui)
+function _depPrepMode(){ return depCanManage() || (_depRole() === 'chef' && _depChefTab === 'prep'); }
 function depCanSeeTab(){ return depCanManage() || _depRole() === 'chef' || _depRole() === 'ouvrier'; }   // v5.41.530 — l'ouvrier y voit la semaine de son chef   // le chef y voit sa feuille de route
 /* v5.41.462 — deux pôles : menuiserie / charpente */
 const DEP_POLES = { charpente:{ l:'Charpente', e:'🪵', c:'#E8AC3D', img:'icons/pole-charpente.png' }, menuiserie:{ l:'Menuiserie', e:'🪟', c:'#3BA7C9', img:'icons/pole-menuiserie.png' } };
@@ -74650,7 +74704,9 @@ async function _depSave(changed, removedIds){
 function _depMe(){ return { authId:_routeMyAuthId() || '', name:_routeMyName() }; }
 function _depGroupKey(t){ return t.siteId ? 's:' + t.siteId : 'l:' + String(t.siteName || '').trim().toLowerCase() + '|' + String(t.address || '').trim().toLowerCase(); }
 function _depFmtD(iso, h){ try{ return new Date(iso).toLocaleString('fr-FR', h ? { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' } : { day:'numeric', month:'short' }); }catch(e){ return ''; } }
+function _depMineOk(t){ return _depRole() === 'chef' ? t.chefOwn === _depMe().authId : !t.chefOwn; }   // v5.41.532 — le chef ne voit que ses tâches, le conducteur pas celles des chefs
 function _depInFilter(t, f){
+  if(!_depMineOk(t)) return false;
   if(_depPole !== 'all' && _depPoleOf(t) !== _depPole) return false;   // v5.41.462 — pôle affiché (v5.41.518 : « Tous »)
   if(f === 'arch') return !!t.archived;
   if(t.archived) return false;
@@ -74673,13 +74729,13 @@ function _depMarkSeen(){ const s = _depSeen(); _depReports().forEach(t => { s[t.
 function depRender(){
   const box = document.getElementById('depBody'); if(!box) return;
   if(!depCanSeeTab()){ box.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Réservé aux conducteurs, au patron et aux chefs.</div>'; return; }
-  if(!depCanManage()){ _depChefRender(box); return; }
+  if(!_depPrepMode()){ _depChefRender(box); return; }
   if(!_depTasks){ box.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Chargement…</div>'; _depLoad(true).then(() => { if(_depTasks) depRender(); }); return; }
   if(_depTab === 'cr'){ _depTab = 'taches'; _depFilter = 'done'; }
   const all = _depTasks || [], P = DEP_POLES[_depPole] || { l:'Dépannage', c:'#E8AC3D', e:'🛠️' };
   const cnt = (f, pole) => all.filter(t => !t.archived && _depPoleOf(t) === pole && (f === 'done' ? (t.status === 'done' || t.status === 'ko') : t.status === f)).length;
   const un = _depUnseen();
-  const nArch = all.filter(t => t.archived && (_depPole === 'all' || _depPoleOf(t) === _depPole)).length;
+  const nArch = all.filter(t => t.archived && _depMineOk(t) && (_depPole === 'all' || _depPoleOf(t) === _depPole)).length;
   const tiles = [['todo', 'À faire', '#E8AC3D'], ['sent', 'En cours', '#5B8DEF'], ['done', 'Terminées', '#4FAE6C']].map(([k, l, c]) =>
     `<button class="${_depFilter === k ? 'on' : ''}" style="--c:${c}" onclick="depSetFilter('${k}')"><b>${cnt(k, _depPole)}</b><small>${l}</small>${k === 'done' && un ? '<i class="dep-badge">' + un + '</i>' : ''}</button>`).join('');
   let body = '';
@@ -74692,7 +74748,7 @@ function depRender(){
       + `<button class="dk-add" onclick="depOpenEdit()">＋ Tâche</button>` + _depSheetHtml();
     const n = k => k === 'sent' ? _depSentGroups().length : k === 'done' ? _depRepGroups().length : all.filter(t => _depInFilter(t, k)).length;   // En cours / Terminées : nombre de cartes
     const cols = [['todo', '📋 À faire', '#E8AC3D', todoHtml], ['sent', '🚚 En cours', '#5B8DEF', _depSentHtml()], ['done', '✅ Terminées', '#4FAE6C', _depReportsHtml()]];
-    box.innerHTML = `<div class="dep2 dk">${_depHeadHtml(gl.length)}
+    box.innerHTML = `<div class="dep2 dk">${_depChefTabsHtml()}${_depHeadHtml(gl.length)}
       <div class="dep-kbnav">${cols.map(([k, l, c]) => `<button style="--c:${c}" onclick="depKbGo('${k}')"><i></i>${l.replace(/^\S+ /, '')}<b>${n(k)}</b>${k === 'done' && un ? '<em class="dep-badge">' + un + '</em>' : ''}</button>`).join('')}</div>
       <div class="dep-kb" id="depKb">${cols.map(([k, l, c, h]) => `<div class="dep-col" id="depCol_${k}" style="--c:${c}"><div class="dep-colh"><i></i>${l}<b>${n(k)}</b></div><div class="dep-colb">${h}</div></div>`).join('')}</div>
       <button class="dep-archlink" onclick="depSetFilter('arch')">📦 Archivées (${nArch})</button></div>`;
@@ -74702,7 +74758,7 @@ function depRender(){
     return;
   }
   if(_depFilter === 'arch'){   // v5.41.493 — archives au même visuel que le Kanban
-    const al = all.filter(t => t.archived && (_depPole === 'all' || _depPoleOf(t) === _depPole)).sort((a, b) => (b.archivedAt || b.updatedAt || '').localeCompare(a.archivedAt || a.updatedAt || ''));
+    const al = all.filter(t => t.archived && _depMineOk(t) && (_depPole === 'all' || _depPoleOf(t) === _depPole)).sort((a, b) => (b.archivedAt || b.updatedAt || '').localeCompare(a.archivedAt || a.updatedAt || ''));
     const groups = new Map(); al.forEach(t => { const k = _depGroupKey(t); if(!groups.has(k)) groups.set(k, []); groups.get(k).push(t); });
     const cards = [...groups.values()].map(g => _depArchCardHtml(g)).join('') || `<div class="dep-empty"><span>📦</span>Rien dans les archives.</div>`;
     box.innerHTML = `<div class="dep2 dk"><div class="dk-chips">${_depChipsHtml()}</div>
@@ -74754,7 +74810,7 @@ const DEP_PCOLS = ['#5B8DEF', '#4FAE6C', '#E8AC3D', '#9B59D0', '#E5484D', '#2BB3
 function _depPersonCol(n){ let h = 0; String(n || '').split('').forEach(c => { h = (h * 31 + c.charCodeAt(0)) >>> 0; }); return DEP_PCOLS[h % DEP_PCOLS.length]; }
 function _depStopIni(name, siteId){ const st = siteId && (data.sites || []).find(x => x.id === siteId); return siteIni(st || { name:name || 'Chantier', color:DEP_FREE_COL }, 20); }
 function _depChipsHtml(){
-  const all = (_depTasks || []).filter(t => !t.archived), n = k => all.filter(t => k === 'all' || _depPoleOf(t) === k).length;
+  const all = (_depTasks || []).filter(t => !t.archived && _depMineOk(t)), n = k => all.filter(t => k === 'all' || _depPoleOf(t) === k).length;
   return `<button class="nv-chip${_depPole === 'all' ? ' on' : ''}" onclick="depSetPole('all')">Tous <b>${n('all')}</b></button>`
     + Object.entries(DEP_POLES).map(([k, p]) => `<button class="nv-chip${_depPole === k ? ' on' : ''}" onclick="depSetPole('${k}')">${_depPoleIc(k, 'dk-pic')} ${escapeHtml(p.l)} <b>${n(k)}</b></button>`).join('');
 }
@@ -74882,8 +74938,9 @@ function depToggleSel(id){
 function depMoveStop(i, d){ const j = i + d; if(j < 0 || j >= _depOrder.length) return; const x = _depOrder[i]; _depOrder[i] = _depOrder[j]; _depOrder[j] = x; depRender(); }
 function _depRecipients(){
   const me = _depMe().authId;
-  return (window._depReg || []).filter(u => u && u.authId && u.name && u.authId !== me && ['ouvrier', 'chef', 'conducteur'].includes(u.role) && !/\.(test|dupont)$/i.test(u.authId))
-    .sort((a, b) => (a.role === b.role ? 0 : a.role === 'chef' ? -1 : b.role === 'chef' ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'fr'));
+  const meRow = { authId:me, name:(_depMe().name || 'Moi') + ' (moi)', role:_depRole(), me:true };   // v5.41.531 — on peut s'envoyer la feuille à soi-même
+  return [meRow].concat((window._depReg || []).filter(u => u && u.authId && u.name && u.authId !== me && ['ouvrier', 'chef', 'conducteur'].includes(u.role) && !/\.(test|dupont)$/i.test(u.authId))
+    .sort((a, b) => (a.role === b.role ? 0 : a.role === 'chef' ? -1 : b.role === 'chef' ? 1 : 0) || String(a.name).localeCompare(String(b.name), 'fr')));
 }
 function _depSheetHtml(){
   if(!_depSel.size) return '';
@@ -74913,7 +74970,7 @@ async function depSendRoute(){
   const now = new Date().toISOString(), me = _depMe();
   const keys = _depOrder.filter(k => sel.some(t => _depGroupKey(t) === k)).concat([...new Set(sel.map(_depGroupKey))].filter(k => !_depOrder.includes(k)));
   const route = { id:uid(), createdAt:now, updatedAt:now, status:'active', fromDep:true,
-    createdBy:{ authId:me.authId, name:me.name }, recipients:[{ authId:u.authId, name:u.name }],
+    createdBy:{ authId:me.authId, name:me.name }, recipients:[{ authId:u.authId, name:u.me ? _depMe().name : u.name }],
     stops: keys.map(k => {
       const g = sel.filter(t => _depGroupKey(t) === k), t0 = g[0];
       return { id:uid(), siteId:t0.siteId || null, name:t0.siteName || 'Chantier', address:t0.address || '', keybox:t0.keybox || '',
@@ -74927,10 +74984,11 @@ async function depSendRoute(){
   if(!Array.isArray(data.settings.routeHistory)) data.settings.routeHistory = [];
   data.settings.routeHistory.unshift({ id:route.id, createdAt:now, status:'active', recipients:route.recipients.slice(), stops:route.stops.map(s => ({ name:s.name, tasks:s.tasks.map(t => t.label) })) });
   data.settings.routeHistory = data.settings.routeHistory.slice(0, 100); saveData();
-  await _depSave(sel.map(t => Object.assign({}, t, { status:'sent', routeId:route.id, sentTo:{ authId:u.authId, name:u.name }, sentAt:now, sentBy:me.authId, updatedAt:now })));
-  notifyPush([u.authId], 'Notybat — Dépannage', 'Nouvelle feuille de route : ' + sel.length + ' tâche' + (sel.length > 1 ? 's' : '') + ', ' + route.stops.length + ' chantier' + (route.stops.length > 1 ? 's' : ''), 'route-' + route.id, 'dep:feuille');
+  await _depSave(sel.map(t => Object.assign({}, t, { status:'sent', routeId:route.id, sentTo:{ authId:u.authId, name:u.me ? _depMe().name : u.name }, sentAt:now, sentBy:me.authId, updatedAt:now })));
+  if(!u.me) notifyPush([u.authId], 'Notybat — Dépannage', 'Nouvelle feuille de route : ' + sel.length + ' tâche' + (sel.length > 1 ? 's' : '') + ', ' + route.stops.length + ' chantier' + (route.stops.length > 1 ? 's' : ''), 'route-' + route.id, 'dep:feuille');
   _depSel.clear(); _depOrder = []; _depTo = '';
-  showToast('✅ Feuille de route envoyée à ' + u.name);
+  showToast(u.me ? '✅ Feuille de route ajoutée à « Ma feuille de route »' : '✅ Feuille de route envoyée à ' + u.name);
+  if(u.me){ try{ await routeLoadMine(); _routeUpdateIndicators(); }catch(_){} if(_depRole() === 'chef'){ _depChefTab = 'cond'; try{ localStorage.setItem('rwood-chef-tab', 'cond'); }catch(_){} } }
   depRender();
 }
 
@@ -74989,7 +75047,7 @@ function depOpenView(id){
       ${rep}
       <div class="hint" style="margin-top:10px;">Créée${t.createdBy ? ' par ' + escapeHtml(t.createdBy) : ''}${t.createdAt ? ' le ' + _depFmtD(t.createdAt, true) : ''}</div>
     </div>
-    <div class="dvw-foot"><button class="btn btn-outline" onclick="depCloseView()">Fermer</button>${depCanManage() ? `<button class="btn btn-primary" onclick="depCloseView();depOpenEdit('${t.id}')">✏️ ${t.status && t.status !== 'todo' ? 'Gérer' : 'Modifier'}</button>` : ''}</div>
+    <div class="dvw-foot"><button class="btn btn-outline" onclick="depCloseView()">Fermer</button>${depCanPrep() ? `<button class="btn btn-primary" onclick="depCloseView();depOpenEdit('${t.id}')">✏️ ${t.status && t.status !== 'todo' ? 'Gérer' : 'Modifier'}</button>` : ''}</div>
   </div>`;
   ov.addEventListener('click', e => { if(e.target === ov) depCloseView(); });
   document.body.appendChild(ov);
@@ -75207,6 +75265,7 @@ async function depSaveEdit(){
     keybox:String(e.keybox || '').trim(), keyboxMedia:e.keyboxMedia || [], title:String(e.title).trim(), actions:e.actions, notes:String(e.notes || '').trim(),
     media:e.media || [], mat:(e.mat || []).filter(m => m && m.label), prio:e.prio === 'urgent' ? 'urgent' : 'normal',
     status:e.status || 'todo', archived:!!e.archived, createdBy:e.createdBy || me, createdAt:e.createdAt || now, updatedAt:now };
+  if(e.chefOwn) t.chefOwn = e.chefOwn; else if(_depRole() === 'chef') t.chefOwn = me.authId;   // v5.41.532 — tâches du chef : à lui seul
   ['report', 'history', 'routeId', 'sentTo', 'sentAt', 'sentBy', 'archivedAt', 'geo', 'geoAddr'].forEach(k => { if(e[k] !== undefined) t[k] = e[k]; });
   showToast('Enregistrement…');
   { // v5.41.461 — position pour la carte des tâches
@@ -75846,16 +75905,18 @@ async function dreSave(){
 /* ═══ v5.41.462 — Chef : sa feuille de route en grand + carte des arrêts numérotés ═══ */
 let _depChefIdx = 0, _dcMap = null, _depChefBig = false, _depChefLoading = false;
 function _depChefRender(box){
-  if(_depChefTab === 'week'){ _cwRender(box); return; }   // v5.41.529 — 🗓️ Ma semaine (feuille de route perso du chef)
+  if(_depChefTab === 'week') _depChefTab = 'cond';   // v5.41.531 — « Ma semaine » retirée
   if(!_depChefLoading && !box.dataset.loaded){ _depChefLoading = true; routeLoadMine().then(() => { _depChefLoading = false; box.dataset.loaded = '1'; _routeUpdateIndicators(); depRender(); }).catch(() => { _depChefLoading = false; }); }
+  if(_depRole() === 'ouvrier' && !(typeof _getFollowedChefId === 'function' && _getFollowedChefId()) && !(_routeCache || []).length){ _depOuvChefPick(box); return; }
   const routes = _routeCache || [];
   if(!routes.length){
-    box.innerHTML = `<div class="dep2">${_cwTabsHtml()}<div class="dep-empty big"><span>🚚</span><b>Aucune feuille de route du conducteur</b><br>Quand il t'en envoie une, elle s'affiche ici. En attendant, prépare <a href="#" onclick="_depChefTab='week';depRender();return false;" style="color:var(--wood);">🗓️ Ma semaine</a>.</div></div>`;
+    box.innerHTML = `<div class="dep2">${_depChefTabsHtml()}${_depOuvChefBar()}<div class="dep-empty big"><span>🚚</span><b>Aucune feuille de route en cours</b><br>${_depRole() === 'chef' ? 'Quand on t\'en envoie une, elle s\'affiche ici. Tu peux aussi t\'en faire une : <a href="#" onclick="_cwTab(\'prep\');return false;" style="color:var(--wood);">📋 Préparer une feuille</a>.' : 'Quand ton chef ou le conducteur en prépare une, elle s\'affiche ici.'}</div></div>`;
     return;
   }
   if(_depChefIdx >= routes.length) _depChefIdx = 0;
   setTimeout(_routeMarkSeen, 0);   // v5.41.476 — vues → le point rouge disparaît
   const r = routes[_depChefIdx], stops = r.stops || [];
+  const ro = r._key !== ROUTE_KEY_PREFIX + (_routeMyAuthId() || '');   // v5.41.532 — feuille du chef suivi : lecture + pointage seulement
   const tasks = stops.reduce((a, s) => a.concat(s.tasks || []), []);
   const doneT = tasks.filter(t => t.report || t.done).length, pct = tasks.length ? Math.round(doneT / tasks.length * 100) : 0;
   const cur = _routeCurrentStop(r);
@@ -75865,17 +75926,18 @@ function _depChefRender(box){
     const done = s.status === 'done', isCur = cur && cur.id === s.id;
     const nT = (s.tasks || []).length, nD = (s.tasks || []).filter(t => t.report || t.done).length;
     if(done) return `<div class="dep-stop d"><div class="num">✓</div><div class="bd"><b>${escapeHtml(s.name)}</b><small>${nD}/${nT} tâche${nT > 1 ? 's' : ''} faite${nD > 1 ? 's' : ''}</small></div></div>`;
-    const tasksHtml = (s.tasks || []).map(t => t.dep ? _depRouteTaskHtml(r, s, t)
+    const tasksHtml = ro ? (s.tasks || []).map(t => `<div class="dep-plain ro"><span>${t.report ? (t.report.result === 'done' ? '✅' : '⛔') : t.done ? '✅' : '⏳'}</span><span>${escapeHtml(t.label)}${(t.media || []).length ? `<div class="dep-mg sm">${t.media.filter(m => m.type === 'photo').map(m => `<div><img src="${escapeHtml(m.url)}" onclick="_pfsNavList=[];_pfsNavIndex=-1;openPhotoFullscreen(${_routeJsArg(m.url)},'')"></div>`).join('')}</div>` : ''}</span></div>`).join('')
+      : (s.tasks || []).map(t => t.dep ? _depRouteTaskHtml(r, s, t)
       : `<label class="dep-plain"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="routeToggleTask('${r._key}','${r.id}','${s.id}','${t.id}',this.checked)"><span>${escapeHtml(t.label)}</span></label>`).join('');
     return `<div class="dep-stop${isCur ? ' cur' : ''}"><div class="num">${i + 1}</div><div class="bd">
       <b>${escapeHtml(s.name)}</b><small>${escapeHtml(s.address || '')}${s.keybox ? ' · 🔑 ' + escapeHtml(s.keybox) : ''}</small>
       ${s.notes ? `<div class="nt">📝 ${escapeHtml(s.notes)}</div>` : ''}
       ${(s.mat || []).length ? `<div class="nt">🧰 ${s.mat.map(m => (m.done ? '✓ ' : '') + escapeHtml(m.label)).join(' · ')}</div>` : ''}
       ${isCur || nT <= 3 ? `<div class="tks">${tasksHtml}</div>` : `<small>${nT} tâches</small>`}
-      <div class="bt">${s.address ? `<button class="w" onclick="openWazeAddress(${_routeJsArg(s.address)})">🧭 Waze</button>` : ''}<button onclick="openRouteStopDetail('${r._key}','${r.id}','${s.id}')">📋 Détail</button>${isCur ? `<button class="g" onclick="routeFinishStop('${r._key}','${r.id}','${s.id}')">✅ Fini</button>` : ''}</div>
+      <div class="bt">${s.address ? `<button class="w" onclick="openWazeAddress(${_routeJsArg(s.address)})">🧭 Waze</button>` : ''}<button onclick="openRouteStopDetail('${r._key}','${r.id}','${s.id}')">📋 Détail</button><button onclick="depPointStop('${r._key}','${r.id}','${s.id}')">⏱️ Pointer</button>${isCur && !ro ? `<button class="g" onclick="routeFinishStop('${r._key}','${r.id}','${s.id}')">✅ Fini</button>` : ''}</div>
     </div></div>`;
   };
-  box.innerHTML = `<div class="dep2">${_cwTabsHtml()}${pick}
+  box.innerHTML = `<div class="dep2">${_depChefTabsHtml()}${_depOuvChefBar()}${pick}${ro ? '<div class="hint" style="margin:0 2px 8px;">👀 Feuille de ton chef : tu vois tout et tu pointes ; c\'est lui qui coche les tâches.</div>' : ''}
     <div class="dep-hero"><small>DE ${escapeHtml(((r.createdBy && r.createdBy.name) || '').toUpperCase())} · ${escapeHtml(when.toUpperCase())}</small>
       <b>${stops.length} arrêt${stops.length > 1 ? 's' : ''} · ${tasks.length} tâche${tasks.length > 1 ? 's' : ''}</b>
       <div class="pg"><i style="width:${pct}%"></i></div><small>${doneT} tâche${doneT > 1 ? 's' : ''} faite${doneT > 1 ? 's' : ''} sur ${tasks.length}</small></div>
@@ -75910,15 +75972,48 @@ function ephCreate(cb, pre){
 }
 /* ═══ v5.41.529 — 🗓️ Ma semaine : la feuille de route que le chef se fait lui-même (visible que par lui) ═══
    Ligne rwood_sync « chef_week_v1_<compte> » = { items:[{ id, siteId|null, name, address, days:[aaaa-mm-jj], tasks:[{id,label,done}], photos:[{url}], updatedAt }], tomb:{} } */
-let _depChefTab = (() => { try{ return localStorage.getItem('rwood-chef-tab') || ((data.settings && data.settings.myProfile && data.settings.myProfile.role) === 'ouvrier' ? 'week' : 'cond'); }catch(e){ return 'cond'; } })();
+let _depChefTab = (() => { try{ const v = localStorage.getItem('rwood-chef-tab'); return v === 'prep' ? 'prep' : 'cond'; }catch(e){ return 'cond'; } })();
 let _cwFor = null;
 /* v5.41.530 — la semaine affichée : la mienne (chef) ou celle du chef que l'ouvrier a choisi (même chef que « À faire ») */
 function _cwIsOuv(){ return _depRole() === 'ouvrier'; }
 function _cwOwner(){ return _cwIsOuv() ? (typeof _getFollowedChefId === 'function' ? _getFollowedChefId() : null) : (_gpAcc() || 'moi'); }
 function _cwRO(){ return _cwIsOuv(); }
 let _cw = null, _cwLoading = false, _cwWeek = null, _cwDay = null, _cwE = null;
+/* v5.41.532 — ouvrier : choisir le chef dont il suit la feuille de route (même chef que « À faire ») */
+function _depOuvChefBar(){
+  if(_depRole() !== 'ouvrier') return '';
+  const id = typeof _getFollowedChefId === 'function' ? _getFollowedChefId() : null;
+  if(!window._ctRegCache) _ctReg().then(() => { if(document.querySelector('#view-depannages.active')) depRender(); });
+  const u = id ? (window._ctRegCache || []).find(x => x.authId === id) : null;
+  return `<div class="cw-who">🦺 <span>${id ? 'Feuille de route de <b>' + escapeHtml(u ? u.name : 'ton chef') + '</b>' : 'Choisis ton chef pour voir sa feuille de route'}</span><button onclick="_depOuvChefChange()">${id ? 'Changer' : 'Choisir'}</button></div>`;
+}
+function _depOuvChefPick(box){
+  if(!window._ctRegCache){ box.innerHTML = '<div class="dep2"><div class="hint" style="text-align:center;padding:24px;">Chargement…</div></div>'; _ctReg().then(() => depRender()); return; }
+  const chefs = (window._ctRegCache || []).filter(u => u.role === 'chef').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
+  box.innerHTML = `<div class="dep2"><div class="dep-empty"><span>🦺</span><b>Avec quel chef es-tu ?</b><br>Tu verras sa feuille de route : chantiers, tâches, photos, itinéraires, et tu pointeras tes heures.</div>
+    <div class="cw-chefs">${chefs.map(u => `<button onclick="_depOuvSetChef('${escapeHtml(u.authId)}')">${_chatAvatarHtml({ authId:u.authId, name:u.name, role:'chef' }, 36)}<b>${escapeHtml(u.name)}</b></button>`).join('') || '<div class="hint">Aucun chef d\'équipe inscrit pour l\'instant.</div>'}</div></div>`;
+}
+function _depOuvChefChange(){ const b = document.getElementById('depBody'); if(b){ _routeCache = []; _depOuvChefPick(b); } }
+async function _depOuvSetChef(id){
+  try{ if(typeof onChefTodoSelectorChange === 'function') await onChefTodoSelectorChange(id); else { _setFollowedChefId(id); pushMyUserRegistration(); } }catch(e){ try{ _setFollowedChefId(id); }catch(_){} }
+  const b = document.getElementById('depBody'); if(b) b.dataset.loaded = ''; _depChefIdx = 0;
+  try{ await routeLoadMine(); _routeUpdateIndicators(); }catch(e){} depRender();
+}
+/* ⏱️ Pointer sur l'arrêt d'une feuille de route (aujourd'hui) */
+function depPointStop(key, rid, sid){
+  const r = (_routeCache || []).find(x => x.id === rid), st = r && (r.stops || []).find(x => x.id === sid); if(!st) return;
+  const it = { siteId:st.siteId && (data.sites || []).some(x => x.id === st.siteId) ? st.siteId : null, name:st.name, address:st.address || '' };
+  const dk = _cwIso(new Date()), wid = _ptsMe().workerId, day = data.attendance && data.attendance[dk], e = day && day.workers && wid ? day.workers[wid] : null;
+  const already = e && (e.mode === 'multi' || (day._sitePicked && (it.siteId ? day.siteId !== it.siteId || day.customSite : true)));
+  if(!already){ _cwPointGo(it, dk, false); return; }
+  _gcMenu({ title:'⏱️ ' + st.name, list:[
+    { i:'🔁', l:'Toute la journée ici (remplace)', fn:() => _cwPointGo(it, dk, false) },
+    { i:'＋', l:'Ajouter à ma journée (plusieurs chantiers)', fn:() => _cwPointGo(it, dk, true) }
+  ]}, innerWidth / 2 - 120, innerHeight / 2);
+}
+function _depChefTabsHtml(){ return _depRole() === 'chef' ? `<div class="cw-tabs"><button class="${_depChefTab !== 'prep' ? 'on' : ''}" onclick="_cwTab('cond')">🚚 Ma feuille de route</button><button class="${_depChefTab === 'prep' ? 'on' : ''}" onclick="_cwTab('prep')">📋 Préparer une feuille</button></div>` : ''; }
 function _cwTabsHtml(){ return `<div class="cw-tabs"><button class="${_depChefTab !== 'week' ? 'on' : ''}" onclick="_cwTab('cond')">🚚 Du conducteur</button><button class="${_depChefTab === 'week' ? 'on' : ''}" onclick="_cwTab('week')">🗓️ ${_cwIsOuv() ? 'Semaine du chef' : 'Ma semaine'}</button></div>`; }
-function _cwTab(k){ _depChefTab = k; try{ localStorage.setItem('rwood-chef-tab', k); }catch(e){} depRender(); }
+function _cwTab(k){ _depChefTab = k; try{ localStorage.setItem('rwood-chef-tab', k); }catch(e){} if(k === 'prep' && !_depTasks) _depLoad(true).then(() => depRender()); depRender(); }
 function _cwKey(){ return 'chef_week_v1_' + (_cwOwner() || 'aucun'); }
 function _cwIso(d){ const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); }
 function _cwMonday(iso){ const d = new Date(iso + 'T12:00:00'); const k = (d.getDay() + 6) % 7; d.setDate(d.getDate() - k); return _cwIso(d); }
@@ -83391,6 +83486,7 @@ async function _rwFindRoute(routeId){
   return (_routeCache || []).find(r => r.id === routeId) || null;
 }
 function _rwOpenPinnedPopup(tab){
+  if(tab === 'route'){ try{ goTo('depannages'); }catch(_){} return; }   // v5.41.532
   const pop = document.getElementById('pinnedNotePopup');
   if(pop && !pop.classList.contains('open')) togglePinnedNotePopup();
   setTimeout(() => { try{ _pinnedSwitchTab(tab); if(tab === 'route') renderRoutePane(); }catch(_){} }, 700);
