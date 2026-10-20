@@ -3289,6 +3289,8 @@
   .ef-seg{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:12px; } .ef-seg button{ padding:12px 6px; border-radius:12px; border:1.5px solid var(--line); background:var(--card2,rgba(255,255,255,.03)); color:var(--ink); font-weight:900; font-size:14px; font-family:inherit; cursor:pointer; } .ef-seg button.on{ border-color:var(--wood); background:rgba(232,172,61,.16); color:#f0c870; }
   .ef-opt{ display:flex; align-items:center; gap:8px; margin-top:12px; font-weight:800; font-size:13.5px; } .ef-opt span{ flex:1; } .ef-opt button{ width:38px; height:38px; border-radius:10px; border:1.5px solid var(--line); background:none; color:var(--ink); font-size:18px; font-weight:900; cursor:pointer; } .ef-opt b{ min-width:24px; text-align:center; font-size:18px; }
   .ef-chk{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; } .ef-chk label{ display:inline-flex; align-items:center; gap:6px; border:1.5px solid var(--line); border-radius:999px; padding:6px 12px; font-size:13px; font-weight:800; cursor:pointer; } .ef-chk label.on{ border-color:var(--wood); background:rgba(232,172,61,.16); } .ef-chk input{ width:16px; height:16px; margin:0; accent-color:#E8AC3D; }
+  .ef-wk button{ display:flex; flex-direction:column; align-items:center; gap:2px; } .ef-wk small{ font-size:11px; font-weight:700; opacity:.75; } .ef-wk{ grid-template-columns:1fr 1fr 1fr !important; }
+  .ef-wkl{ margin:10px 0 0; padding:10px 12px; border-radius:12px; background:rgba(79,174,108,.12); border:1.5px solid rgba(79,174,108,.45); font-size:13.5px; font-weight:700; } .ef-wkl b{ color:#7fd99a; font-size:15px; }
   .ef-sum{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:10px 0 0; } .ef-sum > div{ background:var(--card); border:1.5px solid var(--line); border-radius:14px; padding:10px; text-align:center; } .ef-sum b{ display:block; font-size:24px; font-weight:900; color:#f0c870; } .ef-sum small{ font-size:11.5px; color:var(--ink-soft); font-weight:700; line-height:1.3; }
   .ef-warn{ margin:10px 0 0; padding:12px; border-radius:12px; background:rgba(229,72,77,.12); border:1.5px solid rgba(229,72,77,.5); font-weight:700; font-size:13.5px; } .ef-warn div{ display:flex; gap:8px; margin-top:8px; } .ef-warn button{ flex:1; padding:10px; border-radius:10px; border:1.5px solid var(--wood); background:rgba(232,172,61,.16); color:#f0c870; font-weight:900; font-family:inherit; cursor:pointer; }
   .ef-3d{ position:relative; margin-top:10px; border-radius:16px; overflow:hidden; background:radial-gradient(ellipse at 50% 30%, #2a221b, #120e0b); border:1.5px solid var(--line); } .ef-3d canvas{ display:block; width:100%; height:380px; touch-action:none; cursor:grab; }
@@ -42915,12 +42917,21 @@ function _efM(x){ return _efR(x).toFixed(2).replace('.', ',') + ' m'; }
 /* v5.41.556 — règles de montage : on part du sol avec un cadre H / poteau de 2 m sur pied (5 à 40 cm) → 1er plancher entre 2,05 et 2,40 m,
    puis un plancher tous les 2 m ; seul le DERNIER peut être décalé de 50 cm en 50 cm (rosaces) au-dessus de l'avant-dernier.
    Donc : dernier plancher = pied (5 à 40 cm) + un multiple de 50 cm (au moins 2 m). Sinon on propose la hauteur possible juste en dessous / au-dessus. */
+/* hauteurs possibles du dernier plancher : pied (5 à 40 cm) + T, avec T = 2, 3, 3,5, 4, 5, 5,5… (jamais 50 cm au-dessus de l'avant-dernier : les poteaux dépasseraient trop) */
+function _efTs(){ const o = []; for(let n = 1; n < 30; n++){ o.push(2 * n); o.push(2 * n + 1); o.push(2 * n + 1.5); } return o.sort((x, y) => x - y); }
+function _efReach(H){ const e = 1e-6; for(const T of _efTs()) if(H >= T + 0.05 - e && H <= T + 0.40 + e) return T; return 0; }
+function _efNear(H){ let lo = null, hi = null; _efTs().forEach(T => { const x = _efR(T + 0.05), y = _efR(T + 0.40); if(y < H && (lo === null || y > lo)) lo = y; if(x > H && (hi === null || x < hi)) hi = x; }); return { lo, hi }; }
+/* plancher idéal selon le travail : gouttière à hauteur de hanche (≈ 1 m au-dessus du plancher) · sous l'avant-toit, bras levés (≈ 2 m) */
+function _efPick(target, below){ let best = null; const e = 1e-6;
+  _efTs().forEach(T => { const x = _efR(T + 0.05), y = _efR(T + 0.40); let c;
+    if(below){ if(x > target + e) return; c = Math.min(y, target); } else c = Math.max(x, Math.min(y, target));
+    if(best === null || Math.abs(c - target) < Math.abs(best - target) - e) best = _efR(c); });
+  return best; }
 function _efLevels(H, mode){
   const A0 = 0.05, A1 = 0.40, eps = 1e-6;
-  if(H < 2 + A0 - eps) return { ok:false, lo:null, hi:_efR(2 + A0) };
-  const f = _efR(((H - A0) % 0.5 + 0.5) % 0.5);   // reste au-dessus de 5 cm, dans un pas de 50 cm
-  if(f > A1 - A0 + eps && f < 0.5 - eps) return { ok:false, lo:_efR(H - (f - (A1 - A0))), hi:_efR(H + (0.5 - f)) };
-  const a = _efR(A0 + (f >= 0.5 - eps ? 0 : f)), T = _efR(H - a);
+  const iv0 = _efReach(H);
+  if(!iv0) return Object.assign({ ok:false }, _efNear(H));
+  const a = _efR(H - iv0), T = iv0;
   const nReg = Math.ceil(T / 2 - eps) - 1, decks = [];
   for(let i = 1; i <= nReg; i++) decks.push(_efR(a + 2 * i));
   decks.push(_efR(H));
@@ -42937,10 +42948,13 @@ function _efLevels(H, mode){
   return out;
 }
 function _efCalc(){
-  const s = ef.s, L = _efNum(s.L), H = _efNum(s.H), mode = s.mode === 'P' ? 'P' : 'H', ppt = Math.max(1, Math.min(4, parseInt(s.ppt, 10) || 2));
+  const s = ef.s, L = _efNum(s.L), mode = s.mode === 'P' ? 'P' : 'H', ppt = Math.max(1, Math.min(4, parseInt(s.ppt, 10) || 2));
+  const wk = s.wk === 'g' || s.wk === 't' ? s.wk : 'p', ref = _efNum(s.ref);
+  let H = _efNum(s.H);
+  if(wk !== 'p'){ if(ref <= 0) return null; H = _efPick(wk === 'g' ? ref - 1.0 : ref - 1.9, wk === 't'); if(!H) return null; }   // avant-toit : au moins 1,90 m de hauteur libre
   if(L <= 0 || H <= 0) return null;
   const nt = Math.max(1, Math.ceil(L / EF_T - 1e-6)), np = nt + 1, lv = _efLevels(H, mode);
-  if(!lv.ok) return { nt, np, L, H, mode, lv };
+  if(!lv.ok) return { nt, np, L, H, mode, lv, wk, ref };
   const nd = lv.decks.length, all = s.pf !== 'top', Q = [];   // v5.41.555 — plateaux à tous les étages ou au dernier seulement
   const nPl = all ? nd : 1, nLow = nd - nPl;   // étages sans plateaux : seule la travée trappe est montée
   const add = (k, l, n, note) => { if(n > 0) Q.push({ k, l, n, note:note || '' }); };
@@ -42963,14 +42977,17 @@ function _efCalc(){
   if(s.dg !== false) add('dg', 'Diagonales 3 m × 2 m', Math.ceil(nt / 5) * lv.lifts, '1 travée sur 5, à chaque hauteur');
   const am = s.am !== false ? Math.max(1, Math.floor(H / 4)) * Math.ceil(np / 2) : 0;
   if(am) add('am', 'Amarrages (points d\'ancrage)', am, '1 file sur 2, tous les 4 m de haut — à vérifier');
-  return { nt, np, L, H, mode, lv, Q, ppt, all };
+  return { nt, np, L, H, mode, lv, Q, ppt, all, wk, ref };
 }
 function efMount(){
   const host = document.getElementById('calcMode-echaf'); if(!host) return;
-  if(!ef){ const sv = _efStore(); ef = { s:Object.assign({ L:'12', H:'6,15', mode:'H', ppt:2, pf:'all', pl:true, dg:true, am:true }, sv), cam:{ yaw:-0.75, pitch:0.42, dist:0 }, drag:null }; }
+  if(!ef){ const sv = _efStore(); ef = { s:Object.assign({ L:'12', H:'6,15', wk:'g', ref:'7', mode:'H', ppt:2, pf:'all', pl:true, dg:true, am:true }, sv), cam:{ yaw:-0.75, pitch:0.42, dist:0 }, drag:null }; }
   host.innerHTML = `<div class="card ef">
-    <div class="ef-in"><label>↔️ Largeur à couvrir<span><input type="text" inputmode="decimal" id="efL" value="${escapeHtml(ef.s.L)}" oninput="ef.s.L=this.value;efUpd()"> m</span></label>
-      <label>↕️ Hauteur du dernier plancher<span><input type="text" inputmode="decimal" id="efH" value="${escapeHtml(ef.s.H)}" oninput="ef.s.H=this.value;efUpd()"> m</span></label></div>
+    <div class="ef-opt" style="margin:0 0 6px;"><span>Je travaille…</span></div>
+    <div class="ef-seg ef-wk">${[['g', '🪣 Gouttière', 'à hauteur de hanche'], ['t', '🏠 Sous l\'avant-toit', 'bras au-dessus de la tête'], ['p', '📏 Autre', 'je donne le plancher']].map(([k, l, d]) => `<button class="${(ef.s.wk || 'g') === k ? 'on' : ''}" onclick="ef.s.wk='${k}';efMount()">${l}<small>${d}</small></button>`).join('')}</div>
+    <div class="ef-in" style="margin-top:10px;"><label>↔️ Largeur à couvrir<span><input type="text" inputmode="decimal" id="efL" value="${escapeHtml(ef.s.L)}" oninput="ef.s.L=this.value;efUpd()"> m</span></label>
+      ${(ef.s.wk || 'g') === 'p' ? `<label>↕️ Hauteur du dernier plancher<span><input type="text" inputmode="decimal" id="efH" value="${escapeHtml(ef.s.H)}" oninput="ef.s.H=this.value;efUpd()"> m</span></label>`
+        : `<label>↕️ Hauteur ${(ef.s.wk || 'g') === 'g' ? 'de la gouttière' : 'sous l\'avant-toit'}<span><input type="text" inputmode="decimal" id="efRef" value="${escapeHtml(ef.s.ref || '')}" placeholder="ex : 7" oninput="ef.s.ref=this.value;efUpd()"> m</span></label>`}</div>
     <div class="ef-seg"><button class="${ef.s.mode !== 'P' ? 'on' : ''}" onclick="ef.s.mode='H';efMount()">🅷 Cadres en H</button><button class="${ef.s.mode === 'P' ? 'on' : ''}" onclick="ef.s.mode='P';efMount()">🔩 Tout en poteaux</button></div>
     <div class="ef-opt"><span>Plateaux par travée</span><button onclick="ef.s.ppt=Math.max(1,(ef.s.ppt||2)-1);efMount()">−</button><b>${ef.s.ppt || 2}</b><button onclick="ef.s.ppt=Math.min(4,(ef.s.ppt||2)+1);efMount()">＋</button></div>
     <div class="ef-opt" style="margin-bottom:-4px;"><span>Plateaux</span></div>
@@ -42999,9 +43016,11 @@ function efUpd(){
   const sum = document.getElementById('efSum'), lst = document.getElementById('efList'); if(!sum || !lst) return;
   if(!r){ sum.innerHTML = '<div class="hint" style="margin:8px 2px;">Indique la largeur et la hauteur du dernier plancher.</div>'; lst.innerHTML = ''; efDraw(); return; }
   if(!r.lv.ok){
+    if(r.wk !== 'p'){ sum.innerHTML = '<div class="ef-warn">⚠️ Hauteur trop basse pour un échafaudage (1er plancher à 2,05 m minimum).</div>'; lst.innerHTML = ''; efDraw(); return; }
     sum.innerHTML = `<div class="ef-warn">⚠️ Avec ${r.mode === 'P' ? 'des poteaux (rosaces tous les 50 cm)' : 'des cadres de 2 m et 1 m'} et des pieds de 5 à 40 cm, le dernier plancher ne peut pas être à ${_efM(r.H)} (1er plancher entre 2,05 et 2,40 m, puis tous les 2 m, le dernier réglable de 50 en 50 cm). Je peux le mettre :<div>${r.lv.lo ? `<button onclick="efSetH(${r.lv.lo})">↓ plus bas : ${_efM(r.lv.lo)}</button>` : ''}${r.lv.hi ? `<button onclick="efSetH(${r.lv.hi})">↑ plus haut : ${_efM(r.lv.hi)}</button>` : ''}</div></div>`;
     lst.innerHTML = ''; efDraw(); return; }
-  sum.innerHTML = `<div class="ef-sum"><div><b>${r.nt}</b><small>travée${r.nt > 1 ? 's' : ''} de 3 m<br>= ${_efM(r.nt * 3)}</small></div><div><b>${r.lv.decks.length}</b><small>plancher${r.lv.decks.length > 1 ? 's' : ''}<br>${r.lv.decks.map(_efM).join(' · ')}</small></div><div><b>${Math.round(r.lv.a * 100)} cm</b><small>réglage<br>des pieds</small></div></div>
+  const wkLine = r.wk !== 'p' ? `<div class="ef-wkl">${r.wk === 'g' ? '🪣 Gouttière' : '🏠 Avant-toit'} à ${_efM(r.ref)} → dernier plancher à <b>${_efM(r.H)}</b> : ${r.wk === 'g' ? 'la gouttière arrive à ' + Math.round((r.ref - r.H) * 100) + ' cm au-dessus du plancher (hanche ≈ 1 m)' : Math.round((r.ref - r.H) * 100) + ' cm sous l\'avant-toit (bras levés)'}.</div>` : '';
+  sum.innerHTML = wkLine + `<div class="ef-sum"><div><b>${r.nt}</b><small>travée${r.nt > 1 ? 's' : ''} de 3 m<br>= ${_efM(r.nt * 3)}</small></div><div><b>${r.lv.decks.length}</b><small>plancher${r.lv.decks.length > 1 ? 's' : ''}<br>${r.lv.decks.map(_efM).join(' · ')}</small></div><div><b>${Math.round(r.lv.a * 100)} cm</b><small>réglage<br>des pieds</small></div></div>
     ${r.nt * 3 - r.L > 0.01 ? `<div class="hint" style="margin:4px 2px 0;">L'échafaudage fait ${_efM(r.nt * 3)} pour couvrir ${_efM(r.L)} (dépasse de ${_efM(r.nt * 3 - r.L)}).</div>` : ''}`;
   const tot = r.Q.reduce((a, q) => a + q.n, 0);
   lst.innerHTML = `<div class="card ef-l"><div class="ef-lh"><b>📋 Matériel · ${tot} pièces</b><button onclick="efShare()">📤 Partager</button></div>
@@ -43009,7 +43028,7 @@ function efUpd(){
     <div class="hint" style="margin-top:8px;">Estimation Altrad Plettac / Mefran, profondeur 0,89 m. Vérifie les amarrages et diagonales avec la notice de montage.</div></div>`;
   efDraw();
 }
-function efSetH(h){ ef.s.H = String(h).replace('.', ','); const i = document.getElementById('efH'); if(i) i.value = ef.s.H; efUpd(); }
+function efSetH(h){ ef.s.wk = 'p'; ef.s.H = String(h).replace('.', ','); efMount(); return; const i = document.getElementById('efH'); if(i) i.value = ef.s.H; efUpd(); }
 async function efShare(){
   const r = ef && ef.r; if(!r || !r.Q) return;
   const txt = `Échafaudage ${r.mode === 'P' ? 'en poteaux' : 'en cadres H'} — ${_efM(r.nt * 3)} × plancher à ${_efM(r.H)}\n${r.nt} travées · ${r.lv.decks.length} planchers (${r.lv.decks.map(_efM).join(', ')}) · pieds à ${Math.round(r.lv.a * 100)} cm\n\n` + r.Q.map(q => `${q.n} × ${q.l}${q.note ? ' (' + q.note + ')' : ''}`).join('\n');
@@ -43035,6 +43054,7 @@ function efDraw(){
   for(let x = -1; x <= Lx + 1; x += 1) line([x, 0, -1.5], [x, 0, D + 1.5], 'rgba(255,255,255,.06)', 1);
   for(let z = -1.5; z <= D + 1.5; z += 0.5) line([-1, 0, z], [Lx + 1, 0, z], 'rgba(255,255,255,.06)', 1);
   quad([[-0.2, 0, -0.25], [Lx + 0.2, 0, -0.25], [Lx + 0.2, top + 0.3, -0.25], [-0.2, top + 0.3, -0.25]], 'rgba(120,110,100,.18)');   // façade
+  if(r.wk !== 'p' && r.ref > 0){ quad([[-0.4, r.ref, -0.25], [Lx + 0.4, r.ref, -0.25], [Lx + 0.4, r.ref + 0.6, -1.4], [-0.4, r.ref + 0.6, -1.4]], 'rgba(160,70,50,.55)'); if(r.wk === 'g') line([-0.4, r.ref - 0.05, 0.05], [Lx + 0.4, r.ref - 0.05, 0.05], '#8a9aa8', 5); else quad([[-0.4, r.ref, -0.25], [Lx + 0.4, r.ref, -0.25], [Lx + 0.4, r.ref, 0.6], [-0.4, r.ref, 0.6]], 'rgba(160,70,50,.45)'); }
   const TUBE = '#C9CDD2', RED = '#E5484D';
   for(let i = 0; i <= r.nt; i++){ const x = i * EF_T;
     [0, D].forEach(z => { line([x, 0, z], [x, lv.a, z], '#E8AC3D', 3); quad([[x - .12, 0.005, z - .12], [x + .12, 0.005, z - .12], [x + .12, 0.005, z + .12], [x - .12, 0.005, z + .12]], '#8a7356'); });
@@ -48349,9 +48369,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.556';
+const APP_VERSION = '5.41.557';
 
 const CHANGELOG = [
+  {
+    version: '5.41.557',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🏗️', text: "Échafaudage : « Je travaille… » 🪣 Gouttière (à hauteur de hanche) ou 🏠 Sous l'avant-toit (bras au-dessus de la tête) : tu donnes la hauteur de la gouttière / de l'avant-toit, l'outil place lui-même le dernier plancher à la bonne hauteur possible. « 📏 Autre » pour donner directement le plancher. Plus jamais de dernier plancher à 50 cm de l'avant-dernier (les poteaux dépasseraient trop)." }
+    ]
+  },
   {
     version: '5.41.556',
     date: '20/10/2026',
