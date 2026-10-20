@@ -743,6 +743,13 @@
   .gf-f.gf-t.bur .gf-band{ background:rgba(155,89,208,.18); }
   .rv-fcs{ display:flex; gap:6px; flex-wrap:wrap; } .rv-fc{ border:1.5px solid rgba(255,255,255,.25); background:rgba(255,255,255,.08); color:#fff; border-radius:16px; padding:6px 11px; font-weight:800; font-size:13px; cursor:pointer; }
   .rv-fc.on{ background:#E8AC3D; border-color:#E8AC3D; color:#1b1714; } .rv-fc.add{ border-style:dashed; color:#f0c870; } .rv-fc.bur{ border-color:rgba(155,89,208,.7); }
+  .tk-2b{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px; } .tk-2b .btn{ width:auto; margin:0; display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 6px; font-weight:900; }
+  .tkc{ display:flex; gap:12px; align-items:center; width:100%; text-align:left; background:var(--card2,rgba(255,255,255,.04)); border:1.5px solid var(--border,#3a3128); border-radius:14px; padding:14px; margin:0 0 10px; color:inherit; cursor:pointer; font:inherit; }
+  .tkc b{ display:block; font-size:16px; font-weight:900; } .tkc small{ display:block; font-size:12.5px; opacity:.75; margin-top:3px; line-height:1.35; font-weight:600; }
+  .tkc-i{ font-size:30px; flex-shrink:0; } .tkc-p{ border-color:var(--accent,#E8AC3D); background:rgba(232,172,61,.10); } .tkc:hover{ filter:brightness(1.1); }
+  .tkc-who{ border:1.5px solid var(--accent,#E8AC3D); border-radius:12px; padding:4px 10px 10px; margin-bottom:6px; }
+  .tkc-b{ display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:14px; font-weight:900; } .tkc-b small{ font-weight:700; font-size:11.5px; opacity:.85; }
+  .tk-2b small{ font-weight:700; font-size:11.5px; opacity:.85; }
   /* v5.41.538 — À envoyer épuré */
   .dk-gn{ white-space:normal !important; overflow:visible !important; flex:1; font-size:14.5px; } .dk-gh{ margin:12px 2px 6px; } .dk-gh .dk-gb:first-of-type{ margin-left:auto; }
   .skb-c.dk-plain{ border-left:1px solid var(--line); } .skb-c.dk-plain:hover{ border-color:var(--wood); } .dk-plain .dk-tr{ align-items:flex-start; } .dk-plain .dep-ck{ margin-top:1px; } .dk-plain small{ margin-left:34px !important; }
@@ -10034,6 +10041,53 @@ const STORAGE_KEY = 'chantier-data';
    appelées tôt dans le cycle de vie de l'app. Les garder ici évite tout risque
    lié à la "temporal dead zone" des `const` (référence avant déclaration). */
 const siteColors = ['#C17A3D', '#6FA37E', '#E07A63', '#7B9FD1', '#D4B85A', '#A084CA', '#5FB4B8', '#D17BA6'];
+/* v5.41.542 — couleur de chantier automatique : chaque chantier a sa propre couleur (bien distincte),
+   choisie parmi celles qui ne sont pas déjà prises. Les chantiers éphémères restent gris. */
+const SITE_AUTO_COLS = ['#E5484D','#F07F2D','#C9A227','#7CB342','#2E9E5B','#14A3A3','#2D9CDB','#3F63D6','#6E4BD8','#A64AC9','#D9479A','#B23A48',
+  '#8B5E34','#5E7C16','#0F7C6E','#1F5FA0','#4B3B8F','#C2185B','#FF6F61','#9E7B5A','#556B8D','#7A1FA2'];
+function _siteColExtra(i){   // au-delà de la palette : teintes réparties (angle d'or), en hexa
+  const h = (i * 137.508 + 20) % 360 / 360, sa = .62, l = i % 2 ? .40 : .50;
+  const q = l < .5 ? l * (1 + sa) : l + sa - l * sa, p = 2 * l - q;
+  const f = t => { t = (t + 1) % 1; const v = t < 1/6 ? p + (q - p) * 6 * t : t < .5 ? q : t < 2/3 ? p + (q - p) * (2/3 - t) * 6 : p; return Math.round(v * 255).toString(16).padStart(2, '0'); };
+  return ('#' + f(h + 1/3) + f(h) + f(h - 1/3)).toUpperCase();
+}
+function _siteIsEph(s){ return !!s && s.stage === 'ephemere'; }
+function _siteIsOn(s){ if(!s || s._deleted || s.status === 'termine') return false; try{ const st = siteStage(s); return !(st && (st.phase === 'archive' || st.phase === 'termine')); }catch(_){ return true; } }
+function siteAutoColor(exceptId, taken){
+  const used = {}, usedAll = {};
+  (data.sites || []).forEach(x => { if(!x || x.id === exceptId || _siteIsEph(x) || !x.color) return; const c = String(x.color).toLowerCase(); usedAll[c] = (usedAll[c] || 0) + 1; if(_siteIsOn(x)) used[c] = (used[c] || 0) + 1; });
+  if(taken) Object.keys(taken).forEach(c => { used[c] = (used[c] || 0) + taken[c]; usedAll[c] = (usedAll[c] || 0) + taken[c]; });
+  const L = SITE_AUTO_COLS.slice(); for(let i = 0; L.length < Object.keys(usedAll).length + 1 || L.length < SITE_AUTO_COLS.length; i++) L.push(_siteColExtra(i));
+  const free = L.find(c => !used[c.toLowerCase()] && !usedAll[c.toLowerCase()]) || L.find(c => !used[c.toLowerCase()]);
+  if(free) return free;
+  return L.slice().sort((a, b) => (used[a.toLowerCase()] || 0) - (used[b.toLowerCase()] || 0))[0];
+}
+/* Une fois (patron / conducteur) : redonne à tous les chantiers existants une couleur bien à eux.
+   Ordre stable (en cours d'abord, puis par date de création) → même résultat sur chaque appareil. */
+function siteColorsAutoRun(force){
+  try{
+    const role = data.settings && data.settings.myProfile && data.settings.myProfile.role;
+    if(role !== 'patron' && role !== 'conducteur') return 0;
+    if(!data.settings) data.settings = {};
+    const all = (data.sites || []).filter(x => x && x.id && !x._deleted && !x._plNew && !_siteIsEph(x));
+    const once = !data.settings._siteAutoColV1 || force;
+    const todo = once ? all : all.filter(x => !x.color || String(x.color).toUpperCase() === '#9AA0A6');   // ex-éphémère passé en vrai chantier
+    if(!todo.length){ data.settings._siteAutoColV1 = true; return 0; }
+    const key = x => (_siteIsOn(x) ? '0' : '1') + (x.createdAt || '9999') + x.id;
+    const now = new Date().toISOString(); let n = 0;
+    if(once){
+      const ord = all.slice().sort((a, b) => key(a) < key(b) ? -1 : 1), on = ord.filter(_siteIsOn), off = ord.filter(x => !_siteIsOn(x));
+      const L = SITE_AUTO_COLS.slice(); for(let i = 0; L.length < ord.length; i++) L.push(_siteColExtra(i));
+      on.forEach((x, i) => { if(x.color !== L[i]){ x.color = L[i]; x.updatedAt = now; n++; } });
+      off.forEach((x, i) => { const c = L[on.length + i];   // terminés : couleurs suivantes, pas de doublon
+      if(x.color !== c){ x.color = c; x.updatedAt = now; n++; } });
+    } else todo.forEach(x => { x.color = siteAutoColor(x.id); x.updatedAt = now; n++; });
+    data.settings._siteAutoColV1 = true;
+    if(n){ saveData(); if(typeof syncAllSitesCycle === 'function') setTimeout(syncAllSitesCycle, 500); }
+    return n;
+  }catch(e){ return 0; }
+}
+setTimeout(() => { siteColorsAutoRun(); setInterval(() => siteColorsAutoRun(), 120000); }, 20000);
 
 /* ============ Notybat STORAGE (IndexedDB + dossier externe) ============
    Les photos et gros fichiers ne passent plus par localStorage (limite ~5 Mo).
@@ -16832,6 +16886,7 @@ function _buildSiteFromForm(status){
     progress: 0,
     stockNeeds: {}, stockTaken: {},
     ownerDeviceId: getDeviceSyncId(),
+    color: siteAutoColor(),   // v5.41.542 — couleur bien à lui
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString() // voir mergeArrayById : sert à trancher entre versions concurrentes
   };
@@ -40728,7 +40783,7 @@ function applySiteFiche(fiche, targetSiteId){
       address: fiche.site.address,
       status: fiche.site.status,
       progress: fiche.site.progress,
-      color: fiche.site.color || siteColors[0],
+      color: fiche.site.color || siteAutoColor(),
       keyboxCode: fiche.site.keyboxCode || '',
       stockNeeds,
       stockTaken: {},
@@ -48064,9 +48119,30 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.539';
+const APP_VERSION = '5.41.542';
 
 const CHANGELOG = [
+  {
+    version: '5.41.542',
+    date: '20/10/2026',
+    entries: [
+      { icon: '🎨', text: "Couleur de chantier automatique : chaque nouveau chantier reçoit tout seul une couleur bien à lui, différente de celles déjà prises. Les chantiers déjà créés reçoivent chacun la leur une fois (fait par le patron ou un conducteur, puis partagé à tous). Les chantiers éphémères restent gris ; s'ils deviennent de vrais chantiers, ils prennent une couleur. On peut toujours la changer à la main dans les réglages du chantier." }
+    ]
+  },
+  {
+    version: '5.41.541',
+    date: '20/10/2026',
+    entries: [
+      { icon: '➕', text: "Tâches : « ＋ Tâche » propose maintenant 2 choix expliqués. 💾 Enregistrer : la tâche va dans « À envoyer », tu l'enverras plus tard. 📤 Envoyer : « À qui ? » et « Pour quand ? » en premier, et elle part tout de suite dans « Mes tâches » de la personne choisie." }
+    ]
+  },
+  {
+    version: '5.41.540',
+    date: '20/10/2026',
+    entries: [
+      { icon: '📤', text: "Nouvelle tâche : deux boutons — « 💾 Enregistrer » (pour l'envoyer plus tard) ou « 📤 Envoyer » tout de suite à la personne choisie, pour le jour choisi." }
+    ],
+  },
   {
     version: '5.41.539',
     date: '20/10/2026',
@@ -54434,7 +54510,7 @@ function confirmQRImport(){
     address:    p.a || '',
     status:     p.s || 'a-faire',
     progress:   p.p || 0,
-    color:      p.c || '',
+    color:      p.c || siteAutoColor(),
     keyboxCode: p.k || '',
     tileType:   p.t || '',
     info:       p.info || '',
@@ -74924,7 +75000,7 @@ function depRender(){
     const groups = new Map(); list.forEach(t => { const k = _depGroupKey(t); if(!groups.has(k)) groups.set(k, []); groups.get(k).push(t); });
     const gl = [...groups.values()];
     const todoHtml = (gl.length ? gl.map(g => _depTodoGroupHtml(g)).join('') : `<div class="dep-empty"><span>${DEP_POLES[_depPole] ? _depPoleIc(_depPole, 'dep-pic-empty') : '🛠️'}</span>${_depQ ? 'Aucune tâche ne correspond.' : 'Aucune tâche à faire.<br>Ajoute-en une avec « ＋ Tâche ».'}</div>`)
-      + `<button class="dk-add" onclick="depOpenEdit()">＋ Tâche</button>` + _depSheetHtml();
+      + `<button class="dk-add" onclick="depNewChoice()">＋ Tâche</button>` + _depSheetHtml();
     const n = k => k === 'sent' ? _depSentGroups().length : k === 'done' ? _depRepGroups().length : all.filter(t => _depInFilter(t, k)).length;   // En cours / Terminées : nombre de cartes
     const cols = [['todo', '📋 À envoyer', '#E8AC3D', todoHtml], ['sent', '📤 Envoyées', '#5B8DEF', _depSentHtml()], ['done', '✅ Faites', '#4FAE6C', _depReportsHtml()]];
     box.innerHTML = `<div class="dep2 dk">${_depChefTabsHtml()}${_depHeadHtml(gl.length)}
@@ -74962,7 +75038,7 @@ function depRender(){
     <div class="dep-pole">${Object.entries(DEP_POLES).map(([k, p]) => { const n = cnt('todo', k), u = k !== _depPole ? 0 : 0;
       return `<button class="${k === _depPole ? 'on' : ''}" style="--c:${p.c}" onclick="depSetPole('${k}')">${_depPoleIc(k)} ${p.l}${n ? '<small>' + n + '</small>' : ''}</button>`; }).join('')}</div>
     <div class="dep-stats">${tiles}</div>
-    <div class="dep-actions"><button class="p" onclick="depNewRouteChoice()">🚚 Feuille de route</button><button onclick="depOpenEdit()">＋ Tâche</button><button class="ic" onclick="depMapOpen()" title="Carte">🗺️</button></div>
+    <div class="dep-actions"><button class="p" onclick="depNewRouteChoice()">🚚 Feuille de route</button><button onclick="depNewChoice()">＋ Tâche</button><button class="ic" onclick="depMapOpen()" title="Carte">🗺️</button></div>
     ${_depFilter === 'arch' ? '<div class="dep-site"><span>📦 Archivées</span></div>' : ''}
     ${body}
     <button class="dep-archlink" onclick="depSetFilter('${_depFilter === 'arch' ? 'todo' : 'arch'}')">${_depFilter === 'arch' ? '‹ Retour aux tâches' : '📦 Archivées (' + nArch + ')'}</button></div>`;
@@ -74996,7 +75072,7 @@ function _depChipsHtml(){
 function _depHeadHtml(hasTodo){
   return `<div class="dk-top"><div class="nv-srch dk-srch">🔍<input type="search" placeholder="Rechercher un chantier, une tâche, une personne…" value="${escapeHtml(_depQ)}" oninput="_depQ=this.value;clearTimeout(window._depQT);window._depQT=setTimeout(()=>{depRender();const i=document.querySelector('.dk-srch input');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)"></div>
       <button class="btn btn-outline dk-b dk-map" onclick="depMapOpen()" title="Carte">🗺️<span> Carte</span></button>
-      <button class="btn btn-primary dk-b" onclick="depOpenEdit()">＋ Tâche</button></div>
+      <button class="btn btn-primary dk-b" onclick="depNewChoice()">＋ Tâche</button></div>
     <div class="dk-chips">${_depChipsHtml()}</div>`;
 }
 function _depTodoGroupHtml(g){   // v5.41.538 — épuré : rond + nom complet, puis les tâches (coche, URGENT, photos jointes, 🧰)
@@ -75058,7 +75134,7 @@ function depKbGo(k){ const kb = document.getElementById('depKb'), c = document.g
 /* v5.41.492 — « ＋ Ajouter une tâche à ce chantier » (chantier déjà choisi) */
 function depAddToSite(k){
   const t0 = (_depTasks || []).find(t => _depGroupKey(t) === k);
-  depOpenEdit();
+  depOpenEdit(null, false, 'save');
   if(!t0 || !_depEdit) return;
   _depEdit.pole = _depPoleOf(t0);
   if(t0.siteId){ depPickSite(t0.siteId); return; }
@@ -75089,7 +75165,7 @@ function _depTasksHtml(){
       + g.map(t => _depTaskCard(t, selectable)).join('');
   }).join('') || `<div class="hint" style="text-align:center;padding:22px 6px;">${_depFilter === 'todo' ? 'Aucune tâche à faire. Crée la première avec le bouton ci-dessus.' : 'Rien ici pour l\'instant.'}</div>`;
   const extra = _depFilter === 'done' && list.length ? `<button class="btn btn-outline btn-block" style="margin-top:6px;" onclick="depArchiveAllDone()">📦 Archiver toutes les terminées</button>` : '';
-  return `<div class="abs-g2" style="margin-bottom:8px;"><button class="btn btn-primary btn-block" onclick="depNewRouteChoice()">🚚 Créer une feuille de route</button><button class="btn btn-outline btn-block" onclick="depOpenEdit()">＋ Nouvelle tâche</button></div>
+  return `<div class="abs-g2" style="margin-bottom:8px;"><button class="btn btn-primary btn-block" onclick="depNewRouteChoice()">🚚 Créer une feuille de route</button><button class="btn btn-outline btn-block" onclick="depNewChoice()">＋ Nouvelle tâche</button></div>
     <button class="btn btn-outline btn-block" style="margin-bottom:10px;" onclick="depMapOpen()">🗺️ Voir les tâches sur la carte</button>
     <div class="dep-chips">${chips}</div>${selectable && list.length ? '<div class="hint" style="font-size:12px;margin:-2px 2px 8px;">Coche des tâches (plusieurs chantiers possibles) pour créer une feuille de route.</div>' : ''}
     ${body}${extra}${selectable ? _depSheetHtml() : ''}`;
@@ -75186,11 +75262,23 @@ async function depSendRoute(){
 }
 
 /* ── Création / modification d'une tâche ── */
-function depOpenEdit(id, direct){
+/* v5.41.541 — ＋ Tâche : choix « Enregistrer » ou « Envoyer », avec ce que ça fait */
+function depNewChoice(){
+  let ov = document.getElementById('modal-tkChoice'); if(ov) ov.remove();
+  ov = document.createElement('div'); ov.id = 'modal-tkChoice'; ov.className = 'modal-overlay open';
+  const go = m => `document.getElementById('modal-tkChoice').remove();depOpenEdit(null,false,'${m}')`;
+  ov.innerHTML = `<div class="modal tkc-m" style="max-width:420px;"><div class="modal-header"><h2>＋ Nouvelle tâche</h2><button class="modal-close" onclick="document.getElementById('modal-tkChoice').remove()">×</button></div>
+    <button class="tkc" onclick="${go('save')}"><span class="tkc-i">💾</span><span><b>Enregistrer la tâche</b><small>Elle va dans « À envoyer ». Tu l'enverras plus tard, seule ou avec d'autres.</small></span></button>
+    <button class="tkc tkc-p" onclick="${go('send')}"><span class="tkc-i">📤</span><span><b>Envoyer la tâche</b><small>Elle part tout de suite dans « Mes tâches » de la personne choisie.</small></span></button></div>`;
+  ov.addEventListener('click', e => { if(e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+}
+function depOpenEdit(id, direct, nm){
   const t = id ? (_depTasks || []).find(x => x.id === id) : null;
   window._depDirect = !t && !!direct;   // v5.41.461 — tâche créée directement pour la feuille en cours
   _depEdit = t ? JSON.parse(JSON.stringify(t)) : { id:null, mode:'site', siteId:'', siteName:'', address:'', keybox:'', keyboxMedia:[], title:'', actions:[], notes:'', media:[], mat:[], prio:'normal', pole:_depPoleNew(), kind:'autre' };
   if(!Array.isArray(_depEdit.mat)) _depEdit.mat = [];
+  if(!t && (nm === 'save' || nm === 'send')) _depEdit._nm = nm;
   if(t){ _depEdit.pole = _depPoleOf(t); _depEdit.kind = t.kind || 'autre'; }
   if(t) _depEdit.mode = t.siteId ? 'site' : 'free';
   // v5.41.499 — une seule liste « choses à faire » : le texte de la tâche + ses anciennes actions
@@ -75198,7 +75286,7 @@ function depOpenEdit(id, direct){
   if(t && !(t.status && t.status !== 'todo')) _depEdit.actions = [];
   let ov = document.getElementById('modal-depEdit'); if(ov) ov.remove();
   ov = document.createElement('div'); ov.id = 'modal-depEdit'; ov.className = 'modal-overlay open';
-  ov.innerHTML = `<div class="modal" style="max-width:480px;"><div class="modal-header"><h2>🛠️ ${t ? 'Tâche' : 'Nouvelle tâche'}</h2><button class="modal-close" onclick="depCloseEdit()">×</button></div><div id="depEditBody"></div></div>`;
+  ov.innerHTML = `<div class="modal" style="max-width:480px;"><div class="modal-header"><h2>${t ? '🛠️ Tâche' : nm === 'send' ? '📤 Envoyer une tâche' : nm === 'save' ? '💾 Nouvelle tâche à envoyer plus tard' : '🛠️ Nouvelle tâche'}</h2><button class="modal-close" onclick="depCloseEdit()">×</button></div><div id="depEditBody"></div></div>`;
   ov.addEventListener('click', e => { if(e.target === ov) depCloseEdit(); });
   document.body.appendChild(ov);
   _depEditRender();
@@ -75310,7 +75398,12 @@ function _depEditRender(){
   const chips = sites.slice(0, 8);
   if(site && !chips.some(x => x.id === site.id)) chips.push(site);   // chantier choisi (même terminé) visible en puce
   const more = sites.length > 8 ? sites.slice(8) : [];
+  const nm = !e.id && !window._depDirect ? (e._nm || '') : 'x';
+  const whoWhen = `<div class="tk-l">À qui ?</div>${_depWhoChips(e.sendTo || '', "_depEdit.sendTo='%v';_depEditRender()", false)}
+      <div class="tk-l">Pour quand ?</div>${_depWhenChips(e.whenK || 'today', e.whenD || '', "_depEdit.whenK='%k';_depEdit.whenD='%d';_depEditRender()")}`;
+  const sendLbl = e.sendTo ? 'à ' + escapeHtml(_depWhoName(e.sendTo)) + ' · ' + escapeHtml(_depWhenLbl(_depWhenObj(e.whenK || 'today', e.whenD || ''))) : 'choisis à qui';
   box.innerHTML = `${rep}${hist}<div class="dep-form">
+    ${nm === 'send' ? `<div class="tkc-who">${whoWhen}</div>` : ''}
     <div class="dep-step">1 · Pôle</div>
     <div class="dep-big2">${Object.entries(DEP_POLES).map(([k, p]) => `<button class="${e.pole === k ? 'on' : ''}" style="--c:${p.c}" onclick="_depEdit.pole='${k}';_depEditRender()"><span>${_depPoleIc(k, 'dep-pic-big')}</span>${p.l}</button>`).join('')}</div>
     <div class="dep-step">2 · Où ?</div>
@@ -75331,9 +75424,10 @@ function _depEditRender(){
     ${_depMediaGrid(e.media, 'depRmMedia', 'depAnnotMedia')}
     <div class="dep-big2 sm"><button onclick="depPickMedia('media')"><span>📷</span>Photos</button>${e.mode === 'site' && e.siteId ? `<button onclick="depSitePhotos()"><span>🏗️</span>Du chantier</button>` : ''}<button onclick="depAddSketch()"><span>📐</span>Croquis</button></div>
     <div class="dep-big2 sm" style="margin-top:12px;"><button class="${e.prio !== 'urgent' ? 'on' : ''}" style="--c:#8a7a66" onclick="_depEdit.prio='normal';_depEditRender()">Normale</button><button class="${e.prio === 'urgent' ? 'on' : ''}" style="--c:#E07A63" onclick="_depEdit.prio='urgent';_depEditRender()">🔥 Urgente</button></div>
-    ${!e.id && !window._depDirect ? `<div class="dep-step">📤 Envoyer</div><div class="tk-l">Pour quand</div>${_depWhenChips(e.whenK || 'today', e.whenD || '', "_depEdit.whenK='%k';_depEdit.whenD='%d';_depEditRender()")}
-      <div class="tk-l">À qui</div>${_depWhoChips(e.sendTo || '', "_depEdit.sendTo='%v';_depEditRender()", true)}` : ''}
-    <button class="btn btn-primary btn-block dep-save" onclick="depSaveEdit()">${window._depDirect ? '➕ Ajouter aux tâches à envoyer' : e.id ? '💾 Enregistrer' : e.sendTo ? '📤 Envoyer à ' + escapeHtml(_depWhoName(e.sendTo)) + ' · ' + escapeHtml(_depWhenLbl(_depWhenObj(e.whenK || 'today', e.whenD || ''))) : '💾 Enregistrer (à envoyer plus tard)'}</button>
+    ${nm === 'save' ? `<button class="btn btn-outline btn-block dep-save tkc-b" onclick="depSaveEdit('save')">💾 Enregistrer<small>va dans « À envoyer »</small></button>`
+      : nm === 'send' ? `<button class="btn btn-primary btn-block dep-save tkc-b" onclick="depSaveEdit('send')">📤 Envoyer<small>${sendLbl}</small></button>`
+      : nm === '' ? `<div class="dep-step">📤 Envoyer</div>${whoWhen}<div class="tk-2b"><button class="btn btn-outline dep-save" onclick="depSaveEdit('save')">💾 Enregistrer<small>pour l'envoyer plus tard</small></button><button class="btn btn-primary dep-save" onclick="depSaveEdit('send')">📤 Envoyer<small>${sendLbl}</small></button></div>`
+      : `<button class="btn btn-primary btn-block dep-save" onclick="depSaveEdit()">${window._depDirect ? '➕ Ajouter aux tâches à envoyer' : '💾 Enregistrer'}</button>`}
     ${e.id ? `<div class="abs-g2" style="margin-top:8px;"><button class="btn btn-outline btn-block" onclick="depArchive('${e.id}', ${e.archived ? 'false' : 'true'})">${e.archived ? 'Désarchiver' : '📦 Archiver'}</button><button class="btn btn-outline btn-block" style="color:var(--red,#E07A63);" onclick="depDelete('${e.id}')">🗑️ Supprimer</button></div>` : ''}</div>`;
 }
 /* v5.41.511 — choix du chantier : groupé par statut (couleur du statut), rond de la couleur du chantier avec ses initiales */
@@ -75446,8 +75540,10 @@ function depAddSketch(){
     }catch(x){ showToast('❌ Échec de l\'envoi du croquis'); }
   });
 }
-async function depSaveEdit(){
+async function depSaveEdit(mode){
   const e = _depEdit; if(!e) return;
+  if(mode === 'send' && !e.sendTo){ showToast('Choisis à qui envoyer'); return; }   // v5.41.540 — Enregistrer OU Envoyer
+  if(mode === 'save') e.sendTo = '';
   const pend = (document.getElementById('depLineIn') || {}).value; if(pend && pend.trim()){ if(!Array.isArray(e.lines)) e.lines = []; e.lines.push(pend.trim()); }
   const lines = (e.lines || []).map(x => String(x).trim()).filter(Boolean);
   const pm = (document.getElementById('depMatIn') || {}).value; if(pm && pm.trim()){ if(!Array.isArray(e.mat)) e.mat = []; e.mat.push({ id:uid(), label:pm.trim() }); }
@@ -85300,7 +85396,7 @@ function planningNewDraft(){
   const t = _absToday(), mon = _plMonday(t);
   const site = { id:uid(), name:'', address:'', status:'brouillon', progress:0, stockNeeds:{}, stockTaken:{},
     ownerDeviceId:(typeof getDeviceSyncId === 'function' ? getDeviceSyncId() : ''), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(),
-    startDate:_absAdd(mon, 7), dueDate:_absAdd(mon, 11), assignedChefs:[], assignedWorkers:[], _plNew:true };
+    startDate:_absAdd(mon, 7), dueDate:_absAdd(mon, 11), assignedChefs:[], assignedWorkers:[], _plNew:true, color:siteAutoColor() };
   if(!Array.isArray(data.sites)) data.sites = [];
   data.sites.push(site);
   planningOpenSite(site.id);
