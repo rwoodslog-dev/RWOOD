@@ -48064,9 +48064,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.538';
+const APP_VERSION = '5.41.539';
 
 const CHANGELOG = [
+  {
+    version: '5.41.539',
+    date: '20/10/2026',
+    entries: [
+      { icon: '📝', text: "« Notes de chantier » : l'onglet est pour le patron, les conducteurs et la compta. Les chefs y accèdent par Chantier › Notes." },
+      { icon: '📣', text: "Nouvelle colonne « Remontées de terrain » (🦺) : seuls les chefs y écrivent, le bureau la lit. Les autres colonnes partagées sont en lecture seule pour les chefs ; les colonnes 🔒 bureau (devis, archi…) restent invisibles pour eux. Réglable par colonne dans ⚙️ Colonnes." },
+      { icon: '📋', text: "« À faire » s'appelle maintenant « Liste à faire »." }
+    ],
+  },
   {
     version: '5.41.538',
     date: '20/10/2026',
@@ -66221,8 +66230,8 @@ document.addEventListener('DOMContentLoaded', () => {
 /* Catalogue complet des onglets disponibles pour le dashboard. */
 const SIMPLE_ALL_TILES = [
   { view:'chantiers', img:'icons/chantier.png', icon:'🏗️', label:'Chantiers' },
-  { view:'notes', img:'icons/afaire.png', icon:'📋', label:'À faire' },
-  { view:'notesdashboard', img:'icons/note.png', icon:'📝', label:'Notes' },
+  { view:'notes', img:'icons/afaire.png', icon:'📋', label:'Liste à faire' },
+  { view:'notesdashboard', img:'icons/note.png', icon:'📝', label:'Notes de chantier' },
   { view:'heures', img:'icons/heures.png', icon:'⏱️', label:'Heures' },
   { view:'itineraires', img:'icons/itineraire.png', icon:'🗺️', label:'Itinéraires' },
   { view:'stock', img:'icons/stock.png', icon:'📦', label:'Stock camion' },
@@ -66481,7 +66490,7 @@ function _simpleTileAllowedForRole(viewId){
   if(viewId === 'depannages') return typeof depCanSeeTab === 'function' && depCanSeeTab();   // v5.41.459 / 462 — chef : sa feuille de route
   if(role === 'ouvrier') return OUVRIER_ALLOWED_VIEWS.includes(viewId);
   if(viewId === 'notes') return (role === 'chef' || role === 'ouvrier' || role === 'conducteur'); // v5.41.299 — + conducteur
-  if(viewId === 'notesdashboard') return true; // v5.41.333 — Notes pour tous les rôles
+  if(viewId === 'notesdashboard') return _nvBoss() || !window.RW_NEW; // v5.41.539 — onglet « Notes de chantier » : bureau ; les chefs passent par Chantier › Notes
   // v5.41.163 — "Suivi" doit être réservé à Conducteur/Patron (voir
   // suiviCanAccess) partout, y compris la sidebar PC/le dashboard mobile qui
   // passent par SIMPLE_ALL_TILES : sans cette règle, un compte Chef ayant
@@ -69788,6 +69797,7 @@ const NV_COLS_DEF = [
   { id:'attn',  icon:'⚠️', name:"Points d'attention", color:'#E8AC3D', team:true, notify:true },
   { id:'info',  icon:'📌', name:'Infos chantier', color:'#5B8DEF', team:true },
   { id:'bur',   icon:'🔒', name:'Bureau', color:'#8B5E34', team:false },
+  { id:'terr',  icon:'📣', name:'Remontées de terrain', color:'#E8743B', team:true, w:'chefs' },   // v5.41.539 — écrite par les chefs, lue par le bureau
   { id:'done',  icon:'✅', name:'Fait / Validé', color:'#4FAE6C', team:true, fin:true }
 ];
 const NV_COLS_TPL = {
@@ -69808,7 +69818,12 @@ const NV_COLS_TPL = {
 };
 const NV_COL_COLORS = ['#E8AC3D','#E5484D','#E8743B','#5B8DEF','#2BB3C0','#4FAE6C','#9B59D0','#D9579A','#8B5E34','#7A8590'];
 let _nvColsCfg = (() => { try{ return JSON.parse(localStorage.getItem('rwood-note-cols') || 'null'); }catch(e){ return null; } })();
-function _nvCols(){ return (_nvColsCfg && Array.isArray(_nvColsCfg.cols) && _nvColsCfg.cols.length) ? _nvColsCfg.cols : NV_COLS_DEF; }
+function _nvCols(){
+  const L = (_nvColsCfg && Array.isArray(_nvColsCfg.cols) && _nvColsCfg.cols.length) ? _nvColsCfg.cols : NV_COLS_DEF;
+  if(!L.some(c => c.w === 'chefs') && !(_nvColsCfg && _nvColsCfg.noTerr)){ const k = L.findIndex(c => c.fin); const t = NV_COLS_DEF.find(c => c.id === 'terr'); if(k >= 0) L.splice(k, 0, Object.assign({}, t)); else L.push(Object.assign({}, t)); }   // v5.41.539 — « Remontées de terrain » toujours présente
+  return L;
+}
+function _nvChefCol(c){ return !!c && c.team !== false && c.w === 'chefs'; }   // colonne où les chefs écrivent
 function _nvVisCols(){ const b = _nvBoss(); return _nvCols().filter(c => b || c.team !== false); }
 async function _nvColsFetch(){
   try{
@@ -69906,7 +69921,7 @@ function _nvTouchSite(site){
   if(typeof syncAllSitesCycle === 'function') try{ syncAllSitesCycle(); }catch(e){}
   if(typeof renderChantierActifBanner === 'function') try{ renderChantierActifBanner(); }catch(e){}
 }
-function _nvCanMove(it){ return _nvBoss() || (_nvRole() === 'chef' && !it.bureau); }
+function _nvCanMove(it){ return _nvBoss() || (_nvRole() === 'chef' && !it.bureau && _nvChefCol(_nvColOf(it))); }   // v5.41.539 — le chef ne bouge que ses remontées
 function _nvCanManage(it){
   if(_nvBoss()) return true;
   const me = _nvMe();
@@ -70005,7 +70020,7 @@ function _nvFind(id){
 }
 let _nvAddCol = null;
 function _nvAddColObj(){
-  const cols = _nvVisCols().filter(c => _nvBoss() || c.team !== false);
+  const cols = _nvVisCols().filter(c => _nvBoss() || _nvChefCol(c));
   return cols.find(c => c.id === _nvAddCol) || cols.find(c => !c.fin) || cols[0] || null;
 }
 function nvSetCol(id){ _nvAddCol = id; const c = _nvAddColObj(); if(c && c.team === false) _nvAddImp = false; notesViewRender(true); }
@@ -70022,6 +70037,7 @@ async function nvAdd(){
   const site = _nvCurSite(); if(!site){ showToast('Choisis un chantier'); return; }
   const boss = _nvBoss(); if(!boss && _nvRole() !== 'chef') return;
   const col = _nvAddColObj(); if(!col) return;
+  if(!boss && !_nvChefCol(col)){ showToast('Les chefs écrivent dans « Remontées de terrain »'); return; }
   const me = _nvMe(), now = new Date().toISOString();
   const kind = col.team === false ? 'bureau' : ((col.notify && !col.fin) ? 'attention' : 'info');
   let media = null;
@@ -70093,6 +70109,7 @@ async function nvMoveTo(id, colId, ev, quiet){
   const it = _nvFind(id), col = _nvCols().find(c => c.id === colId); if(!it || !col) return;
   const boss = _nvBoss();
   if(!boss && (col.team === false || it.bureau)) return;
+  if(!boss && !_nvChefCol(col) && !col.fin) return;
   if(!boss && !_nvCanMove(it) && !(col.fin || _nvColOf(it).fin)) return;
   const me = _nvMe(), now = new Date().toISOString(), cur = _nvColOf(it);
   if(cur.id === col.id) return;
@@ -70142,7 +70159,7 @@ function _nvNoteHtml(it, ctx){
   const isNew = snap && n.createdAt && n.createdAt > snap && n.authId !== ctx.me.authId && n.createdBy !== ctx.me.name;
   const col = it.col || _nvColOf(it), canMv = _nvCanMove(it) && !ctx.big;
   const drag = canMv && ctx.desk ? `draggable="true" ondragstart="nvDrag(event,'${n.id}')"` : '';
-  const vc = ctx.cols || _nvVisCols(), ci = vc.findIndex(c => c.id === col.id), okC = c => c && (ctx.boss || c.team !== false) && (ctx.boss || !it.bureau);
+  const vc = ctx.cols || _nvVisCols(), ci = vc.findIndex(c => c.id === col.id), okC = c => c && (ctx.boss || _nvChefCol(c) || (c.fin && c.team !== false)) && (ctx.boss || !it.bureau);
   const pc = ci > 0 ? vc[ci - 1] : null, nc = ci >= 0 && ci < vc.length - 1 ? vc[ci + 1] : null;
   const mvHtml = canMv ? `${okC(pc) ? `<button onclick="nvMoveTo('${n.id}','${pc.id}',event)">‹ ${escapeHtml((pc.icon || '') + ' ' + pc.name)}</button>` : ''}${okC(nc) ? `<button class="go" onclick="nvMoveTo('${n.id}','${nc.id}',event)">${escapeHtml((nc.icon || '') + ' ' + nc.name)} ›</button>` : ''}` : '';
   const sLab = ctx.all ? (() => { const so = (data.sites || []).find(x => x.id === it.sid); return so ? `<div class="nv-slab" onclick="event.stopPropagation();nvPickSite('${so.id}')">${_nvIniHtml(so)}${escapeHtml(so.name || 'Chantier')}</div>` : ''; })() : '';
@@ -70186,6 +70203,7 @@ function _nvNoteHtml(it, ctx){
   </div>` : ''}`;
 }
 function notesViewRender(keepSeen){
+  if(window.RW_NEW && !_nvBoss() && !window._nvLock){ showToast('📝 Ouvre un chantier › Notes'); try{ goTo('chantiers'); }catch(e){} return; }   // v5.41.539
   const root = document.getElementById('nvRoot'); if(!root) return;
   const role = _nvRole(), boss = _nvBoss(), me = _nvMe();
   const sites = _nvSites();
@@ -70213,7 +70231,7 @@ function notesViewRender(keepSeen){
   if(allMode){
     add = `<div class="hint nv-allhint">Tous les chantiers · choisis un chantier ci-dessus pour ajouter une note.</div>`;
   } else if(boss || role === 'chef'){
-    const ac = _nvAddColObj(), addable = vcols.filter(c => boss || c.team !== false);
+    const ac = _nvAddColObj(), addable = vcols.filter(c => boss || _nvChefCol(c));
     const kc = c => `<button class="${ac && ac.id === c.id ? 'on' : ''}" style="--c:${escapeHtml(c.color)}" onpointerdown="event.preventDefault()" onmousedown="event.preventDefault()" onclick="nvSetCol('${c.id}')"><i></i>${escapeHtml((c.icon || '') + ' ' + c.name)}</button>`;
     add = `<div class="nv-add"><input id="nvAddInput" type="text" enterkeyhint="done" autocomplete="off" placeholder="${ac ? escapeHtml('Ajouter dans ' + (ac.icon || '') + ' ' + ac.name + '…') : 'Ajouter une note…'}" onfocus="_nvTyping(true)" onblur="setTimeout(()=>_nvTyping(false),250)" onkeydown="if(event.key==='Enter'){event.preventDefault();nvAdd();}">
       <button onclick="rmDictate('nvAddInput','Dicte ta note')" title="Dicter">🎤</button><button onpointerdown="event.preventDefault()" onclick="nvAttAddPhoto()" title="Photo">📷</button><button class="p" onclick="nvAdd()">＋</button></div>
@@ -70226,9 +70244,9 @@ function notesViewRender(keepSeen){
   const canAdd = !allMode && (boss || role === 'chef');
   const colsHtml = vcols.map(c => {
     const arr = (groups[c.id] || []).sort(c.fin ? ((a, b) => new Date(b.n.doneAt || b.n.noteUpdatedAt || 0) - new Date(a.n.doneAt || a.n.noteUpdatedAt || 0)) : ((a, b) => (b.n.important ? 1 : 0) - (a.n.important ? 1 : 0) || tms(b) - tms(a)));
-    const plus = canAdd && (boss || c.team !== false) ? `<button class="nv-cplus" onclick="nvAddIn('${c.id}', event)" title="Ajouter dans cette colonne">＋</button>` : '';
+    const plus = canAdd && (boss || _nvChefCol(c)) ? `<button class="nv-cplus" onclick="nvAddIn('${c.id}', event)" title="Ajouter dans cette colonne">＋</button>` : '';
     return `<div class="dep-col nv-col${c.fin ? ' fin' : ''}" id="nvCol_${c.id}" style="--c:${escapeHtml(c.color)}" ondragover="nvDragOver(event,this)" ondragleave="nvDragLeave(this)" ondrop="nvDrop(event,'${c.id}',this)">
-      <div class="dep-colh"><i></i>${escapeHtml((c.icon || '') + ' ' + c.name)}${c.team === false ? ' <small>🔒</small>' : ''}<b>${arr.length}</b>${plus}</div>
+      <div class="dep-colh"><i></i>${escapeHtml((c.icon || '') + ' ' + c.name)}${c.team === false ? ' <small>🔒</small>' : c.w === 'chefs' ? ' <small>🦺</small>' : ''}<b>${arr.length}</b>${plus}</div>
       <div class="dep-colb">${arr.map(x => _nvNoteHtml(x, ctx)).join('') || `<div class="hint nv-cempty">${plus ? 'Rien ici · ＋ pour ajouter' : 'Rien ici'}</div>`}</div></div>`;
   }).join('');
   const tools = boss ? `<button class="nv-cfgbtn" onclick="nvCfgOpen()" title="Organiser les colonnes">⚙️<span> Colonnes</span></button>` : '';
@@ -70313,7 +70331,7 @@ async function nvCfgSave(){
   const cols = _nvCfgDraft.cols.map(c => Object.assign({}, c, { name: (c.name || '').trim() || 'Colonne', icon: (c.icon || '').trim() }));
   if(!cols.length){ showToast('Il faut au moins une colonne'); return; }
   const moved = Object.assign({}, _nvCfgDraft.moved); cols.forEach(c => { delete moved[c.id]; });
-  const ok = await _nvColsSave({ cols, moved }); if(!ok) return;
+  const ok = await _nvColsSave({ cols, moved, noTerr: !cols.some(c => c.w === 'chefs') }); if(!ok) return;   // v5.41.539 — si le bureau retire « Remontées de terrain », elle ne revient pas
   showToast('✅ Colonnes enregistrées pour toute l\'entreprise');
   _nvCfgDirty = false; nvCfgClose(true);
 }
@@ -70328,7 +70346,8 @@ function _nvCfgHtml(){
       ${ed ? `<div class="nv-ced">
         <div class="f"><input class="ic" value="${escapeHtml(c.icon || '')}" maxlength="4" oninput="nvCfgSet('${c.id}','icon',this.value)" title="Emoji"><input id="nvCfgName_${c.id}" value="${escapeHtml(c.name || '')}" maxlength="40" placeholder="Nom de la colonne" oninput="nvCfgSet('${c.id}','name',this.value)"></div>
         <div class="f cl">${NV_COL_COLORS.map(x => `<button class="${x === c.color ? 'on' : ''}" style="background:${x}" onclick="nvCfgSet('${c.id}','color','${x}',true)"></button>`).join('')}</div>
-        <label><input type="checkbox" ${c.team !== false ? 'checked' : ''} onchange="nvCfgSet('${c.id}','team',this.checked,true)"><span>Visible par les chefs et ouvriers<small>Sinon 🔒 bureau : patron, conducteur, comptable</small></span></label>
+        <label><input type="checkbox" ${c.team !== false ? 'checked' : ''} onchange="nvCfgSet('${c.id}','team',this.checked,true)"><span>Visible par les chefs et ouvriers (lecture)<small>Sinon 🔒 bureau : patron, conducteur, comptable</small></span></label>
+        <label><input type="checkbox" ${c.w === 'chefs' ? 'checked' : ''} ${c.team === false || c.fin ? 'disabled' : ''} onchange="nvCfgSet('${c.id}','w',this.checked ? 'chefs' : '',true)"><span>🦺 Écrite par les chefs d'équipe<small>Remontées de terrain : les chefs y écrivent, le bureau la lit. Les autres colonnes partagées sont en lecture seule pour les chefs.</small></span></label>
         <label><input type="checkbox" ${c.fin ? 'checked' : ''} onchange="nvCfgSet('${c.id}','fin',this.checked,true)"><span>Colonne « terminé »<small>Cartes barrées · le bouton ✓ Fait y envoie les notes</small></span></label>
         <label><input type="checkbox" ${c.notify ? 'checked' : ''} ${c.fin ? 'disabled' : ''} onchange="nvCfgSet('${c.id}','notify',this.checked,true)"><span>Prévenir les chefs du chantier<small>Notification + bouton « ✓ Fait » sur la carte</small></span></label>
         <button class="del" onclick="nvCfgDel('${c.id}')">🗑 Supprimer la colonne</button>
