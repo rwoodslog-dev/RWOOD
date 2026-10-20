@@ -14627,106 +14627,115 @@ async function _gpKey(){
 async function _gpEnc(buf){ const k = await _gpKey(), iv = crypto.getRandomValues(new Uint8Array(12)); const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, k, buf)); const o = new Uint8Array(12 + ct.length); o.set(iv); o.set(ct, 12); return o; }
 async function _gpDec(buf){ const b = new Uint8Array(buf); return crypto.subtle.decrypt({ name:'AES-GCM', iv:b.slice(0, 12) }, await _gpKey(), b.slice(12)); }
 async function _gpDir(){ const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('perso|' + _gpAcc()))); return Array.from(h.slice(0, 10)).map(x => x.toString(16).padStart(2, '0')).join(''); }
-/* ── Index chiffré ── */
-async function _gpFetchIdx(){
-  const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(_gpRow()) + '&select=data', { headers:{ 'Prefer':'' } });
-  if(!res.ok) return null;
-  const rows = await res.json();
-  if(!rows || !rows.length) return { items:[], tomb:{} };
-  const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-  if(!d || !d.ct) return { items:[], tomb:{} };
-  try{ localStorage.setItem('rwood-perso-cache:' + _gpAcc(), JSON.stringify(d)); }catch(e){}
-  return JSON.parse(new TextDecoder().decode(await _gpDec(_rmUnB64(d.ct))));
-}
+/* ═══ v5.41.545 — Galerie perso RANGÉE DANS LE TÉLÉPHONE (comme la galerie native) ═══
+   Les photos sont enregistrées tout de suite dans l'appli (IndexedDB), sans réseau, sans chiffrement
+   ni téléchargement : affichage, partage et « Enregistrer » sont immédiats. Internet ne sert que
+   quand on envoie une photo dans un chantier. Les anciennes photos perso (chiffrées sur le serveur)
+   sont récupérées une fois dans le téléphone, en arrière-plan. */
+function _gplDb(){ return new Promise((res, rej) => { const r = indexedDB.open('rwood-gpl', 1); r.onupgradeneeded = () => { r.result.createObjectStore('f', { keyPath:'k' }); r.result.createObjectStore('m', { keyPath:'acc' }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function _gpl(store, op, val){ const db = await _gplDb(); return new Promise((res, rej) => { const tx = db.transaction(store, op === 'get' ? 'readonly' : 'readwrite'), st = tx.objectStore(store);
+  const rq = op === 'get' ? st.get(val) : op === 'put' ? st.put(val) : st.delete(val); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); }
+function _gplK(id, t){ return _gpAcc() + '|' + id + (t ? ':t' : ':f'); }
+async function _gplMeta(){ return (await _gpl('m', 'get', _gpAcc())) || { acc:_gpAcc(), items:[], folders:[], tomb:{} }; }
+async function _gplWrite(){ await _gpl('m', 'put', { acc:_gpAcc(), items:_gpIdx || [], folders:_gpFolders || [], tomb:_gpTomb || {}, mig:!!_gpMig.done }); }
+let _gpMig = { done:false, run:false, n:0, of:0 };
 async function _gpLoad(force){
   if(_gpLoading) return; if(_gpIdx && !force) return;
   _gpLoading = true;
-  try{
-    let r = null; try{ r = await _gpFetchIdx(); }catch(e){}
-    if(!r){ try{ const c = JSON.parse(localStorage.getItem('rwood-perso-cache:' + _gpAcc()) || 'null'); if(c && c.ct) r = JSON.parse(new TextDecoder().decode(await _gpDec(_rmUnB64(c.ct)))); }catch(e){} }
-    if(r){ _gpTomb = r.tomb || {}; _gpIdx = (r.items || []).filter(i => !_gpTomb[i.id]); _gpFolders = (r.folders || []).filter(f => f && !_gpTomb[f.id]); }
-    else if(!_gpIdx) _gpIdx = [];
-  }finally{ _gpLoading = false; }
+  try{ const m = await _gplMeta(); _gpTomb = m.tomb || {}; _gpIdx = (m.items || []).filter(i => !_gpTomb[i.id]); _gpFolders = (m.folders || []).filter(f => f && !_gpTomb[f.id]); _gpMig.done = !!m.mig; }
+  catch(e){ if(!_gpIdx) _gpIdx = []; }
+  finally{ _gpLoading = false; }
+  if(!_gpMig.done) setTimeout(_gpMigrate, 300);
 }
-async function _gpSaveIdx(add, delIds){
-  let cur = null; try{ cur = await _gpFetchIdx(); }catch(e){}
-  if(!cur){ showToast('⚠️ Pas de connexion : réessaie'); return false; }
-  const tomb = Object.assign({}, cur.tomb || {}, _gpTomb); (delIds || []).forEach(id => { tomb[id] = Date.now(); });
-  const newer = (a, b) => !a ? b : ((b.mAt || b.at || '') >= (a.mAt || a.at || '') ? b : a);   // v5.41.513 — dernier rangement gagne
-  const map = new Map(); (cur.items || []).concat(_gpIdx || [], add || []).forEach(i => { if(i && i.id && !tomb[i.id]) map.set(i.id, newer(map.get(i.id), i)); });
-  const items = [...map.values()].sort((a, b) => (b.at || '').localeCompare(a.at || ''));
-  const fm = new Map(); (cur.folders || []).concat(_gpFolders || []).forEach(f => { if(f && f.id && !tomb[f.id]) fm.set(f.id, newer(fm.get(f.id), f)); });
-  const folders = [...fm.values()];
-  const ct = await _gpEnc(new TextEncoder().encode(JSON.stringify({ items, tomb, folders })));
-  const out = { v:1, ct:_rmB64(ct) };
-  const res = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
-    body:JSON.stringify({ user_id:_gpRow(), updated_at:new Date().toISOString(), data:JSON.stringify(out) }) });
-  if(!res || !res.ok){ showToast('⚠️ Envoi impossible : réessaie'); return false; }
-  try{ localStorage.setItem('rwood-perso-cache:' + _gpAcc(), JSON.stringify(out)); }catch(e){}
-  _gpIdx = items; _gpTomb = tomb; _gpFolders = folders; return true;
+async function _gpSaveIdx(add, delIds){   // tout est local : jamais d'échec réseau
+  if(_gpIdx === null) await _gpLoad();
+  const now = Date.now(); (delIds || []).forEach(id => { _gpTomb[id] = now; });
+  const map = new Map(); (_gpIdx || []).concat(add || []).forEach(i => { if(i && i.id && !_gpTomb[i.id]) map.set(i.id, i); });
+  _gpIdx = [...map.values()].sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  _gpFolders = (_gpFolders || []).filter(f => f && !_gpTomb[f.id]);
+  try{ await _gplWrite(); return true; }catch(e){ showToast('❌ Mémoire du téléphone pleine ?'); return false; }
 }
-/* ── Fichiers chiffrés dans le stockage ── */
-async function _gpPut(path, bytes){
-  if(window.RW_TEST){ _gpMem.set(path, bytes); return; }
-  const res = await fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${path}`, { method:'POST',
-    headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY, 'Content-Type':'application/octet-stream', 'x-upsert':'true', 'Cache-Control':'private, max-age=31536000, immutable' }, body:new Blob([bytes]) });
-  if(!res.ok) throw new Error('upload ' + res.status);
-}
+/* ── Ancien stockage chiffré : lecture seule, pour récupérer les anciennes photos ── */
 async function _gpGet(path){
-  if(window.RW_TEST){ const b = _gpMem.get(path); if(!b) throw new Error('absent'); return b; }
   const res = await fetch(`${SUPA_URL}/storage/v1/object/public/${SUPA_BUCKET}/${path}`);
   if(!res.ok) throw new Error('get ' + res.status);
   return res.arrayBuffer();
 }
-async function _gpUrl(it, thumb){
-  const k = it.id + (thumb ? ':t' : ':f');
-  if(_gpUrls.has(k)) return _gpUrls.get(k);
-  const p = thumb ? it.tpath : it.path; if(!p) return '';
-  const raw = await _gpDec(await _gpGet(p));
-  const u = URL.createObjectURL(new Blob([raw], { type:thumb ? 'image/jpeg' : (it.mime || 'image/jpeg') }));
-  _gpUrls.set(k, u); return u;
-}
-async function _gpShrink(file, dim, q){ try{ if(typeof _rwShrinkPhoto === 'function'){ const s = await _rwShrinkPhoto(file, dim, q); if(s) return s; } }catch(e){} return file; }
-/* ── File d'attente hors réseau (IndexedDB, octets déjà chiffrés) ── */
 function _gpDb(){ return new Promise((res, rej) => { const r = indexedDB.open('rwood-perso', 1); r.onupgradeneeded = () => r.result.createObjectStore('q', { keyPath:'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 async function _gpQ(op, val){ const db = await _gpDb(); return new Promise((res, rej) => { const tx = db.transaction('q', op === 'all' ? 'readonly' : 'readwrite'), st = tx.objectStore('q');
   const rq = op === 'all' ? st.getAll() : op === 'put' ? st.put(val) : st.delete(val); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); }
-async function gpFlush(){
-  if(window.RW_TEST || !navigator.onLine || !_gpAcc()) return;
-  let q = []; try{ q = await _gpQ('all'); }catch(e){ return; }
-  q = q.filter(x => x.acc === _gpAcc()); if(!q.length) return;
-  const done = [];
-  for(const x of q){ try{ await _gpPut(x.item.path, x.full); if(x.thumb) await _gpPut(x.item.tpath, x.thumb); done.push(x); }catch(e){ break; } }
-  if(done.length && await _gpSaveIdx(done.map(x => x.item))){ for(const x of done) try{ await _gpQ('del', x.id); }catch(e){}
-    showToast('🔒 ' + done.length + ' photo' + (done.length > 1 ? 's' : '') + ' perso envoyée' + (done.length > 1 ? 's' : ''));
-    if(_galerieOpenSiteId === '__perso__') gpRender(); }
+async function _gpLegacyIdx(){
+  const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent('perso_gallery_v1_' + _gpAcc()) + '&select=data', { headers:{ 'Prefer':'' } });
+  if(!res.ok) return null;
+  const rows = await res.json(); if(!rows || !rows.length) return { items:[], folders:[], tomb:{} };
+  const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+  if(!d || !d.ct) return { items:[], folders:[], tomb:{} };
+  return JSON.parse(new TextDecoder().decode(await _gpDec(_rmUnB64(d.ct))));
 }
-window.addEventListener('online', () => setTimeout(gpFlush, 1500));
-setTimeout(() => { try{ gpFlush(); }catch(e){} }, 9000);
-/* ── Ajout ── */
+async function _gpMigrate(){
+  if(_gpMig.run || _gpMig.done || !_gpAcc() || window.RW_TEST) { if(window.RW_TEST) _gpMig.done = true; return; }
+  _gpMig.run = true;
+  try{
+    // 1) photos restées « en attente de réseau » dans l'ancienne file : déjà dans le téléphone, on les déchiffre
+    let q = []; try{ q = (await _gpQ('all')).filter(x => x.acc === _gpAcc()); }catch(e){}
+    for(const x of q){ try{
+      await _gpl('f', 'put', { k:_gplK(x.item.id), b:new Blob([await _gpDec(x.full)], { type:x.item.mime || 'image/jpeg' }) });
+      if(x.thumb) await _gpl('f', 'put', { k:_gplK(x.item.id, 1), b:new Blob([await _gpDec(x.thumb)], { type:'image/jpeg' }) });
+      const it = Object.assign({}, x.item); delete it.path; delete it.tpath; it.local = 1;
+      await _gpSaveIdx([it]); await _gpQ('del', x.id); }catch(e){} }
+    // 2) anciennes photos du serveur → copiées dans le téléphone
+    if(!navigator.onLine){ _gpMig.run = false; return; }
+    const L = await _gpLegacyIdx(); if(!L){ _gpMig.run = false; return; }
+    const tomb = L.tomb || {}, have = new Set((_gpIdx || []).map(i => i.id));
+    (L.folders || []).forEach(f => { if(f && !tomb[f.id] && !_gpTomb[f.id] && !(_gpFolders || []).some(x => x.id === f.id)) _gpFolders.push(f); });
+    const todo = (L.items || []).filter(i => i && !tomb[i.id] && !_gpTomb[i.id] && (!have.has(i.id) || !(_gpIdx.find(x => x.id === i.id) || {}).local));
+    _gpMig.of = todo.length; _gpMig.n = 0;
+    if(todo.length) await _gpSaveIdx(todo.filter(i => !have.has(i.id)));   // visibles tout de suite (chargées depuis le serveur en attendant)
+    let fail = 0;
+    for(const it of todo){
+      try{ const full = await _gpDec(await _gpGet(it.path));
+        await _gpl('f', 'put', { k:_gplK(it.id), b:new Blob([full], { type:it.mime || 'image/jpeg' }) });
+        if(it.tpath) try{ await _gpl('f', 'put', { k:_gplK(it.id, 1), b:new Blob([await _gpDec(await _gpGet(it.tpath))], { type:'image/jpeg' }) }); }catch(e){}
+        const cur = (_gpIdx || []).find(x => x.id === it.id); if(cur){ cur.local = 1; }
+        _gpMig.n++; if(_gpMig.n % 5 === 0) await _gplWrite();
+        if(_galerieOpenSiteId === '__perso__'){ const h = document.getElementById('gpMigH'); if(h) h.textContent = '📥 Récupération de tes anciennes photos perso dans le téléphone… ' + _gpMig.n + '/' + _gpMig.of; }
+      }catch(e){ fail++; }
+    }
+    if(!fail){ _gpMig.done = true; if(todo.length) showToast('📥 ' + todo.length + ' ancienne' + (todo.length > 1 ? 's' : '') + ' photo' + (todo.length > 1 ? 's' : '') + ' perso rangée' + (todo.length > 1 ? 's' : '') + ' dans le téléphone'); }
+    await _gplWrite();
+  }catch(e){}
+  _gpMig.run = false;
+  if(_galerieOpenSiteId === '__perso__') gpRender();
+}
+function gpFlush(){ return _gpMigrate(); }
+window.addEventListener('online', () => setTimeout(() => { if(_gpIdx && !_gpMig.done) _gpMigrate(); }, 2000));
+async function _gpUrl(it, thumb){
+  const k = it.id + (thumb ? ':t' : ':f');
+  if(_gpUrls.has(k)) return _gpUrls.get(k);
+  let r = null; try{ r = await _gpl('f', 'get', _gplK(it.id, thumb)); if(!r && thumb) r = await _gpl('f', 'get', _gplK(it.id)); }catch(e){}
+  let blob = r && r.b;
+  if(!blob){ const p = thumb && it.tpath ? it.tpath : it.path; if(!p) throw new Error('absent'); blob = new Blob([await _gpDec(await _gpGet(p))], { type:thumb ? 'image/jpeg' : (it.mime || 'image/jpeg') }); }
+  const u = URL.createObjectURL(blob); _gpUrls.set(k, u); return u;
+}
+async function _gpShrink(file, dim, q){ try{ if(typeof _rwShrinkPhoto === 'function'){ const s = await _rwShrinkPhoto(file, dim, q); if(s) return s; } }catch(e){} return file; }
+/* ── Ajout : immédiat, sans réseau ── */
 async function gpAddFiles(files){
   if(!_gpAcc()){ showToast('Connecte-toi à ton compte'); return; }
-  if(!(window.crypto && crypto.subtle)){ showToast('⚠️ Ce téléphone ne permet pas le chiffrement'); return; }
-  if(_gpBusy) return; _gpBusy = true;
-  showToast('🔒 Chiffrement et envoi…');
-  const dir = await _gpDir(), pre = _rwStoragePrefix(), add = [], queued = [];
-  try{
-    for(const f of files){
-      const isImg = /^image\//.test(f.type || ''), id = uid(), now = new Date().toISOString();
-      const full = isImg ? await _gpShrink(f, 1600, 0.8) : f;
-      const thumb = isImg ? await _gpShrink(f, 360, 0.7) : null;
-      const fullEnc = await _gpEnc(await full.arrayBuffer()), thEnc = thumb ? await _gpEnc(await thumb.arrayBuffer()) : null;
-      const _ctx = _gpCtx();
-      const item = { id, folder:_ctx.folder, site:_ctx.site, name:f.name || (isImg ? 'Photo' : 'Document'), mime:isImg ? (full.type || 'image/jpeg') : (f.type || 'application/pdf'), kind:isImg ? 'photo' : 'pdf', at:now,
-        path:`${pre}perso/${dir}/${id}.bin`, tpath:thEnc ? `${pre}perso/${dir}/${id}.t.bin` : '' };
-      try{ if(!navigator.onLine && !window.RW_TEST) throw new Error('offline'); await _gpPut(item.path, fullEnc); if(thEnc) await _gpPut(item.tpath, thEnc); add.push(item);
-        if(thumb) _gpUrls.set(id + ':t', URL.createObjectURL(thumb)); }
-      catch(e){ try{ await _gpQ('put', { id, acc:_gpAcc(), item, full:fullEnc, thumb:thEnc }); queued.push(item); }catch(_){ showToast('❌ Photo non enregistrée'); } }
-    }
-    if(add.length) await _gpSaveIdx(add);
-    showToast(queued.length ? '📶 ' + queued.length + ' en attente de réseau · elle' + (queued.length > 1 ? 's partiront' : ' partira') + ' toute' + (queued.length > 1 ? 's' : '') + ' seule' + (queued.length > 1 ? 's' : '') : '🔒 ' + add.length + ' ajoutée' + (add.length > 1 ? 's' : '') + ' à ta galerie perso');
-  }finally{ _gpBusy = false; }
+  if(_gpIdx === null) await _gpLoad();
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+  const add = [], thumbs = [];
+  for(const f of files){
+    const isImg = /^image\//.test(f.type || ''), id = uid(), now = new Date(Date.now() + add.length).toISOString(), _ctx = _gpCtx();
+    try{ await _gpl('f', 'put', { k:_gplK(id), b:f }); }catch(e){ showToast('❌ Photo non enregistrée (mémoire pleine ?)'); continue; }
+    add.push({ id, folder:_ctx.folder, site:_ctx.site, name:f.name || (isImg ? 'Photo' : 'Document'), mime:f.type || (isImg ? 'image/jpeg' : 'application/pdf'), kind:isImg ? 'photo' : 'pdf', at:now, local:1 });
+    if(isImg) thumbs.push([id, f]);
+  }
+  if(!add.length) return;
+  await _gpSaveIdx(add);
+  showToast('📷 ' + add.length + ' ajoutée' + (add.length > 1 ? 's' : '') + ' à ta galerie perso');
   if(_galerieOpenSiteId === '__perso__') gpRender();
+  // miniatures en arrière-plan (la photo s'affiche déjà en attendant)
+  for(const [id, f] of thumbs){ try{ const t = await _gpShrink(f, 360, 0.7); if(t && t !== f){ await _gpl('f', 'put', { k:_gplK(id, 1), b:t }); const u = _gpUrls.get(id + ':t'); if(u){ _gpUrls.delete(id + ':t'); URL.revokeObjectURL(u); } } }catch(e){} }
 }
 /* v5.41.533 — même ＋ que Photos & Docs : prendre / importer des photos, scanner / importer un document */
 function gpAddSheet(){
@@ -14753,7 +14762,7 @@ function gpPick(cam){
   document.body.appendChild(inp); inp.onchange = () => { const f = Array.from(inp.files || []); inp.remove(); if(f.length) gpAddFiles(f); }; inp.click();
 }
 async function gpCopyFromUrl(url, name){
-  try{ showToast('🔒 Copie dans ta galerie perso…'); const b = await (await fetch(url)).blob();
+  try{ showToast('📥 Copie dans ta galerie perso…'); const b = await (await fetch(url)).blob();
     await gpAddFiles([new File([b], (name || 'photo') + '.' + ((b.type || '').split('/')[1] || 'jpg').replace('svg+xml', 'svg'), { type:b.type || 'image/jpeg' })]); }
   catch(e){ showToast('❌ Copie impossible'); }
 }
@@ -14772,7 +14781,7 @@ function _gpDayLbl(iso){ const d = new Date(iso), t = new Date(); t.setHours(0, 
 async function gpRender(){
   const root = document.getElementById('galerieContent'); if(!root || _galerieOpenSiteId !== '__perso__') return;
   { const fab = document.getElementById('galerieFab'); if(fab) fab.style.display = 'none'; const sb = document.getElementById('galerieSelectBtn'); if(sb) sb.style.display = 'none'; }
-  let q = []; try{ q = (await _gpQ('all')).filter(x => x.acc === _gpAcc()); }catch(e){}
+  if(_gpIdx === null){ await _gpLoad(); if(_galerieOpenSiteId !== '__perso__') return; }
   const items = _gpIdx || [], fold = (_gpFolders || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric:true }));
   const siteOf = id => id ? (data.sites || []).find(s => s.id === id) : null;
   const isS = _gpCur && String(_gpCur).startsWith('site:');
@@ -14797,14 +14806,14 @@ async function gpRender(){
     : `<div class="galerie-head1 gf-head"><button onclick="gpGo(null)" title="Retour (dépose une photo ici pour la sortir du dossier)" ondragover="if(_gpDrag){event.preventDefault();this.classList.add('ov');}" ondragleave="this.classList.remove('ov')" ondrop="event.preventDefault();this.classList.remove('ov');gpDropTo('')">←</button><span class="t">${cur ? escapeHtml((cur.icon || '📁') + ' ' + cur.name) : `<span class="s-row">${siteIni(curS, 26)}${escapeHtml(curS.name || 'Chantier')}</span>`}</span><span class="n">· 🔒 ${vis.length}</span>${cur ? `<button class="gf-hb" onclick="gpFolderRename('${cur.id}')" title="Renommer">✏️</button><button class="gf-hb" onclick="gpFolderDel('${cur.id}')" title="Supprimer le dossier">🗑</button>` : ''}</div>`;
   const looseLbl = atRoot && strip && vis.length ? `<div class="rm-lbl" style="margin:10px 2px 0;">${_gpMode === 'site' ? 'Sans chantier' : 'Sans dossier'}</div>` : '';
   root.innerHTML = `<div class="gp">${head}
-    ${atRoot ? `<div class="gp-lock">🔐 <span>Photos <b>chiffrées</b>, visibles que par toi (ni l'équipe ni le patron). Tu les retrouves sur tes appareils, sans encombrer ton téléphone.</span></div>` : ''}
+    ${atRoot ? `<div class="gp-lock">🔒 <span>Rangées <b>dans ce téléphone</b>, visibles que par toi (ni l'équipe ni le patron). Tout de suite, même sans réseau.</span></div>` : ''}
     <div class="gp-btns"><button class="p" onclick="gpAddSheet()">＋ Ajouter</button>${vis.length ? `<button class="${_gpSel ? 'on' : ''}" onclick="gpSelToggle()">${_gpSel ? '✕ Annuler' : '☑ Sélectionner'}</button>` : ''}</div>
     ${_gpClip && _gpMode === 'dos' ? `<div class="gc-clip">✂️ <b>${_gpClip.ids.length} photo${_gpClip.ids.length > 1 ? 's' : ''}</b><button class="btn btn-primary btn-sm" onclick="gpPaste(${cur ? `'${cur.id}'` : "''"})">📥 Coller ici</button><button class="btn btn-outline btn-sm" onclick="_gpClip=null;gpRender()">✕</button></div>` : ''}
     ${!_gpSel && vis.length ? `<div class="gp-selhint">${_mIsPC() ? '🖱️ Clic droit = actions · Ctrl + clic = sélection · glisse sur un dossier pour ranger' : 'Appui long sur une photo = actions'}</div>` : ''}
     ${_gpSel ? `<div class="gp-selhint">Touche les photos · <a onclick="gpSelAll()">${_gpSel.size && _gpSel.size === vis.length ? 'Tout décocher' : 'Tout sélectionner'}</a></div>` : ''}
-    ${q.length ? `<div class="gp-q">📶 ${q.length} en attente de réseau · ${q.length > 1 ? 'elles partiront' : 'elle partira'} toute${q.length > 1 ? 's' : ''} seule${q.length > 1 ? 's' : ''}</div>` : ''}
+    ${_gpMig.run && _gpMig.of ? `<div class="gp-q" id="gpMigH">📥 Récupération de tes anciennes photos perso dans le téléphone… ${_gpMig.n}/${_gpMig.of}</div>` : ''}
     ${strip}${looseLbl}
-    ${_gpIdx === null ? '<div class="hint" style="text-align:center;padding:24px;">🔓 Déchiffrement…</div>'
+    ${_gpIdx === null ? '<div class="hint" style="text-align:center;padding:24px;">Chargement…</div>'
       : !items.length ? `<div class="gp-empty"><span>🔒</span>Ta galerie perso est vide.<br>Prends ou importe une photo : elle sera visible <b>que par toi</b>.</div>`
       : !vis.length ? (atRoot ? '' : `<div class="gp-empty"><span>${cur ? '📁' : '🏗️'}</span>Rien ici pour l'instant.<br>${cur ? '📷 Prendre ou importer ici, ou « ☑ Choisir » des photos puis « 📁 Déplacer ».' : ''}</div>`)
       : groups.map(g => `<div class="gp-day">${g.l}</div><div class="gp-grid">${g.a.map(i => { const it = items[i];
@@ -14823,7 +14832,7 @@ function gpIntroMaybe(){
   const d = document.createElement('div'); d.id = 'gpIntro';
   d.innerHTML = `<div class="gpi"><div class="gpi-ic">🔒</div><b>Ta galerie perso</b>
     <p>Pour les photos prises au travail qui ne servent pas forcément aux infos du chantier : un repère, une idée, un modèle vu ailleurs, un ticket…</p>
-    <ul><li>📵 <span>Pas besoin de les garder sur ton téléphone</span></li><li>🔐 <span>Chiffrées, visibles <b>que par toi</b> (ni l'équipe ni le patron)</span></li><li>📁 <span>Range-les dans tes dossiers ou trie-les par chantier</span></li><li>🏗️ <span>Une photo devient utile ? Déplace-la dans le chantier</span></li><li>⋯ <span>Tu la retrouves dans « Plus »</span></li></ul>
+    <ul><li>⚡ <span>Enregistrées tout de suite dans l'appli, même sans réseau</span></li><li>🔒 <span>Visibles <b>que par toi</b> (ni l'équipe ni le patron)</span></li><li>📁 <span>Range-les dans tes dossiers ou trie-les par chantier</span></li><li>🏗️ <span>Une photo devient utile ? Déplace-la dans le chantier</span></li><li>⋯ <span>Tu la retrouves dans « Plus »</span></li></ul>
     <button class="gpi-p" onclick="document.getElementById('gpIntro').remove();goTo('galerie')">🔒 Ouvrir ma galerie perso</button><button class="gpi-s" onclick="document.getElementById('gpIntro').remove()">Compris</button></div>`;
   d.addEventListener('click', e => { if(e.target === d) d.remove(); });
   document.body.appendChild(d);
@@ -14959,7 +14968,7 @@ function gpTap(i, e){
 function _gpSelItems(){ return (_gpIdx || []).filter(it => _gpSel && _gpSel.has(it.id)); }
 async function _gpFiles(list){
   const out = []; let k = 0;
-  for(const it of list){ k++; if(list.length > 2) showToast('🔓 Préparation ' + k + '/' + list.length + '…'); try{ out.push(await _gpFile(it)); }catch(e){} }
+  for(const it of list){ k++; try{ out.push(await _gpFile(it)); }catch(e){} }
   return out;
 }
 async function gpShareSel(){
@@ -14992,7 +15001,8 @@ async function gpDeleteSel(){
 }
 async function _gpRemove(list){
   if(!(await _gpSaveIdx([], list.map(x => x.id)))) return false;
-  list.forEach(it => [it.path, it.tpath].filter(Boolean).forEach(p => { if(window.RW_TEST) _gpMem.delete(p); else fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${p}`, { method:'DELETE', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } }).catch(() => {}); }));
+  for(const it of list){ try{ await _gpl('f', 'del', _gplK(it.id)); await _gpl('f', 'del', _gplK(it.id, 1)); }catch(e){} }
+  list.forEach(it => [it.path, it.tpath].filter(Boolean).forEach(p => { if(!window.RW_TEST) fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${p}`, { method:'DELETE', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } }).catch(() => {}); }));
   list.forEach(it => { try{ ['t', 'f'].forEach(k => { const u = _gpUrls.get(it.id + ':' + k); if(u){ URL.revokeObjectURL(u); _gpUrls.delete(it.id + ':' + k); } }); }catch(e){} });
   return true;
 }
@@ -15006,11 +15016,11 @@ async function _gpThumbs(){
 async function gpView(i){
   const items = _gpIdx || [], it = items[i]; if(!it) return; _gpView = i;
   const V = (_gpVis && _gpVis.includes(i)) ? _gpVis : items.map((_, k) => k), pos = V.indexOf(i), prev = pos > 0 ? V[pos - 1] : -1, next = pos < V.length - 1 ? V[pos + 1] : -1;
-  if(it.kind === 'pdf'){ try{ showToast('🔓 Ouverture…'); const u = await _gpUrl(it, false); window.open(u, '_blank'); }catch(e){ showToast('❌ Ouverture impossible'); } return; }
+  if(it.kind === 'pdf'){ try{ const u = await _gpUrl(it, false); window.open(u, '_blank'); }catch(e){ showToast('❌ Ouverture impossible'); } return; }
   let ov = document.getElementById('gpViewer');
   if(!ov){ ov = document.createElement('div'); ov.id = 'gpViewer'; document.body.appendChild(ov); }
   ov.innerHTML = `<div class="gpv-top"><button onclick="gpViewClose()">✕</button><span>🔒 Photo perso · ${pos + 1}/${V.length}</span></div>
-    <div class="gpv-img">${prev >= 0 ? `<button class="gpv-ar l" onclick="gpView(${prev})">‹</button>` : ''}<img id="gpvImg" alt=""><span class="gp-ld" id="gpvLd">🔓</span>${next >= 0 ? `<button class="gpv-ar r" onclick="gpView(${next})">›</button>` : ''}</div>
+    <div class="gpv-img">${prev >= 0 ? `<button class="gpv-ar l" onclick="gpView(${prev})">‹</button>` : ''}<img id="gpvImg" alt=""><span class="gp-ld" id="gpvLd"></span>${next >= 0 ? `<button class="gpv-ar r" onclick="gpView(${next})">›</button>` : ''}</div>
     <div class="gpv-acts"><button class="p" onclick="gpShare(${i})">📤 Partager</button><button onclick="gpSave(${i})">⬇️ Enregistrer</button><button onclick="gpToSite(${i})">📁 Déplacer</button><button class="x" onclick="gpDelete(${i})">🗑️</button></div>`;
   ov.style.display = 'flex';
   try{ const u = await _gpUrl(it, false); const im = document.getElementById('gpvImg'); if(im && _gpView === i){ im.src = u; const l = document.getElementById('gpvLd'); if(l) l.remove(); } }catch(e){ const l = document.getElementById('gpvLd'); if(l) l.textContent = '⚠️ Photo introuvable'; }
@@ -15018,7 +15028,8 @@ async function gpView(i){
 function gpViewClose(){ const ov = document.getElementById('gpViewer'); if(ov) ov.style.display = 'none'; _gpView = -1; }
 /* v5.41.469 — partager une photo perso vers n'importe quelle appli (WhatsApp, SMS, mail…) */
 async function _gpFile(it){
-  const raw = await _gpDec(await _gpGet(it.path));
+  let r = null; try{ r = await _gpl('f', 'get', _gplK(it.id)); }catch(e){}
+  const raw = r && r.b ? r.b : await _gpDec(await _gpGet(it.path));
   const nm = (it.name || 'photo').replace(/\.[a-z0-9]+$/i, '') + (it.kind === 'pdf' ? '.pdf' : '.jpg');
   return new File([raw], nm, { type:it.mime || (it.kind === 'pdf' ? 'application/pdf' : 'image/jpeg') });
 }
@@ -15064,8 +15075,7 @@ async function gpToSiteGo(ids, siteId){
 async function gpDelete(i){
   const it = (_gpIdx || [])[i]; if(!it) return;
   if(!confirm('Supprimer cette photo de ta galerie perso ?')) return;
-  if(!(await _gpSaveIdx([], [it.id]))) return;
-  [it.path, it.tpath].filter(Boolean).forEach(p => { if(window.RW_TEST) _gpMem.delete(p); else fetch(`${SUPA_URL}/storage/v1/object/${SUPA_BUCKET}/${p}`, { method:'DELETE', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY } }).catch(() => {}); });
+  if(!(await _gpRemove([it]))) return;
   gpViewClose(); showToast('🗑️ Supprimée'); gpRender();
 }
 function _gpFolderHtml(){
@@ -48133,9 +48143,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.544';
+const APP_VERSION = '5.41.545';
 
 const CHANGELOG = [
+  {
+    version: '5.41.545',
+    date: '20/10/2026',
+    entries: [
+      { icon: '⚡', text: "Galerie perso refaite comme la galerie du téléphone : les photos sont rangées tout de suite dans l'appli, sans réseau (plus de chiffrement ni d'envoi au serveur). Affichage, partage et « ⬇️ Enregistrer » sont immédiats. Internet ne sert que quand tu envoies une photo dans un chantier." },
+      { icon: '📥', text: "Tes anciennes photos perso sont récupérées une fois dans le téléphone, en arrière-plan (il faut du réseau la première fois). Attention : la galerie perso reste sur CE téléphone." }
+    ]
+  },
   {
     version: '5.41.544',
     date: '20/10/2026',
