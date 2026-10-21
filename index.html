@@ -1101,6 +1101,19 @@
   .nv-kbtop .dep-kbnav button{ flex:none; min-width:max-content; padding:8px 10px; }
   @media (max-width:640px){ .nv-cfgbtn span{ display:none; } }
   .nv-cfgbtn{ flex:none; margin:4px 0 8px auto; border:1.5px solid var(--line); background:var(--card); color:var(--ink); border-radius:12px; padding:6px 12px; font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
+  /* v5.41.562 — téléphone / tablette : une liste de blocs (un par colonne), de haut en bas */
+  .nv-chev{ display:none; } .dep-colh .nv-z{ font-weight:700; color:var(--ink-soft); background:none !important; font-size:11.5px; }
+  @media (max-width:999px){
+    .nv-kbtop .dep-kbnav{ display:none !important; }
+    .nv-kbtop{ justify-content:flex-end; }
+    #nvRoot .nv-kb{ display:block !important; overflow:visible !important; }
+    #nvRoot .nv-kb .dep-col{ width:auto; flex:none; margin:0 0 8px; border-top:1px solid var(--line); border-left:4px solid var(--c); padding:2px 8px 6px; }
+    #nvRoot .nv-col .dep-colh{ cursor:pointer; margin:8px 2px 8px; user-select:none; -webkit-user-select:none; } #nvRoot .nv-col .dep-colh i{ display:none; }
+    #nvRoot .nv-col .nv-cn{ flex:1; min-width:0; text-align:left; } #nvRoot .nv-col .dep-colh b{ margin-left:0; }
+    .nv-chev{ display:inline; color:var(--ink-soft); font-size:13px; width:14px; text-align:center; }
+    #nvRoot .nv-col.fold .dep-colb{ display:none; } #nvRoot .nv-col.fold .dep-colh{ margin:6px 2px; } #nvRoot .nv-col.fold.empty .nv-cn{ color:var(--ink-soft); }
+    #nvRoot .nv-col .nv-cempty{ padding:4px 0 6px; }
+  }
   @media (min-width:1000px){
     #nvRoot .nv-kb{ grid-template-columns:none; grid-auto-flow:column; grid-auto-columns:minmax(205px,1fr); overflow-x:auto; padding-bottom:6px; }
     .nv-kbtop .dep-kbnav{ display:none; }
@@ -48403,9 +48416,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.561';
+const APP_VERSION = '5.41.562';
 
 const CHANGELOG = [
+  {
+    version: '5.41.562',
+    date: '21/10/2026',
+    entries: [
+      { icon: '📝', text: "Notes de chantier sur téléphone : plus de colonnes qui dépassent de l'écran. Une liste de blocs de haut en bas, un par colonne (sa couleur, son nombre). Les colonnes vides et « Fait » sont repliées ; touche le titre pour ouvrir / replier. Sur PC, le Kanban ne change pas." }
+    ]
+  },
   {
     version: '5.41.561',
     date: '20/10/2026',
@@ -70856,8 +70876,9 @@ function notesViewRender(keepSeen){
   const colsHtml = vcols.map(c => {
     const arr = (groups[c.id] || []).sort(c.fin ? ((a, b) => new Date(b.n.doneAt || b.n.noteUpdatedAt || 0) - new Date(a.n.doneAt || a.n.noteUpdatedAt || 0)) : ((a, b) => (b.n.important ? 1 : 0) - (a.n.important ? 1 : 0) || tms(b) - tms(a)));
     const plus = canAdd && _nvCanWrite(c) ? `<button class="nv-cplus" onclick="nvAddIn('${c.id}', event)" title="Ajouter dans cette colonne">＋</button>` : '';
-    return `<div class="dep-col nv-col${c.fin ? ' fin' : ''}" id="nvCol_${c.id}" style="--c:${escapeHtml(c.color)}" ondragover="nvDragOver(event,this)" ondragleave="nvDragLeave(this)" ondrop="nvDrop(event,'${c.id}',this)">
-      <div class="dep-colh"><i></i>${escapeHtml((c.icon || '') + ' ' + c.name)}${c.team === false ? ' <small>🔒</small>' : ''}${_nvCanWrite(c) ? '' : ' <small title="Lecture seule">👁️</small>'}<b>${arr.length}</b>${plus}</div>
+    const fold = _nvFold[c.id] !== undefined ? _nvFold[c.id] : (!arr.length || !!c.fin);   // v5.41.562 — téléphone : colonnes vides et « Fait » repliées
+    return `<div class="dep-col nv-col${c.fin ? ' fin' : ''}${fold ? ' fold' : ''}${arr.length ? '' : ' empty'}" id="nvCol_${c.id}" style="--c:${escapeHtml(c.color)}" ondragover="nvDragOver(event,this)" ondragleave="nvDragLeave(this)" ondrop="nvDrop(event,'${c.id}',this)">
+      <div class="dep-colh" onclick="nvFoldT('${c.id}',event)"><i></i><span class="nv-cn">${escapeHtml((c.icon || '') + ' ' + c.name)}${c.team === false ? ' <small>🔒</small>' : ''}${_nvCanWrite(c) ? '' : ' <small title="Lecture seule">👁️</small>'}</span>${arr.length ? `<b>${arr.length}</b>` : '<b class="nv-z">rien</b>'}${plus}<span class="nv-chev">${fold ? '▸' : '▾'}</span></div>
       <div class="dep-colb">${arr.map(x => _nvNoteHtml(x, ctx)).join('') || `<div class="hint nv-cempty">${plus ? 'Rien ici · ＋ pour ajouter' : 'Rien ici'}</div>`}</div></div>`;
   }).join('');
   const tools = boss ? `<button class="nv-cfgbtn" onclick="nvCfgOpen()" title="Organiser les colonnes">⚙️<span> Colonnes</span></button>` : '';
@@ -70874,6 +70895,8 @@ function notesViewRender(keepSeen){
   const ni = document.getElementById('nvAddInput'); if(ni){ ni.value = draft; if(focus) ni.focus(); }
   _nvTyping(focus);
 }
+let _nvFold = {};
+function nvFoldT(id, e){ if(window.innerWidth >= 1000 || (e && e.target.closest('.nv-cplus'))) return; const c = document.getElementById('nvCol_' + id); if(!c) return; const f = !c.classList.contains('fold'); _nvFold[id] = f; c.classList.toggle('fold', f); const ch = c.querySelector('.nv-chev'); if(ch) ch.textContent = f ? '▸' : '▾'; }
 function nvKbGo(k){ const kb = document.getElementById('nvKb'), c = document.getElementById('nvCol_' + k); if(kb && c){ kb.scrollTo({ left:c.offsetLeft - kb.offsetLeft, behavior:'smooth' }); } }
 function _nvAttAddHtml(){
   if(!_nvAttPreview) return '';
