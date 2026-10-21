@@ -48421,9 +48421,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.566';
+const APP_VERSION = '5.41.567';
 
 const CHANGELOG = [
+  {
+    version: '5.41.567',
+    date: '21/10/2026',
+    entries: [
+      { icon: '🛠️', text: "Notes de chantier : appui long (téléphone) ou clic droit (PC) sur une note → « Transformer en tâche ». Comme « ＋ Tâche » (Enregistrer ou Envoyer), avec le chantier déjà choisi, le texte et la photo de la note ; on peut ajouter d'autres choses à faire et des photos. La note devient la tâche (elle quitte les notes)." }
+    ]
+  },
   {
     version: '5.41.566',
     date: '21/10/2026',
@@ -70683,7 +70690,7 @@ function nvSiteMenu(){
   const cur = _nvSite && _nvSite !== '__all__' ? _nvSite : '__all__';
   sitePicker({ title:'Notes de quel chantier ?', current:cur, sites:_nvSites(), extras:[{ v:'__all__', l:'Tous les chantiers', ic:'📋' }], onPick:v => nvPickSite(v) });
 }
-function nvTap(id){ _nvOpenId = (_nvOpenId === id) ? null : id; notesViewRender(true); }
+function nvTap(id){ if(Date.now() - (window._nvLpAt || 0) < 800) return; _nvOpenId = (_nvOpenId === id) ? null : id; notesViewRender(true); }
 function _nvFind(id){
   const cur = _nvCurSite(), list = cur ? [cur] : _nvSites();
   for(const site of list){ const it = _nvTeamNotes(site).concat(_nvBureauNotes(site.id)).find(x => x.n.id === id); if(it){ it.site = site; return it; } }
@@ -70837,8 +70844,30 @@ function nvEdit(id){
   const v = t.trim(); if(!v) return;
   _nvMutate(id, n => { n.text = v; });
 }
-function nvArchive(id){
-  if(!confirm('Retirer cette note ?')) return;
+/* v5.41.567 — appui long (téléphone) / clic droit (PC) sur une note : menu « 🛠️ Transformer en tâche » */
+function nvNoteMenu(id, x, y){
+  const it = _nvFind(id); if(!it) return;
+  const L = [];
+  if(typeof depCanPrep === 'function' && depCanPrep() && !it.bureau) L.push({ i:'🛠️', l:'Transformer en tâche', fn:() => nvToTask(id) });
+  if(_nvCanManage(it)){ if(L.length) L.push('-'); L.push({ i:'✏️', l:'Modifier', fn:() => nvEdit(id) }); L.push({ i:'🗑', l:'Retirer', danger:true, fn:() => nvArchive(id) }); }
+  if(!L.length) return;
+  const t = String(it.n.text || 'Note'); _gcMenu({ title:t.length > 40 ? t.slice(0, 40) + '…' : t, list:L }, x, y);
+}
+document.addEventListener('contextmenu', e => { const el = e.target.closest && e.target.closest('#nvRoot [data-nid]'); if(!el || e.target.closest('button, a, input')) return; e.preventDefault(); nvNoteMenu(el.dataset.nid, e.clientX, e.clientY); });
+(function _nvLongPress(){ let t = null, xy = null;
+  document.addEventListener('pointerdown', e => { if(e.pointerType === 'mouse') return; const el = e.target.closest && e.target.closest('#nvRoot [data-nid]'); if(!el || e.target.closest('button, a, input')) return;
+    xy = [e.clientX, e.clientY]; clearTimeout(t); t = setTimeout(() => { window._nvLpAt = Date.now(); try{ navigator.vibrate && navigator.vibrate(25); }catch(_){} nvNoteMenu(el.dataset.nid, xy[0], xy[1]); }, 550); }, true);
+  document.addEventListener('pointermove', e => { if(xy && (Math.abs(e.clientX - xy[0]) > 10 || Math.abs(e.clientY - xy[1]) > 10)) clearTimeout(t); }, true);
+  ['pointerup', 'pointercancel'].forEach(k => document.addEventListener(k, () => { clearTimeout(t); xy = null; }, true));
+})();
+function nvToTask(id){
+  const it = _nvFind(id); if(!it || !it.site) return;
+  const n = it.n;
+  window._depPrefill = { siteId:it.site.id, text:String(n.text || '').trim(), media:n.media && n.media.url ? [{ url:n.media.url, thumbUrl:n.media.thumbUrl || n.media.url, name:'Photo de la note', type:'photo', uploadedAt:n.createdAt || new Date().toISOString(), fromSite:true }] : [], noteId:id };
+  depNewChoice();
+}
+function nvArchive(id, quiet){
+  if(!quiet && !confirm('Retirer cette note ?')) return;
   _nvOpenId = null; _nvMutate(id, n => { n.archived = true; });
 }
 function _nvNoteHtml(it, ctx){
@@ -70862,7 +70891,7 @@ function _nvNoteHtml(it, ctx){
     const can2 = _nvCanManage(it) || canMv, open2 = can2 && _nvOpenId === n.id;
     let when = ''; try{ when = new Date(n.createdAt).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }); }catch(e){}
     let doneTxt = ''; if(n.done){ try{ doneTxt = '✓ Fait par ' + (n.doneBy || '?') + (n.doneAt ? ' · ' + new Date(n.doneAt).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''); }catch(e){ doneTxt = '✓ Fait'; } }
-    return `<div class="nv-att${n.done ? ' ok' : ''}" style="--cc:${escapeHtml(col.color)}" ${drag} ${can2 ? `onclick="nvTap('${n.id}')"` : ''}>
+    return `<div class="nv-att${n.done ? ' ok' : ''}" data-nid="${n.id}" style="--cc:${escapeHtml(col.color)}" ${drag} ${can2 ? `onclick="nvTap('${n.id}')"` : ''}>
       ${isNew && !n.done ? '<span class="nv-new">Nouveau</span>' : ''}${sLab}
       <div class="nv-att-top">${n.media && n.media.url ? `<img class="nv-att-ph" src="${escapeHtml(n.media.thumbUrl || n.media.url)}" alt="" onclick="nvAttOpenPhoto('${n.id}', event)">` : ''}
         <div class="nv-tx"><div class="nv-att-t${n.done ? ' nv-done' : ''}">${n.important ? '📌 ' : ''}${escapeHtml(n.text || '')}</div><div class="nv-m">${escapeHtml([n.createdBy, when].filter(Boolean).join(' · '))}${n.media ? ' · 📷 touche la photo pour l\'agrandir' : ''}</div></div></div>
@@ -70879,7 +70908,7 @@ function _nvNoteHtml(it, ctx){
     ? `<span class="nv-ck${n.done ? ' on' : ''}" onclick="nvCheck('${n.id}', event)">${n.done ? '✓' : ''}</span>`
     : `<span class="nv-ic">${n.important ? '⚠️' : k.i}</span>`;
   const can = _nvCanManage(it) || canMv, open = can && _nvOpenId === n.id;
-  return `<div class="nv-n${n.important ? ' imp' : ''}${it.bureau ? ' bur' : ''}${ctx.big ? ' big' : ''}${n.done ? ' isdone' : ''}" ${drag} ${can ? `onclick="nvTap('${n.id}')"` : ''}>
+  return `<div class="nv-n${n.important ? ' imp' : ''}${it.bureau ? ' bur' : ''}${ctx.big ? ' big' : ''}${n.done ? ' isdone' : ''}" data-nid="${n.id}" ${drag} ${can ? `onclick="nvTap('${n.id}')"` : ''}>
     ${lead}
     <div class="nv-tx">${sLab}<div class="${n.done ? 'nv-done' : ''}">${escapeHtml(n.text || '')}</div>${meta.length ? `<div class="nv-m">${escapeHtml(meta.join(' · '))}</div>` : ''}${n.media && n.media.url ? `<img class="nv-nph" src="${escapeHtml(n.media.thumbUrl || n.media.url)}" alt="" onclick="nvAttOpenPhoto('${n.id}', event)">` : ''}</div>
     ${isNew ? '<span class="nv-new">Nouveau</span>' : ''}
@@ -75952,7 +75981,8 @@ function depNewChoice(){
   ov.innerHTML = `<div class="modal tkc-m" style="max-width:420px;"><div class="modal-header"><h2>＋ Nouvelle tâche</h2><button class="modal-close" onclick="document.getElementById('modal-tkChoice').remove()">×</button></div>
     <button class="tkc" onclick="${go('save')}"><span class="tkc-i">💾</span><span><b>Enregistrer la tâche</b><small>Elle va dans « À envoyer ». Tu l'enverras plus tard, seule ou avec d'autres.</small></span></button>
     <button class="tkc tkc-p" onclick="${go('send')}"><span class="tkc-i">📤</span><span><b>Envoyer la tâche</b><small>Elle part tout de suite dans « Mes tâches » de la personne choisie.</small></span></button></div>`;
-  ov.addEventListener('click', e => { if(e.target === ov) ov.remove(); });
+  ov.addEventListener('click', e => { if(e.target === ov){ ov.remove(); window._depPrefill = null; } });
+  if(window._depPrefill){ const h = ov.querySelector('h2'); if(h) h.textContent = '🛠️ Transformer la note en tâche'; }
   document.body.appendChild(ov);
 }
 function depOpenEdit(id, direct, nm){
@@ -75962,17 +75992,20 @@ function depOpenEdit(id, direct, nm){
   if(!Array.isArray(_depEdit.mat)) _depEdit.mat = [];
   if(!t && (nm === 'save' || nm === 'send')) _depEdit._nm = nm;
   if(t && t.due && t.due.d){ _depEdit.dueD = t.due.d; _depEdit.dueH = t.due.h || ''; }   // v5.41.551
+  const _pf = !t ? window._depPrefill : null; window._depPrefill = null;   // v5.41.567 — note → tâche
   if(t){ _depEdit.pole = _depPoleOf(t); _depEdit.kind = t.kind || 'autre'; }
   if(t) _depEdit.mode = t.siteId ? 'site' : 'free';
   // v5.41.499 — une seule liste « choses à faire » : le texte de la tâche + ses anciennes actions
   _depEdit.lines = t && !(t.status && t.status !== 'todo') ? [t.title].concat((t.actions || []).map(a => a && a.label)).map(x => String(x || '').trim()).filter(Boolean) : [];
   if(t && !(t.status && t.status !== 'todo')) _depEdit.actions = [];
+  if(_pf){ _depEdit.lines = _pf.text ? [_pf.text] : []; _depEdit.media = (_pf.media || []).slice(); _depEdit._fromNote = _pf.noteId; }
   let ov = document.getElementById('modal-depEdit'); if(ov) ov.remove();
   ov = document.createElement('div'); ov.id = 'modal-depEdit'; ov.className = 'modal-overlay open';
   ov.innerHTML = `<div class="modal" style="max-width:480px;"><div class="modal-header"><h2>${t ? '🛠️ Tâche' : nm === 'send' ? '📤 Envoyer une tâche' : nm === 'save' ? '💾 Nouvelle tâche à envoyer plus tard' : '🛠️ Nouvelle tâche'}</h2><button class="modal-close" onclick="depCloseEdit()">×</button></div><div id="depEditBody"></div></div>`;
   ov.addEventListener('click', e => { if(e.target === ov) depCloseEdit(); });
   document.body.appendChild(ov);
   _depEditRender();
+  if(_pf && _pf.siteId){ try{ _depEdit.mode = 'site'; depPickSite(_pf.siteId); }catch(e){} }
 }
 /* ═══ v5.41.498 — Détail d'une tâche : photos en grand (glisser), infos, puis ✏️ Modifier ═══ */
 let _dvw = null;
@@ -76256,6 +76289,7 @@ async function depSaveEdit(mode){
   extra.forEach(x => Object.keys(x).forEach(k => { if(x[k] === undefined) delete x[k]; }));
   const all = [t].concat(extra);
   if(!(await _depSave(all))) return;
+  if(e._fromNote){ try{ nvArchive(e._fromNote, true); }catch(_){} showToast('🛠️ La note est devenue une tâche'); }   // v5.41.567
   const direct = window._depDirect; window._depDirect = false;
   depCloseEdit();
   const nn = all.length, sfx = nn > 1 ? 's' : '';
