@@ -1067,7 +1067,8 @@
   .svp-hm .svp-n{ border-left:none; padding:0; }
   .svp-n .av{ width:28px; height:28px; border-radius:8px; display:grid; place-items:center; color:#fff; font-weight:900; font-size:11px; flex:none; }
   .svp-n b{ display:block; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:135px; } .svp-n small{ display:block; font-size:11px; color:var(--ink-soft); font-weight:700; }
-  .svp-d{ flex:none; width:74px; box-sizing:border-box; border-left:1px solid rgba(255,255,255,.04); padding:3px 0; }
+  .svp-lbl{ font-size:16px; min-width:0; }
+  .svp-d{ flex:none; width:var(--svp-dw, 74px); box-sizing:border-box; border-left:1px solid rgba(255,255,255,.04); padding:3px 0; }
   .svp-d.w0{ border-left-color:var(--line); } .svp-d.we{ background:rgba(255,255,255,.025); } .svp-d.td{ background:rgba(232,172,61,.1); }
   .svp-hd .svp-d{ text-align:center; } .svp-hd .svp-d small{ display:block; font-size:9.5px; font-weight:800; color:var(--ink-soft); white-space:nowrap; } .svp-hd .svp-d b{ font-size:13px; }
   .svp-hd{ border-bottom:1px solid var(--line); } .svp-r{ border-bottom:1px solid rgba(255,255,255,.04); min-height:62px; }
@@ -48500,9 +48501,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.572';
+const APP_VERSION = '5.41.573';
 
 const CHANGELOG = [
+  {
+    version: '5.41.573',
+    date: '21/10/2026',
+    entries: [
+      { icon: '📊', text: "Heures › Suivi : semaine par semaine ou mois par mois (Semaine / Mois), avec ‹ › et les flèches ← → du clavier, comme les Fiches d'heures. Les jours prennent toute la largeur de l'écran." }
+    ]
+  },
   {
     version: '5.41.572',
     date: '21/10/2026',
@@ -84310,6 +84318,7 @@ document.addEventListener('keydown', e => {
   }
   if(!document.querySelector('#view-heures.active')) return;
   // Heures : bouton de semaine visible (fiches / fiche d'un salarié côté bureau), sinon jour (pointage)
+  if(typeof currentHeuresMode !== 'undefined' && currentHeuresMode === 'suivi'){ e.preventDefault(); _kbKeepScroll(() => svpNav(d)); return; }   // v5.41.573
   const vis = el => el && el.offsetParent !== null;
   // v5.41.569 — vue bureau « Fiches d'heures » (Semaine / Mois) et tableau d'équipe : la navigation du haut
   const top = [...document.querySelectorAll('#view-heures [onclick="bfNav(-1)"], #view-heures [onclick="eqNav(-1)"]')].find(vis);
@@ -84326,9 +84335,13 @@ document.addEventListener('keydown', e => {
 /* ═══ fin v5.41.568 ═══ */
 /* ═══ v5.41.571 — SUIVI = planning automatique, comme l'onglet Planning, rempli tout seul par les pointages.
    Une ligne par chantier ; sur chaque jour : qui était là (initiales), les tâches faites, la couleur du chantier. ═══ */
-let _svpWk = 0, _svpQ = '', _svpLoading = false, _svpAt = 0;
-const SVP_WEEKS = 9, SVP_DW = 74;
-function _svpRange(){ const end = getMondayOfWeek(new Date(), _svpWk); end.setDate(end.getDate() + 6); const start = new Date(end); start.setDate(end.getDate() - SVP_WEEKS * 7 + 1); const out = []; for(let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) out.push(new Date(d)); return out; }
+let _svpWk = 0, _svpMo = 0, _svpPer = (() => { try{ return localStorage.getItem('rwood-svp-per') || 'semaine'; }catch(e){ return 'semaine'; } })(), _svpQ = '', _svpLoading = false, _svpAt = 0;
+let SVP_DW = 74;
+/* v5.41.573 — semaine par semaine ou mois par mois (comme les Fiches d'heures) */
+function _svpRange(){ const out = [];
+  if(_svpPer === 'mois'){ const t = new Date(), y = t.getFullYear(), m = t.getMonth() + _svpMo, n = new Date(y, m + 1, 0).getDate(); for(let i = 1; i <= n; i++) out.push(new Date(y, m, i)); return out; }
+  const mon = getMondayOfWeek(new Date(), _svpWk); for(let i = 0; i < 7; i++){ const d = new Date(mon); d.setDate(mon.getDate() + i); out.push(d); } return out; }
+function svpPer(p){ _svpPer = p; try{ localStorage.setItem('rwood-svp-per', p); }catch(e){} svpRender(); }
 async function _svpLoad(force){
   if(_svpLoading) return; if(!force && _comptableLiveData && Date.now() - _svpAt < 120000) return;
   _svpLoading = true;
@@ -84336,12 +84349,13 @@ async function _svpLoad(force){
   _svpLoading = false;
   if(document.querySelector('#view-heures.active') && currentHeuresMode === 'suivi') svpRender();
 }
-function svpNav(d){ _svpWk = d === 0 ? 0 : _svpWk + d * 4; svpRender(true); }
+function svpNav(d){ if(_svpPer === 'mois') _svpMo = d === 0 ? 0 : _svpMo + d; else _svpWk = d === 0 ? 0 : _svpWk + d; svpRender(true); }
 function svpRender(keepEnd){
   const host = document.getElementById('heuresSuivi'); if(!host) return;
   if(!_comptableLiveData){ host.innerHTML = '<div class="hint" style="text-align:center;padding:30px 0;">⏳ Chargement des pointages de l\'équipe…</div>'; _svpLoad(true); return; }
   if(Date.now() - _svpAt > 120000) _svpLoad(true);
   const ctx = _recapTeamContext(), days = _svpRange(), todayK = _rplKey(new Date());
+  { const W = (host.clientWidth || (document.querySelector('#view-heures') || {}).clientWidth || 1000) - 192; SVP_DW = Math.max(_svpPer === 'mois' ? 58 : 96, Math.floor(W / days.length)); }
   const name = {}; (ctx.workers || []).forEach(w => { name[w.id] = w.name; });
   const sites = new Map();
   days.forEach((d, i) => { const k = _rplKey(d), day = ctx.attendance[k]; if(!day || !day.workers) return;
@@ -84355,8 +84369,7 @@ function svpRender(keepEnd){
   const pc = n => RPL_COLORS[_rplHash(n) % RPL_COLORS.length];
   const months = []; days.forEach((d, i) => { const m = d.toLocaleDateString('fr-FR', { month:'long', year:'numeric' }); const l = months[months.length - 1]; if(!l || l.m !== m) months.push({ m, n:1 }); else l.n++; });
   const f = d => d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
-  const head = `<div class="svp-hm"><div class="svp-n"></div>${months.map(m => `<div style="width:${m.n * SVP_DW}px">${m.m}</div>`).join('')}</div>
-    <div class="svp-hd"><div class="svp-n"><b>Chantier</b></div>${days.map(d => { const k = _rplKey(d), we = d.getDay() === 0 || d.getDay() === 6; return `<div class="svp-d${we ? ' we' : ''}${k === todayK ? ' td' : ''}${d.getDay() === 1 ? ' w0' : ''}"><small>${'DLMMJVS'[d.getDay()]}${d.getDay() === 1 ? ' · S' + getISOWeekNumber(d) : ''}</small><b>${d.getDate()}</b></div>`; }).join('')}</div>`;
+  const head = `<div class="svp-hd"><div class="svp-n"><b>Chantier</b></div>${days.map(d => { const k = _rplKey(d), we = d.getDay() === 0 || d.getDay() === 6; return `<div class="svp-d${we ? ' we' : ''}${k === todayK ? ' td' : ''}${d.getDay() === 1 ? ' w0' : ''}"><small>${'DLMMJVS'[d.getDay()]}${d.getDay() === 1 ? ' · S' + getISOWeekNumber(d) : ''}</small><b>${d.getDate()}</b></div>`; }).join('')}</div>`;
   const rows = L.map((s, si) => `<div class="svp-r"><div class="svp-n"><span class="av sq" style="background:${escapeHtml(s.color)}">${escapeHtml(ini(s.name))}</span><span><b>${escapeHtml(s.name)}</b><small>${_rplFmtH(s.tot)} h · ${s.who.size} pers.</small></span></div>${days.map((d, i) => {
       const w = s.days[i], we = d.getDay() === 0 || d.getDay() === 6, k = _rplKey(d), cls = 'svp-d' + (we ? ' we' : '') + (k === todayK ? ' td' : '') + (d.getDay() === 1 ? ' w0' : '');
       if(!w) return `<div class="${cls}"></div>`;
@@ -84366,12 +84379,15 @@ function svpRender(keepEnd){
       return `<div class="${cls}"><div class="svp-b${jl ? ' jl' : ''}${jr ? ' jr' : ''}" style="--c:${escapeHtml(s.color)}" title="${escapeHtml(tip)}" onclick="svpDetail(${si},${i})">
         <span class="svp-av">${w.slice(0, 3).map(x => `<i style="background:${pc(x.n)}">${escapeHtml(ini(x.n))}</i>`).join('')}${w.length > 3 ? `<i class="m">+${w.length - 3}</i>` : ''}</span>
         <span class="svp-t">${escapeHtml(tasks.join(' · ') || _rplFmtH(w.reduce((a, x) => a + x.h, 0)) + ' h')}</span></div></div>`; }).join('')}</div>`).join('');
-  host.innerHTML = `<div class="svp-top"><button class="pl-chip" onclick="svpNav(-1)" title="4 semaines plus tôt">‹</button><b>${f(days[0])} → ${f(days[days.length - 1])}</b><button class="pl-chip" onclick="svpNav(1)" title="4 semaines plus tard">›</button>${_svpWk ? '<button class="pl-chip" onclick="svpNav(0)">📍 Aujourd\'hui</button>' : ''}
+  const lbl = _svpPer === 'mois' ? (s0 => s0.charAt(0).toUpperCase() + s0.slice(1))(days[0].toLocaleDateString('fr-FR', { month:'long', year:'numeric' })) : 'S' + getISOWeekNumber(days[0]) + ' · ' + f(days[0]) + ' → ' + f(days[6]);
+  const off = _svpPer === 'mois' ? _svpMo : _svpWk;
+  host.innerHTML = `<div class="svp-top"><div class="rb-seg">${[['semaine', 'Semaine'], ['mois', 'Mois']].map(([k, l]) => `<button type="button" class="${_svpPer === k ? 'on' : ''}" onclick="svpPer('${k}')">${l}</button>`).join('')}</div>
+      <span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;"><button class="pl-chip" onclick="svpNav(-1)" title="Précédent (← du clavier)">‹</button><b class="svp-lbl">${lbl}</b><button class="pl-chip" onclick="svpNav(1)" title="Suivant (→ du clavier)">›</button></span>${off ? `<button class="pl-chip" onclick="svpNav(0)">${_svpPer === 'mois' ? 'Ce mois' : 'Cette semaine'}</button>` : ''}
       <input type="search" class="svp-q" placeholder="🔍 Chantier" value="${escapeHtml(_svpQ)}" oninput="_svpQ=this.value;clearTimeout(window._svpT);window._svpT=setTimeout(()=>{svpRender(true);const i=document.querySelector('.svp-q');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},250)">
       <span style="flex:1"></span><button class="pl-chip" onclick="_svpLoad(true)" title="Recharger les pointages">🔄</button></div>
     <div class="hint" style="margin:0 2px 8px;">Rempli tout seul avec les pointages de chacun : une ligne par chantier, qui était là et ce qui a été fait. Clique un jour pour le détail.</div>
-    ${L.length ? `<div class="svp-w" id="svpW"><div class="svp-g" style="width:${190 + days.length * SVP_DW}px">${head}${rows}</div></div>` : '<div class="hint" style="text-align:center;padding:28px 0;">Aucun pointage sur cette période.</div>'}`;
-  const w = document.getElementById('svpW'); if(w) w.scrollLeft = w.scrollWidth;   // on arrive sur la semaine en cours (à droite)
+    ${L.length ? `<div class="svp-w" id="svpW"><div class="svp-g" style="--svp-dw:${SVP_DW}px;width:${190 + days.length * SVP_DW}px">${head}${rows}</div></div>` : '<div class="hint" style="text-align:center;padding:28px 0;">Aucun pointage sur cette période.</div>'}`;
+  const w = document.getElementById('svpW'); if(w && _svpPer === 'mois' && !off){ const ti = days.findIndex(d => _rplKey(d) === todayK); if(ti > 0) w.scrollLeft = Math.max(0, ti * SVP_DW - w.clientWidth / 2); }
 }
 function svpDetail(si, di){
   const s = (window._svpSites || [])[si], d = (window._svpDays || [])[di]; if(!s || !d) return; const w = s.days[di] || [];
