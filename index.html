@@ -48606,9 +48606,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.584';
+const APP_VERSION = '5.41.585';
 
 const CHANGELOG = [
+  {
+    version: '5.41.585',
+    date: '24/10/2026',
+    entries: [
+      { icon: '✅', text: "Tâches : le bouton « Tâche finie » devient un petit bouton discret « ✓ Finie »." },
+      { icon: '📋', text: "Bureau : le récap des tâches finies passe à la semaine (lundi → dimanche, rangé par pôle puis par jour). Flèches pour voir les semaines précédentes." },
+      { icon: '✏️', text: "Notes : « Modifier » ouvre la même fenêtre que pour ajouter (chantier, titre, détail, date, photos). Les boutons pour changer de colonne disparaissent quand on touche une note." },
+      { icon: '➕', text: "Colonnes Tâches : on peut écrire plusieurs tâches d'un coup (« + Ajouter une autre tâche » ou Entrée)." },
+      { icon: '🐛', text: "Fenêtre d'ajout : la liste des chantiers s'affiche maintenant dans la fenêtre (elle passait derrière)." },
+      { icon: '🔠', text: "Notes : le titre des colonnes s'affiche en entier (passe à la ligne s'il est long)." },
+      { icon: '👓', text: "Notes : textes plus grands et moins de majuscules, plus faciles à lire." },
+      { icon: '🔔', text: "Bureau : le vendredi matin, une notification « Récap de la semaine » donne le nombre de tâches finies par pôle ; la toucher ouvre le récap." }
+    ]
+  },
   {
     version: '5.41.584',
     date: '23/10/2026',
@@ -89808,6 +89822,256 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 })();
 </script>
 <!-- ═══ fin MODULE — Notybat Clair 9 ═══ -->
+
+<!-- ═══ MODULE — Notybat Clair 10 (v5.41.585) — bouton Tâche finie discret, récap de la semaine + notif du vendredi ═══ -->
+<style>
+  .nb-tfin{ display:inline-flex; align-items:center; gap:4px; width:auto; margin:0 0 8px 34px; min-height:32px; padding:4px 12px; border:1.5px solid #4CAF79; border-radius:99px; background:transparent; color:#4CAF79; font:inherit; font-size:12.5px; font-weight:700; letter-spacing:0; text-transform:none; cursor:pointer; }
+  .nb-tfin.ok{ border-color:var(--line); color:var(--ink-soft); font-size:12px; font-weight:600; }
+  #nbRc .dayh{ font-size:12px; font-weight:700; color:var(--ink-soft); margin:10px 2px 6px; text-transform:capitalize; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  const isTask = c => !!c && c.type === 'taches';
+  const isBur = () => ['patron', 'conducteur', 'comptable'].includes(_nvRole()) || _nvIsPatron();
+  const iso = d => { const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+  const photosOf = n => (Array.isArray(n.photos) && n.photos.length ? n.photos : (n.media && n.media.url ? [n.media] : [])).filter(p => p && p.url);
+  const monday = d => { const x = new Date(typeof d === 'string' ? d + 'T12:00' : d); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return iso(x); };
+  const addDays = (s, k) => { const x = new Date(s + 'T12:00'); x.setDate(x.getDate() + k); return iso(x); };
+
+  /* ── Bouton « Tâche finie » : texte court et discret ── */
+  const _card = _nvNoteHtml;
+  window._nvNoteHtml = function(it, ctx){
+    return _card(it, ctx).replace('>TÂCHE FINIE</button>', '>✓ Finie</button>').replace(/>✓ FINIE( par [^<·]*)? · annuler<\/button>/, (m, p) => `>✓ Finie${p || ''} · annuler</button>`);
+  };
+
+  /* ── Tâches finies d'une semaine (lundi → dimanche) ── */
+  function weekDone(mon){
+    const end = addDays(mon, 6), cols = _nvCols().filter(isTask), out = [];
+    (data.sites || []).forEach(s => (s.noteCategories || []).forEach(c => (c.notes || []).forEach(n => {
+      if(!n || n.deleted || !n.done || !n.doneAt) return;
+      const d = iso(n.doneAt); if(d < mon || d > end) return;
+      const col = cols.find(x => x.id === n.col); if(col) out.push({ n, s, col, d });
+    })));
+    return { cols, out };
+  }
+
+  let _rcWeek = monday(new Date());
+  window.nbRecapOpen = function(d){
+    if(d) _rcWeek = monday(d);
+    const { cols, out } = weekDone(_rcWeek); window._nbRcPh = {};
+    let o = document.getElementById('nbRc'); if(o) o.remove();
+    o = document.createElement('div'); o.id = 'nbRc';
+    const end = addDays(_rcWeek, 6), cur = monday(new Date());
+    const lab = d => new Date(d + 'T12:00').toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
+    o.innerHTML = `<div class="hd"><b>Tâches finies · ${out.length}</b><button class="btn btn-outline btn-sm" onclick="document.getElementById('nbRc').remove()">Fermer</button></div>
+      <div class="day"><button class="week-nav-btn" onclick="nbRecapOpen('${addDays(_rcWeek, -7)}')">←</button><b>Semaine du ${E(lab(_rcWeek))} au ${E(lab(end))}</b><button class="week-nav-btn" onclick="nbRecapOpen('${addDays(_rcWeek, 7)}')" ${_rcWeek >= cur ? 'disabled' : ''}>→</button></div>
+      ${cols.length ? cols.map(c => {
+        const a = out.filter(x => x.col.id === c.id).sort((x, y) => String(x.n.doneAt).localeCompare(String(y.n.doneAt)));
+        let lastDay = '';
+        return `<div class="pole" style="--c:${E(c.color)}">${E(((c.icon || '') + ' ' + c.name).trim())} · ${a.length}</div>` + (a.length ? a.map(({ n, s, d }) => {
+          const ls = String(n.text || '').split('\n'), t = ls.shift(), det = ls.join('\n').trim(), ps = photosOf(n); window._nbRcPh[n.id] = ps;
+          const h = new Date(n.doneAt).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
+          const dh = d !== lastDay ? `<div class="dayh">${E(new Date(d + 'T12:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }))}</div>` : ''; lastDay = d;
+          return dh + `<div class="r" style="--c:${E(c.color)}"><b>${E(t)}</b><small>${E([s.name, n.doneBy ? 'fini par ' + n.doneBy : '', h].filter(Boolean).join(' · '))}</small>${det ? `<div class="det">${E(det)}</div>` : ''}${ps.length ? `<div class="nb-phs">${ps.map((p, i) => `<img src="${E(p.thumbUrl || p.url)}" alt="" onclick="nbLb('${n.id}',${i},event)">`).join('')}</div>` : ''}</div>`; }).join('') : '<div class="hint" style="margin:0 2px;">Aucune tâche finie cette semaine.</div>');
+      }).join('') : '<div class="hint">Aucune colonne Tâches. Crée-en une dans Notes › Colonnes (modèle « Tâches par pôle »).</div>'}`;
+    document.body.appendChild(o);
+  };
+  const _nr = notesViewRender;
+  window.notesViewRender = function(){
+    const r = _nr.apply(this, arguments);
+    try{ const b = document.querySelector('#nvRoot .nb-rcbtn'); if(b){ b.textContent = 'Récap de la semaine'; b.setAttribute('onclick', 'nbRecapOpen()'); } }catch(e){}
+    return r;
+  };
+
+  /* ── Notification du vendredi matin (bureau) : récap de la semaine ── */
+  const _ht = _handleNotifTarget;
+  window._handleNotifTarget = async function(target){
+    if(String(target || '').replace(/^#/, '') === 'nbrecap'){ try{ goTo('notesdashboard'); }catch(e){} setTimeout(() => nbRecapOpen(), 400); return; }
+    return _ht.apply(this, arguments);
+  };
+  function fridayCheck(){
+    try{
+      if(!data || !isBur()) return;
+      const now = new Date(); if(now.getDay() !== 5 || now.getHours() < 7) return;
+      const mon = monday(now), key = 'nbWeekRecap-' + mon;
+      if(localStorage.getItem(key)) return;
+      const { cols, out } = weekDone(mon); if(!cols.length) return;
+      localStorage.setItem(key, '1');
+      const per = cols.map(c => { const k = out.filter(x => x.col.id === c.id).length; return k ? c.name + ' : ' + k : ''; }).filter(Boolean).join(' · ');
+      const body = out.length ? out.length + ' tâche' + (out.length > 1 ? 's' : '') + ' finie' + (out.length > 1 ? 's' : '') + ' cette semaine' + (per ? ' — ' + per : '') : 'Aucune tâche finie cette semaine pour le moment.';
+      const authId = data.settings && data.settings.auth && data.settings.auth.authId;
+      if(authId) notifyPush([authId], '📋 Récap de la semaine', body, 'nb-week-recap', 'nbrecap');
+      const t = document.createElement('div');
+      t.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:9200;background:var(--bg-elev);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;gap:10px;align-items:center;max-width:480px;margin:0 auto;';
+      t.innerHTML = `<div style="flex:1;min-width:0;"><b>📋 Récap de la semaine</b><div style="font-size:13px;color:var(--ink-soft);margin-top:2px;">${E(body)}</div></div><button class="btn btn-primary btn-sm">Voir</button><button class="btn btn-outline btn-sm" aria-label="Fermer">✕</button>`;
+      const [v, x] = t.querySelectorAll('button');
+      v.onclick = () => { t.remove(); nbRecapOpen(); }; x.onclick = () => t.remove();
+      document.body.appendChild(t);
+    }catch(e){}
+  }
+  setTimeout(fridayCheck, 6000); setInterval(fridayCheck, 15 * 60000);
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') setTimeout(fridayCheck, 2000); });
+})();
+</script>
+<!-- ═══ fin MODULE — Notybat Clair 10 ═══ -->
+
+<!-- ═══ MODULE — Notybat Clair 11 (v5.41.585) — Notes : une seule fenêtre pour ajouter / modifier, plusieurs tâches d'un coup, liste des chantiers intégrée, textes plus lisibles ═══ -->
+<style>
+  /* Lisibilité : moins de majuscules, textes plus grands */
+  #nvRoot .dep-colh .nv-cn, #nvRoot .nv-sec, #nvRoot .nv-kl, #nvRoot .nb-arch-h, #nvRoot .nb-archbtn{ text-transform:none !important; letter-spacing:0 !important; }
+  #nvRoot .dep-colh .nv-cn{ font-size:16px; font-weight:800; }
+  #nvRoot .nv-col .dep-colh .nv-cn, #nvRoot .dep-colh .nv-cn{ white-space:normal !important; overflow:visible !important; text-overflow:clip !important; overflow-wrap:anywhere; line-height:1.25; }
+  #nvRoot .nv-col .dep-colh{ align-items:flex-start !important; } #nvRoot .nv-col .dep-colh > *{ align-self:center; } #nvRoot .nv-col .dep-colh .nv-cn{ align-self:center; }
+  #nvRoot .nv-kbnav button{ white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }
+  #nvRoot .nb-nt{ font-size:16px; line-height:1.4; font-weight:600; color:var(--ink); }
+  #nvRoot .nb-det{ font-size:14.5px; line-height:1.45; color:var(--ink); opacity:.85; margin-top:3px; white-space:pre-wrap; }
+  #nvRoot .nv-m{ font-size:13px !important; line-height:1.35; margin-top:4px; }
+  #nvRoot .nb-n{ padding-top:12px; padding-bottom:12px; }
+  .nb-due{ text-transform:none !important; letter-spacing:0 !important; font-size:12.5px !important; font-weight:700 !important; }
+  .nb-acts button{ font-size:13.5px !important; }
+  #nbRc .hd b, #nbRc .pole{ text-transform:none !important; letter-spacing:0 !important; }
+  #nbRc .pole{ font-size:15px; }
+  #nbEd .hd b{ text-transform:none !important; letter-spacing:0 !important; font-size:17px !important; }
+  #nbEd label.l{ text-transform:none !important; letter-spacing:0 !important; font-size:13.5px !important; color:var(--ink) !important; font-weight:700 !important; margin-top:14px !important; }
+  /* Liste des chantiers dans la fenêtre (plus de menu natif qui passe derrière) */
+  #nbEd .nb-sbtn{ display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; min-height:48px; padding:10px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-size:16px; font-weight:700; text-align:left; cursor:pointer; }
+  #nbEd .nb-sbtn.empty{ color:var(--ink-soft); font-weight:500; border-color:var(--wood); }
+  #nbEd .nb-slist{ margin-top:6px; border:1.5px solid var(--line); border-radius:12px; max-height:260px; overflow-y:auto; background:var(--bg); }
+  #nbEd .nb-slist input{ width:100%; box-sizing:border-box; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--ink); padding:12px; font:inherit; font-size:16px; }
+  #nbEd .nb-slist button{ display:block; width:100%; text-align:left; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--ink); padding:13px 12px; font:inherit; font-size:15px; cursor:pointer; }
+  #nbEd .nb-slist button:last-child{ border-bottom:0; }
+  #nbEd .nb-slist button.on{ color:var(--wood); font-weight:800; }
+  #nbEd .nb-sfix{ padding:12px; border-radius:12px; border:1.5px solid var(--line); font-size:16px; font-weight:700; }
+  /* Plusieurs tâches */
+  #nbEd .nb-trow{ display:flex; gap:6px; align-items:center; margin-bottom:6px; }
+  #nbEd .nb-trow input{ flex:1; }
+  #nbEd .nb-trow button{ flex-shrink:0; width:40px; height:44px; border-radius:10px; border:1px solid var(--line); background:transparent; color:var(--ink-soft); font-size:18px; cursor:pointer; }
+  #nbEd .nb-tadd{ width:100%; min-height:44px; border:1.5px dashed var(--line); border-radius:12px; background:transparent; color:var(--ink); font:inherit; font-size:14px; font-weight:700; cursor:pointer; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  const isTask = c => !!c && c.type === 'taches';
+  const photosOf = n => (Array.isArray(n.photos) && n.photos.length ? n.photos : (n.media && n.media.url ? [n.media] : [])).filter(p => p && p.url);
+  let S = null;   // état de la fenêtre
+
+  /* ── Carte : plus de boutons ‹ colonne / colonne ›, ni Date / Photos séparés (tout est dans « Modifier ») ── */
+  const _card = _nvNoteHtml;
+  window._nvNoteHtml = function(it, ctx){
+    return _card(it, ctx)
+      .replace(/<button onclick="nvMoveTo\([^"]*\)">[^<]*<\/button>/g, '')
+      .replace(/<button onclick="nbDueOpen\([^"]*\)">[^<]*<\/button>/g, '')
+      .replace(/<button onclick="nbAddPhotos\([^"]*\)">[^<]*<\/button>/g, '')
+      .replace(/<button onclick="nvAttPhotoChange\([^"]*\)">[^<]*<\/button>/g, '');
+  };
+  window.nvEdit = function(id){ nbNoteEditor(null, null, id); };
+
+  /* ── Fenêtre unique : ajouter OU modifier ── */
+  function draw(){
+    const o = document.getElementById('nbEd'); if(!o || !S) return;
+    const box = o.querySelector('#nbEdSiteBox'), ph = o.querySelector('#nbEdPh'), tl = o.querySelector('#nbEdTitles');
+    if(box){
+      if(S.editId) box.innerHTML = `<div class="nb-sfix">${E(S.site ? S.site.name : 'Chantier')}</div>`;
+      else {
+        const sites = _nvSites(), q = (S.q || '').toLowerCase(), list = sites.filter(s => !q || String(s.name || '').toLowerCase().includes(q));
+        box.innerHTML = `<button type="button" class="nb-sbtn${S.site ? '' : ' empty'}" onclick="nbEdSiteToggle()"><span>${S.site ? E(S.site.name || 'Chantier') : 'Touche pour choisir le chantier'}</span><span>${S.open ? '▴' : '▾'}</span></button>
+          ${S.open ? `<div class="nb-slist">${sites.length > 8 ? `<input type="text" id="nbEdSq" placeholder="Rechercher un chantier…" value="${E(S.q || '')}" oninput="nbEdSiteQ(this.value)">` : ''}${list.map(s => `<button type="button" class="${S.site && S.site.id === s.id ? 'on' : ''}" onclick="nbEdSitePick('${s.id}')">${E(s.name || 'Chantier')}</button>`).join('') || '<div class="hint" style="padding:12px;">Aucun chantier</div>'}</div>` : ''}`;
+      }
+    }
+    if(tl){
+      const many = S.titles.length > 1;
+      tl.innerHTML = S.titles.map((t, i) => `<div class="nb-trow"><input type="text" data-i="${i}" maxlength="140" value="${E(t)}" placeholder="${isTask(S.col) ? (i ? 'Tâche suivante' : 'Ex : Poser les chevrons') : 'Ex : Livraison des tuiles mardi'}" enterkeyhint="${S.multi ? 'next' : 'done'}" oninput="nbEdT(${i},this.value)" onkeydown="nbEdKey(event,${i})">${many ? `<button type="button" aria-label="Retirer" onclick="nbEdTRm(${i})">×</button>` : ''}</div>`).join('')
+        + (S.multi ? `<button type="button" class="nb-tadd" onclick="nbEdTAdd()">+ Ajouter une autre tâche</button>${many ? '<div class="hint" style="margin:6px 2px 0;font-size:12.5px;">Le détail, la date et les photos ci-dessous s\'appliquent à toutes ces tâches.</div>' : ''}` : '');
+    }
+    if(ph){
+      const all = S.keep.map((p, i) => `<span><img src="${E(p.thumbUrl || p.url)}" alt=""><button type="button" onclick="nbEdKeepRm(${i})">×</button></span>`)
+        .concat(S.files.map((f, i) => `<span><img src="${f.u}" alt=""><button type="button" onclick="nbEdRm(${i})">×</button></span>`));
+      ph.innerHTML = `${all.length ? `<div class="nb-edphs">${all.join('')}</div>` : ''}<button type="button" class="btn btn-outline" onclick="nbEdPhoto()">${all.length ? '+ Photos' : 'Ajouter des photos'}</button>`;
+    }
+  }
+  window.nbEdSiteToggle = function(){ if(!S) return; S.open = !S.open; draw(); if(S.open){ const q = document.getElementById('nbEdSq'); if(q) q.focus(); } };
+  window.nbEdSiteQ = function(v){ if(!S) return; S.q = v; draw(); const q = document.getElementById('nbEdSq'); if(q){ q.focus(); q.setSelectionRange(v.length, v.length); } };
+  window.nbEdSitePick = function(id){ if(!S) return; S.site = (data.sites || []).find(s => s.id === id) || null; S.open = false; S.q = ''; draw(); const t = document.querySelector('#nbEdTitles input'); if(t) t.focus(); };
+  window.nbEdT = function(i, v){ if(S) S.titles[i] = v; };
+  window.nbEdTAdd = function(){ if(!S) return; S.titles.push(''); draw(); const ins = document.querySelectorAll('#nbEdTitles input'); if(ins.length) ins[ins.length - 1].focus(); };
+  window.nbEdTRm = function(i){ if(!S) return; S.titles.splice(i, 1); if(!S.titles.length) S.titles.push(''); draw(); };
+  window.nbEdKey = function(e, i){ if(e.key !== 'Enter' || !S) return; e.preventDefault(); if(S.multi && String(S.titles[i] || '').trim()){ if(i === S.titles.length - 1) nbEdTAdd(); else { const ins = document.querySelectorAll('#nbEdTitles input'); if(ins[i + 1]) ins[i + 1].focus(); } } else { const d = document.getElementById('nbEdD'); if(d) d.focus(); } };
+  window.nbEdSetFile = function(f){ if(!S || !f) return; S.files.push({ f, u: URL.createObjectURL(f) }); draw(); };
+  window.nbEdRm = function(i){ if(!S) return; try{ URL.revokeObjectURL(S.files[i].u); }catch(e){} S.files.splice(i, 1); draw(); };
+  window.nbEdKeepRm = function(i){ if(!S) return; S.keep.splice(i, 1); draw(); };
+  window.nbEdPhoto = function(){ const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*'; i.multiple = true; i.onchange = () => [...(i.files || [])].forEach(nbEdSetFile); i.click(); };
+  window.nbEdClose = function(){ const o = document.getElementById('nbEd'); if(o) o.remove(); try{ (S && S.files || []).forEach(f => URL.revokeObjectURL(f.u)); }catch(e){} S = null; };
+
+  window.nbNoteEditor = function(colId, ev, editId){
+    if(ev) ev.stopPropagation();
+    let col, it = null;
+    if(editId){
+      it = _nvFind(editId); if(!it) return;
+      if(!_nvCanManage(it)){ showToast('Tu ne peux pas modifier cette note'); return; }
+      col = it.col || _nvColOf(it);
+    } else {
+      col = _nvCols().find(c => c.id === colId); if(!col) return;
+      if(!_nvCanWrite(col)){ showToast('Tu ne peux pas écrire dans cette colonne'); return; }
+    }
+    const what = isTask(col) ? 'tâche' : 'note';
+    const lines = it ? String(it.n.text || '').split('\n') : [''], title = lines.shift(), det = lines.join('\n').trim();
+    const cur = it ? it.site : (_nvCurSite() || _nvSites().find(s => s.id === _nvSite) || null);
+    S = { col, editId: editId || null, site: cur, open: !cur, q:'', titles:[title || ''], multi: !editId && isTask(col), files:[], keep: it ? photosOf(it.n).slice() : [] };
+    let ov = document.getElementById('nbEd'); if(ov) ov.remove();
+    ov = document.createElement('div'); ov.id = 'nbEd';
+    ov.onclick = e => { if(e.target === ov) nbEdClose(); };
+    ov.innerHTML = `<div style="--c:${E(col.color)}"><div class="hd"><b>${editId ? 'Modifier la ' + what : (S.multi ? 'Nouvelles tâches' : 'Nouvelle ' + what)} · ${E(col.name)}</b><button type="button" class="modal-x" onclick="nbEdClose()">✕</button></div>
+      <label class="l">Chantier</label><div id="nbEdSiteBox"></div>
+      <label class="l">${S.multi ? 'Tâches (une par ligne)' : 'Titre'}</label><div id="nbEdTitles"></div>
+      <label class="l" for="nbEdD">Détail <span style="font-weight:500;color:var(--ink-soft);">(facultatif)</span></label>
+      <textarea id="nbEdD" placeholder="${isTask(col) ? 'Où, comment, quel matériel…' : 'Plus de précisions…'}">${E(det)}</textarea>
+      <label class="l" for="nbEdDue">À faire pour le <span style="font-weight:500;color:var(--ink-soft);">(facultatif)</span></label><input type="date" id="nbEdDue" value="${E(it && it.n.due || '')}">
+      <label class="l">Photos</label><div id="nbEdPh"></div>
+      <div class="nb-dz">Sur PC : glisse une ou plusieurs photos ici</div>
+      <div class="ft"><button type="button" class="btn btn-outline" onclick="nbEdClose()">Annuler</button><button type="button" class="btn btn-primary" id="nbEdOk" onclick="nbEdSave()">Enregistrer</button></div></div>`;
+    document.body.appendChild(ov);
+    draw();
+    setTimeout(() => { const t = document.querySelector('#nbEdTitles input'); if(cur && t) t.focus(); }, 60);
+  };
+
+  window.nbEdSave = async function(){
+    if(!S) return;
+    const st = S, col = st.col, site = st.site;
+    const titles = st.titles.map(t => String(t || '').trim()).filter(Boolean);
+    const d = ((document.getElementById('nbEdD') || {}).value || '').trim(), due = (document.getElementById('nbEdDue') || {}).value || null;
+    if(!site){ showToast('Choisis un chantier'); st.open = true; draw(); return; }
+    if(!titles.length){ showToast('Écris un titre'); const x = document.querySelector('#nbEdTitles input'); if(x) x.focus(); return; }
+    const btn = document.getElementById('nbEdOk'); if(btn){ btn.disabled = true; btn.textContent = 'Enregistrement…'; }
+    const ms = [];
+    for(const f of st.files){ try{ ms.push(await _nvAttUpload(f.f, site.id)); }catch(e){} }
+    if(ms.length < st.files.length && !confirm("Certaines photos n'ont pas pu être envoyées (réseau ?). Enregistrer quand même ?")){ if(btn){ btn.disabled = false; btn.textContent = 'Enregistrer'; } return; }
+    const photos = st.keep.concat(ms);
+    if(st.editId){
+      await _nvMutate(st.editId, n => { n.text = titles[0] + (d ? '\n' + d : ''); n.due = due; n.photos = photos; n.media = photos[0] || null; });
+      showToast((isTask(col) ? 'Tâche' : 'Note') + ' modifiée');
+      nbEdClose(); return;
+    }
+    const me = _nvMe(), now = new Date().toISOString();
+    const kind = col.team === false ? 'bureau' : ((col.notify && !col.fin) ? 'attention' : 'info');
+    const notes = titles.map(t => {
+      const n = { id: uid(), text: t + (d ? '\n' + d : ''), kind, col: col.id, important:false, hasCheckbox:false, done: !!col.fin, archived:false,
+        date:null, due, photos: photos.slice(), media: photos[0] || null, createdAt: now, noteUpdatedAt: now, createdBy: me.name, authId: me.authId, byRole: _nvRole() };
+      if(col.fin){ n.doneBy = me.name; n.doneAuthId = me.authId; n.doneAt = now; }
+      return n;
+    });
+    if(kind === 'bureau') await _nvBureauSave(x => { const a = (x.sites[site.id] = x.sites[site.id] || []); notes.forEach(n => a.push(n)); });
+    else { const cat = _nvRwCat(site); notes.forEach(n => cat.notes.push(n)); cat.catUpdatedAt = now; _nvTouchSite(site); }
+    try{ if(!col.fin) _nvColNotify(col, site, notes.length > 1 ? Object.assign({}, notes[0], { text: notes.length + ' tâches : ' + titles.join(', ') }) : notes[0]); }catch(e){}
+    const w = isTask(col) ? 'Tâche' : 'Note';
+    showToast((notes.length > 1 ? notes.length + ' tâches ajoutées' : w + ' ajoutée') + ' · ' + (site.name || ''));
+    nbEdClose(); notesViewRender(true);
+  };
+})();
+</script>
+<!-- ═══ fin MODULE — Notybat Clair 11 ═══ -->
 
 </body>
 </html>
