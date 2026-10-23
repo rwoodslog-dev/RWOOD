@@ -48606,9 +48606,32 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.588';
+const APP_VERSION = '5.41.591';
 
 const CHANGELOG = [
+  {
+    version: '5.41.591',
+    date: '24/10/2026',
+    entries: [
+      { icon: '🚐', text: "Itinéraires › « Tournée » : choisis plusieurs chantiers sur la carte (ou dans la liste) dans l'ordre de passage, puis « Lancer la tournée »." },
+      { icon: '📍', text: "Tournée : un bandeau en bas montre le chantier en cours avec ses raccourcis (Fiche, Y aller, Notes, Photos) et l'avancement de la tournée." },
+      { icon: '⏱️', text: "Tournée : « Pointer ce chantier » ouvre la fenêtre de la feuille de route (temps passé, tâche, avec qui). Chaque chantier s'ajoute à ta fiche du jour en multi-chantiers, la fiche des collègues cochés est pré-remplie en même temps, puis le chantier suivant s'ouvre." }
+    ]
+  },
+  {
+    version: '5.41.590',
+    date: '24/10/2026',
+    entries: [
+      { icon: '🚚', text: "Livraisons : les livraisons reçues sont rangées en bas de la colonne dans « ✅ Reçues · N » (touche pour les afficher). On ne voit plus que les livraisons à venir." }
+    ]
+  },
+  {
+    version: '5.41.589',
+    date: '24/10/2026',
+    entries: [
+      { icon: '🚚', text: "Livraisons : plus de case à cocher, seulement le bouton « ✅ Reçue » / « ↩️ Pas reçue ». Une livraison reçue est grisée et barrée." }
+    ]
+  },
   {
     version: '5.41.588',
     date: '24/10/2026',
@@ -75138,7 +75161,7 @@ async function _routeApplyPointage(stop, route, result){
   const tasksSummary = (stop.tasks||[]).map(t => t.label).join(', ');
     const { hours: h, task, team } = result;
 
-    const dateKey = new Date().toISOString().slice(0,10);
+    const dateKey = (typeof dateKeyOf === 'function') ? dateKeyOf(new Date()) : new Date().toISOString().slice(0,10);   // v5.41.591 — date locale
     if(!data.attendance[dateKey]) data.attendance[dateKey] = { siteId: data.sites[0]?.id || null, workers: {} };
     const today = data.attendance[dateKey];
 
@@ -90645,6 +90668,14 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   #nbRecv .att button{ position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:50%; border:0; background:#E5484D; color:#fff; font-weight:900; cursor:pointer; line-height:22px; padding:0; }
   #nbRecv .ft{ display:flex; gap:8px; margin-top:14px; } #nbRecv .ft button{ flex:1; min-height:48px; }
   #nbRc .nb-rcliv .r small b{ font-size:12px; }
+  /* livraison reçue : carte grisée et titre barré ; pas de case à cocher sur les livraisons */
+  #nvRoot .nv-n.nb-livrecu{ opacity:.55; filter:grayscale(1); background:var(--bg) !important; }
+  #nvRoot .nv-n.nb-livrecu .nb-nt, #nvRoot .nv-n.nb-livrecu .nb-det{ text-decoration:line-through; text-decoration-thickness:2px; }
+  #nvRoot .nv-n.nb-livrecu .nb-livbtns button{ filter:none; }
+  #nvRoot .nb-rcvgrp{ margin-top:8px; }
+  #nvRoot .nb-rcvtg{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border:1.5px dashed var(--line); border-radius:12px; background:transparent; color:var(--ink-soft); font:inherit; font-size:14px; font-weight:800; cursor:pointer; }
+  #nvRoot .nb-rcvgrp.open .nb-rcvtg{ border-style:solid; }
+  #nvRoot .nb-rcvbox{ display:none; margin-top:8px; } #nvRoot .nb-rcvgrp.open .nb-rcvbox{ display:block; }
 </style>
 <script>
 (function(){
@@ -90809,6 +90840,51 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     nbRecvOpen(id);
   };
 
+  /* ── Cartes de livraison : pas de case à cocher (seulement « Reçue / Pas reçue »), reçue = grisée et barrée ── */
+  const _card = window._nvNoteHtml;
+  window._nvNoteHtml = function(it, ctx){
+    let h = _card.apply(this, arguments);
+    try{
+      if(!isLivNote(it)) return h;
+      h = h.replace(/<span class="nv-ck[^"]*"[^>]*>[^<]*<\/span>/, '');
+      if(it.n && it.n.liv && it.n.liv.recu) h = h.replace('class="nv-n', 'class="nv-n nb-livrecu');
+    }catch(e){}
+    return h;
+  };
+
+  /* ── Livraisons reçues repliées en bas de la colonne (« ✅ Reçues · N » à déplier) ── */
+  const _rcvOpen = new Set();
+  window.nbRcvToggle = function(btn, key){
+    const g = btn.closest('.nb-rcvgrp'); if(!g) return;
+    const on = !g.classList.contains('open'); g.classList.toggle('open', on);
+    if(on) _rcvOpen.add(key); else _rcvOpen.delete(key);
+    const i = btn.querySelector('i'); if(i) i.textContent = on ? '▴' : '▾';
+  };
+  function foldReceived(){
+    const root = document.getElementById('nvRoot'); if(!root) return;
+    root.querySelectorAll('.dep-colb').forEach((body, bi) => {
+      const colEl = body.closest('[id^="nvCol_"]'), cid = colEl ? colEl.id : 'c' + bi;
+      [body, ...body.querySelectorAll('.nv-sg')].forEach((h, hi) => {
+        if(h.querySelector(':scope > .nb-rcvgrp')) return;
+        const cards = [...h.children].filter(x => x.classList && x.classList.contains('nb-livrecu'));
+        if(!cards.length) return;
+        const key = cid + '|' + hi + '|' + (h.dataset.sid || '');
+        const open = _rcvOpen.has(key);
+        const g = document.createElement('div'); g.className = 'nb-rcvgrp' + (open ? ' open' : ''); g.setAttribute('data-testid', 'livraisons-recues-group');
+        g.innerHTML = `<button type="button" class="nb-rcvtg" data-testid="livraisons-recues-toggle" onclick="event.stopPropagation();nbRcvToggle(this,'${E(key)}')"><span>✅ Reçues · ${cards.length}</span><i>${open ? '▴' : '▾'}</i></button><div class="nb-rcvbox"></div>`;
+        const box = g.querySelector('.nb-rcvbox');
+        cards.forEach(c => { const nx = c.nextElementSibling; box.appendChild(c); if(nx && nx.classList.contains('nv-acts')) box.appendChild(nx); });
+        h.appendChild(g);
+      });
+    });
+  }
+  const _nvr = window.notesViewRender;
+  window.notesViewRender = function(){
+    const r = _nvr.apply(this, arguments);
+    try{ if(!_nvCfgOpen) foldReceived(); }catch(e){ console.warn('[livraisons reçues]', e); }
+    return r;
+  };
+
   /* ── Récap de la semaine : livraisons reçues (titre, chantier, date de réception) ── */
   function weekRecv(mon){
     const end = addDays(mon, 6), out = [];
@@ -90842,6 +90918,229 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 })();
 </script>
 <!-- ═══ fin MODULE — Notybat Clair 14 ═══ -->
+
+<!-- ═══ MODULE — Notybat Clair 15 (v5.41.591) — Itinéraires : Tournée de chantiers ═══
+     - Itinéraires › « 🚐 Tournée » : choisir plusieurs chantiers sur la carte (ou dans la liste), dans l'ordre de passage
+     - « Lancer la tournée » : bandeau actif en bas avec la fiche du chantier en cours (Fiche, Y aller, Notes, Photos)
+     - « ⏱️ Pointer ce chantier » : même fenêtre que la feuille de route (temps passé, tâche, avec qui) ;
+       chaque chantier pointé s'ajoute à la fiche du jour en multi-chantiers, et la fiche des collègues cochés est pré-remplie en même temps
+     - Puis le chantier suivant s'ouvre ; « Chantier suivant › » pour passer sans pointer -->
+<style>
+  #rwTourBtn{ display:flex; align-items:center; gap:12px; width:100%; margin:0 0 12px; padding:14px; border:1.5px solid var(--wood); border-radius:16px; background:rgba(232,172,61,.10); color:var(--ink); font:inherit; text-align:left; cursor:pointer; }
+  #rwTourBtn i{ font-style:normal; font-size:28px; } #rwTourBtn b{ display:block; font-size:16px; } #rwTourBtn small{ display:block; color:var(--ink-soft); font-size:12.5px; margin-top:2px; }
+  #rwTourPick{ position:fixed; inset:0; z-index:9300; background:var(--bg); display:flex; flex-direction:column; }
+  #rwTourPick .top{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:calc(10px + env(safe-area-inset-top,0px)) 12px 10px; border-bottom:1px solid var(--line); }
+  #rwTourPick .top b{ font-size:16px; }
+  #rwTourMap{ height:42vh; min-height:220px; flex-shrink:0; background:#1b1712; }
+  #rwTourPick .lst{ flex:1; overflow-y:auto; padding:10px 12px; }
+  #rwTourPick .q{ width:100%; box-sizing:border-box; padding:11px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font:inherit; font-size:15px; margin-bottom:8px; }
+  #rwTourPick .row{ display:flex; align-items:center; gap:10px; width:100%; min-height:52px; padding:8px 10px; margin-bottom:6px; border:1.5px solid var(--line); border-radius:12px; background:var(--card); color:var(--ink); font:inherit; text-align:left; cursor:pointer; }
+  #rwTourPick .row.on{ border-color:var(--wood); background:rgba(232,172,61,.12); }
+  #rwTourPick .row .n{ width:30px; height:30px; flex-shrink:0; border-radius:50%; border:2px solid var(--line); display:flex; align-items:center; justify-content:center; font-weight:900; font-size:14px; }
+  #rwTourPick .row.on .n{ background:var(--wood); border-color:var(--wood); color:#1a1000; }
+  #rwTourPick .row .t{ flex:1; min-width:0; } #rwTourPick .row .t b{ display:block; font-size:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } #rwTourPick .row .t small{ display:block; color:var(--ink-soft); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rwTourPick .ft{ display:flex; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px)); border-top:1px solid var(--line); background:var(--bg-elev); }
+  #rwTourPick .ft button{ min-height:50px; } #rwTourPick .ft .go{ flex:1; font-size:16px; font-weight:900; }
+  #rwTourBar{ position:fixed; left:0; right:0; bottom:0; z-index:640; display:flex; justify-content:center; pointer-events:none; }
+  #rwTourBar > div{ pointer-events:auto; width:100%; max-width:560px; background:var(--bg-elev); color:var(--ink); border:1.5px solid var(--wood); border-bottom:0; border-radius:18px 18px 0 0; box-shadow:0 -8px 28px rgba(0,0,0,.35); padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px)); }
+  #rwTourBar .hd{ display:flex; align-items:center; gap:10px; cursor:pointer; }
+  #rwTourBar .hd .n{ width:38px; height:38px; flex-shrink:0; border-radius:50%; background:var(--wood); color:#1a1000; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:16px; }
+  #rwTourBar .hd .t{ flex:1; min-width:0; } #rwTourBar .hd small{ display:block; font-size:11.5px; font-weight:900; color:var(--wood); letter-spacing:.03em; }
+  #rwTourBar .hd b{ display:block; font-size:17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rwTourBar .hd .ad{ font-size:12.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rwTourBar .hd .x{ width:44px; height:44px; border-radius:50%; border:1px solid var(--line); background:transparent; color:var(--ink); font-size:16px; cursor:pointer; flex-shrink:0; }
+  #rwTourBar .steps{ display:flex; gap:4px; margin:8px 0 2px; } #rwTourBar .steps span{ flex:1; height:5px; border-radius:3px; background:var(--line); } #rwTourBar .steps span.ok{ background:#4FAE6C; } #rwTourBar .steps span.cur{ background:var(--wood); }
+  #rwTourBar .sc{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:10px; }
+  #rwTourBar .sc button{ min-height:58px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font:inherit; font-size:12.5px; font-weight:800; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; }
+  #rwTourBar .sc button i{ font-style:normal; font-size:20px; }
+  #rwTourBar .ac{ display:flex; gap:8px; margin-top:10px; }
+  #rwTourBar .ac button{ min-height:52px; border-radius:14px; font:inherit; font-weight:900; cursor:pointer; }
+  #rwTourBar .ac .pt{ flex:1.5; border:0; background:#4FAE6C; color:#fff; font-size:15.5px; }
+  #rwTourBar .ac .pt.done{ background:transparent; border:1.5px solid #4FAE6C; color:#4FAE6C; }
+  #rwTourBar .ac .nx{ flex:1; border:1.5px solid var(--line); background:transparent; color:var(--ink); font-size:14.5px; }
+  #rwTourBar.min .sc, #rwTourBar.min .ac, #rwTourBar.min .steps{ display:none; }
+  body.rw-tour-on .view.active{ padding-bottom:calc(240px + env(safe-area-inset-bottom,0px)) !important; }
+  body.rw-tour-on.rw-tour-min .view.active{ padding-bottom:calc(90px + env(safe-area-inset-bottom,0px)) !important; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  const KEY = 'rwood-tournee';
+  const siteOf = id => (data.sites || []).find(s => s.id === id && !s._deleted) || null;
+  const todayKey = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  function load(){ try{ const t = JSON.parse(localStorage.getItem(KEY) || 'null'); return t && Array.isArray(t.stops) && t.stops.length ? t : null; }catch(e){ return null; } }
+  function save(t){ try{ if(t) localStorage.setItem(KEY, JSON.stringify(t)); else localStorage.removeItem(KEY); }catch(e){} }
+
+  /* ── Bouton « Tournée » dans Itinéraires ── */
+  function injectBtn(){
+    const v = document.getElementById('view-itineraires'); if(!v || document.getElementById('rwTourBtn')) return;
+    const t = load();
+    const b = document.createElement('button'); b.type = 'button'; b.id = 'rwTourBtn'; b.setAttribute('data-testid', 'tournee-open-btn');
+    b.onclick = () => { const cur = load(); if(cur){ rwTourBar(); showToast('Tournée en cours · ' + cur.stops.length + ' chantiers'); } else rwTourPick(); };
+    b.innerHTML = `<i>🚐</i><div><b>${t ? 'Tournée en cours' : 'Tournée'}</b><small>${t ? 'Reprendre la tournée (' + t.stops.length + ' chantiers)' : 'Choisis plusieurs chantiers sur la carte, puis lance la tournée'}</small></div>`;
+    v.insertBefore(b, v.firstChild);
+  }
+  const _ri = window.renderItineraries;
+  window.renderItineraries = function(){ const r = _ri.apply(this, arguments); try{ const o = document.getElementById('rwTourBtn'); if(o) o.remove(); injectBtn(); }catch(e){} return r; };
+
+  /* ── Choix des chantiers (carte + liste) ── */
+  let P = null;
+  function pickList(){
+    return (data.sites || []).filter(s => s && !s._deleted && !s.archived && s.status !== 'termine' && s.status !== 'archive');
+  }
+  function drawPick(){
+    const o = document.getElementById('rwTourPick'); if(!o || !P) return;
+    const q = (P.q || '').toLowerCase().trim();
+    const L = pickList().filter(s => !q || (String(s.name || '') + ' ' + String(s.address || '')).toLowerCase().includes(q))
+      .sort((a, b) => { const ia = P.sel.indexOf(a.id), ib = P.sel.indexOf(b.id); if(ia >= 0 || ib >= 0) return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib); return String(a.name || '').localeCompare(String(b.name || ''), 'fr'); });
+    o.querySelector('.rows').innerHTML = L.map(s => { const i = P.sel.indexOf(s.id); return `<button type="button" class="row${i >= 0 ? ' on' : ''}" data-testid="tournee-site-${E(s.id)}" onclick="rwTourToggle('${E(s.id)}')"><span class="n">${i >= 0 ? i + 1 : ''}</span><span class="t"><b>${E(s.name || 'Chantier')}</b><small>${E(s.address || 'Pas d\'adresse')}</small></span></button>`; }).join('') || '<div class="hint" style="padding:12px;">Aucun chantier</div>';
+    const go = o.querySelector('.go'); go.disabled = !P.sel.length;
+    go.textContent = P.sel.length ? '▶️ Lancer la tournée · ' + P.sel.length + ' chantier' + (P.sel.length > 1 ? 's' : '') : 'Choisis les chantiers';
+    o.querySelector('.top b').textContent = '🚐 Tournée' + (P.sel.length ? ' · ' + P.sel.length : '');
+    /* pastilles de la carte : numéro d'ordre */
+    Object.entries(P.mk || {}).forEach(([id, m]) => { const s = siteOf(id); if(!s) return; const i = P.sel.indexOf(id); try{ m.setIcon(_depPinIcon(s.name, i >= 0 ? '#E8AC3D' : '#8a8478', i >= 0 ? i + 1 : '', { label:s.name })); }catch(e){} });
+  }
+  window.rwTourToggle = function(id){ if(!P) return; const i = P.sel.indexOf(id); if(i >= 0) P.sel.splice(i, 1); else P.sel.push(id); drawPick(); };
+  window.rwTourQ = function(v){ if(!P) return; P.q = v; drawPick(); };
+  window.rwTourPickClose = function(){ try{ P && P.map && P.map.remove(); }catch(e){} const o = document.getElementById('rwTourPick'); if(o) o.remove(); P = null; };
+  window.rwTourPick = async function(){
+    rwTourPickClose();
+    P = { sel:[], q:'', mk:{}, map:null };
+    const o = document.createElement('div'); o.id = 'rwTourPick'; o.setAttribute('data-testid', 'tournee-pick');
+    o.innerHTML = `<div class="top"><b>🚐 Tournée</b><button type="button" class="btn btn-outline btn-sm" data-testid="tournee-pick-close" onclick="rwTourPickClose()">Fermer</button></div>
+      <div id="rwTourMap"></div>
+      <div class="lst"><div class="hint" style="margin:0 2px 8px;">Touche les chantiers sur la carte ou dans la liste, dans l'ordre de passage.</div>
+        <input class="q" type="search" placeholder="🔍 Rechercher un chantier…" data-testid="tournee-search" oninput="rwTourQ(this.value)"><div class="rows"></div></div>
+      <div class="ft"><button type="button" class="btn btn-outline" data-testid="tournee-clear" onclick="rwTourClearSel()">Effacer</button><button type="button" class="btn btn-primary go" data-testid="tournee-launch-btn" onclick="rwTourStart()" disabled>Choisis les chantiers</button></div>`;
+    document.body.appendChild(o);
+    drawPick();
+    const el = document.getElementById('rwTourMap');
+    if(!(await _ensureLeaflet())){ el.innerHTML = '<div style="padding:30px;text-align:center;color:var(--ink-soft);">Carte indisponible hors connexion — choisis dans la liste</div>'; return; }
+    if(!P || !document.getElementById('rwTourMap')) return;
+    const map = L.map('rwTourMap'); P.map = map;
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap', maxZoom:19 }).addTo(map);
+    map.setView([46.6, 2.4], 6);
+    setTimeout(() => { try{ map.invalidateSize(); }catch(e){} }, 80);
+    const pts = [];
+    for(const s of pickList()){
+      let g = s._geo; try{ if(!g && s.address) g = await geocodeAddress(s.address); }catch(e){}
+      if(!P || P.map !== map) return;
+      if(!g || g.lat == null) continue;
+      const m = L.marker([g.lat, g.lng], { icon:_depPinIcon(s.name, '#8a8478', '', { label:s.name }) }).addTo(map);
+      m.on('click', () => rwTourToggle(s.id));
+      P.mk[s.id] = m; pts.push([g.lat, g.lng]);
+    }
+    drawPick();
+    try{ map.invalidateSize(); if(pts.length > 1) map.fitBounds(pts, { padding:[40, 40], maxZoom:14 }); else if(pts.length) map.setView(pts[0], 13); }catch(e){}
+  };
+  window.rwTourClearSel = function(){ if(!P) return; P.sel = []; drawPick(); };
+  window.rwTourStart = function(){
+    if(!P || !P.sel.length) return;
+    const t = { date: todayKey(), stops: P.sel.slice(), idx: 0, pointed: [], team: [], startedAt: new Date().toISOString() };
+    save(t); rwTourPickClose();
+    rwTourBar();
+    try{ const o = document.getElementById('rwTourBtn'); if(o){ o.remove(); injectBtn(); } }catch(e){}
+    showToast('🚐 Tournée lancée · ' + t.stops.length + ' chantier' + (t.stops.length > 1 ? 's' : ''));
+  };
+
+  /* ── Bandeau actif de la tournée ── */
+  let _min = false;
+  window.rwTourBar = function(){
+    let t = load(); let bar = document.getElementById('rwTourBar');
+    if(t){ const k0 = t.stops.length, cur0 = t.stops[t.idx]; t.stops = t.stops.filter(id => siteOf(id)); if(t.stops.length !== k0){ const j = t.stops.indexOf(cur0); t.idx = j >= 0 ? j : Math.min(t.idx, t.stops.length - 1); t.pointed = t.pointed.filter(id => t.stops.includes(id)); save(t); } }
+    if(!t || !t.stops.length){ if(bar) bar.remove(); document.body.classList.remove('rw-tour-on', 'rw-tour-min'); save(null); return; }
+    if(t.idx >= t.stops.length) t.idx = t.stops.length - 1;
+    const id = t.stops[t.idx], s = siteOf(id), n = t.stops.length, done = t.pointed.includes(id), last = t.idx >= n - 1;
+    if(!bar){ bar = document.createElement('div'); bar.id = 'rwTourBar'; bar.setAttribute('data-testid', 'tournee-bar'); document.body.appendChild(bar); }
+    bar.classList.toggle('min', _min);
+    document.body.classList.add('rw-tour-on'); document.body.classList.toggle('rw-tour-min', _min);
+    bar.innerHTML = `<div>
+      <div class="hd" onclick="rwTourMin()" data-testid="tournee-bar-toggle"><span class="n">${t.idx + 1}</span><div class="t"><small>🚐 TOURNÉE · CHANTIER ${t.idx + 1} / ${n}${done ? ' · ✓ POINTÉ' : ''}</small><b data-testid="tournee-current-site">${E(s.name || 'Chantier')}</b><div class="ad">${E(s.address || 'Pas d\'adresse')}</div></div>
+        <button type="button" class="x" title="${_min ? 'Agrandir' : 'Réduire'}" onclick="event.stopPropagation();rwTourMin()">${_min ? '▴' : '▾'}</button><button type="button" class="x" title="Terminer la tournée" data-testid="tournee-end-btn" onclick="event.stopPropagation();rwTourEnd()">✕</button></div>
+      <div class="steps">${t.stops.map((x, i) => `<span class="${t.pointed.includes(x) ? 'ok' : i === t.idx ? 'cur' : ''}"></span>`).join('')}</div>
+      <div class="sc">
+        <button type="button" data-testid="tournee-fiche-btn" onclick="rwTourDo('fiche')"><i>🏗️</i>Fiche</button>
+        <button type="button" data-testid="tournee-waze-btn" onclick="rwTourDo('go')"><i>🚗</i>Y aller</button>
+        <button type="button" data-testid="tournee-notes-btn" onclick="rwTourDo('notes')"><i>📝</i>Notes</button>
+        <button type="button" data-testid="tournee-photos-btn" onclick="rwTourDo('photo')"><i>📷</i>Photos</button>
+      </div>
+      <div class="ac">
+        <button type="button" class="pt${done ? ' done' : ''}" data-testid="tournee-pointer-btn" onclick="rwTourPoint()">${done ? '✓ Pointé · repointer' : '⏱️ Pointer ce chantier'}</button>
+        <button type="button" class="nx" data-testid="tournee-next-btn" onclick="rwTourNext()">${last ? '🏁 Terminer' : 'Chantier suivant ›'}</button>
+      </div></div>`;
+  };
+  window.rwTourMin = function(){ _min = !_min; rwTourBar(); };
+  window.rwTourDo = function(k){
+    const t = load(); if(!t) return; const id = t.stops[t.idx]; if(!siteOf(id)) return;
+    if(k === 'fiche') goTo('detail', id);
+    else if(k === 'go') openWaze(id);
+    else if(k === 'notes') openSiteNotesModal(id);
+    else if(k === 'photo') rwSitePhotoBurst(id);
+  };
+  window.rwTourEnd = function(force){
+    const t = load();
+    const fin = () => { save(null); const b = document.getElementById('rwTourBar'); if(b) b.remove(); document.body.classList.remove('rw-tour-on', 'rw-tour-min'); const o = document.getElementById('rwTourBtn'); if(o){ o.remove(); injectBtn(); } };
+    if(force || !t){ fin(); return; }
+    let d = document.getElementById('rwTourEndDlg'); if(d) d.remove();
+    d = document.createElement('div'); d.id = 'rwTourEndDlg'; d.className = 'nb-datebox'; d.style.zIndex = 9400;
+    d.innerHTML = `<div><b>Terminer la tournée ?</b><div class="hint" style="margin:8px 0 12px;">${t.pointed.length} chantier${t.pointed.length > 1 ? 's' : ''} pointé${t.pointed.length > 1 ? 's' : ''} sur ${t.stops.length}. Le pointage déjà fait est gardé.</div>
+      <div class="f"><button class="btn btn-outline" data-testid="tournee-end-cancel" onclick="document.getElementById('rwTourEndDlg').remove()">Continuer</button><button class="btn btn-primary" data-testid="tournee-end-confirm" onclick="document.getElementById('rwTourEndDlg').remove();rwTourEnd(true);showToast('🏁 Tournée terminée')">Terminer</button></div></div>`;
+    document.body.appendChild(d);
+  };
+  window.rwTourNext = function(){
+    const t = load(); if(!t) return;
+    if(t.idx >= t.stops.length - 1){ rwTourEnd(); return; }
+    t.idx++; save(t); _min = false; rwTourBar();
+    const s = siteOf(t.stops[t.idx]); if(s) showToast('➡️ ' + (s.name || 'Chantier suivant'));
+  };
+
+  /* ── Pointage : fenêtre de la feuille de route → fiche du jour en multi-chantiers ── */
+  window.rwTourPoint = async function(){
+    const t = load(); if(!t) return;
+    const id = t.stops[t.idx], s = siteOf(id); if(!s) return;
+    const wid = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
+    if(!wid){ showToast('⚠️ Relie ton profil à un ouvrier (Paramètres) pour pointer'); return; }
+    const stop = { id: 'tour_' + id, siteId: id, name: s.name || 'Chantier', address: s.address || '', tasks: [] };
+    const route = { id: 'tournee', stops: t.stops.map(x => ({ id: 'tour_' + x, siteId: x })), recipients: [] };
+    const p = _routeFinishDialog(stop, route, 'pointage');
+    try{ const sm = document.querySelector('#modal-routePointage .rfd-hd small'); if(sm) sm.textContent = '🚐 TOURNÉE · POINTER CE CHANTIER'; }catch(e){}
+    /* les collègues choisis au chantier précédent restent cochés */
+    const want = new Set(t.team || []);
+    if(want.size){ let k = 0; const iv = setInterval(() => { k++; if(!_rfd || k > 80){ clearInterval(iv); return; } if(_rfd.cands){ clearInterval(iv); _rfd.cands.forEach((u, i) => { if(u && u.authId && want.has(u.authId)) _rfd.team.add(i); }); _rfdTeamRender(); } }, 100); }
+    const res = await p;
+    if(!res || !res.hours) return;
+    try{
+      if(!data.attendance) data.attendance = {};
+      /* repointer : la ligne déjà ajoutée par la tournée pour ce chantier est remplacée (pas de doublon) */
+      Object.values(data.attendance).forEach(d => { const e = d && d.workers && d.workers[wid]; if(e && Array.isArray(e.sites)) e.sites = e.sites.filter(r => !(r && r.tourId === t.startedAt && r.siteId === id)); });
+      await _routeApplyPointage(stop, route, res);
+      Object.values(data.attendance).forEach(d => { const e = d && d.workers && d.workers[wid]; const r = e && Array.isArray(e.sites) && e.sites[e.sites.length - 1]; if(r && r.siteId === id && !r.tourId) r.tourId = t.startedAt; });
+      saveData();
+    }catch(e){ console.warn('[tournée] pointage', e); showToast('⚠️ Pointage non enregistré'); return; }
+    const t2 = load() || t;
+    if(!t2.pointed.includes(id)) t2.pointed.push(id);
+    t2.team = (res.team || []).map(u => u && u.authId).filter(Boolean);
+    if(t2.idx < t2.stops.length - 1){ t2.idx++; save(t2); _min = false; rwTourBar(); const nx = siteOf(t2.stops[t2.idx]); setTimeout(() => showToast('➡️ Prochain chantier : ' + ((nx && nx.name) || '')), 1800); }
+    else { save(t2); rwTourBar(); setTimeout(() => showToast('🏁 Dernier chantier pointé — touche « Terminer » pour finir la tournée'), 1800); }
+  };
+
+  /* le bandeau s'efface quand une autre fenêtre est ouverte (appareil photo, notes…) ; il reste sous la fenêtre de pointage */
+  const OVL = ['nbRecv', 'rwTourPick', 'mediaFabSheet', 'rwReview', 'nbLiv', 'nbRc', 'nbTmap', 'nbEd', 'rwTourEndDlg'];
+  setInterval(() => {
+    const b = document.getElementById('rwTourBar'); if(!b) return;
+    const other = [...document.querySelectorAll('.modal-overlay.open')].some(m => m.id !== 'modal-routePointage') || OVL.some(id => document.getElementById(id));
+    const hide = other && !document.getElementById('modal-routePointage');
+    if((b.style.display === 'none') !== hide) b.style.display = hide ? 'none' : '';
+  }, 300);
+
+  /* reprise après fermeture de l'appli (même jour) */
+  function resume(){ const t = load(); if(!t) return; if(t.date !== todayKey()){ save(null); return; } if(typeof data !== 'undefined' && data && data.sites) rwTourBar(); }
+  setTimeout(resume, 2500);
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') setTimeout(() => { const t = load(); if(t && t.date !== todayKey()) rwTourEnd(true); }, 500); });
+})();
+</script>
+<!-- ═══ fin MODULE — Notybat Clair 15 ═══ -->
 
 
 </body>
