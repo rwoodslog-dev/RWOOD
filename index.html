@@ -48615,7 +48615,7 @@ const CHANGELOG = [
     entries: [
       { icon: '↔️', text: "Notes de chantier : chaque colonne se replie d'un clic sur son titre (PC et téléphone). Replié, on voit en haut le nombre de notes, tâches ou livraisons et le nombre de chantiers." },
       { icon: '🏗️', text: "Notes, tâches et livraisons : bouton « Photos du chantier » pour joindre des photos déjà dans la galerie du chantier de l'appli (en plus de l'appareil photo et du téléphone)." },
-      { icon: '🗺️', text: "Colonnes Tâches : le bouton « Voir la carte » a maintenant son icône de carte." },
+      { icon: '🗺️', text: "Notes de chantier : « Voir la carte » dans chaque colonne (notes, tâches, livraisons…) pour voir sur la carte les chantiers concernés, avec le nombre d'éléments et les premiers titres." },
       { icon: '🚚', text: "Nouvelle livraison : la liste des chantiers s'affiche directement dans la fenêtre, comme pour une tâche. « Ajouter à mon agenda » passe sur la livraison (petit bouton) et propose les notifications : à l'heure, 30 min avant, la veille 18 h…" }
     ]
   },
@@ -89397,13 +89397,18 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   };
   window.nbTaskMap = async function(colId){
     const c = _nvCols().find(x => x.id === colId); if(!c) return;
-    const items = [];
-    (data.sites || []).forEach(s => { const n = _nvItemsFor(s).filter(x => x.col && x.col.id === colId && !x.n.done).length; if(n) items.push({ s, n }); });
+    const items = [], liv = c.type === 'livraisons', wd = c.type === 'taches' ? ['tâche', 'tâches'] : liv ? ['livraison', 'livraisons'] : ['note', 'notes'];
+    (data.sites || []).forEach(s => {
+      if(s._deleted) return;
+      const l = _nvItemsFor(s).filter(x => x.col && x.col.id === colId && (c.type !== 'taches' || !x.n.done));
+      if(l.length) items.push({ s, n: l.length, titles: l.slice(0, 3).map(x => String(x.n.text || '').split('\n')[0]), next: liv ? l.map(x => x.n.liv && x.n.liv.date && !x.n.liv.recu ? x.n.liv.date : '').filter(Boolean).sort()[0] || '' : '' });
+    });
     let ov = document.getElementById('nbTmap'); if(ov) ov.remove();
     ov = document.createElement('div'); ov.id = 'nbTmap';
-    ov.innerHTML = `<div class="top"><b>${E(c.name)} · ${items.length} chantier${items.length > 1 ? 's' : ''}</b><button class="btn btn-outline btn-sm" onclick="nbTaskMapClose()">Fermer</button></div><div id="nbTmapEl"></div>`;
+    ov.innerHTML = `<div class="top"><b>${E(c.name)} · ${items.length} chantier${items.length > 1 ? 's' : ''} sur la carte</b><button class="btn btn-outline btn-sm" onclick="nbTaskMapClose()">Fermer</button></div><div id="nbTmapEl"></div>`;
     document.body.appendChild(ov);
     const el = document.getElementById('nbTmapEl');
+    if(!items.length) showToast('Rien dans cette colonne pour le moment');
     if(!(await _ensureLeaflet())){ el.innerHTML = '<div style="padding:30px;text-align:center;color:var(--ink-soft);">Carte indisponible hors connexion</div>'; return; }
     const map = L.map('nbTmapEl'); window._nbTmapObj = map;
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap', maxZoom:19 }).addTo(map);
@@ -89412,7 +89417,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       let g = x.s._geo; try{ if(!g && x.s.address) g = await geocodeAddress(x.s.address); }catch(e){}
       if(!g || !document.getElementById('nbTmapEl')) continue;
       const mk = L.marker([g.lat, g.lng], { icon: typeof _depPinIcon === 'function' ? _depPinIcon(x.s.name, x.s.color || c.color, i + 1, { label:x.s.name }) : undefined }).addTo(map);
-      mk.bindPopup(`<b>${E(x.s.name)}</b><br>${x.n} tâche${x.n > 1 ? 's' : ''} à faire<br><a href="#" onclick="nbTaskMapClose();nvPickSite('${x.s.id}');return false;">Ouvrir les notes</a>`);
+      mk.bindPopup(`<b>${E(x.s.name)}</b><br>${x.n} ${x.n > 1 ? wd[1] : wd[0]}${c.type === 'taches' ? ' à faire' : ''}${x.next ? '<br>Prochaine : ' + E(new Date(x.next + 'T12:00').toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' })) : ''}<div style="margin:4px 0;font-size:12.5px;">${x.titles.map(E).join('<br>')}${x.n > 3 ? '<br>…' : ''}</div><a href="#" onclick="nbTaskMapClose();nvPickSite('${x.s.id}');return false;">Ouvrir les notes</a>`);
       b.push([g.lat, g.lng]);
     }
     setTimeout(() => { map.invalidateSize(); if(b.length > 1) map.fitBounds(b, { padding:[40, 40], maxZoom:15 }); else if(b.length) map.setView(b[0], 14); else map.setView([46.6, 2.4], 6); }, 80);
@@ -89585,10 +89590,10 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
         if(body){
           const em = body.querySelector('.nv-cempty'); if(em && can) em.textContent = 'Rien ici pour l\'instant';
           if(can && !body.querySelector('.nb-newrow')) body.insertAdjacentHTML('afterbegin', `<button type="button" class="nb-newrow" onclick="nbNoteEditor('${c.id}')"><b>+</b>${isTask(c) ? 'Ajouter une tâche' : 'Ajouter une note'}</button>`);
-          if(isTask(c) && isBur() && !body.querySelector('.nb-maprow')){
-            const n = (data.sites || []).reduce((a, s) => a + (_nvItemsFor(s).some(x => x.col && x.col.id === c.id && !x.n.done) ? 1 : 0), 0);
+          if(!body.querySelector('.nb-maprow')){
+            const n = (data.sites || []).reduce((a, s) => a + (_nvItemsFor(s).some(x => x.col && x.col.id === c.id && (!isTask(c) || !x.n.done)) ? 1 : 0), 0);
             const nb = body.querySelector('.nb-newrow');
-            const html = `<button type="button" class="nb-maprow" onclick="nbTaskMap('${c.id}')" title="${n} chantier${n > 1 ? 's' : ''} avec des tâches à faire" aria-label="Voir la carte"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4Z"/><path d="M9 4v13"/><path d="M15 7v13"/></svg><span>Voir la carte</span></button>`;
+            const html = `<button type="button" class="nb-maprow" onclick="nbTaskMap('${c.id}')" title="${n} chantier${n > 1 ? 's' : ''} sur la carte" aria-label="Voir la carte"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4 3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4Z"/><path d="M9 4v13"/><path d="M15 7v13"/></svg><span>Voir la carte</span></button>`;
             if(nb) nb.insertAdjacentHTML('afterend', html); else body.insertAdjacentHTML('afterbegin', html);
           }
         }
