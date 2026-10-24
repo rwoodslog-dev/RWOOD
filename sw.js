@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v1162';
+const CACHE_NAME = 'rwood-cache-v1163';
 const ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -110,7 +110,7 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      Promise.all(ASSETS.map((url) => cache.add(url).catch(() => {})))
+      Promise.all(ASSETS.map((url) => cache.add(new Request(url, { cache: 'reload' })).catch(() => {})))
     )
   );
 });
