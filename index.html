@@ -48606,9 +48606,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.593';
+const APP_VERSION = '5.41.594';
 
 const CHANGELOG = [
+  {
+    version: '5.41.594',
+    date: '24/10/2026',
+    entries: [
+      { icon: '📝', text: "Réception d'une livraison : nouvelle étape « Note sur la livraison » pour écrire une remarque (manque, casse, reçu par…). La note est enregistrée avec la date, l'heure et ton nom, affichée sur la carte de la livraison reçue et dans le récap de la semaine." }
+    ]
+  },
   {
     version: '5.41.593',
     date: '24/10/2026',
@@ -90683,6 +90690,10 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   #nbRecv .att img{ width:64px; height:64px; object-fit:cover; border-radius:10px; display:block; }
   #nbRecv .att .pdf{ width:64px; height:64px; border-radius:10px; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; }
   #nbRecv .att button{ position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:50%; border:0; background:#E5484D; color:#fff; font-weight:900; cursor:pointer; line-height:22px; padding:0; }
+  #nbRecv .stp textarea{ width:100%; box-sizing:border-box; min-height:84px; margin-top:10px; padding:10px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-size:16px; resize:vertical; }
+  #nvRoot .nb-rnote{ margin-top:6px; padding:7px 9px; border-left:3px solid #2BB3C0; border-radius:6px; background:color-mix(in srgb, #2BB3C0 12%, transparent); font-size:13px; line-height:1.35; white-space:pre-wrap; word-break:break-word; }
+  #nvRoot .nb-rnote small{ display:block; color:var(--ink-soft); font-size:11.5px; margin-bottom:2px; }
+  #nbRc .nb-rcliv .r .det{ white-space:pre-wrap; }
   #nbRecv .ft{ display:flex; gap:8px; margin-top:14px; } #nbRecv .ft button{ flex:1; min-height:48px; }
   #nbRc .nb-rcliv .r small b{ font-size:12px; }
   /* livraison reçue : carte grisée et titre barré ; pas de case à cocher sur les livraisons */
@@ -90733,6 +90744,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 
   /* ── Fenêtre de réception ── */
   let R = null, _poll = null;
+  Object.defineProperty(window, 'R_', { get(){ return R; }, configurable:true });
   function draw(){
     const o = document.getElementById('nbRecv'); if(!o || !R) return;
     const th = (arr, k) => arr.map((x, i) => `<span>${x.u ? `<img src="${x.u}" alt="">` : '<span class="pdf">PDF</span>'}<button type="button" data-testid="reception-remove-${k}-${i}" onclick="nbRecvRm('${k}',${i})">×</button></span>`).join('');
@@ -90778,7 +90790,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   };
   window.nbRecvOpen = function(id){
     const it = _nvFind(id); if(!it) return;
-    R = { id, scan:[], photos:[], busy:false };
+    R = { id, scan:[], photos:[], note:'', busy:false };
     let o = document.getElementById('nbRecv'); if(o) o.remove();
     o = document.createElement('div'); o.id = 'nbRecv'; o.setAttribute('data-testid', 'reception-modal');
     o.onclick = e => { if(e.target === o && !(R && R.busy)) nbRecvClose(); };
@@ -90792,6 +90804,8 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
         <div class="hint" style="margin-top:4px;">Rangée dans les photos du chantier avec #livraison</div>
         <div class="bt"><button type="button" class="btn btn-outline" data-testid="reception-photo-btn" onclick="nbRecvPhoto()">📷 Prendre une photo</button><button type="button" class="btn btn-outline imp" data-testid="reception-photo-import-btn" title="Importer une photo" onclick="nbRecvImport('p')">📥</button></div>
         <div class="att"></div></div>
+      <div class="stp" id="nbRecvNoteBox"><div class="t">📝 Note sur la livraison<small>Facultatif</small></div>
+        <textarea id="nbRecvNote" data-testid="reception-note" maxlength="2000" placeholder="Remarques sur la réception : manque, casse, palette abîmée, reçu par…" oninput="if(R_){R_.note=this.value;} this.closest('.stp').classList.toggle('ok', !!this.value.trim())"></textarea></div>
       <div class="ft"><button type="button" class="btn btn-outline" data-testid="reception-cancel-btn" onclick="nbRecvClose()">Annuler</button><button type="button" class="btn btn-primary" id="nbRecvOk" data-testid="reception-validate-btn" onclick="nbRecvSave()">✅ Valider la réception</button></div></div>`;
     document.body.appendChild(o);
   };
@@ -90799,6 +90813,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   window.nbRecvSave = async function(){
     if(!R || R.busy) return;
     const st = R, it = _nvFind(st.id); if(!it){ nbRecvClose(); return; }
+    const noteTxt = (((document.getElementById('nbRecvNote') || {}).value) || st.note || '').trim().slice(0, 2000);
     const site = it.site, n = it.n, title = titleOf(n);
     st.busy = true;
     const btn = document.getElementById('nbRecvOk'); if(btn){ btn.disabled = true; btn.textContent = 'Enregistrement…'; }
@@ -90831,6 +90846,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       const now = new Date().toISOString(), me = _nvMe().name;
       await _nvMutate(st.id, x => {
         x.liv = Object.assign({}, x.liv, { recu:true, recuAt:now, recuBy:me });
+        if(noteTxt) x.liv.recuNote = noteTxt; else delete x.liv.recuNote;   // note de réception (remarques)
         if(newP.length){ const ps = (Array.isArray(x.photos) ? x.photos : (x.media && x.media.url ? [x.media] : [])).concat(newP); x.photos = ps; x.media = ps[0] || null; }
         if(newD.length) x.docs = (Array.isArray(x.docs) ? x.docs : []).concat(newD);
       });
@@ -90853,7 +90869,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   window.nbLivRecu = function(id, ev){
     if(ev && ev.stopPropagation) ev.stopPropagation();
     const it = _nvFind(id); if(!it) return;
-    if(it.n.liv && it.n.liv.recu) return _recu.call(this, id, null);
+    if(it.n.liv && it.n.liv.recu){ _nvMutate(id, n => { n.liv = Object.assign({}, n.liv, { recu:false }); delete n.liv.recuNote; }); return; }
     nbRecvOpen(id);
   };
 
@@ -90895,9 +90911,22 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       });
     });
   }
+  /* note de réception visible sur la carte (qui, quand, remarque) */
+  function noteOnCards(){
+    const root = document.getElementById('nvRoot'); if(!root) return;
+    root.querySelectorAll('.nv-n.nb-livrecu[data-nid]').forEach(c => {
+      if(c.querySelector('.nb-rnote')) return;
+      const it = _nvFind(c.dataset.nid), L = it && it.n && it.n.liv; if(!L || !L.recu) return;
+      const tx = c.querySelector('.nv-tx'); if(!tx) return;
+      let when = ''; if(L.recuAt){ try{ const d = new Date(L.recuAt); when = d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); }catch(e){} }
+      if(!L.recuNote && !when) return;
+      tx.insertAdjacentHTML('beforeend', `<div class="nb-rnote" data-testid="reception-note-card"><small>✅ Reçue${when ? ' le ' + E(when) : ''}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</small>${L.recuNote ? '📝 ' + E(L.recuNote) : ''}</div>`);
+    });
+  }
   const _nvr = window.notesViewRender;
   window.notesViewRender = function(){
     const r = _nvr.apply(this, arguments);
+    try{ if(!_nvCfgOpen){ noteOnCards(); } }catch(e){ console.warn('[note réception]', e); }
     try{ if(!_nvCfgOpen) foldReceived(); }catch(e){ console.warn('[livraisons reçues]', e); }
     return r;
   };
@@ -90926,7 +90955,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       const L = weekRecv(_wk);
       const rows = L.map(({ n, s, at, hasTime }) => {
         const dt = new Date(at), dl = dt.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }) + (hasTime ? ' à ' + dt.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }) : '');
-        return `<div class="r" style="--c:${LIVC}" data-testid="recap-livraison-${E(n.id)}"><b>${E(titleOf(n))}</b><small>🏗️ ${E(s.name || 'Chantier')}</small><small>✅ Reçue le ${E(dl)}</small></div>`;
+        return `<div class="r" style="--c:${LIVC}" data-testid="recap-livraison-${E(n.id)}"><b>${E(titleOf(n))}</b><small>🏗️ ${E(s.name || 'Chantier')}</small><small>✅ Reçue le ${E(dl)}${n.liv.recuBy ? ' · ' + E(n.liv.recuBy) : ''}</small>${n.liv.recuNote ? `<div class="det">📝 ${E(n.liv.recuNote)}</div>` : ''}</div>`;
       }).join('');
       o.insertAdjacentHTML('beforeend', `<div class="nb-rcliv" data-testid="recap-livraisons-section"><div class="pole" style="--c:${LIVC}">🚚 Livraisons reçues · ${L.length}</div>${rows || '<div class="hint">Aucune livraison reçue cette semaine.</div>'}</div>`);
     }catch(e){ console.warn('[récap livraisons]', e); }
