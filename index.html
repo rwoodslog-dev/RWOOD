@@ -48606,9 +48606,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.594';
+const APP_VERSION = '5.41.595';
 
 const CHANGELOG = [
+  {
+    version: '5.41.595',
+    date: '24/10/2026',
+    entries: [
+      { icon: '🚐', text: "Créer une tournée : en choisissant les chantiers dans l'ordre, une ligne dorée avec des flèches les relie sur la carte dans l'ordre de passage (elle se met à jour si tu retires ou ajoutes un chantier, et disparaît avec « Effacer »)." }
+    ]
+  },
   {
     version: '5.41.594',
     date: '24/10/2026',
@@ -91058,6 +91065,27 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   function pickList(){
     return (data.sites || []).filter(s => s && !s._deleted && !(typeof siteHiddenForMe === 'function' && siteHiddenForMe(s)));   /* v5.41.593 — tous les statuts, terminés compris */
   }
+  /* v5.41.595 — ligne qui relie les chantiers choisis dans l'ordre de la tournée (avec flèches de sens) */
+  function drawRoute(){
+    try{
+      const LF = window.L; if(!P || !P.map || !LF) return;
+      if(P.line){ try{ P.line.remove(); }catch(e){} P.line = null; }
+      if(P.arrows){ try{ P.arrows.remove(); }catch(e){} P.arrows = null; }
+      const pts = P.sel.map(id => (P.geo || {})[id]).filter(Boolean);
+      if(pts.length < 2) return;
+      P.line = LF.polyline(pts, { color:'#E8AC3D', weight:5, opacity:.92, lineJoin:'round', interactive:false }).addTo(P.map);
+      const g = LF.layerGroup();
+      for(let i = 0; i < pts.length - 1; i++){
+        const a = P.map.project(LF.latLng(pts[i]), 10), b = P.map.project(LF.latLng(pts[i + 1]), 10);
+        if(Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 2) continue;
+        const ang = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+        const mid = [(pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2];
+        LF.marker(mid, { interactive:false, keyboard:false, icon: LF.divIcon({ className:'', iconSize:[22, 22], iconAnchor:[11, 11], html:'<div style="width:22px;height:22px;border-radius:50%;background:#14100C;border:2px solid #E8AC3D;color:#E8AC3D;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;transform:rotate(' + ang + 'deg);">➤</div>' }) }).addTo(g);
+      }
+      P.arrows = g.addTo(P.map);
+      if(P.line.bringToBack) P.line.bringToBack();
+    }catch(e){ console.warn('[tournée ligne]', e); }
+  }
   function drawPick(){
     const o = document.getElementById('rwTourPick'); if(!o || !P) return;
     const q = (P.q || '').toLowerCase().trim();
@@ -91069,6 +91097,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     o.querySelector('.top b').textContent = '🚐 Tournée' + (P.sel.length ? ' · ' + P.sel.length : '');
     /* pastilles de la carte : numéro d'ordre */
     Object.entries(P.mk || {}).forEach(([id, m]) => { const s = siteOf(id); if(!s) return; const i = P.sel.indexOf(id); try{ m.setIcon(_depPinIcon(s.name, colOf(s), i >= 0 ? i + 1 : '', { label:s.name, sel: i >= 0, ordBadge:true })); m.setOpacity(P.sel.length && i < 0 ? 0.6 : 1); m.setZIndexOffset(i >= 0 ? 1000 : 0); }catch(e){} });
+    drawRoute();
   }
   window.rwTourToggle = function(id){ if(!P) return; const i = P.sel.indexOf(id); if(i >= 0) P.sel.splice(i, 1); else P.sel.push(id); drawPick(); };
   window.rwTourQ = function(v){ if(!P) return; P.q = v; drawPick(); };
@@ -91100,7 +91129,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       if(!g || g.lat == null) continue;
       const m = L.marker([g.lat, g.lng], { icon:_depPinIcon(s.name, colOf(s), '', { label:s.name }) }).addTo(map);
       m.on('click', () => rwTourToggle(s.id));
-      P.mk[s.id] = m; pts.push([g.lat, g.lng]);
+      P.mk[s.id] = m; (P.geo = P.geo || {})[s.id] = [g.lat, g.lng]; pts.push([g.lat, g.lng]);
     }
     P.pts = pts; drawPick(); fit(); setTimeout(fit, 300);
   };
