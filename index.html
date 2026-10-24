@@ -6836,9 +6836,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
 
       <div id="headerActionsRow" style="display:flex; gap:6px; flex-shrink:0;">
         <!-- v5.41.299 — bouton « Installer » retiré (appli sur le Play Store) -->
-        <button class="install-btn" id="musicToggleHeaderBtn" onclick="_musicHeaderToggleClick()" title="Basculer météo / musique">
-          <img id="musicToggleIcon" src="icons/musique/note-de-musique.png" alt="" style="width:24px;height:24px;object-fit:contain;" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🎵',style:'font-size:20px;'}))">
-        </button>
+        <button class="install-btn nf-bell" id="agHeaderBtn" data-testid="header-agenda-btn" onclick="agOpen()" title="Agenda" aria-label="Agenda" style="position:relative;font-size:18px;line-height:1;">📅<i id="agBadge"></i></button>
         <button class="install-btn nf-bell" id="nfBell" onclick="nfOpen()" title="Notifications" style="position:relative;font-size:17px;line-height:1;">🔔<i id="nfBadge" style="display:none"></i></button>
         <button class="install-btn" id="rhHelpBtn" onclick="rhOpen()" title="Aide de cet onglet" style="display:none;font-size:18px;font-weight:900;line-height:1;">?</button>
         <button class="install-btn" onclick="toggleParametres()"
@@ -48606,9 +48604,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.41.597';
+const APP_VERSION = '5.41.598';
 
 const CHANGELOG = [
+  {
+    version: '5.41.598',
+    date: '24/10/2026',
+    entries: [
+      { icon: '📅', text: "En-tête : la météo et son bouton sont retirés. Le bouton 📅 Agenda ouvre une fenêtre comme celle des notifications : tes 7 prochains jours (livraisons, tâches, absences), « ＋ Ajouter » et « Tout l'agenda ». Toucher une livraison ouvre sa réception." }
+    ]
+  },
   {
     version: '5.41.597',
     date: '24/10/2026',
@@ -54009,6 +54014,7 @@ function populateWeatherSiteSelect(){
 let _lastWeatherSiteId = localStorage.getItem('rwood-weather-site') || '';
 
 async function loadWeatherForSite(siteId){
+  return;   /* v5.41.598 — météo retirée */
   if(!siteId){ _meteoRenderFavZone(); return; }
   _lastWeatherSiteId = siteId;
   localStorage.setItem('rwood-weather-site', siteId);
@@ -54473,7 +54479,7 @@ function _gearPressEnd(){
 }
 
 function _musicModeIsActive(){
-  return !!(data.settings && data.settings.musicModeActive);
+  return true;   /* v5.41.598 — météo retirée de l'en-tête : le lecteur radio reste affiché */
 }
 
 function _musicModeConfirmToggle(){
@@ -54882,6 +54888,7 @@ function checkCaniculeAlert(temps, siteName){
 
 /* Restaurer la bannière canicule au démarrage si une alerte était active */
 function restoreCaniculeBanner(){
+  return;   /* v5.41.598 — météo retirée */
   const level    = localStorage.getItem('rwood-canicule-level');
   const siteName = localStorage.getItem('rwood-canicule-site') || '';
   const t        = parseFloat(localStorage.getItem('rwood-canicule-t') || '0');
@@ -91506,6 +91513,93 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 })();
 </script>
 <!-- ═══ fin MODULE — Notybat Clair 17 ═══ -->
+
+<!-- ═══ MODULE — Notybat Clair 18 (v5.41.598) — En-tête : météo retirée, bouton 📅 Agenda (fenêtre comme les notifications) ═══ -->
+<style>
+  #weatherWidget, #weatherDropdown{ display:none !important; }
+  #musicWidget{ display:flex !important; }
+  /* fenêtre Agenda : même habillage que la fenêtre Notifications */
+  #agShade{ position:fixed; inset:0; z-index:3000; background:rgba(0,0,0,.45); opacity:0; pointer-events:none; transition:opacity .2s; }
+  #agShade.on{ opacity:1; pointer-events:auto; }
+  #agShade.on .nf-pan{ transform:none; }
+  @media(min-width:860px){ #agShade{ background:transparent; } }
+  #agShade .nf-h button.go{ border:1.5px solid #E8AC3D; border-radius:99px; padding:5px 11px; }
+  #agShade .agp-r{ display:flex; gap:10px; align-items:flex-start; background:#241d18; border:1px solid var(--line); border-radius:14px; padding:10px 11px; margin-bottom:7px; cursor:pointer; }
+  #agShade .agp-r.abs{ cursor:default; opacity:.85; }
+  #agShade .agp-r .d{ width:10px; height:10px; border-radius:50%; flex:none; margin-top:5px; }
+  #agShade .agp-r b{ display:block; font-size:13.5px; line-height:1.3; word-break:break-word; }
+  #agShade .agp-r small{ display:block; font-size:12px; color:var(--ink-soft); margin-top:2px; }
+  #agShade .agp-r .go{ margin-left:auto; align-self:center; font-size:11px; font-weight:800; color:#2BB3C0; white-space:nowrap; }
+  #agShade .agp-more{ width:100%; margin:6px 0 2px; padding:10px; border-radius:12px; border:1.5px dashed var(--line); background:transparent; color:var(--ink-soft); font:inherit; font-weight:800; cursor:pointer; }
+  #agBadge{ display:none; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  let DAYS = 7;
+  function items(){
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const end = new Date(today); end.setDate(end.getDate() + DAYS);
+    const tk = dateKeyOf(today), ek = dateKeyOf(end);
+    let abs = []; try{ abs = typeof _agAbsTeam === 'function' ? _agAbsTeam(tk, ek) : []; }catch(e){}
+    const all = (data.tasks || []).filter(t => t && t.date && t.date >= tk).concat(abs).sort(_agSortTasks);
+    return { tk, shown: all.filter(t => t.date < ek), later: all.filter(t => t.date >= ek).length };
+  }
+  function rowHtml(t){
+    if(t._absTeam) return `<div class="agp-r abs"><span class="d" style="background:${E(t.color || 'var(--ink-soft)')}"></span><div><b>${E(t.text)}</b><small>Absence validée · équipe</small></div></div>`;
+    const site = (data.sites || []).find(s => s.id === t.siteId);
+    const color = site && site.color ? (String(site.color).startsWith('var(') ? site.color : colorFull(site.color)) : 'var(--ink-soft)';
+    const meta = [t.time ? t.time.replace(':', ' h ') : '', site ? site.name : '', t.reminderAt && !t.reminderNotified ? '🔔' : ''].filter(Boolean).join(' · ');
+    const liv = t.fromLiv ? `<span class="go">Réceptionner ›</span>` : '';
+    return `<div class="agp-r" data-testid="agenda-panel-row" onclick="agRowGo('${E(t.id)}')"><span class="d" style="background:${E(color)}"></span><div><b>${E(t.text || '')}</b>${meta ? `<small>${E(meta)}</small>` : ''}</div>${liv}</div>`;
+  }
+  function draw(){
+    const body = document.getElementById('agBody'); if(!body) return;
+    const { tk, shown, later } = items();
+    let html = '', last = '';
+    shown.forEach(t => { if(t.date !== last){ html += `<div class="nf-sec">${E(_agDayLabel(t.date))}</div>`; last = t.date; } html += rowHtml(t); });
+    if(!shown.length) html = `<div class="nf-empty"><span>🗓️</span>Rien de prévu${DAYS <= 7 ? ' cette semaine' : ''}</div>`;
+    if(later) html += `<button type="button" class="agp-more" onclick="agMore()">Voir la suite (${later})</button>`;
+    body.innerHTML = html;
+  }
+  window.agMore = function(){ DAYS += 30; draw(); };
+  window.agClose = function(){ const o = document.getElementById('agShade'); if(o) o.classList.remove('on'); };
+  window.agOpen = function(){
+    try{ nfClose(); }catch(e){}
+    let ov = document.getElementById('agShade');
+    if(!ov){
+      ov = document.createElement('div'); ov.id = 'agShade'; ov.setAttribute('data-testid', 'agenda-panel');
+      ov.innerHTML = `<div class="nf-pan" id="agPan"><div class="nf-h"><b>📅 Agenda</b><button type="button" onclick="openTaskModal();agClose()" title="Nouvelle tâche">＋ Ajouter</button><button type="button" class="go" data-testid="agenda-panel-open-full" onclick="agClose();goTo('agenda')">Tout l'agenda</button><button class="nf-x" onclick="agClose()">✕</button></div><div class="nf-body" id="agBody"></div><div class="nf-grab" id="agGrab"></div></div>`;
+      ov.addEventListener('click', e => { if(e.target === ov) agClose(); });
+      document.body.appendChild(ov);
+      const g = document.getElementById('agGrab'), pan = document.getElementById('agPan'); let y0 = null;   // remonter la poignée = fermer
+      g.addEventListener('pointerdown', e => { y0 = e.clientY; g.setPointerCapture(e.pointerId); });
+      g.addEventListener('pointermove', e => { if(y0 === null) return; pan.style.transform = `translateY(${Math.min(0, e.clientY - y0)}px)`; });
+      g.addEventListener('pointerup', e => { if(y0 === null) return; const d = e.clientY - y0; y0 = null; pan.style.transform = ''; if(d < -60) agClose(); });
+    }
+    DAYS = 7; draw(); ov.classList.add('on');
+  };
+  /* toucher une ligne : livraison → fenêtre de réception, tâche → modification */
+  window.agRowGo = function(id){
+    const t = (data.tasks || []).find(x => x && x.id === id); agClose(); if(!t) return;
+    if(t.fromLiv){ try{ if(_nvFind(t.fromLiv)){ nbRecvOpen(t.fromLiv); return; } }catch(e){} }
+    try{ openTaskModal(id); }catch(e){}
+  };
+  /* la fenêtre Notifications ferme l'agenda (une seule fenêtre à la fois) */
+  const _nfo = window.nfOpen; if(_nfo) window.nfOpen = function(){ agClose(); return _nfo.apply(this, arguments); };
+  /* pastille : nombre d'éléments prévus aujourd'hui */
+  function badge(){
+    const b = document.getElementById('agBadge'); if(!b) return;
+    try{ const tk = dateKeyOf(new Date()), n = (data.tasks || []).filter(t => t && t.date === tk).length; b.textContent = n > 9 ? '9+' : String(n); b.style.display = n ? '' : 'none'; }catch(e){}
+  }
+  setTimeout(badge, 2500); setInterval(badge, 60000);
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') badge(); });
+  document.addEventListener('keydown', e => { if(e.key === 'Escape') agClose(); });
+})();
+</script>
+<!-- ═══ fin MODULE — Notybat Clair 18 ═══ -->
+
 
 
 
