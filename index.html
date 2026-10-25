@@ -38034,513 +38034,228 @@ function _htTotals(rows){
   return t;
 }
 
-function openHoursTable(){
-  const { keys, weeks } = _htSel();
-  if(!keys.size){ showToast('Sélectionne au moins un salarié'); return; }
-  if(!weeks.length){ showToast('Sélectionne au moins une semaine'); return; }
-  _ht = _htBuild(keys, weeks); _htQ = ''; _htWho = '';
-  closeModal('pdfWorkerSelector');
-  openModal('hoursTable');
-  htRender();
-}
-function htSetTab(t){ _htTab = t; htRender(); }
-function htSortBy(k){ const s = _htSort[_htTab]; if(s.k === k) s.d = -s.d; else { s.k = k; s.d = 1; } htRender(); }
-function htRender(){
-  if(!_ht) return;
-  document.getElementById('htTitle').textContent = 'Tableau des heures — ' + _ht.month;
-  document.getElementById('htSub').textContent = (_ht.company ? _ht.company + ' · ' : '') + _ht.period + ' · ' + _ht.recap.length + ' salarié' + (_ht.recap.length > 1 ? 's' : '') + ' · ' + _ht.days.length + ' journée' + (_ht.days.length > 1 ? 's' : '');
-  document.querySelectorAll('#htTabs button').forEach(b => b.classList.toggle('on', b.dataset.t === _htTab));
-  const who = document.getElementById('htWho');
-  who.style.display = _htTab === 'days' ? '' : 'none';
-  who.innerHTML = '<option value="">Tous les salariés</option>' + _ht.recap.map(r => `<option ${r.name === _htWho ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('');
-  const cols = _htCols(_htTab), rows = _htRows(_htTab), so = _htSort[_htTab];
-  let h = '<table class="ht-t"><thead><tr>' + cols.map(c => `<th class="${c.n ? 'n' : ''}${c.k === so.k ? ' on' : ''}" onclick="htSortBy('${c.k}')">${escapeHtml(c.l)}<i>${c.k === so.k ? (so.d > 0 ? '▲' : '▼') : '↕'}</i></th>`).join('') + '</tr></thead><tbody>';
-  h += rows.map(r => '<tr>' + cols.map(c => { const v = c.v(r); const neg = c.n && typeof v === 'string' && v.startsWith('-'); return `<td class="${c.n ? 'n' : ''}${neg ? ' neg' : ''}${r.type && r.type !== 'Travail' && c.k === 'type' ? ' abs' : ''}">${escapeHtml(String(v))}</td>`; }).join('') + '</tr>').join('');
-  if(!rows.length) h += `<tr><td colspan="${cols.length}" class="empty-row">Aucune ligne</td></tr>`;
-  h += '</tbody>';
-  if(_htTab === 'recap' && rows.length) { const t = _htTotals(rows); h += '<tfoot><tr>' + cols.map(c => `<td class="${c.n ? 'n' : ''}">${escapeHtml(String(c.k === 'name' ? 'TOTAL' : c.v(t)))}</td>`).join('') + '</tr></tfoot>'; }
-  if(_htTab === 'days' && rows.length) { const tot = rows.reduce((a, d) => a + (+d.hours || 0), 0); h += `<tfoot><tr><td colspan="6">TOTAL · ${rows.length} jour${rows.length > 1 ? 's' : ''}</td><td class="n">${_htNum(tot)}</td><td class="n">${rows.filter(d => d.panier).length || ''}</td><td></td><td class="n">${rows.filter(d => d.perso).length || ''}</td></tr></tfoot>`; }
-  h += '</table>';
-  document.getElementById('htWrap').innerHTML = h;
-  const miss = _ht.recap.reduce((a, r) => a + r.noZone, 0);
-  document.getElementById('htNote').innerHTML = (_htTab === 'recap'
-    ? '<b>S + n°</b> : heures sup. de la semaine (au-delà de 35 h ; négatif = heures en moins), ou le motif si la semaine entière est une absence. <b>H. sup</b> : total à payer. <b>Zones</b> : nombre de trajets par zone ; <b>Véh. perso</b> : trajets faits avec la voiture personnelle.'
-    : 'Une ligne par journée pointée. Touche un titre de colonne pour trier.') + (miss ? `<br><span style="color:var(--red);">⚠️ ${miss} journée${miss > 1 ? 's' : ''} sans zone de trajet (adresse du chantier manquante).</span>` : '');
-}
-
-/* ── Excel au format Notybat ── */
-async function _htEnsureExcel(){
-  if(typeof ExcelJS !== 'undefined') return true;
-  const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
-  try{ await load('exceljs.min.js'); }catch(e){ try{ await load('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'); }catch(e2){} }
-  return typeof ExcelJS !== 'undefined';
-}
-async function _htLogo(){
-  try{ const r = await fetch('icons/logo-header-v2.png'); const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
-}
-async function _htExcelBlob(){
-  if(!(await _htEnsureExcel())) throw new Error('Moteur Excel introuvable');
-  const wb = new ExcelJS.Workbook(); wb.creator = 'Notybat'; wb.created = new Date();
-  await _htLoadRoles();
-  const logo = await _htLogo(); const logoId = logo ? wb.addImage({ base64: logo, extension:'png' }) : null;
-  const thin = { style:'thin', color:{ argb:'FF' + HT_LINE } };
-  const sheet = (name, tab, rows, totalRow) => {
-    const cols = _htCols(tab).filter(c => !(tab === 'days' && (c.k === 'site' || c.k === 'task')));   // v5.51.4 — pas de noms de chantier dans l'Excel
-    const ws = wb.addWorksheet(name, { views:[{ state:'frozen', xSplit:1, ySplit:4 }],
-      pageSetup:{ orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{ left:.3, right:.3, top:.4, bottom:.4, header:.2, footer:.2 } },
-      headerFooter:{ oddFooter:'&L&8Notybat — Tableau des heures&R&8Page &P / &N' } });
-    ws.columns = cols.map(c => ({ width: Math.max(8, c.w * 0.95) }));
-    const last = cols.length;
-    ws.mergeCells(1, 1, 1, last); ws.mergeCells(2, 1, 2, last);
-    const t = ws.getCell(1, 1);
-    t.value = { richText:[ ...(logoId != null ? [{ text:'          ', font:{ size:18 } }] : []), { text:'Noty', font:{ bold:true, size:18, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:18, color:{ argb:'FF' + HT_OR } } },
-      { text:'   ·   ' + (tab === 'days' ? 'Détail des journées' : 'Tableau des heures') + ' — ' + _ht.month, font:{ bold:true, size:14, color:{ argb:'FFFFFFFF' } } } ] };
-    t.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_NAVY } }; t.alignment = { vertical:'middle', indent:1 };
-    ws.getRow(1).height = 36;
-    const s2 = ws.getCell(2, 1);
-    s2.value = (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  ' + _ht.recap.length + ' salarié(s)  ·  édité le ' + _ht.edited;
-    s2.font = { size:10, bold:true, color:{ argb:'FF' + HT_NAVY } }; s2.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFE7CF' } }; s2.alignment = { vertical:'middle', indent:1 };
-    ws.getRow(2).height = 20;
-    if(logoId != null) ws.addImage(logoId, { tl:{ col:0.08, row:0.12 }, ext:{ width:38, height:38 } });
-    const hr = ws.getRow(4);
-    cols.forEach((c, i) => { const cell = hr.getCell(i + 1); cell.value = c.l; cell.font = { bold:true, color:{ argb:'FFFFFFFF' }, size:10 };
-      cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_NAVY } }; cell.alignment = { horizontal: c.n ? 'center' : 'left', vertical:'middle', wrapText:true };
-      cell.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } }; });
-    hr.height = 24;
-    rows.forEach((r, ri) => {
-      const row = ws.getRow(5 + ri);
-      cols.forEach((c, i) => {
-        const cell = row.getCell(i + 1); let v = c.v(r);
-        if(c.n){ const num = typeof v === 'number' ? v : (v !== '' && !isNaN(+String(v).replace(',', '.').replace('+', '')) ? +String(v).replace(',', '.').replace('+', '') : null); if(num != null && c.k !== 'week') { v = num; cell.numFmt = (/^w\d/.test(c.k) || c.k === 'hs') ? '+General;-General;0' : 'General'; } }
-        cell.value = v === '' ? null : v;
-        cell.alignment = { horizontal: c.n ? 'center' : 'left', vertical:'middle', wrapText: c.k === 'site' || c.k === 'task' };
-        cell.border = { top:thin, bottom:thin, left:thin, right:thin }; cell.font = { size:10, bold: c.k === 'name' };
-        if(ri % 2) cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_ZEBRA } };
-        if(typeof v === 'number' && v < 0) cell.font = { size:10, color:{ argb:'FFC0392B' } };
-      });
-    });
-    if(totalRow){
-      const row = ws.getRow(5 + rows.length);
-      totalRow.forEach((v, i) => { const cell = row.getCell(i + 1); cell.value = v === '' ? null : v;
-        const ck = cols[i] && cols[i].k; if(typeof v === 'number') cell.numFmt = (ck && (/^w\d/.test(ck) || ck === 'hs')) ? '+General;-General;0' : 'General'; cell.font = { bold:true, size:10, color:{ argb:'FF' + HT_NAVY } };
-        cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFD3A8' } }; cell.alignment = { horizontal: i ? 'center' : 'left' };
-        cell.border = { top:{ style:'medium', color:{ argb:'FF' + HT_OR } }, bottom:thin, left:thin, right:thin }; });
-    }
-    ws.autoFilter = { from:{ row:4, column:1 }, to:{ row:4 + rows.length, column:last } };
-    ws.pageSetup.printTitlesRow = '4:4';
-    return ws;
-  };
-  const ic = await _htIconIds(wb);   // v5.51.4 — icônes bleu/orange de l'appli
-  _htResumeSheet(wb, logoId, ic);   // l'essentiel par salarié (semaines, heures sup, absences datées, zones)
-  _htComptaSheet(wb, logoId, ic);   // 1 colonne par salarié, même principe que le tableau Bois Concept
-  _ht.recap.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr')).forEach(p => _htFicheSheet(wb, logoId, p, ic));   // 1 fiche-calendrier par salarié
-  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
-  sheet('Détail par jour', 'days', det, det.length ? ['TOTAL', '', '', '', det.reduce((a, d) => a + (+d.hours || 0), 0), det.filter(d => d.panier).length || '', '', det.filter(d => d.perso).length || ''] : null);
-  const info = wb.addWorksheet('À savoir');
-  info.columns = [{ width:110 }];
-  [['Comment lire le tableau', true],
-   ['Onglet « Résumé » : une colonne par salarié — heures de chaque semaine et heures sup, congés et absences avec leurs dates, paniers, trajets par zone.'],
-   ['Onglets « Fiche Nom » : le calendrier du mois de chaque salarié, comme dans l’appli (une case par jour, couleur = zone de trajet).'],
-   ['Onglet « Tableau comptable » : une colonne par salarié, une ligne par information (même principe que le tableau habituel du comptable).'],
-   ['Cases bleutées : remplies automatiquement par Notybat à partir des fiches d’heures. Cases blanches : à compléter par l’entreprise si besoin (changement de statut, régularisation, primes, grands déplacements, acompte).'],
-   ['Période : ' + _ht.period + ' (semaines complètes, du lundi au dimanche).'],
-   ['Heures sup. par semaine : heures travaillées − 35 h (négatif = heures en moins). Si la semaine entière est une absence, le motif est écrit (CP, CSS, Maladie…).'],
-   ['Heures supplémentaires à payer : somme des semaines travaillées (ligne orange).'],
-   ['Absences / congés : dates du premier et du dernier jour de chaque période. Le détail jour par jour est dans l’onglet « Détail par jour ».'],
-   ['Trajets : nombre de jours par zone (1A : 0-5 km, 1B : 5-10 km, 2 : 10-20 km, 3 : 20-30 km, 4 : 30-40 km, 5 : 40 km et plus). « dont véhicule perso » : jours où le salarié a pris sa voiture personnelle.'],
-   [''], ['Document édité avec Notybat le ' + _ht.edited + '.']].forEach((l, i) => { const c = info.getCell(i + 1, 1); c.value = l[0]; c.alignment = { wrapText:true, vertical:'top' };
-     c.font = l[1] ? { bold:true, size:14, color:{ argb:'FF' + HT_NAVY } } : { size:11 }; });
-  const out = await wb.xlsx.writeBuffer();
-  return new Blob([out], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-}
-/* ── Onglet « Tableau comptable » : 1 colonne par salarié (comme le tableau Bois Concept), habillage Notybat ── */
-function _htComptaSheet(wb, logoId, ic){
-  const people = _ht.recap.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-  const N = people.length, C0 = 3, last = C0 + Math.max(N, 1) - 1;
-  const ws = wb.addWorksheet('Tableau comptable', { views:[{ state:'frozen', xSplit:2, ySplit:3 }],
-    pageSetup:{ orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{ left:.3, right:.3, top:.4, bottom:.4, header:.2, footer:.2 } },
-    headerFooter:{ oddFooter:'&L&8Notybat — Tableau comptable ' + _ht.month + '&R&8Page &P / &N' } });
-  ws.getColumn(1).width = 40; ws.getColumn(2).width = 14;
-  for(let c = C0; c <= last; c++) ws.getColumn(c).width = 17;
-  const thin = { style:'thin', color:{ argb:'FF' + HT_LINE } };
-  const box = { top:thin, bottom:thin, left:thin, right:thin };
-  const fill = argb => ({ type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + argb } });
-  const AUTO = 'EAF1FA', HL = 'FFE7CF', SEC = HT_NAVY;
-  // Titre
-  ws.mergeCells(1, 1, 1, last); ws.mergeCells(2, 1, 2, last);
-  const t = ws.getCell(1, 1);
-  t.value = { richText:[ ...(logoId != null ? [{ text:'          ', font:{ size:18 } }] : []), { text:'Noty', font:{ bold:true, size:18, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:18, color:{ argb:'FF' + HT_OR } } },
-    { text:'   ·   Tableau des heures pour la paie — ' + _ht.month, font:{ bold:true, size:14, color:{ argb:'FFFFFFFF' } } } ] };
-  t.fill = fill(HT_NAVY); t.alignment = { vertical:'middle', indent:1 }; ws.getRow(1).height = 36;
-  if(logoId != null) ws.addImage(logoId, { tl:{ col:0.05, row:0.12 }, ext:{ width:38, height:38 } });
-  const s2 = ws.getCell(2, 1);
-  s2.value = (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  ' + N + ' salarié(s)  ·  édité le ' + _ht.edited + '      ■ bleuté = rempli par Notybat   □ blanc = à compléter';
-  s2.font = { size:10, bold:true, color:{ argb:'FF' + HT_NAVY } }; s2.fill = fill(HL); s2.alignment = { vertical:'middle', indent:1 }; ws.getRow(2).height = 20;
-  // En-tête : noms
-  const hr = ws.getRow(3); hr.height = 44;
-  const h1 = hr.getCell(1); h1.value = 'Salarié'; ws.mergeCells(3, 1, 3, 2);
-  [h1].forEach(c => { c.font = { bold:true, color:{ argb:'FFFFFFFF' }, size:11 }; c.fill = fill(HT_NAVY); c.alignment = { vertical:'middle', indent:1 }; c.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } }; });
-  people.forEach((p, i) => { const c = hr.getCell(C0 + i); c.value = { richText:[ { text:p.name, font:{ bold:true, size:12, color:{ argb:'FFFFFFFF' } } }, { text:'\n' + (p.roleL || 'Salarié'), font:{ bold:true, size:9.5, color:{ argb:'FF' + HT_OR } } } ] }; c.fill = fill(HT_NAVY);
-    c.alignment = { horizontal:'center', vertical:'middle', wrapText:true }; c.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } }, left:{ style:'thin', color:{ argb:'FF26334D' } } }; });
-  let row = 4;
-  const SEC_IC = { 'Modification de statut':'statut', 'Heures du mois':'horloge', 'Heures sup. au-delà des 35 heures':'hsup', 'Absences ou congés sans solde':'abs', 'Congés payés':'cp',
-    'Prime à verser':'prime', 'Petits déplacements':'van', 'Grands déplacements':'gd', 'Divers':'note' };
-  const section = (label) => {
-    ws.mergeCells(row, 1, row, last);
-    const c = ws.getCell(row, 1); c.value = '        ' + label.toUpperCase(); c.font = { bold:true, size:10.5, color:{ argb:'FF' + HT_OR } }; c.fill = fill(SEC); c.alignment = { vertical:'middle' };
-    ws.getRow(row).height = 22; _htIcon(ws, ic, SEC_IC[label], row, 1, 17); row++;
-  };
-  // kind : 'auto' (Notybat) | 'manual' (à compléter) | 'total' (surligné)
-  const line = (label, sub, get, kind, fmt) => {
-    const a = ws.getCell(row, 1), b = ws.getCell(row, 2);
-    a.value = label; b.value = sub || null;
-    a.font = { size:10, bold: kind === 'total' }; b.font = { size:9, italic:true, color:{ argb:'FF5A6473' } };
-    a.alignment = { vertical:'middle', indent:1, wrapText:true }; b.alignment = { vertical:'middle', horizontal:'center' };
-    [a, b].forEach(c => { c.border = box; if(kind === 'total') c.fill = fill(HL); });
-    for(let i = 0; i < Math.max(N, 1); i++){
-      const c = ws.getCell(row, C0 + i), p = people[i];
-      let v = (p && get) ? get(p) : null; if(v === '' || (v === 0 && fmt === 'count')) v = null;
-      c.value = v == null ? null : v;
-      c.alignment = { horizontal:'center', vertical:'middle', wrapText:true }; c.border = box;
-      c.font = { size:10.5, bold: kind === 'total', color:{ argb: (typeof v === 'number' && v < 0) ? 'FFC0392B' : 'FF1B2333' } };
-      if(typeof v === 'number') c.numFmt = fmt === 'signed' ? '+General;-General;0' : 'General';
-      c.fill = fill(kind === 'total' ? HL : kind === 'auto' ? AUTO : 'FFFFFF');
-    }
-    ws.getRow(row).height = 18; row++;
-  };
-  const per = (arr, i) => { const p = _htPeriods(arr)[i]; return p || null; };
-  const fr = k => { if(!k) return null; const [y, m, d] = k.split('-'); return d + '/' + m + '/' + y; };
-  // 1. Statut
-  section('Modification de statut');
-  line('Nouveau coefficient', '', null, 'manual');
-  line('Nouveau libellé du poste', '', null, 'manual');
-  line('Nouveau taux horaire', '', null, 'manual');
-  // 2. Heures
-  section('Heures du mois');
-  line('Jours travaillés', '', p => p.daysWorked, 'auto', 'count');
-  line('Heures travaillées', '', p => Math.round(p.hours * 100) / 100, 'auto', 'count');
-  section('Heures sup. au-delà des 35 heures');
-  _ht.weeks.forEach((w, i) => {
-    const sun = w.sunday || new Date(w.monday.getTime() + 6 * 86400000);
-    const f = d => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
-    line('Semaine ' + w.weekNum, f(w.monday) + ' → ' + f(sun), p => { const x = p.wk[i]; if(x.worked) return Math.round((x.h - 35) * 100) / 100; const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : null; }, 'auto', 'signed');
-  });
-  line('REGUL', '', null, 'manual');
-  line('TOTAL DU MOIS', '', p => Math.round(p.hs * 100) / 100, 'total', 'signed');
-  line('Solde antérieur', '', null, 'manual');
-  line('TOTAL', '', null, 'manual');
-  line('À réserver', '', null, 'manual');
-  line('Pris récupération', '', null, 'manual');
-  line('Régularisation M-1 trop perçu', '', null, 'manual');
-  line('Heures supplémentaires à payer', '', p => Math.round(p.hs * 100) / 100, 'total', 'signed');
-  // 3. Absences
-  section('Absences ou congés sans solde');
-  const absP = p => _htPeriods(p.cssD).map(x => ({ a:x[0], b:x[1], m:'CSS' })).concat(p.absD.map(x => ({ a:x.date, b:x.date, m:x.motif })));
-  for(let k = 0; k < 3; k++){
-    line('Date du 1er jour d’absence', 'période ' + (k + 1), p => { const x = absP(p)[k]; return x ? fr(x.a) : null; }, 'auto');
-    line('Date du dernier jour d’absence', '', p => { const x = absP(p)[k]; return x ? fr(x.b) : null; }, 'auto');
-    line('Motif', '', p => { const x = absP(p)[k]; return x ? x.m : null; }, 'auto');
-  }
-  line('Autres absences (au-delà de 3 périodes)', '', p => { const x = absP(p).slice(3); return x.length ? x.map(y => fr(y.a) + (y.b !== y.a ? '→' + fr(y.b) : '') + ' ' + y.m).join(', ') : null; }, 'auto');
-  // 4. CP
-  section('Congés payés');
-  for(let k = 0; k < 2; k++){
-    line('Date du 1er jour de congés', 'période ' + (k + 1), p => { const x = per(p.cpD, k); return x ? fr(x[0]) : null; }, 'auto');
-    line('Date du dernier jour de congés (inclus)', '', p => { const x = per(p.cpD, k); return x ? fr(x[1]) : null; }, 'auto');
-  }
-  line('Nombre de jours de CP', '', p => p.cp, 'auto', 'count');
-  // 5. Primes
-  section('Prime à verser');
-  line('Montant prime exceptionnelle', '', null, 'manual');
-  line('Préciser si « brut » ou « net »', '', null, 'manual');
-  line('Type de prime outillage', '', null, 'manual');
-  // 6. Petits déplacements
-  section('Petits déplacements');
-  line('Nombre de paniers', '', p => p.paniers, 'auto', 'count');
-  [['1A','0 à 5 km'],['1B','5 à 10 km'],['2','10 à 20 km'],['3','20 à 30 km'],['4','30 à 40 km'],['5','40 km et +']].forEach(([z, km]) => {
-    line('Nombre de trajets zone ' + z, '(' + km + ')', p => p.z[z], 'auto', 'count');
-    line('   dont véhicule perso (transport) zone ' + z, '', p => p.zp[z], 'auto', 'count');
-  });
-  // 7. Grands déplacements
-  section('Grands déplacements');
-  line('Jours en grand déplacement', '', p => p.z.GD, 'auto', 'count');
-  line('Nombre de repas (midi + soir)', '', null, 'manual');
-  line('Nombre de nuits', '', null, 'manual');
-  line('Nombre d’allers et retours dans le mois', '', null, 'manual');
-  line('Durée d’un aller domicile → chantier', '', null, 'manual');
-  section('Divers');
-  line('Acompte versé', '', null, 'manual');
-  line('Remarque', '', null, 'manual');
-  ws.pageSetup.printTitlesRow = '3:3';
-  ws.pageSetup.printTitlesColumn = 'A:B';
-  return ws;
-}
-/* ═══ v5.51.4 — Excel « facile à lire » : résumé par salarié (semaines, heures sup, absences datées, paniers, zones)
-   + 1 fiche-calendrier par salarié. Pas de noms de chantier : seulement les zones. Icônes bleu/orange de l'appli. ═══ */
+/* ═══ v5.52.0 — TABLEAU DES HEURES = le « Résumé » (1 colonne par salarié), partout pareil :
+   à l'écran, en Excel, en PDF et à l'impression. Un seul modèle (_htModel) → 4 rendus. ═══ */
 const HT_ZONE_COLORS = { '1A':'5B8DEF', '1B':'2F6FD6', '2':'16A085', '3':'C99A12', '4':'E67E22', '5':'C0392B', 'GD':'8E44AD' };
 const HT_ZONE_KM = [['1A','0 à 5 km'],['1B','5 à 10 km'],['2','10 à 20 km'],['3','20 à 30 km'],['4','30 à 40 km'],['5','40 km et +']];
 const HT_ICONS = { horloge:'icons/ui/horloge.png', hsup:'icons/ui/fleche-haut.png', cal:'icons/ui/calendrier.png', cp:'icons/ui/conges.png', maladie:'icons/ui/maladie.png',
-  css:'icons/monnaie.png', abs:'icons/ui/interdit.png', repas:'icons/ui/repas.png', zone:'icons/zone.png', van:'icons/ui/camionnette.png', car:'icons/voiture.png',
-  gd:'icons/valise.png', statut:'icons/ui/badge.png', prime:'icons/ui/cadeau.png', note:'icons/ui/bloc-notes.png' };
+  css:'icons/monnaie.png', abs:'icons/ui/interdit.png', repas:'icons/ui/repas.png', zone:'icons/zone.png', van:'icons/ui/camionnette.png', car:'icons/voiture.png', gd:'icons/valise.png' };
 const _htFill = argb => ({ type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + argb } });
-const _htInitials = n => String(n || '').split(/\s+/).filter(Boolean).slice(0, 2).map(x => x[0].toUpperCase()).join('');
 function _htLighten(hex, f){
   const c = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
   return c.map(v => Math.round(v + (255 - v) * f).toString(16).padStart(2, '0')).join('').toUpperCase();
 }
-async function _htImg(url){
-  try{ const r = await fetch(url); if(!r.ok) return null; const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
-}
-async function _htIconIds(wb){
-  const out = {};
-  await Promise.all(Object.entries(HT_ICONS).map(async ([k, u]) => { const d = await _htImg(u); if(d) out[k] = wb.addImage({ base64:d, extension:'png' }); }));
-  return out;
-}
-/* Petite icône de l'appli posée dans une cellule (ligne r, colonne c, 1-based) */
-function _htIcon(ws, ic, key, r, c, size){
-  if(!ic || ic[key] == null) return;
-  const s = size || 18;
-  ws.addImage(ic[key], { tl:{ col:(c - 1) + 0.08, row:(r - 1) + 0.18 }, ext:{ width:s, height:s }, editAs:'oneCell' });
-}
-function _htTitle(ws, logoId, lastCol, title, sub){
-  ws.mergeCells(1, 1, 1, lastCol); ws.mergeCells(2, 1, 2, lastCol);
-  const t = ws.getCell(1, 1);
-  t.value = { richText:[ ...(logoId != null ? [{ text:'          ', font:{ size:18 } }] : []), { text:'Noty', font:{ bold:true, size:18, color:{ argb:'FFFFFFFF' } } },
-    { text:'bat', font:{ bold:true, size:18, color:{ argb:'FF' + HT_OR } } }, { text:'   ·   ' + title, font:{ bold:true, size:14, color:{ argb:'FFFFFFFF' } } } ] };
-  t.fill = _htFill(HT_NAVY); t.alignment = { vertical:'middle', indent:1 }; ws.getRow(1).height = 38;
-  if(logoId != null) ws.addImage(logoId, { tl:{ col:0.05, row:0.12 }, ext:{ width:40, height:40 } });
-  const s2 = ws.getCell(2, 1); s2.value = sub;
-  s2.font = { size:10, bold:true, color:{ argb:'FF' + HT_NAVY } }; s2.fill = _htFill('FFE7CF'); s2.alignment = { vertical:'middle', indent:1, wrapText:true };
-  ws.getRow(2).height = 22;
-}
-function _htTile(ws, r, c1, c2, value, label, bg, fg){
-  if(c2 > c1){ ws.mergeCells(r, c1, r, c2); ws.mergeCells(r + 1, c1, r + 1, c2); }
-  const v = ws.getCell(r, c1), l = ws.getCell(r + 1, c1);
-  v.value = value; v.font = { bold:true, size:20, color:{ argb:'FF' + (fg || HT_NAVY) } }; v.alignment = { horizontal:'center', vertical:'middle' };
-  l.value = label; l.font = { bold:true, size:9.5, color:{ argb:'FF' + (fg === 'FFFFFF' ? 'FFE7CF' : '5A6473') } }; l.alignment = { horizontal:'center', vertical:'top', wrapText:true };
-  for(let c = c1; c <= c2; c++){ ws.getCell(r, c).fill = _htFill(bg); ws.getCell(r + 1, c).fill = _htFill(bg); }
-}
 const _htDM = k => { if(!k) return ''; const [, m, d] = k.split('-'); return d + '/' + m; };
 const _htPer = arr => _htPeriods(arr).map(p => p[0] === p[1] ? 'le ' + _htDM(p[0]) : _htDM(p[0]) + ' → ' + _htDM(p[1]));
-/* Jours d'absence d'un salarié pour un type (cp, maladie, css, autres) */
 function _htAbs(p, type){
   if(type === 'cp') return p.cpD;
   if(type === 'css') return p.cssD;
   if(type === 'maladie') return p.absD.filter(x => x.tj === 'maladie').map(x => x.date);
   return p.absD.filter(x => x.tj !== 'maladie').map(x => x.date);
 }
+const _htTJColor = t => ((TYPE_JOURNEE[t] && TYPE_JOURNEE[t].color) || '#C0392B').replace('#', '').toUpperCase();
 
-/* ── Onglet 1 « Résumé » : une colonne par salarié ── */
-function _htResumeSheet(wb, logoId, ic){
-  const people = _ht.recap.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-  const N = Math.max(people.length, 1), last = 1 + N;
-  // v5.51.5 — tout le résumé sur UNE seule page (portrait jusqu'à 6 salariés, paysage au-delà)
-  const ws = wb.addWorksheet('Résumé', { views:[{ state:'frozen', xSplit:1, ySplit:4 }],
-    pageSetup:{ orientation: people.length > 6 ? 'landscape' : 'portrait', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:1, horizontalCentered:true, margins:{ left:.25, right:.25, top:.3, bottom:.35, header:.15, footer:.15 } },
-    headerFooter:{ oddFooter:'&L&8Notybat — Résumé ' + _ht.month + '&R&8Page &P / &N' } });
-  ws.getColumn(1).width = 34; for(let c = 2; c <= last; c++) ws.getColumn(c).width = 20;
-  _htTitle(ws, logoId, last, 'Heures du mois — ' + _ht.month, (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  une colonne par salarié  ·  le calendrier de chacun est dans son onglet « Fiche ».');
-  ws.getRow(3).height = 6;
-  const hr = ws.getRow(4); hr.height = 48;
-  const h0 = hr.getCell(1); h0.value = 'Salarié'; h0.font = { bold:true, size:11, color:{ argb:'FFFFFFFF' } }; h0.fill = _htFill(HT_NAVY); h0.alignment = { vertical:'middle', indent:1 };
-  h0.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } };
-  people.forEach((p, i) => { const x = hr.getCell(2 + i);
-    x.value = { richText:[ { text:p.name, font:{ bold:true, size:13, color:{ argb:'FFFFFFFF' } } },
-      { text:'\n' + (p.roleL || 'Salarié'), font:{ bold:true, size:10, color:{ argb:'FF' + HT_OR } } } ] };
-    x.fill = _htFill(HT_NAVY); x.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
-    x.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } }, left:{ style:'thin', color:{ argb:'FF33415E' } } }; });
-  const thin = { style:'thin', color:{ argb:'FF' + HT_LINE } }, box = { top:thin, bottom:thin, left:thin, right:thin };
-  let r = 5;
-  const section = (icon, label) => {
-    ws.mergeCells(r, 1, r, last);
-    const c = ws.getCell(r, 1); c.value = '        ' + label.toUpperCase(); c.font = { bold:true, size:10.5, color:{ argb:'FF' + HT_OR } }; c.fill = _htFill(HT_NAVY); c.alignment = { vertical:'middle' };
-    ws.getRow(r).height = 22; _htIcon(ws, ic, icon, r, 1, 17); r++;
-  };
-  /* get(p) → { v: valeur ou richText, bg } */
-  const line = (icon, label, sub, get, opt) => {
-    opt = opt || {};
-    const row = ws.getRow(r);
-    const a = row.getCell(1);
-    a.value = { richText:[ { text:(icon ? '        ' : '  ') + label, font:{ bold:true, size:10.5, color:{ argb:'FF' + HT_NAVY } } },
-      ...(sub ? [{ text:'\n' + (icon ? '        ' : '  ') + sub, font:{ size:8.5, color:{ argb:'FF5A6473' } } }] : []) ] };
-    a.alignment = { vertical:'middle', wrapText:true }; a.border = box; a.fill = _htFill(opt.hl ? 'FFE7CF' : 'FFFFFF');
-    let lines = 1;
-    people.forEach((p, i) => {
-      const x = row.getCell(2 + i), g = get(p) || {};
-      x.value = g.v == null || g.v === '' ? '—' : g.v;
-      x.alignment = { horizontal:'center', vertical:'middle', wrapText:true }; x.border = box;
-      x.font = { bold:!!opt.big, size: opt.big ? 13 : 10.5, color:{ argb: g.v == null || g.v === '' ? 'FFB5BCC7' : 'FF1B2333' } };
-      x.fill = _htFill(g.bg || (opt.hl ? 'FFE7CF' : 'FFFFFF'));
-      if(g.lines) lines = Math.max(lines, g.lines);
-    });
-    row.height = Math.max(sub ? 27 : 22, 13.5 * lines + 6);
-    if(icon) _htIcon(ws, ic, icon, r, 1, 18);
-    r++;
-  };
+/* Même personne sur plusieurs appareils / équipes → une seule colonne ; personnes sans aucune journée → retirées */
+function _htMergePeople(recap){
+  const by = new Map();
+  recap.forEach(p => {
+    const k = _rmNameKey(p.name); const q = by.get(k);
+    if(!q){ by.set(k, p); return; }
+    ['hours','daysWorked','cp','css','other','paniers','perso','noZone'].forEach(f => q[f] += p[f] || 0);
+    Object.keys(q.z).forEach(z => q.z[z] += p.z[z] || 0); Object.keys(q.zp).forEach(z => q.zp[z] += p.zp[z] || 0);
+    q.wk.forEach((x, i) => { const y = p.wk[i]; x.h += y.h; x.worked = x.worked || y.worked; Object.keys(y.abs).forEach(t => x.abs[t] = (x.abs[t] || 0) + y.abs[t]); });
+    q.cpD = [...new Set(q.cpD.concat(p.cpD))]; q.cssD = [...new Set(q.cssD.concat(p.cssD))]; q.absD = q.absD.concat(p.absD.filter(a => !q.absD.some(b => b.date === a.date)));
+    if(!q.roleL && p.roleL) q.roleL = p.roleL;
+  });
+  const out = [...by.values()].filter(p => (p.daysWorked > 0 || p.hours > 0 || (p.cp + p.css + p.other) > 0) && !_isRemovedUser(_rmUsersCache, '', p.name));
+  out.forEach(p => { p.hs = p.wk.reduce((a, x) => a + (x.worked ? x.h - 35 : 0), 0); });
+  return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+
+/* Le modèle : sections + lignes ; chaque cellule = { main, mainColor, sub, subColor, bg } */
+function _htModel(){
+  const people = _htMergePeople(_ht.recap);
+  const rows = [];
+  const sec = (icon, label) => rows.push({ t:'sec', icon, label });
+  const line = (icon, label, sub, get, o) => rows.push(Object.assign({ t:'line', icon, label, sub, cells: people.map(p => get(p) || {}) }, o || {}));
   const sign = n => (n > 0 ? '+' : '') + _htNum(Math.round(n * 100) / 100);
   const f = d => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
-  // 1. Heures par semaine
-  section('horloge', 'Heures par semaine');
+  sec('horloge', 'Heures par semaine');
   _ht.weeks.forEach((w, i) => {
     const sun = w.sunday || new Date(w.monday.getTime() + 6 * 86400000);
     line(null, 'Semaine ' + w.weekNum, f(w.monday) + ' → ' + f(sun), p => {
       const x = p.wk[i];
       if(x.worked){ const hs = x.h - 35;
-        return { v:{ richText:[ { text:_htNum(x.h) + ' h', font:{ bold:true, size:11.5, color:{ argb:'FF1B2333' } } },
-          { text:'\n' + (hs === 0 ? '35 h pile' : sign(hs) + ' h sup'), font:{ bold:true, size:9, color:{ argb: hs < 0 ? 'FFC0392B' : hs > 0 ? 'FFC46A12' : 'FF5A6473' } } } ] }, lines:2,
-          bg: hs > 0 ? 'FFF3E6' : hs < 0 ? 'FBE9E7' : 'FFFFFF' }; }
-      const t = Object.keys(x.abs);
-      if(!t.length) return {};
-      const tc = t.length === 1 && TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].color ? TYPE_JOURNEE[t[0]].color.replace('#', '').toUpperCase() : '5A6473';
-      return { v:{ richText:[ { text: t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].label) || t[0]) : 'Absences', font:{ bold:true, size:10, color:{ argb:'FF' + tc } } } ] }, bg:_htLighten(tc, .85) };
+        return { main:_htNum(x.h) + ' h', sub: hs === 0 ? '35 h pile' : sign(hs) + ' h sup', subColor: hs < 0 ? 'C0392B' : hs > 0 ? 'C46A12' : '5A6473', bg: hs > 0 ? 'FFF3E6' : hs < 0 ? 'FBE9E7' : null }; }
+      const t = Object.keys(x.abs); if(!t.length) return {};
+      const tc = t.length === 1 ? _htTJColor(t[0]) : '5A6473';
+      return { main: t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].label) || t[0]) : 'Absences', mainColor:tc, small:true, bg:_htLighten(tc, .85) };
     });
   });
-  line('horloge', 'Total heures du mois', '', p => ({ v:_htNum(p.hours) + ' h' }), { big:true });
-  line('hsup', 'Heures sup à payer', 'au-delà de 35 h par semaine', p => ({ v:sign(p.hs) + ' h', bg: p.hs < 0 ? 'FBE3E0' : 'FFD3A8' }), { big:true, hl:true });
-  // 2. Absences avec leurs dates
-  section('cal', 'Congés et absences');
-  [['cp', 'cp', 'Congés payés'], ['maladie', 'maladie', 'Arrêt maladie'], ['css', 'css', 'Congé sans solde'], ['abs', 'autres', 'Autres absences']].forEach(([icon, type, label]) => {
+  line('horloge', 'Total heures du mois', '', p => ({ main:_htNum(p.hours) + ' h' }), { big:true });
+  line('hsup', 'Heures sup à payer', 'au-delà de 35 h par semaine', p => ({ main:sign(p.hs) + ' h', mainColor: p.hs < 0 ? 'C0392B' : '1B2333', bg: p.hs < 0 ? 'FBE3E0' : 'FFD3A8' }), { big:true, hl:true });
+  sec('cal', 'Congés et absences');
+  [['cp','cp','Congés payés'],['maladie','maladie','Arrêt maladie'],['css','css','Congé sans solde'],['abs','autres','Autres absences']].forEach(([icon, type, label]) => {
     line(icon, label, 'jours et dates', p => {
       const d = _htAbs(p, type); if(!d.length) return {};
-      const per = _htPer(d);
-      const tc = (TYPE_JOURNEE[type] && TYPE_JOURNEE[type].color ? TYPE_JOURNEE[type].color : '#C0392B').replace('#', '').toUpperCase();
+      const tc = type === 'autres' ? 'C0392B' : _htTJColor(type);
       const motifs = type === 'autres' ? ' (' + [...new Set(p.absD.filter(x => x.tj !== 'maladie').map(x => x.motif))].join(', ') + ')' : '';
-      return { v:{ richText:[ { text:d.length + ' jour' + (d.length > 1 ? 's' : '') + motifs, font:{ bold:true, size:11, color:{ argb:'FF' + tc } } },
-        { text:'\n' + per.join('\n'), font:{ size:9, color:{ argb:'FF1B2333' } } } ] }, lines: 1 + per.length, bg:_htLighten(tc, .85) };
+      return { main:d.length + ' jour' + (d.length > 1 ? 's' : '') + motifs, mainColor:tc, sub:_htPer(d).join('\n'), subColor:'1B2333', bg:_htLighten(tc, .85) };
     });
   });
-  // 3. Paniers
-  section('repas', 'Repas');
-  line('repas', 'Paniers repas', 'nombre de jours', p => ({ v: p.paniers ? p.paniers + ' paniers' : '' }));
-  // 4. Trajets par zone (comme le récap des fiches)
-  section('zone', 'Trajets par zone');
+  sec('repas', 'Repas');
+  line('repas', 'Paniers repas', 'nombre de jours', p => p.paniers ? { main:p.paniers + ' paniers' } : {});
+  sec('zone', 'Trajets par zone');
   HT_ZONE_KM.forEach(([z, km]) => {
     const zc = HT_ZONE_COLORS[z];
-    line(null, 'Zone ' + z, km, p => {
-      if(!p.z[z]) return {};
-      return { v:{ richText:[ { text:p.z[z] + ' j', font:{ bold:true, size:11.5, color:{ argb:'FF' + zc } } },
-        ...(p.zp[z] ? [{ text:'\ndont ' + p.zp[z] + ' en voiture perso', font:{ size:8.5, color:{ argb:'FF2F6FD6' } } }] : []) ] }, lines: p.zp[z] ? 2 : 1, bg:_htLighten(zc, .88) };
-    });
+    line(null, 'Zone ' + z, km, p => p.z[z] ? { main:p.z[z] + ' j', mainColor:zc, sub: p.zp[z] ? 'dont ' + p.zp[z] + ' en voiture perso' : '', subColor:'2F6FD6', bg:_htLighten(zc, .88) } : {}, { labelColor:zc });
   });
-  line('gd', 'Grand déplacement', 'pas de prime de trajet', p => ({ v: p.z.GD ? p.z.GD + ' j' : '', bg: p.z.GD ? _htLighten(HT_ZONE_COLORS.GD, .88) : null }));
-  line('van', 'Total jours de trajet', '', p => { const n = Object.values(p.z).reduce((a, b) => a + b, 0); return { v: n ? n + ' j' : '' }; }, { big:true });
-  line('car', 'dont avec sa voiture perso', '', p => ({ v: p.perso ? p.perso + ' j' : '', bg: p.perso ? 'DCE9FB' : null }));
+  line('gd', 'Grand déplacement', 'pas de prime de trajet', p => p.z.GD ? { main:p.z.GD + ' j', mainColor:HT_ZONE_COLORS.GD, bg:_htLighten(HT_ZONE_COLORS.GD, .88) } : {}, { labelColor:HT_ZONE_COLORS.GD });
+  line('van', 'Total jours de trajet', '', p => { const n = Object.values(p.z).reduce((a, b) => a + b, 0); return n ? { main:n + ' j' } : {}; }, { big:true });
+  line('car', 'dont avec sa voiture perso', '', p => p.perso ? { main:p.perso + ' j', mainColor:'2F6FD6', bg:'DCE9FB' } : {});
+  return { people, rows };
+}
+
+/* ── Écran ── */
+function openHoursTable(){
+  const { keys, weeks } = _htSel();
+  if(!keys.size){ showToast('Sélectionne au moins un salarié'); return; }
+  if(!weeks.length){ showToast('Sélectionne au moins une semaine'); return; }
+  _ht = _htBuild(keys, weeks);
+  closeModal('pdfWorkerSelector');
+  openModal('hoursTable');
+  htRender();
+  _htLoadRoles().then(() => htRender()).catch(() => {});   // rôles (registre des comptes)
+}
+function htRender(){
+  if(!_ht) return;
+  const m = _htModel(); _ht.model = m;
+  document.getElementById('htTitle').textContent = 'Tableau des heures — ' + _ht.month;
+  document.getElementById('htSub').textContent = (_ht.company ? _ht.company + ' · ' : '') + _ht.period + ' · ' + m.people.length + ' salarié' + (m.people.length > 1 ? 's' : '');
+  const css = h => '#' + h;
+  const cell = c => {
+    if(!c || c.main == null || c.main === '') return '<td class="e">—</td>';
+    return `<td style="${c.bg ? 'background:' + css(c.bg) + ';' : ''}"><b style="${c.mainColor ? 'color:' + css(c.mainColor) + ';' : ''}${c.small ? 'font-size:12px;' : ''}">${escapeHtml(c.main)}</b>${c.sub ? '<small style="color:' + css(c.subColor || '5A6473') + '">' + escapeHtml(c.sub).replace(/\n/g, '<br>') + '</small>' : ''}</td>`;
+  };
+  let h = '<table class="hr-t"><thead><tr><th class="lb">Salarié</th>' + m.people.map(p => `<th><span>${escapeHtml(p.name)}</span><em>${escapeHtml(p.roleL || 'Salarié')}</em></th>`).join('') + '</tr></thead><tbody>';
+  m.rows.forEach(r => {
+    if(r.t === 'sec'){ h += `<tr class="sec"><td class="lb"><div class="lbx"><img src="${HT_ICONS[r.icon]}" alt="">${escapeHtml(r.label)}</div></td><td colspan="${Math.max(1, m.people.length)}"></td></tr>`; return; }
+    h += `<tr class="${r.hl ? 'hl' : ''}${r.big ? ' big' : ''}"><td class="lb"><div class="lbx">${r.icon ? `<img src="${HT_ICONS[r.icon]}" alt="">` : '<i class="sp"></i>'}<span><b style="${r.labelColor ? 'color:#' + r.labelColor + ' !important;' : ''}">${escapeHtml(r.label)}</b>${r.sub ? '<small>' + escapeHtml(r.sub) + '</small>' : ''}</span></div></td>` + r.cells.map(cell).join('') + '</tr>';
+  });
+  if(!m.people.length) h += '<tr><td class="lb">Aucune heure sur cette période</td></tr>';
+  h += '</tbody></table>';
+  let st = document.getElementById('htCss'); if(!st){ st = document.createElement('style'); st.id = 'htCss'; document.head.appendChild(st); }
+  st.textContent = _htTableCss(false);
+  // v5.52.1 — même présentation que le PDF : bandeau Notybat + tableau clair
+  const head = `<div class="ht-hd"><img src="icons/logo-header-v2.png" alt=""><div class="br">Noty<b>bat</b></div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
+  document.getElementById('htWrap').innerHTML = '<div class="ht-doc">' + head + h + '<p class="ht-lg">Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.</p></div>';
+  const miss = m.people.reduce((a, r) => a + (r.noZone || 0), 0);
+  document.getElementById('htNote').innerHTML = '' +
+    (miss ? `<br><span style="color:var(--red);">⚠️ ${miss} journée${miss > 1 ? 's' : ''} sans zone de trajet (adresse du chantier manquante).</span>` : '');
+}
+
+/* ── Excel : une seule feuille, le résumé ── */
+async function _htEnsureExcel(){
+  if(typeof ExcelJS !== 'undefined') return true;
+  const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  try{ await load('exceljs.min.js'); }catch(e){ try{ await load('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'); }catch(e2){} }
+  return typeof ExcelJS !== 'undefined';
+}
+async function _htImg(url){
+  try{ const r = await fetch(url); if(!r.ok) return null; const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
+}
+async function _htLogo(){ return _htImg('icons/logo-header-v2.png'); }
+/* Image posée DANS une cellule (ancrage début/fin : fiable dans Excel, LibreOffice, Google Sheets) */
+/* Icône centrée dans une cellule : positions données directement en EMU (nativeCol/RowOff),
+   car ExcelJS calcule mal les fractions de colonne/ligne. Ancrage début/fin (twoCellAnchor), valide dans Excel. */
+function _htPlace(ws, id, r, c, rowPt, colChars, px){
+  if(id == null) return;
+  const EMU = 9525, s = px || 18;
+  const wPx = colChars * 7 + 5, hPx = rowPt * 96 / 72;
+  const offX = Math.max(1, Math.round((wPx - s) / 2)), offY = Math.max(1, Math.round((hPx - s) / 2));
+  ws.addImage(id, { tl:{ nativeCol:c - 1, nativeColOff:offX * EMU, nativeRow:r - 1, nativeRowOff:offY * EMU },
+    br:{ nativeCol:c - 1, nativeColOff:(offX + s) * EMU, nativeRow:r - 1, nativeRowOff:(offY + s) * EMU }, editAs:'oneCell' });
+}
+async function _htExcelBlob(){
+  if(!(await _htEnsureExcel())) throw new Error('Moteur Excel introuvable');
+  await _htLoadRoles();
+  const m = _htModel(), people = m.people, N = Math.max(people.length, 1);
+  const wb = new ExcelJS.Workbook(); wb.creator = 'Notybat'; wb.created = new Date();
+  const ic = {}; const lg = await _htLogo(); const logoId = lg ? wb.addImage({ base64:lg, extension:'png' }) : null;
+  for(const [k, u] of Object.entries(HT_ICONS)){ const d = await _htImg(u); if(d) ic[k] = wb.addImage({ base64:d, extension:'png' }); }
+  const C0 = 3, last = C0 + N - 1;
+  const ws = wb.addWorksheet('Heures ' + _ht.month.replace(/[\[\]\*\?\/\\:]/g, ' ').slice(0, 24), { views:[{ state:'frozen', xSplit:2, ySplit:5, showGridLines:false }],
+    pageSetup:{ orientation: N > 6 ? 'landscape' : 'portrait', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:1, horizontalCentered:true,
+      margins:{ left:.25, right:.25, top:.3, bottom:.35, header:.15, footer:.15 } },
+    headerFooter:{ oddFooter:'&L&8Notybat — Heures ' + _ht.month + '&R&8édité le ' + _ht.edited } });
+  ws.getColumn(1).width = 5; ws.getColumn(2).width = 30; for(let c = C0; c <= last; c++) ws.getColumn(c).width = 19;
+  const thin = { style:'thin', color:{ argb:'FF' + HT_LINE } }, box = { top:thin, bottom:thin, left:thin, right:thin };
+  // En-tête comme le PDF : bandeau bleu nuit (logo + Notybat à gauche, titre et période à droite), filet orange
+  const merge = (r1, c1, r2, c2) => { if(r2 > r1 || c2 > c1) ws.mergeCells(r1, c1, r2, c2); };
+  for(let rr = 1; rr <= 2; rr++) for(let c = 1; c <= last; c++) ws.getCell(rr, c).fill = _htFill(HT_NAVY);
+  ws.getRow(1).height = 24; ws.getRow(2).height = 16;
+  merge(1, 1, 2, 1); merge(1, 2, 2, 2); merge(1, C0, 1, last); merge(2, C0, 2, last);
+  _htPlace(ws, logoId, 1, 1, 30, 5, 28);
+  const br = ws.getCell(1, 2);
+  br.value = { richText:[ { text:'Noty', font:{ bold:true, size:17, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:17, color:{ argb:'FF' + HT_OR } } } ] };
+  br.alignment = { vertical:'middle', indent:1 };
+  const t = ws.getCell(1, C0); t.value = 'Heures du mois — ' + _ht.month;
+  t.font = { bold:true, size:13, color:{ argb:'FFFFFFFF' } }; t.alignment = { horizontal:'right', vertical:'bottom', indent:1 };
+  const s2 = ws.getCell(2, C0);
+  s2.value = (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited;
+  s2.font = { size:8.5, color:{ argb:'FFC8D0DC' } }; s2.alignment = { horizontal:'right', vertical:'top', indent:1 };
+  ws.getRow(3).height = 3; for(let c = 1; c <= last; c++) ws.getCell(3, c).fill = _htFill(HT_OR);
+  ws.getRow(4).height = 8;
+  // Noms + rôles
+  const hr = ws.getRow(5); hr.height = 40;
+  ws.mergeCells(5, 1, 5, 2);
+  const h0 = hr.getCell(1); h0.value = 'Salarié'; h0.font = { bold:true, size:10.5, color:{ argb:'FFFFFFFF' } }; h0.fill = _htFill(HT_NAVY); h0.alignment = { vertical:'middle', indent:1 };
+  h0.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } };
+  people.forEach((p, i) => { const x = hr.getCell(C0 + i);
+    x.value = { richText:[ { text:p.name, font:{ bold:true, size:11, color:{ argb:'FFFFFFFF' } } }, { text:'\n' + (p.roleL || 'Salarié'), font:{ bold:true, size:9, color:{ argb:'FF' + HT_OR } } } ] };
+    x.fill = _htFill(HT_NAVY); x.alignment = { horizontal:'center', vertical:'middle', wrapText:true };
+    x.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } }, left:{ style:'thin', color:{ argb:'FF33415E' } } }; });
+  let r = 6;
+  m.rows.forEach(row => {
+    if(row.t === 'sec'){
+      ws.mergeCells(r, 2, r, last);
+      ws.getCell(r, 1).fill = _htFill(HT_NAVY);
+      const c = ws.getCell(r, 2); c.value = row.label.toUpperCase(); c.font = { bold:true, size:10.5, color:{ argb:'FF' + HT_OR } }; c.fill = _htFill(HT_NAVY); c.alignment = { vertical:'middle' };
+      ws.getRow(r).height = 22; _htPlace(ws, ic[row.icon], r, 1, 22, 5, 17); r++; return;
+    }
+    const lines = Math.max(1, ...row.cells.map(c => 1 + (c.sub ? String(c.sub).split('\n').length : 0)));
+    const hPt = Math.max(row.sub ? 27 : 22, 13.5 * lines + 6);
+    const R = ws.getRow(r); R.height = hPt;
+    const a = R.getCell(1); a.border = { top:thin, bottom:thin, left:thin }; a.fill = _htFill(row.hl ? 'FFE7CF' : 'FFFFFF');
+    const b = R.getCell(2);
+    b.value = { richText:[ { text:row.label, font:{ bold:true, size:10.5, color:{ argb:'FF' + (row.labelColor || HT_NAVY) } } },
+      ...(row.sub ? [{ text:'\n' + row.sub, font:{ size:8.5, color:{ argb:'FF5A6473' } } }] : []) ] };
+    b.alignment = { vertical:'middle', wrapText:true }; b.border = { top:thin, bottom:thin, right:thin }; b.fill = _htFill(row.hl ? 'FFE7CF' : 'FFFFFF');
+    row.cells.forEach((c, i) => {
+      const x = R.getCell(C0 + i);
+      if(c.main == null || c.main === ''){ x.value = '—'; x.font = { size:10.5, color:{ argb:'FFB5BCC7' } }; }
+      else x.value = { richText:[ { text:c.main, font:{ bold:true, size: row.big ? 13 : (c.small ? 9.5 : 11), color:{ argb:'FF' + (c.mainColor || '1B2333') } } },
+        ...(c.sub ? [{ text:'\n' + c.sub, font:{ bold:true, size:8.5, color:{ argb:'FF' + (c.subColor || '5A6473') } } }] : []) ] };
+      x.alignment = { horizontal:'center', vertical:'middle', wrapText:true }; x.border = box;
+      x.fill = _htFill(c.bg || (row.hl ? 'FFE7CF' : 'FFFFFF'));
+    });
+    if(row.icon) _htPlace(ws, ic[row.icon], r, 1, hPt, 5, 17);
+    r++;
+  });
   r++;
   ws.mergeCells(r, 1, r, last);
   const n = ws.getCell(r, 1);
-  n.value = 'Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso. Le tableau dans l’ordre habituel du comptable est dans l’onglet « Tableau comptable ».';
-  n.font = { size:9.5, italic:true, color:{ argb:'FF5A6473' } }; n.alignment = { wrapText:true, vertical:'top', indent:1 }; ws.getRow(r).height = 30;
-  return ws;
-}
-
-/* ── 1 onglet par salarié : calendrier du mois, couleur = zone de trajet (pas de nom de chantier) ── */
-function _htFicheSheet(wb, logoId, p, ic){
-  let nm = ('Fiche ' + p.name).replace(/[\[\]\*\?\/\\:]/g, ' ').slice(0, 30);
-  const used = new Set(wb.worksheets.map(w => w.name)); let k = 2; const base = nm; while(used.has(nm)) nm = base.slice(0, 27) + ' ' + (k++);
-  const ws = wb.addWorksheet(nm, { pageSetup:{ orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:1, margins:{ left:.3, right:.3, top:.4, bottom:.4, header:.2, footer:.2 } },
-    headerFooter:{ oddFooter:'&L&8Notybat — ' + p.name + ' — ' + _ht.month + '&R&8Page &P / &N' } });
-  ws.getColumn(1).width = 12; for(let c = 2; c <= 8; c++) ws.getColumn(c).width = c >= 7 ? 13 : 18; ws.getColumn(9).width = 13;
-  _htTitle(ws, logoId, 9, p.name + (p.roleL ? ' (' + p.roleL + ')' : '') + ' — ' + _ht.month, (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  chaque case = une journée : heures et zone de trajet (couleur = zone)');
-  ws.getRow(3).height = 6;
-  const absDays = p.cp + p.css + p.other;
-  ws.getRow(4).height = 34; ws.getRow(5).height = 18;
-  _htTile(ws, 4, 1, 2, _htNum(p.hours) + ' h', 'heures travaillées · ' + p.daysWorked + ' jours', HT_NAVY, 'FFFFFF');
-  _htTile(ws, 4, 3, 4, (p.hs > 0 ? '+' : '') + _htNum(Math.round(p.hs * 100) / 100) + ' h', 'heures sup à payer', p.hs < 0 ? 'FBE3E0' : 'FFD3A8', p.hs < 0 ? 'B03A2E' : HT_NAVY);
-  _htTile(ws, 4, 5, 5, String(p.paniers), 'paniers', 'F1F3F6', HT_NAVY);
-  _htTile(ws, 4, 6, 7, String(Object.values(p.z).reduce((a, b) => a + b, 0)), 'jours de trajet' + (p.perso ? ' · ' + p.perso + ' voiture perso' : ''), 'DCE9FB', '1F5FBF');
-  _htTile(ws, 4, 8, 9, String(absDays), 'absence' + (absDays > 1 ? 's' : '') + (p.cp ? ' · dont ' + p.cp + ' CP' : ''), absDays ? 'FBE3E0' : 'F1F3F6', absDays ? 'B03A2E' : '5A6473');
-  let r = 7;
-  const hdr = ['Semaine', 'LUN', 'MAR', 'MER', 'JEU', 'VEN', 'SAM', 'DIM', 'TOTAL'];
-  const hr = ws.getRow(r); hr.height = 22;
-  hdr.forEach((h, i) => { const x = hr.getCell(i + 1); x.value = h; x.font = { bold:true, size:10, color:{ argb:'FFFFFFFF' } }; x.fill = _htFill(HT_NAVY);
-    x.alignment = { horizontal:'center', vertical:'middle' }; x.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } }; });
-  r++;
-  const myDays = new Map(_ht.days.filter(d => d.name === p.name).map(d => [d.date, d]));
-  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const white = { style:'medium', color:{ argb:'FFFFFFFF' } };
-  _ht.weeks.forEach((w, wi) => {
-    const row = ws.getRow(r); row.height = 50;
-    const x = p.wk[wi], hs = x.h - 35;
-    const a = row.getCell(1);
-    a.value = { richText:[ { text:'S' + w.weekNum + '\n', font:{ bold:true, size:13, color:{ argb:'FF' + HT_NAVY } } },
-      { text: x.worked ? (hs >= 0 ? '+' : '') + _htNum(Math.round(hs * 100) / 100) + ' h sup' : '', font:{ bold:true, size:9, color:{ argb: hs < 0 ? 'FFB03A2E' : 'FFC46A12' } } } ] };
-    a.alignment = { horizontal:'center', vertical:'middle', wrapText:true }; a.fill = _htFill('F1F3F6'); a.border = { top:white, bottom:white, left:white, right:white };
-    for(let i = 0; i < 7; i++){
-      const d = new Date(w.monday); d.setDate(d.getDate() + i);
-      const cell = row.getCell(2 + i), day = myDays.get(iso(d));
-      const out = d.getMonth() !== _ht.mMonth;
-      const num = { text:String(d.getDate()) + '\n', font:{ size:8.5, bold:true, color:{ argb: out ? 'FF9AA3B0' : 'FF5A6473' } } };
-      cell.alignment = { vertical:'top', horizontal:'left', wrapText:true };
-      cell.border = { top:white, bottom:white, left:white, right:white };
-      if(!day){ cell.value = { richText:[ num ] }; cell.fill = _htFill(i >= 5 ? 'E9ECF1' : 'F4F6F9'); continue; }
-      if(day.tj && day.tj !== 'normal'){
-        const tc = ((TYPE_JOURNEE[day.tj] && TYPE_JOURNEE[day.tj].color) || '#C0392B').replace('#', '').toUpperCase();
-        cell.value = { richText:[ num, { text:(TYPE_JOURNEE[day.tj] && TYPE_JOURNEE[day.tj].label) || day.type, font:{ bold:true, size:9.5, color:{ argb:'FF' + tc } } } ] };
-        cell.fill = _htFill(_htLighten(tc, 0.82));
-        cell.border = { top:white, bottom:white, right:white, left:{ style:'thick', color:{ argb:'FF' + tc } } };
-        continue;
-      }
-      const zc = day.zone ? (HT_ZONE_COLORS[day.zone] || '5D6D7E') : '9AA3B0';
-      cell.value = { richText:[ num, { text:_htNum(day.hours) + ' h', font:{ bold:true, size:13, color:{ argb:'FF1B2333' } } },
-        { text:'\n' + (day.zone ? (day.zone === 'GD' ? 'Grand dépl.' : 'Zone ' + day.zone) : 'Sans zone'), font:{ bold:true, size:9, color:{ argb:'FF' + zc } } },
-        { text:(day.panier ? ' · panier' : '') + (day.perso ? ' · voiture perso' : ''), font:{ size:8, color:{ argb:'FF5A6473' } } } ] };
-      cell.fill = _htFill(_htLighten(zc, out ? 0.92 : 0.84));
-      cell.border = { top:white, bottom:white, right:white, left:{ style:'thick', color:{ argb:'FF' + zc } } };
-    }
-    const tcell = row.getCell(9);
-    tcell.value = x.h ? _htNum(x.h) + ' h' : (Object.keys(x.abs).length ? '—' : '0 h');
-    tcell.font = { bold:true, size:13, color:{ argb:'FF' + HT_OR } }; tcell.alignment = { horizontal:'center', vertical:'middle' }; tcell.fill = _htFill('FFF3E6');
-    tcell.border = { top:white, bottom:white, left:white, right:white };
-    r++;
-  });
-  // Trajets par zone (barres)
-  r++;
-  ws.mergeCells(r, 1, r, 9);
-  const sh = ws.getCell(r, 1); sh.value = '        TRAJETS PAR ZONE'; sh.font = { bold:true, size:10.5, color:{ argb:'FF' + HT_OR } }; sh.fill = _htFill(HT_NAVY); sh.alignment = { vertical:'middle' };
-  ws.getRow(r).height = 22; _htIcon(ws, ic, 'zone', r, 1, 17); r++;
-  const zs = HT_ZONE_KM.concat([['GD', 'grand déplacement']]).filter(([z]) => p.z[z]);
-  const max = Math.max(1, ...zs.map(([z]) => p.z[z]));
-  if(!zs.length){ ws.mergeCells(r, 1, r, 9); ws.getCell(r, 1).value = 'Aucun trajet ce mois-ci.'; ws.getCell(r, 1).font = { italic:true, color:{ argb:'FF5A6473' } }; r++; }
-  zs.forEach(([z, km]) => {
-    const zc = HT_ZONE_COLORS[z], row = ws.getRow(r); row.height = 19;
-    row.getCell(1).fill = _htFill(zc);
-    ws.mergeCells(r, 2, r, 3); const nmC = row.getCell(2); nmC.value = (z === 'GD' ? 'Grand déplacement' : 'Zone ' + z + '  (' + km + ')');
-    nmC.font = { bold:true, size:10.5, color:{ argb:'FF1B2333' } }; nmC.alignment = { vertical:'middle', indent:1 };
-    const hc = row.getCell(4); hc.value = p.z[z] + ' j' + (p.zp[z] ? ' (' + p.zp[z] + ' perso)' : ''); hc.font = { bold:true, size:10, color:{ argb:'FF' + zc } }; hc.alignment = { horizontal:'center', vertical:'middle' };
-    ws.mergeCells(r, 5, r, 9); const bar = row.getCell(5); bar.value = '█'.repeat(Math.max(1, Math.round(40 * p.z[z] / max)));
-    bar.font = { size:10, color:{ argb:'FF' + zc } }; bar.alignment = { vertical:'middle' };
-    r++;
-  });
-  // Absences datées
-  const abs = [['cp', 'Congés payés'], ['maladie', 'Arrêt maladie'], ['css', 'Congé sans solde'], ['autres', 'Autres absences']].map(([t, l]) => [t, l, _htAbs(p, t)]).filter(x => x[2].length);
-  if(abs.length){
-    r++;
-    ws.mergeCells(r, 1, r, 9);
-    const ah = ws.getCell(r, 1); ah.value = '        CONGÉS ET ABSENCES'; ah.font = { bold:true, size:10.5, color:{ argb:'FF' + HT_OR } }; ah.fill = _htFill(HT_NAVY); ah.alignment = { vertical:'middle' };
-    ws.getRow(r).height = 22; _htIcon(ws, ic, 'cal', r, 1, 17); r++;
-    abs.forEach(([t, l, d]) => {
-      const tc = ((TYPE_JOURNEE[t] && TYPE_JOURNEE[t].color) || '#C0392B').replace('#', '').toUpperCase();
-      const row = ws.getRow(r); row.height = 20; row.getCell(1).fill = _htFill(tc);
-      ws.mergeCells(r, 2, r, 3); const c = row.getCell(2); c.value = l + ' : ' + d.length + ' j'; c.font = { bold:true, size:10.5, color:{ argb:'FF' + tc } }; c.alignment = { vertical:'middle', indent:1 };
-      ws.mergeCells(r, 4, r, 9); const dd = row.getCell(4); dd.value = _htPer(d).join('   ·   '); dd.font = { size:10, color:{ argb:'FF1B2333' } }; dd.alignment = { vertical:'middle', indent:1 };
-      r++;
-    });
-  }
-  r++;
-  ws.mergeCells(r, 1, r, 9);
-  const lg = ws.getCell(r, 1);
-  lg.value = 'Lecture : couleur de la case = zone de trajet du jour · cases teintées avec un libellé = congé ou absence · jours grisés = hors du mois · « h sup » = heures au-delà de 35 h dans la semaine.';
-  lg.font = { size:9, italic:true, color:{ argb:'FF5A6473' } }; lg.alignment = { wrapText:true, indent:1 }; ws.getRow(r).height = 26;
-  ws.pageSetup.printArea = 'A1:I' + r;
-  return ws;
-}
-
-/* Jours ISO consécutifs → périodes [début, fin] */
-function _htPeriods(arr){
-  const a = (arr || []).slice().sort(); if(!a.length) return [];
-  const out = []; let s0 = a[0], prev = a[0];
-  for(let i = 1; i < a.length; i++){ if((new Date(a[i]) - new Date(prev)) / 86400000 > 1){ out.push([s0, prev]); s0 = a[i]; } prev = a[i]; }
-  out.push([s0, prev]); return out;
+  n.value = 'Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso. Heures sup = heures au-delà de 35 h dans la semaine.';
+  n.font = { size:9.5, italic:true, color:{ argb:'FF5A6473' } }; n.alignment = { wrapText:true, vertical:'top', indent:1 }; ws.getRow(r).height = 28;
+  ws.pageSetup.printArea = 'A1:' + ws.getColumn(last).letter + r;
+  // Police Arial partout (comme le PDF)
+  ws.eachRow({ includeEmpty:true }, row => row.eachCell({ includeEmpty:true }, c => {
+    const v = c.value;
+    if(v && v.richText) c.value = { richText: v.richText.map(rt => Object.assign({}, rt, { font: Object.assign({}, rt.font || {}, { name:'Arial' }) })) };
+    c.font = Object.assign({}, c.font || {}, { name:'Arial' });
+  }));
+  const out = await wb.xlsx.writeBuffer();
+  return new Blob([out], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 /* v5.51.6 — rôle de chaque salarié (registre des comptes, sinon fiche de l'appareil) */
 async function _htLoadRoles(){
@@ -38559,63 +38274,71 @@ async function htExcel(){
   catch(e){ showToast('❌ Excel : ' + (e && e.message || e)); }
 }
 
-/* ── PDF au format Notybat (A4 paysage) ── */
+/* ── PDF : le même résumé (A4, portrait jusqu'à 6 salariés, paysage au-delà) ── */
 async function _htPdfBlob(){
   if(typeof _qcEnsurePdfLib === 'function') await _qcEnsurePdfLib();
   const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF; if(!J) throw new Error('PDF indisponible');
-  const doc = new J({ orientation:'landscape', unit:'mm', format:'a4' });
-  const W = 297, H = 210, M = 10, logo = await _htLogo();
+  await _htLoadRoles();
+  const m = _htModel(), N = Math.max(m.people.length, 1);
+  const land = N > 6, doc = new J({ orientation: land ? 'landscape' : 'portrait', unit:'mm', format:'a4' });
+  const W = land ? 297 : 210, H = land ? 210 : 297, M = 8;
   const rgb = h => [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
-  const head = (sub) => {
-    doc.setFillColor(...rgb(HT_NAVY)); doc.rect(0, 0, W, 20, 'F');
-    doc.setFillColor(...rgb(HT_OR)); doc.rect(0, 20, W, 1.2, 'F');
-    let x = M; if(logo){ try{ doc.addImage(logo, 'PNG', M, 3.5, 13, 13); x = M + 16; }catch(e){} }
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(255, 255, 255); doc.text('Noty', x, 12.5);
-    const wN = doc.getTextWidth('Noty'); doc.setTextColor(...rgb(HT_OR)); doc.text('bat', x + wN, 12.5);
-    doc.setTextColor(255, 255, 255); doc.setFontSize(12.5); doc.text(sub + ' — ' + _ht.month, W - M, 10, { align:'right' });
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(200, 208, 220);
-    doc.text((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited, W - M, 15.5, { align:'right' });
-  };
-  const table = (sub, tab, rows, total) => {
-    const cols = _htCols(tab), sw = cols.reduce((a, c) => a + c.w, 0), k = (W - 2 * M) / sw;
-    const xs = []; let acc = M; cols.forEach(c => { xs.push(acc); acc += c.w * k; });
-    const fs = cols.length > 16 ? 6.6 : 7.6, rh = 5.6;
-    let y;
-    const thead = () => {
-      doc.setFillColor(...rgb(HT_NAVY)); doc.rect(M, y, W - 2 * M, 7, 'F');
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(fs); doc.setTextColor(255, 255, 255);
-      cols.forEach((c, i) => { const cw = c.w * k; const tx = doc.splitTextToSize(c.l, cw - 1.5)[0]; doc.text(tx, c.n ? xs[i] + cw / 2 : xs[i] + 1.2, y + 4.6, c.n ? { align:'center' } : undefined); });
-      doc.setFillColor(...rgb(HT_OR)); doc.rect(M, y + 7, W - 2 * M, .6, 'F'); y += 7.6;
-    };
-    const line = (r, ri, isTot) => {
-      if(y + rh > H - 12){ doc.addPage(); head(sub); y = 26; thead(); }
-      if(isTot){ doc.setFillColor(255, 211, 168); doc.rect(M, y, W - 2 * M, rh, 'F'); }
-      else if(ri % 2){ doc.setFillColor(...rgb(HT_ZEBRA)); doc.rect(M, y, W - 2 * M, rh, 'F'); }
-      doc.setDrawColor(...rgb(HT_LINE)); doc.setLineWidth(.15); doc.line(M, y + rh, W - M, y + rh);
-      cols.forEach((c, i) => {
-        let v = isTot ? r[i] : c.v(r); v = v == null ? '' : String(v);
-        const cw = c.w * k; const tx = doc.splitTextToSize(v, cw - 1.6)[0] || '';
-        doc.setFont('helvetica', (c.k === 'name' || isTot) ? 'bold' : 'normal'); doc.setFontSize(fs);
-        if(c.n && v.startsWith('-')) doc.setTextColor(192, 57, 43); else doc.setTextColor(27, 35, 51);
-        doc.text(tx, c.n ? xs[i] + cw / 2 : xs[i] + 1.2, y + 3.9, c.n ? { align:'center' } : undefined);
-      });
-      y += rh;
-    };
-    head(sub); y = 26; thead();
-    rows.forEach((r, ri) => line(r, ri, false));
-    if(total) line(total, 0, true);
-    if(!rows.length){ doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(120, 120, 120); doc.text('Aucune ligne', M + 2, y + 5); }
-  };
-  const rec = _htRows('recap'), tc = _htCols('recap'), tt = _htTotals(rec);
-  table('Tableau des heures', 'recap', rec, rec.length ? tc.map(c => c.k === 'name' ? 'TOTAL' : c.v(tt)) : null);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.2); doc.setTextColor(90, 100, 115);
-  doc.text(doc.splitTextToSize('S + n° : heures sup. de la semaine au-delà de 35 h (négatif = heures en moins) ou motif d\'absence. H. sup : total à payer. CP / CSS / Autres abs. : jours. Zones : trajets par zone (GD = grand déplacement). Véh. perso : trajets avec la voiture personnelle.', W - 2 * M), M, H - 15);
-  doc.addPage();
-  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
-  table('Détail des journées', 'days', det, det.length ? ['TOTAL', '', '', '', '', '', _htNum(det.reduce((a, d) => a + (+d.hours || 0), 0)), det.filter(d => d.panier).length || '', '', det.filter(d => d.perso).length || ''] : null);
-  const n = doc.getNumberOfPages();
-  for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140, 150, 165);
-    doc.text('Notybat — Tableau des heures — ' + _ht.month, M, H - 5); doc.text('Page ' + i + ' / ' + n, W - M, H - 5, { align:'right' }); }
+  const imgs = {}; const logo = await _htLogo();
+  for(const [k, u] of Object.entries(HT_ICONS)) imgs[k] = await _htImg(u);
+  const labW = 46, colW = (W - 2 * M - labW) / N;
+  const fsMain = Math.max(5.5, Math.min(9.5, colW * 0.42)), fsSub = Math.max(4.6, fsMain - 2);
+  // hauteur totale → échelle pour tenir sur une page
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(fsSub);
+  const subLines = c => c.sub ? String(c.sub).split('\n').reduce((a, s) => a.concat(doc.splitTextToSize(s.replace(/→/g, '-'), colW - 1.5)), []) : [];
+  const rowH = r => r.t === 'sec' ? 6 : Math.max(r.sub ? 8 : 6.5, 3.4 * Math.max(1, ...r.cells.map(c => 1 + subLines(c).length)) + 2.2);
+  const total = 22 + 13 + m.rows.reduce((a, r) => a + rowH(r), 0) + 10;
+  const k = Math.min(1, (H - 2) / total);
+  const T = (txt, x, y, o) => doc.text(String(txt).replace(/→/g, '-').replace(/[\u202f\u00a0]/g, ' '), x, y, o);
+  // En-tête
+  doc.setFillColor(...rgb(HT_NAVY)); doc.rect(0, 0, W, 17 * k, 'F'); doc.setFillColor(...rgb(HT_OR)); doc.rect(0, 17 * k, W, 0.9, 'F');
+  let x0 = M; if(logo){ try{ doc.addImage(logo, 'PNG', M, 2.5 * k, 12 * k, 12 * k); x0 = M + 15 * k; }catch(e){} }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15 * k); doc.setTextColor(255, 255, 255); T('Noty', x0, 11 * k);
+  const wN = doc.getTextWidth('Noty'); doc.setTextColor(...rgb(HT_OR)); T('bat', x0 + wN, 11 * k);
+  doc.setTextColor(255, 255, 255); doc.setFontSize(11 * k); T('Heures du mois — ' + _ht.month, W - M, 8.5 * k, { align:'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5 * k); doc.setTextColor(200, 208, 220);
+  T((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited, W - M, 13.5 * k, { align:'right' });
+  let y = 21 * k;
+  // Noms
+  doc.setFillColor(...rgb(HT_NAVY)); doc.rect(M, y, W - 2 * M, 11 * k, 'F'); doc.setFillColor(...rgb(HT_OR)); doc.rect(M, y + 11 * k, W - 2 * M, 0.6, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5 * k); doc.setTextColor(255, 255, 255); T('Salarié', M + 2, y + 6.5 * k);
+  m.people.forEach((p, i) => { const cx = M + labW + colW * i + colW / 2;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(Math.min(9.5, fsMain + 0.5) * k); doc.setTextColor(255, 255, 255); T(doc.splitTextToSize(p.name, colW - 1)[0], cx, y + 5 * k, { align:'center' });
+    doc.setFontSize(fsSub * k); doc.setTextColor(...rgb(HT_OR)); T(p.roleL || 'Salarié', cx, y + 9 * k, { align:'center' }); });
+  y += 12 * k;
+  m.rows.forEach(r => {
+    const h = rowH(r) * k;
+    if(r.t === 'sec'){
+      doc.setFillColor(...rgb(HT_NAVY)); doc.rect(M, y, W - 2 * M, h, 'F');
+      if(imgs[r.icon]){ try{ doc.addImage(imgs[r.icon], 'PNG', M + 1.2, y + 1, h - 2, h - 2); }catch(e){} }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7.8 * k); doc.setTextColor(...rgb(HT_OR)); T(r.label.toUpperCase(), M + h + 1.5, y + h / 2 + 1.1 * k);
+      y += h; return;
+    }
+    doc.setFillColor(...rgb(r.hl ? 'FFE7CF' : 'FFFFFF')); doc.rect(M, y, labW, h, 'F');
+    let lx = M + 1.5; if(r.icon && imgs[r.icon]){ try{ doc.addImage(imgs[r.icon], 'PNG', M + 1, y + h / 2 - 2.2 * k, 4.4 * k, 4.4 * k); }catch(e){} } lx = M + 6.5 * k;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.6 * k); doc.setTextColor(...rgb(r.labelColor || HT_NAVY)); T(r.label, lx, y + (r.sub ? h / 2 - 0.4 : h / 2 + 1.1 * k));
+    if(r.sub){ doc.setFont('helvetica', 'normal'); doc.setFontSize(5.8 * k); doc.setTextColor(90, 100, 115); T(r.sub, lx, y + h / 2 + 2.6 * k); }
+    r.cells.forEach((c, i) => {
+      const cx = M + labW + colW * i;
+      doc.setFillColor(...rgb(c.bg || (r.hl ? 'FFE7CF' : 'FFFFFF'))); doc.rect(cx, y, colW, h, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(fsSub * k); const subs = subLines(c);
+      const blockH = (subs.length + 1) * 3.2 * k; let ty = y + (h - blockH) / 2 + 2.5 * k;
+      if(c.main == null || c.main === ''){ doc.setFont('helvetica', 'normal'); doc.setFontSize(fsMain * k); doc.setTextColor(181, 188, 199); T('—', cx + colW / 2, y + h / 2 + 1.2 * k, { align:'center' }); return; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize((r.big ? fsMain + 1 : c.small ? fsSub + .4 : fsMain) * k); doc.setTextColor(...rgb(c.mainColor || '1B2333'));
+      T(doc.splitTextToSize(c.main, colW - 1)[0], cx + colW / 2, ty, { align:'center' });
+      doc.setFontSize(fsSub * k); doc.setTextColor(...rgb(c.subColor || '5A6473'));
+      subs.forEach(s => { ty += 3.2 * k; T(s, cx + colW / 2, ty, { align:'center' }); });
+    });
+    doc.setDrawColor(...rgb(HT_LINE)); doc.setLineWidth(.15); doc.line(M, y + h, W - M, y + h);
+    for(let i = 0; i <= N; i++){ const lx2 = M + labW + colW * i; doc.line(lx2, y, lx2, y + h); }
+    y += h;
+  });
+  doc.setFont('helvetica', 'italic'); doc.setFontSize(6.5 * k); doc.setTextColor(90, 100, 115);
+  T('Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.', M, y + 5 * k);
   return doc.output('blob');
 }
 async function htPdf(){
@@ -38624,52 +38347,65 @@ async function htPdf(){
   catch(e){ showToast('❌ PDF : ' + (e && e.message || e)); }
 }
 
-/* ── Impression (navigateur / PC). Sur téléphone (appli) : PDF, à imprimer depuis le lecteur PDF ── */
+/* ── Impression : le même tableau (PC). Sur téléphone (appli) : PDF ── */
 function htPrint(){
   const native = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
   if(native){ htPdf(); return; }
-  const tbl = (sub, tab, rows, total) => {
-    const cols = _htCols(tab);
-    return `<h2>${escapeHtml(sub)}</h2><table><thead><tr>${cols.map(c => `<th class="${c.n ? 'n' : ''}">${escapeHtml(c.l)}</th>`).join('')}</tr></thead><tbody>` +
-      rows.map(r => '<tr>' + cols.map(c => { const v = String(c.v(r)); return `<td class="${c.n ? 'n' : ''}${c.n && v.startsWith('-') ? ' neg' : ''}${c.k === 'name' ? ' b' : ''}">${escapeHtml(v)}</td>`; }).join('') + '</tr>').join('') +
-      '</tbody>' + (total ? '<tfoot><tr>' + total.map((v, i) => `<td class="${i ? 'n' : ''}">${escapeHtml(String(v))}</td>`).join('') + '</tr></tfoot>' : '') + '</table>';
-  };
-  const rec = _htRows('recap'), tc = _htCols('recap'), tt = _htTotals(rec);
-  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
-  const logo = new URL('icons/logo-header-v2.png', location.href).href;
+  htRender();
+  const base = location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '');
+  const table = document.getElementById('htWrap').innerHTML.replace(/src="icons\//g, 'src="' + base + 'icons/');
+  const N = (_ht.model && _ht.model.people.length) || 1;
   const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Heures ${escapeHtml(_ht.month)}</title><style>
-    @page{ size:A4 landscape; margin:9mm; }
+    @page{ size:A4 ${N > 6 ? 'landscape' : 'portrait'}; margin:7mm; }
     *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; box-sizing:border-box; }
-    body{ font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; color:#1B2333; margin:0; font-size:9.5px; }
-    .hd{ display:flex; align-items:center; gap:10px; background:#${HT_NAVY}; color:#fff; padding:10px 14px; border-bottom:3px solid #${HT_OR}; }
-    .hd img{ width:34px; height:34px; } .hd .br{ font-size:21px; font-weight:900; } .hd .br b{ color:#${HT_OR}; }
-    .hd .t{ margin-left:auto; text-align:right; } .hd .t div{ font-size:15px; font-weight:800; } .hd .t small{ color:#C8D0DC; font-size:10px; }
-    h2{ font-size:13px; margin:12px 0 6px; color:#${HT_NAVY}; } h2.pb{ page-break-before:always; }
-    table{ width:100%; border-collapse:collapse; } th{ background:#${HT_NAVY}; color:#fff; padding:5px 4px; text-align:left; border-bottom:2px solid #${HT_OR}; font-size:9px; }
-    td{ padding:4px; border-bottom:1px solid #${HT_LINE}; } tbody tr:nth-child(even) td{ background:#${HT_ZEBRA}; }
-    .n{ text-align:center; } .neg{ color:#C0392B; } .b{ font-weight:700; }
-    tfoot td{ background:#FFD3A8; font-weight:800; border-top:2px solid #${HT_OR}; } thead{ display:table-header-group; } tr{ page-break-inside:avoid; }
-    .lg{ color:#5A6473; font-size:8.5px; margin-top:6px; }
+    body{ font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; color:#1B2333; margin:0; font-size:${N > 10 ? 8 : 10}px; }
+    ${_htTableCss(true)}
   </style></head><body>
-    <div class="hd"><img src="${logo}" alt=""><div class="br">Noty<b>bat</b></div><div class="t"><div>Tableau des heures — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + ' · ' : '') + 'Période ' + _ht.period + ' · édité le ' + _ht.edited)}</small></div></div>
-    ${tbl('Récapitulatif par salarié', 'recap', rec, rec.length ? tc.map(c => c.k === 'name' ? 'TOTAL' : c.v(tt)) : null)}
-    <div class="lg">S + n° : heures sup. de la semaine au-delà de 35 h (négatif = heures en moins) ou motif d'absence. H. sup : total à payer. CP / CSS / Autres abs. : jours. Zones : trajets par zone (GD = grand déplacement). Véh. perso : trajets avec la voiture personnelle.</div>
-    ${tbl('Détail des journées', 'days', det, null).replace('<h2>', '<h2 class="pb">')}
+    ${table}
   </body></html>`;
-  let fr = document.getElementById('htPrintFrame');
-  if(fr) fr.remove();
-  fr = document.createElement('iframe'); fr.id = 'htPrintFrame';
-  fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  let fr = document.getElementById('htPrintFrame'); if(fr) fr.remove();
+  fr = document.createElement('iframe'); fr.id = 'htPrintFrame'; fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
   document.body.appendChild(fr);
-  fr.onload = () => setTimeout(() => { try{ fr.contentWindow.focus(); fr.contentWindow.print(); }catch(e){ htPdf(); } }, 250);
+  fr.onload = () => setTimeout(() => { try{ fr.contentWindow.focus(); fr.contentWindow.print(); }catch(e){ htPdf(); } }, 350);
   fr.srcdoc = html;
 }
+/* Style du tableau (écran : thème sombre de l'appli ; impression : clair) */
+function _htTableCss(print){
+  const sticky = !print;
+  return `
+  .ht-doc{ background:#fff; color:#1B2333; font-family:Arial,Helvetica,sans-serif; ${print ? '' : 'border-radius:12px; min-width:max-content;'} }
+  .ht-hd{ display:flex; align-items:center; gap:10px; background:#${HT_NAVY}; color:#fff; padding:${print ? '7px 10px' : '10px 14px'}; border-bottom:3px solid #${HT_OR}; ${print ? '' : 'border-radius:12px 12px 0 0;'} }
+  .ht-hd img{ width:${print ? '30px' : '38px'}; height:${print ? '30px' : '38px'}; }
+  .ht-hd .br{ font-size:${print ? '19px' : '22px'}; font-weight:900; } .ht-hd .br b{ color:#${HT_OR}; }
+  .ht-hd .t{ margin-left:auto; text-align:right; padding-left:20px; } .ht-hd .t div{ font-size:${print ? '14px' : '16px'}; font-weight:800; } .ht-hd .t small{ color:#C8D0DC; font-size:${print ? '9px' : '11px'}; }
+  .ht-lg{ color:#5A6473; font-style:italic; font-size:${print ? '8.5px' : '11px'}; margin:6px 8px 4px; }
+  .hr-t{ border-collapse:separate; border-spacing:0; width:100%; font-family:Arial,Helvetica,sans-serif; ${print ? 'table-layout:fixed;' : ''} }
+  .hr-t th, .hr-t td{ border-bottom:1px solid #${HT_LINE}; border-right:1px solid #${HT_LINE}; text-align:center; vertical-align:middle; padding:${print ? '3px 2px' : '6px 8px'}; background:#fff; color:#1B2333; }
+  .hr-t thead th{ ${sticky ? 'position:sticky; top:0; z-index:3;' : ''} background:#${HT_NAVY}; color:#fff; border-bottom:2px solid #${HT_OR}; border-right-color:#33415E; min-width:${print ? '0' : '118px'}; }
+  .hr-t thead th span{ display:block; font-weight:800; font-size:${print ? '1.05em' : '13.5px'}; }
+  .hr-t thead th em{ display:block; font-style:normal; font-weight:800; color:#${HT_OR}; font-size:${print ? '.85em' : '11px'}; margin-top:2px; }
+  .hr-t .lb{ text-align:left; ${print ? 'width:24%;' : 'position:sticky; left:0; z-index:2; min-width:200px; max-width:200px;'} }
+  .hr-t thead .lb{ z-index:4; font-weight:800; }
+  .hr-t td.lb .lbx{ display:flex; align-items:center; gap:${print ? '4px' : '7px'}; }
+  .hr-t td.lb img{ width:${print ? '13px' : '18px'}; height:${print ? '13px' : '18px'}; flex-shrink:0; }
+  .hr-t td.lb i.sp{ display:inline-block; width:${print ? '13px' : '18px'}; flex-shrink:0; }
+  .hr-t td.lb span{ display:block; min-width:0; }
+  .hr-t td.lb b{ display:block; color:#${HT_NAVY}; font-size:${print ? '1em' : '12.5px'}; }
+  .hr-t td.lb small{ display:block; font-size:${print ? '.8em' : '10.5px'}; color:#5A6473; }
+  .hr-t td b{ display:block; font-size:${print ? '1.05em' : '13.5px'}; }
+  .hr-t td small{ display:block; font-weight:700; font-size:${print ? '.8em' : '10.5px'}; margin-top:1px; }
+  .hr-t td.e{ color:#B5BCC7; }
+  .hr-t tr.sec td{ background:#${HT_NAVY} !important; color:#${HT_OR}; font-weight:800; text-transform:uppercase; font-size:${print ? '.9em' : '12px'}; text-align:left; border-color:#${HT_NAVY}; }
+  .hr-t tr.big td:not(.lb) b{ font-size:${print ? '1.2em' : '15.5px'}; }
+  .hr-t tr.hl td{ background:#FFE7CF; }
+  ${print ? '.hr-t tr{ page-break-inside:avoid; }' : '@media (max-width:600px){ .hr-t .lb{ min-width:126px; max-width:126px; } .hr-t td.lb b{ font-size:11.5px; } .hr-t td.lb img, .hr-t td.lb i.sp{ width:15px; height:15px; } .hr-t thead th{ min-width:100px; } .hr-t td{ padding:5px 4px; } .ht-hd .t div{ font-size:13px; } .ht-hd .br{ font-size:18px; } .ht-hd img{ width:30px; height:30px; } }'}`;
+}
 
-/* ── Envoyer au comptable : partage Excel + PDF (ou téléchargement) ── */
+/* ── Envoyer au comptable : Excel + PDF ── */
 async function htShare(){
   try{
     showToast('Préparation des fichiers…');
-    const [x, p] = await Promise.all([_htExcelBlob(), _htPdfBlob()]);
+    const x = await _htExcelBlob(), p = await _htPdfBlob();
     const fx = new File([x], 'heures-' + _ht.slug + '.xlsx', { type:x.type }), fp = new File([p], 'heures-' + _ht.slug + '.pdf', { type:'application/pdf' });
     if(navigator.canShare && navigator.canShare({ files:[fx, fp] })){
       await navigator.share({ files:[fx, fp], title:'Heures ' + _ht.month, text:'Tableau des heures ' + _ht.month + (_ht.company ? ' — ' + _ht.company : '') });
@@ -38680,6 +38416,14 @@ async function htShare(){
     showToast('✅ Excel et PDF enregistrés : joins-les à ton e-mail pour le comptable');
   }catch(e){ if(!(e && e.name === 'AbortError')) showToast('❌ ' + (e && e.message || e)); }
 }
+/* Jours ISO consécutifs → périodes [début, fin] */
+function _htPeriods(arr){
+  const a = (arr || []).slice().sort(); if(!a.length) return [];
+  const out = []; let s0 = a[0], prev = a[0];
+  for(let i = 1; i < a.length; i++){ if((new Date(a[i]) - new Date(prev)) / 86400000 > 1){ out.push([s0, prev]); s0 = a[i]; } prev = a[i]; }
+  out.push([s0, prev]); return out;
+}
+
 
 /* [comptaedit] Pour un ouvrier donné, renvoie une copie de device.attendance
    où chaque jour/ouvrier a été passé au calque de corrections comptable
@@ -51094,9 +50838,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.51.7';
+const APP_VERSION = '5.52.1';
 
 const CHANGELOG = [
+  {
+    version: '5.52.1',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🎨', text: "Tableau des heures : même présentation à l'écran, en Excel et en PDF (bandeau Notybat, tableau clair, mêmes couleurs, police Arial)." }
+    ]
+  },
+  {
+    version: '5.52.0',
+    date: '25/10/2026',
+    entries: [
+      { icon: '📊', text: "Tableau des heures : un seul tableau clair, le même à l'écran, en Excel, en PDF et à l'impression — une colonne par salarié (nom + rôle) : heures et heures sup de chaque semaine, congés et arrêts avec leurs dates, paniers, trajets par zone (zones en couleur). Un salarié présent sur plusieurs appareils n'apparaît plus qu'une fois, et ceux sans aucune journée sont retirés." },
+      { icon: '🗑', text: "Dev › Comptes : la suppression tient enfin (la liste des comptes supprimés est enregistrée là où le serveur l'autorise ; si l'effacement des pointages est refusé, ils sont vidés). Message détaillé après chaque suppression." }
+    ]
+  },
   {
     version: '5.51.7',
     date: '25/10/2026',
@@ -62592,7 +62351,8 @@ async function pullAllPointagesForComptable(){
           ownerRole:  d.ownerRole  || 'chef',
           ownerAuthId: d.ownerAuthId || '',
           ownerDeviceSyncId: d.ownerDeviceSyncId || row.user_id.replace(COMPANY_SYNC_KEY + '_', ''),
-          workers:    d.workers    || [],
+          _deleted:   !!d._deleted,
+          workers:    (d.workers || []).filter(w => !(w && _isRemovedUser(_rmUsersCache, w.authId, w.name))),   // v5.52.0 — comptes supprimés
           attendance: d.attendance || {},
           weekChecks: d.weekChecks || {},
           sites:      d.sites      || []
@@ -62602,6 +62362,7 @@ async function pullAllPointagesForComptable(){
         // Exclure comptes test par authId ou deviceId
         const comptableId = (device.ownerAuthId || device.deviceId || '').toLowerCase();
         if(_isRemovedUser(_rmUsersCache, device.ownerAuthId, device.ownerName)) return false;   // v5.51.1 — compte supprimé
+        if(device._deleted) return false;
         return !EXCLUDED_SUFFIXES.some(suffix => comptableId.endsWith(suffix));
       })
       // Plus récent en premier — garantit que le dédoublon garde la version la plus à jour
@@ -63608,45 +63369,53 @@ async function _renderDevTabComptes(list){
 }
 
 async function confirmDeleteUserFull(authId, name){
-  if(!confirm('Supprimer ' + name + ' ?\n\n— Retiré de la liste des comptes (il ne revient plus tout seul)\n— Ses pointages supprimés de la vue comptable\n— Ses téléphones sont réinitialisés à la prochaine ouverture\n\nRestaurable dans « Comptes supprimés » en bas de la liste.')) return;
+  if(!confirm('Supprimer ' + name + ' définitivement ?\n\n— Retiré de la liste des comptes (il ne revient plus tout seul)\n— Ses pointages supprimés de la vue comptable et du tableau des heures\n— Ses téléphones sont réinitialisés à la prochaine ouverture\n\nRestaurable dans « Comptes supprimés » en bas de la liste.')) return;
+  const sid = _rmId(authId), nk = _rmNameKey(name);
+  const steps = [];
   try{
-    const sid = _rmId(authId), nk = _rmNameKey(name);
-    // 1. Pierre tombale (empêche tout retour automatique)
-    const rm = (await _fetchRemovedUsers(true)).filter(x => !(x.id === sid && _rmNameKey(x.name) === nk));
-    rm.push({ id: sid, name: name || '', at: new Date().toISOString() });
-    await _saveRemovedUsers(rm);
-    // 2. Registre : toutes les variantes (authId exact, recovered., même nom)
-    const raw = await _fetchUsersRegistryRaw();
-    const toRemove = [], kept = [];
-    raw.forEach(u => { if(!u) return;
-      if(_rmId(u.authId) === sid || (nk && _rmNameKey(u.name) === nk)) toRemove.push(u.authId); else kept.push(u); });
-    await _saveUsersRegistry(kept, toRemove);
-    // 3. TOUS ses pointages (un par appareil : téléphone, PC…), pas seulement le premier
-    let devices = [];
+    // 1. Trouver TOUS ses appareils (téléphone, PC…)
+    let devices = [], rows = [];
     try{
       const res = await supaFetch('/rest/v1/rwood_sync?user_id=like.' + encodeURIComponent(COMPANY_SYNC_KEY + '_%') + '&select=user_id,data', { headers:{ 'Prefer':'' } });
-      const rows = res.ok ? await res.json() : [];
-      (rows || []).forEach(row => {
-        let d = null; try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data; }catch(e){}
-        if(!d) return;
-        if((sid && _rmId(d.ownerAuthId) === sid) || (nk && _rmNameKey(d.ownerName) === nk)) devices.push(row.user_id.replace(COMPANY_SYNC_KEY + '_', ''));
-      });
+      rows = res.ok ? (await res.json() || []) : [];
     }catch(e){}
-    let delOk = 0;
-    for(const dev of devices){
-      const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(COMPANY_SYNC_KEY + '_' + dev), { method:'DELETE', headers:{ 'Prefer':'' } });
-      if(r && r.ok !== false) delOk++;
+    rows.forEach(row => {
+      let d = null; try{ d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data; }catch(e){}
+      if(!d) return;
+      if((sid && _rmId(d.ownerAuthId) === sid) || (nk && _rmNameKey(d.ownerName) === nk)) devices.push({ id: row.user_id.replace(COMPANY_SYNC_KEY + '_', ''), d });
+    });
+    // 2. Liste des comptes supprimés + appareils révoqués (une seule écriture, clé autorisée)
+    const v = await _revokedRead();
+    v.removedUsers = (v.removedUsers || []).filter(x => !(x.id === sid && _rmNameKey(x.name) === nk));
+    v.removedUsers.push({ id: sid, name: name || '', at: new Date().toISOString() });
+    devices.forEach(dv => { if(!v.deviceIds.includes(dv.id)) v.deviceIds.push(dv.id); });
+    await _revokedWrite(v);
+    _rmUsersCache = v.removedUsers; _rmUsersAt = Date.now();
+    steps.push('liste ✓');
+    // 3. Registre : toutes les variantes (authId exact, recovered., même nom)
+    try{
+      const raw = await _fetchUsersRegistryRaw();
+      const toRemove = [], kept = [];
+      raw.forEach(u => { if(!u) return; if(_rmId(u.authId) === sid || (nk && _rmNameKey(u.name) === nk)) toRemove.push(u.authId); else kept.push(u); });
+      await _saveUsersRegistry(kept, toRemove); steps.push('registre ✓');
+    }catch(e){ steps.push('registre ✗'); }
+    // 4. Pointages : effacés ; si le serveur refuse l'effacement, on les vide
+    let ok = 0;
+    for(const dv of devices){
+      const key = COMPANY_SYNC_KEY + '_' + dv.id;
+      let r = null; try{ r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(key), { method:'DELETE', headers:{ 'Prefer':'' } }); }catch(e){}
+      if(r && r.ok){ ok++; continue; }
+      try{
+        const empty = Object.assign({}, dv.d, { workers:[], attendance:{}, weekChecks:{}, _deleted:true, _deletedAt:new Date().toISOString() });
+        const r2 = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify({ user_id:key, updated_at:new Date().toISOString(), data: JSON.stringify(empty) }) });
+        if(r2 && r2.ok) ok++;
+      }catch(e){}
     }
-    // 4. Ses appareils se réinitialisent à la prochaine ouverture
-    if(devices.length){
-      const revoked = await _fetchRevokedDevices();
-      devices.forEach(d => { if(!revoked.includes(d)) revoked.push(d); });
-      await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify({ user_id: REVOKED_DEVICES_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ deviceIds: revoked }) }) });
-    }
-    showToast(name + ' supprimé' + (devices.length ? ' · ' + delOk + '/' + devices.length + ' appareil' + (devices.length > 1 ? 's' : '') : ''));
+    if(devices.length) steps.push(ok + '/' + devices.length + ' appareil' + (devices.length > 1 ? 's' : ''));
+    showToast('✅ ' + name + ' supprimé (' + steps.join(' · ') + ')');
     refreshDevPanel();
-  } catch(e){ showToast('Erreur : ' + e.message); }
+  } catch(e){ showToast('❌ Suppression impossible : ' + e.message); }
 }
 /* Restaurer un compte supprimé (il réapparaît à sa prochaine synchro ou par les pointages) */
 async function restoreRemovedUser(idx){
@@ -63719,17 +63488,9 @@ async function deleteDevAccount(deviceId){
 
     // 2. Ajouter ce deviceId a la liste des appareils revoques
     //    (force ce telephone a se reinitialiser a sa prochaine synchro)
-    const revoked = await _fetchRevokedDevices();
-    if(!revoked.includes(deviceId)) revoked.push(deviceId);
-    await supaFetch('/rest/v1/rwood_sync', {
-      method: 'POST',
-      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({
-        user_id: REVOKED_DEVICES_KEY,
-        updated_at: new Date().toISOString(),
-        data: JSON.stringify({ deviceIds: revoked })
-      })
-    });
+    const v = await _revokedRead();
+    if(!v.deviceIds.includes(deviceId)) v.deviceIds.push(deviceId);
+    await _revokedWrite(v);   // v5.52.0 — garde la liste des comptes supprimés
 
     showToast('Compte supprimé');
     refreshDevPanel();
@@ -64377,22 +64138,30 @@ let _rmUsersCache = null, _rmUsersAt = 0;
 const _rmNorm = s => (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
 const _rmNameKey = s => _rmNorm(s).split(' ').filter(Boolean).sort().join(' ');
 const _rmId = s => (s || '').toString().trim().toLowerCase().replace(/^recovered\./, '');
+/* v5.52.0 — Stockées dans la clé déjà autorisée par la porte d'entrée (REVOKED_DEVICES_KEY),
+   au lieu d'une nouvelle clé que le serveur refusait → la suppression ne tenait pas. */
+async function _revokedRead(){
+  const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(REVOKED_DEVICES_KEY) + '&select=data', { headers:{'Prefer':''} });
+  if(!res.ok) throw new Error('lecture refusée (' + res.status + ')');
+  const rows = await res.json();
+  const d = rows && rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : null;
+  return { deviceIds: (d && Array.isArray(d.deviceIds)) ? d.deviceIds : [], removedUsers: (d && Array.isArray(d.removedUsers)) ? d.removedUsers : [] };
+}
+async function _revokedWrite(obj){
+  const r = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ user_id: REVOKED_DEVICES_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ deviceIds: obj.deviceIds || [], removedUsers: obj.removedUsers || [] }) }) });
+  if(!r || !r.ok) throw new Error('enregistrement refusé par le serveur (' + (r ? r.status : '?') + ')');
+}
 async function _fetchRemovedUsers(force){
   if(!force && _rmUsersCache && Date.now() - _rmUsersAt < 60000) return _rmUsersCache;
-  try{
-    const res = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(USERS_REMOVED_KEY) + '&select=data', { headers:{'Prefer':''} });
-    if(!res.ok) return _rmUsersCache || [];
-    const rows = await res.json();
-    const d = rows && rows.length ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data) : null;
-    _rmUsersCache = (d && Array.isArray(d.users)) ? d.users : []; _rmUsersAt = Date.now();
-  }catch(e){ _rmUsersCache = _rmUsersCache || []; }
+  try{ const v = await _revokedRead(); _rmUsersCache = v.removedUsers; _rmUsersAt = Date.now(); }
+  catch(e){ _rmUsersCache = _rmUsersCache || []; }
   return _rmUsersCache;
 }
 async function _saveRemovedUsers(list){
+  const v = await _revokedRead();
+  v.removedUsers = list; await _revokedWrite(v);
   _rmUsersCache = list; _rmUsersAt = Date.now();
-  const r = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify({ user_id: USERS_REMOVED_KEY, updated_at: new Date().toISOString(), data: JSON.stringify({ users: list }) }) });
-  if(r && r.ok === false) throw new Error('enregistrement refusé (' + r.status + ')');
 }
 function _isRemovedUser(list, authId, name){
   if(!list || !list.length) return false;
@@ -64410,7 +64179,8 @@ async function _fetchUsersRegistry(){
     const raw = (d && d.users) || [];
     // Dédoublonnage à la SOURCE : toute lecture du registre est propre,
     // partout dans l'app (plus aucun doublon "recovered." ne peut s'afficher).
-    return (typeof _dedupeUsersRegistry === 'function') ? _dedupeUsersRegistry(raw) : raw;
+    const clean = (typeof _dedupeUsersRegistry === 'function') ? _dedupeUsersRegistry(raw) : raw;
+    return (typeof _isRemovedUser === 'function' && _rmUsersCache) ? clean.filter(u => !_isRemovedUser(_rmUsersCache, u && u.authId, u && u.name)) : clean;   // v5.52.0
   } catch(e){ return []; }
 }
 
@@ -91018,7 +90788,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       <div id="pdfWeeksList" style="max-height:24vh; overflow-y:auto; display:flex; flex-direction:column; gap:5px;"></div>
 
       <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="openHoursTable()">
-        📊 Tableau des heures (voir, trier, imprimer, Excel, PDF)
+        📊 Tableau des heures (Excel, PDF, impression)
       </button>
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generatePDFFromSelection()">
         🖨 Fiches d'heures détaillées (PDF)
@@ -91039,9 +90809,6 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       <button class="modal-close" onclick="closeModal('hoursTable')">×</button>
     </div>
     <div class="ht-bar">
-      <div class="ht-tabs" id="htTabs"><button type="button" data-t="recap" class="on" onclick="htSetTab('recap')">Récapitulatif</button><button type="button" data-t="days" onclick="htSetTab('days')">Détail par jour</button></div>
-      <select id="htWho" onchange="_htWho=this.value;htRender()" style="display:none;"></select>
-      <input id="htSearch" type="search" placeholder="🔎 Rechercher (nom, chantier…)" oninput="_htQ=this.value;htRender()">
       <div class="ht-act">
         <button class="btn btn-outline btn-sm" onclick="htPrint()">🖨 Imprimer</button>
         <button class="btn btn-outline btn-sm" onclick="htExcel()">📊 Excel</button>
@@ -94848,7 +94615,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   .ht-tabs button.on{ background:var(--wood); color:#1a0f04; }
   #htSearch, #htWho{ flex:1; min-width:150px; padding:9px 11px; border-radius:11px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font:14px inherit; font-family:inherit; }
   .ht-act{ display:flex; gap:6px; flex-wrap:wrap; }
-  .ht-wrap{ overflow:auto; border:1.5px solid var(--line); border-radius:14px; flex:1; min-height:200px; max-height:62vh; }
+  .ht-wrap{ overflow:auto; border-radius:12px; background:#fff; flex:1; min-height:200px; max-height:72vh; }
   .ht-t{ border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
   .ht-t th{ position:sticky; top:0; z-index:2; background:#0E1524; color:#fff; text-align:left; padding:9px 8px; font-weight:800; font-size:12px; white-space:nowrap; cursor:pointer; user-select:none; border-bottom:2px solid #FF8A1E; }
   .ht-t th i{ font-style:normal; opacity:.45; margin-left:4px; font-size:10px; } .ht-t th.on i{ opacity:1; color:#FF8A1E; }
