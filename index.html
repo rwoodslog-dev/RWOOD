@@ -1619,6 +1619,8 @@
   .install-btn.hidden{ display:none; }
   /* Sous-titre masqué */
   header.top .sub{ display:none; }
+  /* v5.47.8 — météo supprimée */
+  #weatherWidget, #weatherDropdown{ display:none !important; }
   /* Widget météo dans le header */
   #weatherWidget{
     -webkit-tap-highlight-color: transparent;
@@ -5446,7 +5448,16 @@
   #stockList > .stk-grp:first-child{ margin-top:2px; }
   .stk-gdot{ display:inline-grid; place-items:center; width:22px; height:22px; margin-left:-5px; }
   .stk-gdot > span{ width:11px; height:11px; border-radius:50%; display:block; }
-  .stk-thumb{ width:40px; height:40px; border-radius:9px; flex-shrink:0; display:grid; place-items:center; background:rgba(238,138,46,.12); color:var(--wood); }
+  .stk-thumb{ width:42px; height:42px; border-radius:10px; flex-shrink:0; display:grid; place-items:center; background:rgba(255,255,255,.06); border:1px solid var(--line); }
+  body.theme-light .stk-thumb{ background:#fff; }
+  .stk-icobtn{ display:flex; align-items:center; gap:10px; width:100%; padding:8px 12px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; text-align:left; }
+  .stk-icobtn img{ width:38px; height:38px; object-fit:contain; }
+  .stk-icobtn b{ flex:1; font-size:15px; }
+  .stk-icobtn small{ color:var(--wood); font-weight:700; font-size:13px; }
+  .stk-icogrid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(92px, 1fr)); gap:8px; max-height:60vh; overflow-y:auto; }
+  .stk-icogrid button{ display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 4px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font:600 11.5px/1.2 inherit; font-family:inherit; cursor:pointer; }
+  .stk-icogrid button.on{ border-color:var(--wood); background:rgba(238,138,46,.12); }
+  .stk-icogrid img{ width:46px; height:46px; object-fit:contain; }
   #newStockBrandChips{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
   #newStockBrandChips:empty{ display:none; }
   #newStockBrandChips button{ border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:999px; padding:7px 13px; font:700 13px/1 inherit; font-family:inherit; cursor:pointer; }
@@ -9600,7 +9611,11 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
         <input type="text" id="newStockBrand" placeholder="Ou une autre marque, ex : Makita" autocomplete="off" list="toolBrandDatalist" oninput="_stkBrandChipsSync()">
         <datalist id="toolBrandDatalist"></datalist>
       </div>
-    <div class="field" id="stockPhotoDropZone">
+      <div class="field">
+        <label>Icône</label>
+        <button type="button" id="newStockIconBtn" class="stk-icobtn" onclick="stkIconPick()"><img src="icons/outils/autre.png" alt=""><b>Autre</b><small>Changer ›</small></button>
+      </div>
+    <div class="field" id="stockPhotoDropZone" style="display:none;">
       <label>Photo</label>
       <div class="signature-row">
         <div id="newStockPhotoPreview"></div>
@@ -32901,6 +32916,7 @@ function setStockCategory(cat){
 
 function setToolKind(kind){
   currentToolKind = kind;
+  try{ if(typeof stkIconSync === 'function') setTimeout(stkIconSync, 0); }catch(e){}
   document.querySelectorAll('#newStockKindChips .chip').forEach(c=>c.classList.toggle('selected', c.dataset.kind===kind));
   document.getElementById('newStockPowerField').style.display = (kind === 'battery') ? 'none' : 'block';
   document.getElementById('newStockBatteryFields').style.display = (kind === 'battery') ? 'block' : 'none';
@@ -33369,6 +33385,10 @@ function _stkModalSimplify(item){
     window._stkBrandFree = !brands.length || (!!v && !brands.some(b => b.toLowerCase() === v));
   }
   _stkBrandChipsSync();
+  // v5.47.7 — icône : celle de l'outil modifié, sinon devinée d'après le nom
+  window._stkIconManual = !!(item && item.toolIcon); window._stkIcon = item ? _stkToolType(item) : 'autre';
+  const nm = document.getElementById('newStockName'); if(nm && !nm._icoHook){ nm._icoHook = 1; nm.addEventListener('input', stkIconSync); }
+  stkIconSync();
 }
 function _stkBrandOther(){
   const inp = document.getElementById('newStockBrand'); if(!inp) return;
@@ -34361,9 +34381,9 @@ function renderStock(){
         }
       }
       const toolMeta = metaParts.filter(Boolean).join(' · ');
-      const photoHtml = item.photo
-        ? `<img ${photoImgAttrs(item.photo)} alt="${escapeHtml(item.name)}" style="width:40px; height:40px; border-radius:8px; object-fit:cover; flex-shrink:0; border:1.5px solid var(--line);">`
-        : (isTool ? `<span class="stk-thumb">${_stkKindIcon(item)}</span>` : '');
+      // v5.47.6 — outils : icône de catégorie (plus de photo) ; la photo reste enregistrée
+      const photoHtml = isTool ? `<span class="stk-thumb">${_stkKindIcon(item)}</span>`
+        : item.photo ? `<img ${photoImgAttrs(item.photo)} alt="${escapeHtml(item.name)}" style="width:40px; height:40px; border-radius:8px; object-fit:cover; flex-shrink:0; border:1.5px solid var(--line);">` : '';
       const brandColor = (isTool && item.brand) ? sourceBrandColors[item.brand] : null;
       const borderStyle = brandColor ? `background:${cardTintBackground(brandColor)};` : '';
       const _sel = _stkSel === item.id;
@@ -34478,23 +34498,51 @@ async function _stkSavNotify(it, action, note, photo, icon){
   }catch(e){ /* ne bloque jamais la mise en SAV */ }
 }
 
-/* v5.47.1 — vignette d'outil sans photo : icône au trait selon le type */
+/* v5.47.7 — icônes d'outils (planche Rémi, icons/outils/*.png) : type deviné d'après le nom,
+   ou choisi à la main dans la fenêtre de l'outil (item.toolIcon). Ordre = priorité de détection. */
+const STK_TYPES = [
+  ['batterie','Batterie',/batter|accu\b/], ['chargeur','Chargeur',/chargeur/],
+  ['visseuse-chocs','Visseuse à chocs',/choc|boulonn/], ['perforateur','Perforateur',/perfo|sds/], ['burineur','Burineur',/burin|piqueur|demolisseur/],
+  ['scie-circulaire','Scie circulaire',/circulaire/], ['scie-sabre','Scie sabre',/sabre/], ['scie-sauteuse','Scie sauteuse',/sauteuse/],
+  ['scie-onglet','Scie à onglet',/onglet|radiale/], ['scie-table','Scie sur table',/scie (sur |a |de )?table|delignage|scie a ruban/], ['tronconneuse','Tronçonneuse',/tronconneuse|elagueuse/],
+  ['meuleuse','Meuleuse',/meuleuse|disqueuse|ponceuse a beton/], ['ponceuse','Ponceuse',/ponc|lustreuse/], ['rabot','Rabot',/rabot/], ['defonceuse','Défonceuse',/defonceuse|affleureuse/],
+  ['multifonction','Multifonction',/oscillant|multifonction|multi-?outil|multitool/], ['cloueur','Cloueur',/clou/], ['agrafeuse','Agrafeuse',/agraf/],
+  ['compresseur','Compresseur',/compress/], ['aspirateur','Aspirateur',/aspi/], ['telemetre','Télémètre',/telemetre|metre laser|disto/], ['niveau-laser','Niveau laser',/laser|rotatif/],
+  ['niveau','Niveau',/niveau/], ['metre','Mètre',/metre|ruban|decametre/], ['pistolet-colle','Pistolet à colle',/colle|mastic|silicone|cartouche/],
+  ['decapeur','Décapeur',/decapeur|air chaud|soudeuse a air/], ['chalumeau','Chalumeau',/chalumeau|lampe a souder|fer a souder/], ['poste-souder','Poste à souder',/poste a souder|soudure|soudeuse|\bmig\b|\btig\b/],
+  ['malaxeur','Malaxeur',/malaxeur|melangeur/], ['betonniere','Bétonnière',/betonniere/], ['groupe-electrogene','Groupe électrogène',/groupe|electrogene/],
+  ['enrouleur','Rallonge',/enrouleur|rallonge|touret/], ['projecteur','Projecteur',/projecteur|lampe|eclairage|\bled\b|spot/], ['echelle','Échelle',/echelle|escabeau|marchepied/],
+  ['echafaudage','Échafaudage',/echafaud/], ['harnais','Harnais',/harnais|antichute|anti-chute|longe|\bepi\b/], ['marteau','Marteau',/marteau|massette|maillet/],
+  ['pince','Pince',/pince|cisaille|tenaille|grignoteuse/], ['caisse-outils','Caisse à outils',/caisse|coffret|boite|servante|valise|mallette/], ['cle','Clé',/\bcle\b|tournevis|douille|cliquet/],
+  ['perceuse','Perceuse-visseuse',/perceuse|visseuse|perce|foret|meche/], ['autre','Autre',null]
+];
+function _stkToolType(item){
+  if(item && item.toolIcon && STK_TYPES.some(t => t[0] === item.toolIcon)) return item.toolIcon;
+  if(item && item.toolKind === 'battery') return 'batterie';
+  if(item && item.toolKind === 'circularsaw') return 'scie-circulaire';
+  const n = String((item && item.name) || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const t = STK_TYPES.find(t => t[2] && t[2].test(n));
+  return t ? t[0] : 'autre';
+}
 function _stkKindIcon(item){
-  const n = String(item.name || '').toLowerCase(), k = item.toolKind;
-  const P = {
-    battery:'<rect x="6" y="7" width="12" height="13" rx="2"/><path d="M9 7V4h6v3M10 13.5h4M12 11.5v4"/>',
-    saw:'<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2"/><path d="M12 4.5v2M19.5 12h-2M12 19.5v-2M4.5 12h2"/>',
-    drill:'<path d="M3 8h11v5H3z"/><path d="M14 9.5h4l3 1-3 1h-4"/><path d="M7 13l-1.5 7h4L11 13"/>',
-    level:'<rect x="2.5" y="9" width="19" height="6" rx="1.5"/><circle cx="12" cy="12" r="1.5"/>',
-    laser:'<path d="M12 3l7 4v10l-7 4-7-4V7z"/><circle cx="12" cy="12" r="2.5"/>',
-    tool:'<path d="M14.5 5.5a4 4 0 0 0 4.9 4.9L11 18.8a2.1 2.1 0 0 1-3-3l8.4-8.4"/><path d="M5 19l2-2"/>'
-  };
-  const t = k === 'battery' || /batter/.test(n) ? 'battery'
-    : k === 'circularsaw' || /scie|meuleuse|disque/.test(n) ? 'saw'
-    : /viss|perfor|perceu|cloueu|agrafeu|boulonn|marteau/.test(n) ? 'drill'
-    : /niveau|r[eè]gle/.test(n) ? 'level'
-    : /laser|t[eé]l[eé]m[eè]tre/.test(n) ? 'laser' : 'tool';
-  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${P[t]}</svg>`;
+  return `<img src="icons/outils/${_stkToolType(item)}.png" alt="" width="34" height="34" style="display:block;width:34px;height:34px;object-fit:contain;">`;
+}
+/* Fenêtre outil : icône devinée en direct, « Changer » ouvre la grille */
+function stkIconSync(){
+  const btn = document.getElementById('newStockIconBtn'); if(!btn) return;
+  if(!window._stkIconManual) window._stkIcon = _stkToolType({ name:(document.getElementById('newStockName') || {}).value, toolKind:currentToolKind });
+  const t = STK_TYPES.find(x => x[0] === window._stkIcon) || STK_TYPES[STK_TYPES.length - 1];
+  btn.querySelector('img').src = 'icons/outils/' + t[0] + '.png';
+  btn.querySelector('b').textContent = t[1];
+}
+function stkIconPick(){
+  const ex = document.getElementById('stkIcoSheet'); if(ex) ex.remove();
+  const d = document.createElement('div'); d.id = 'stkIcoSheet'; d.className = 'modal-overlay open'; d.style.zIndex = 3200;
+  d.innerHTML = `<div class="modal" style="max-width:560px;"><div class="modal-header"><h2>Icône de l'outil</h2><button class="modal-close" onclick="document.getElementById('stkIcoSheet').remove()">×</button></div>
+    <div class="stk-icogrid">${STK_TYPES.map(t => `<button type="button" class="${t[0] === window._stkIcon ? 'on' : ''}" onclick="window._stkIcon='${t[0]}';window._stkIconManual=true;stkIconSync();document.getElementById('stkIcoSheet').remove()"><img src="icons/outils/${t[0]}.png" alt=""><span>${escapeHtml(t[1])}</span></button>`).join('')}</div>
+    <button type="button" class="btn btn-outline btn-block" style="margin-top:10px;" onclick="window._stkIconManual=false;stkIconSync();document.getElementById('stkIcoSheet').remove()">Deviner d'après le nom</button></div>`;
+  d.addEventListener('click', e => { if(e.target === d) d.remove(); });
+  document.body.appendChild(d);
 }
 
 function changeStock(itemId, delta){
@@ -35432,6 +35480,8 @@ function applyToolFieldsToItem(item){
   const ref = document.getElementById('newStockRef').value.trim();
   if(brand) item.brand = brand; else delete item.brand;
   if(ref) item.ref = ref; else delete item.ref;
+  // v5.47.7 — icône choisie à la main (sinon devinée d'après le nom)
+  if(window._stkIconManual && window._stkIcon) item.toolIcon = window._stkIcon; else delete item.toolIcon;
 
   item.toolKind = currentToolKind;
   if(currentToolKind === 'battery'){
@@ -50156,9 +50206,31 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.47.4';
+const APP_VERSION = '5.47.8';
 
 const CHANGELOG = [
+  {
+    version: '5.47.8',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🗑️', text: "Météo supprimée de l'app : plus de météo, plus d'alerte canicule, plus de notification météo du matin (coupée automatiquement pour ceux qui l'avaient activée), plus de catégorie « Météo » dans les sons des notifications Android." },
+      { icon: '🎨', text: "Nouvelles icônes de l'app (126) ajoutées dans icons/ui, prêtes à remplacer les émojis." }
+    ]
+  },
+  {
+    version: '5.47.7',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🧰', text: "Stock camion : nouvelles icônes d'outils (42 types : batterie, chargeur, perceuse, perfo, scies, meuleuse, ponceuse, cloueur, laser, échelle…). L'icône est trouvée toute seule d'après le nom de l'outil ; « Icône › Changer » dans la fenêtre de l'outil pour en choisir une autre." }
+    ]
+  },
+  {
+    version: '5.47.6',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🔧', text: "Stock camion : plus de cadre photo dans la fenêtre d'un outil. Chaque outil s'affiche avec une icône selon son type (en attendant la nouvelle planche d'icônes par catégorie). Les photos déjà prises restent enregistrées." }
+    ]
+  },
   {
     version: '5.47.4',
     date: '25/10/2026',
@@ -55943,7 +56015,7 @@ async function _meteoPublish(){
   try{
     await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ user_id: 'meteo_notif_' + authId, updated_at: new Date().toISOString(),
-        data: JSON.stringify({ authId, enabled: !!m.enabled && sites.length > 0, time: m.time, days: m.days, tz: 'Europe/Paris', sites }) }) });
+        data: JSON.stringify({ authId, enabled: false, time: m.time, days: m.days, tz: 'Europe/Paris', sites: [] }) }) });   // v5.47.8 — météo supprimée : plus de notif du matin
     saveData(true);
   }catch(e){}
 }
@@ -55970,7 +56042,8 @@ async function _meteoTestNow(){
   }
   _meteoPublishSoon();
 }
-setTimeout(() => { try{ if(_meteoPrefs().enabled) _meteoPublish(); }catch(e){} }, 8000); // republie au démarrage (adresses modifiées…)
+// v5.47.8 — météo supprimée : on coupe une fois la notif météo du matin côté serveur pour ceux qui l'avaient activée
+setTimeout(() => { try{ const m = _meteoPrefs(); if(m.enabled && !data.settings.meteoOff){ m.enabled = false; data.settings.meteoOff = true; saveData(); _meteoPublish(); } }catch(e){} }, 8000);
 
 function setWeatherDisplay(emoji, temp, loc, desc){
   const eEl = document.getElementById('weatherEmoji');
@@ -55984,6 +56057,7 @@ function setWeatherDisplay(emoji, temp, loc, desc){
 }
 
 function initWeatherWidget(){
+  return;   /* v5.47.8 — météo supprimée de l'app */
   const cached = localStorage.getItem('rwood-weather-cache');
   let cachedObj = null;
 
@@ -56493,6 +56567,7 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(musicModeApplyOnB
    ════════════════════════════════════════════════════════════════ */
 
 function checkCaniculeAlert(temps, siteName){
+  return;   /* v5.47.8 — météo supprimée de l'app */
   const currentTemp = temps.current || 0;
   const maxTemp     = temps.max     || 0;
   const ressentMax  = temps.appMax  || 0;
@@ -83929,7 +84004,6 @@ function _rnPlug(name){ return (RWOOD_NATIVE && window.Capacitor.Plugins && wind
 const _RN_CHANNELS = [
   { id:'rwood_messages', name:'Messages', description:'Messages, photos, croquis et documents reçus', importance:5, visibility:1, vibration:true },
   { id:'rwood_alertes',  name:'Alertes & SAV', description:'Magasin, SAV, dépannages, feuilles de route', importance:5, visibility:1, vibration:true },
-  { id:'rwood_meteo',    name:'Météo du matin', description:'Prévisions de la journée sur tes chantiers favoris', importance:3, visibility:1, vibration:false },
   { id:'rwood_general',  name:'Général', description:'Rappels, agenda, documents et autres infos', importance:4, visibility:1, vibration:true },
 ];
 let _rnPushReady = false, _rnPushToken = null;
@@ -83979,6 +84053,7 @@ async function _rnPushInit(interactive){
       return null;
     }
     for(const c of _RN_CHANNELS){ try{ await P.createChannel(c); }catch(_){} }
+    try{ if(P.deleteChannel) await P.deleteChannel({ id:'rwood_meteo' }); }catch(_){}   // v5.47.8 — météo supprimée
     if(!_rnPushReady){
       _rnPushReady = true;
       P.addListener('registration', async (t) => {
@@ -84039,7 +84114,7 @@ async function _rnPushInit(interactive){
 }
 function _rnChannelFor(tag, url){
   const t = String(tag||'').toLowerCase(), u = String(url||'');
-  if(t.startsWith('meteo')) return 'rwood_meteo';
+  if(t.startsWith('meteo')) return 'rwood_general';
   if(t === 'magasin' || t.includes('sav') || t.startsWith('route') || t.includes('alerte')) return 'rwood_alertes';
   if(u.startsWith('conv:') || ['info','fichier','photo','croquis','signature','message','alert','urgent'].includes(t)) return 'rwood_messages';
   return 'rwood_general';
@@ -84315,8 +84390,8 @@ async function _rnRenderSettings(){
     <button class="btn btn-outline btn-block" style="margin-top:12px;" onclick="_rn2().openAutostartSettings()">🔋 Réglages batterie & démarrage auto</button>
     <div class="hint" style="margin-top:6px;">Sur Xiaomi / Redmi / Poco : active le <b>démarrage automatique</b> de Notybat et mets la batterie sur <b>« Pas de restrictions »</b>, sinon les notifications peuvent arriver en retard.</div>
     <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="_rn2().openAppSettings()">🔔 Sons des notifications (par catégorie)</button>
-    <div class="hint" style="margin-top:6px;">Messages, Alertes & SAV, Météo, Général : choisis un son différent pour chacune.</div>
-    <div class="hint" style="margin-top:12px;">🏠 <b>Widget</b> : appui long sur l'écran d'accueil → Widgets → Notybat. Il affiche la météo de ton 1er chantier ⭐ favori et tes messages non lus.</div>
+    <div class="hint" style="margin-top:6px;">Messages, Alertes & SAV, Général : choisis un son différent pour chacune.</div>
+    <div class="hint" style="margin-top:12px;">🏠 <b>Widget</b> : appui long sur l'écran d'accueil → Widgets → Notybat. Il affiche tes messages non lus.</div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;">
       <div class="hint" style="margin:0;">App ${escapeHtml(String(info.apk || '?'))} · site ${escapeHtml(String(info.version || APP_VERSION))}${info.pending ? ' · <b>mise à jour prête</b>' : ''}</div>
       <button class="btn btn-outline btn-sm" onclick="${info.pending ? '_rnApplyUpdate()' : '_rnCheckUpdate()'}">${info.pending ? '⚡ Installer' : '🔄 Vérifier'}</button>
