@@ -39778,7 +39778,7 @@ function _rwCoApplyLocalRole(role){
 function _rwCoSyncRole(j){
   const me = j && j.me; if(!me || !j.company || !me.role) return;
   // v5.52.9 — compte développeur : le rôle qu'il a choisi lui-même reste (le rôle de l'entreprise ne l'écrase plus)
-  try{ if(data.settings.devRoleOverride){ const known = Array.isArray(_devUsersCache) && _devUsersCache.length; if(!known || devAccessIsDevUser()) return; } }catch(e){}
+  try{ if(devAccessIsDevUser() && data.settings.devRoleOverride) return; }catch(e){}   // le dev garde le rôle qu'il regarde ; son rôle publié reste « chef » (_rwRealRole)
   const local = (data.settings.myProfile && data.settings.myProfile.role) || '';
   const pend = me.pendingRole || '';
   if((data.settings.rolePending || '') !== pend){ data.settings.rolePending = pend; saveData(); }
@@ -50895,9 +50895,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.52.9';
+const APP_VERSION = '5.53.1';
 
 const CHANGELOG = [
+  {
+    version: '5.53.1',
+    date: '25/10/2026',
+    entries: [
+      { icon: '👷', text: "Compte développeur : même en naviguant entre les rôles, l'appli te publie toujours avec ton vrai rôle dans l'entreprise (chef d'équipe) : fiches d'heures, vue comptable, tableau des heures, liste des comptes. Tes pointages continuent de partir même si tu regardes l'appli en mode comptable." }
+    ]
+  },
+  {
+    version: '5.53.0',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🛠️', text: "Le rôle développeur (onglet Dev, changement de rôle libre) est réservé au compte remi.piechaczek ; il ne peut plus être accordé ni retiré depuis l'onglet Dev." }
+    ]
+  },
   {
     version: '5.52.9',
     date: '25/10/2026',
@@ -62340,7 +62354,7 @@ async function pushPointageToSupabase(extraWorkerIds){
   // Pas de push depuis le mode comptable lui-meme (lecture seule)
   // Pas de push non plus si le profil est vide (compte revoque, en attente de recreation)
   const profile = (data.settings && data.settings.myProfile) || {};
-  if(profile.role === 'comptable' || !profile.role) return false;
+  if(_rwRealRole() === 'comptable' || !_rwRealRole()) return false;   // v5.53.1 — rôle réel (dev qui navigue entre les rôles)
 
   const deviceId = getDeviceSyncId();
   const ownerName = (profile.firstName ? (profile.firstName + ' ' + (profile.lastName||'')) : (data.settings.teamName || 'Equipe')).trim();
@@ -62409,7 +62423,7 @@ async function pushPointageToSupabase(extraWorkerIds){
     updated_at: new Date().toISOString(),
     data: JSON.stringify({
       ownerName: ownerName,
-      ownerRole: profile.role || 'chef',
+      ownerRole: _rwRealRole() || 'chef',
       ownerAuthId: (data.settings && data.settings.auth && data.settings.auth.authId) || '',
       ownerDeviceSyncId: deviceId, // le deviceId "physique" (getDeviceSyncId) — cible réelle des alertes
       workers: myWorkers,
@@ -62693,14 +62707,24 @@ async function devAccessSaveList(list){
 }
 
 /* L'utilisateur connecté a-t-il is_dev = true ? (depuis le cache). */
+/* v5.53.0 — Le rôle développeur est réservé au compte remi.piechaczek (et à lui seul). */
+const RW_DEV_ID = 'remi.piechaczek';
+/* v5.53.1 — Rôle RÉEL dans l'entreprise (celui que voient la comptable, les fiches, le tableau des heures, le registre).
+   Le dev peut naviguer entre les rôles sur son téléphone, mais l'appli le publie toujours avec son vrai rôle (chef d'équipe). */
+function _rwRealRole(){
+  const p = (data.settings && data.settings.myProfile) || {};
+  try{ if(devAccessIsDevUser()) return 'chef'; }catch(e){}   // rôle réel de remi.piechaczek : chef d'équipe
+  return p.role;
+}
 function devAccessIsDevUser(){
   const me = devAccessCurrentUser();
   if(!me) return false;
-  return Array.isArray(_devUsersCache) && _devUsersCache.includes(me);
+  return me.normalize('NFD').replace(/[\u0300-\u036f]/g, '') === RW_DEV_ID;
 }
 
 /* Coche/décoche le rôle dev d'un utilisateur (grave en base + rafraîchit). */
 async function devAccessToggleUser(authId, enabled){
+  showToast('Le rôle développeur est réservé à ' + RW_DEV_ID); try{ refreshDevPanel(); }catch(e){} return;   // v5.53.0
   const id = String(authId||'').trim().toLowerCase();
   if(!id) return;
   let list = await devAccessFetchList();
@@ -63447,7 +63471,7 @@ async function _renderDevTabComptes(list){
       ${sorted.length} utilisateur${sorted.length>1?'s':''} inscrit${sorted.length>1?'s':''}${gLinked ? ' · <b style="color:var(--green);">'+sorted.filter(u=>gLinked.has(String(u.authId||'').toLowerCase())).length+' relié(s) à Google</b>' : ''}
       <span style="float:right;font-size:10px;opacity:0.6;"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"> = registre + pointages</span>
     </div>
-    <div style="font-size:12px;font-weight:700;color:var(--wood);margin:4px 0 10px;">🔑 Gestion des accès Dev — coche pour accorder le rôle développeur</div>` +
+    <div style="font-size:12px;font-weight:700;color:var(--wood);margin:4px 0 10px;">🔑 Le rôle développeur est réservé à ${RW_DEV_ID}</div>` +
   sorted.map(u => {
     const isDev = Array.isArray(devList) && devList.includes(String(u.authId||'').toLowerCase());
     return `
@@ -63465,12 +63489,7 @@ async function _renderDevTabComptes(list){
         <button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);flex-shrink:0;"
           onclick="confirmDeleteUserFull('${escapeHtml(u.authId)}','${escapeHtml(u.name||'?')}')"><img src="icons/corbeille.png" alt="" style="width:14px;height:14px;object-fit:contain;vertical-align:-2px;"></button>
       </div>
-      <label style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; padding-top:10px; border-top:1px solid var(--line); cursor:pointer;">
-        <span style="font-size:13px;font-weight:600;">${isDev ? '🛠️ ' : ''}Rôle Développeur</span>
-        <input type="checkbox" ${isDev?'checked':''} ${u.authId?'':'disabled'}
-          style="width:24px;height:24px;accent-color:var(--wood);flex-shrink:0;"
-          onchange="devAccessToggleUser('${escapeHtml(u.authId||'')}', this.checked)">
-      </label>
+      ${_rmId(u.authId).normalize('NFD').replace(/[\u0300-\u036f]/g, '') === RW_DEV_ID ? '<div style="margin-top:8px;font-size:12.5px;font-weight:700;color:var(--wood);">🛠️ Développeur</div>' : ''}
     </div>`;
   }).join('');
   await _renderRemovedUsersBlock(list);   // v5.51.1
@@ -64710,7 +64729,7 @@ async function pushMyUserRegistration(){
     const entry = {
       authId: auth.authId,
       name: ((profile.firstName||'') + ' ' + (profile.lastName||'')).trim(),
-      role: profile.role,
+      role: _rwRealRole(),   // v5.53.1 — le rôle réel dans l'entreprise (même si le dev navigue entre les rôles)
       phone: normalizePhone((data.contacts||[]).find(c=>c.role==='Moi')?.phone || ''),
       email: ((data.contacts||[]).find(c=>c.role==='Moi') || {}).email || '',   // v5.41.477 — fiche contact
       teamIds: (data.settings.myTeamIds || []).slice(),   // v5.41.482 — « Mon équipe » du chef
@@ -87741,13 +87760,13 @@ function _rwPushPointage(){
 function _rwPointageSyncData(){
   const profile = (data.settings && data.settings.myProfile) || {};
   const wid = profile.workerId;
-  if(!wid || profile.role === 'comptable' || !profile.role) return {};
+  if(!wid || _rwRealRole() === 'comptable' || !_rwRealRole()) return {};
   const ownerName = (profile.firstName ? (profile.firstName + ' ' + (profile.lastName || '')) : (data.settings.teamName || 'Equipe')).trim();
   const mySig = (data.settings && data.settings.signature) || null;
   const workers = (data.workers || []).filter(w => w.id === wid).map(w => ({ id: w.id, name: w.name, signature: (w.signature || mySig) || '' }));
   const attendance = {};
   Object.entries(data.attendance || {}).forEach(([k, d]) => { if(d && d.workers && d.workers[wid]) attendance[k] = { ...d, workers: { [wid]: d.workers[wid] } }; });
-  return { ownerName, ownerRole: profile.role || 'chef', ownerAuthId: (data.settings.auth && data.settings.auth.authId) || '', ownerDeviceSyncId: getDeviceSyncId(),
+  return { ownerName, ownerRole: _rwRealRole() || 'chef', ownerAuthId: (data.settings.auth && data.settings.auth.authId) || '', ownerDeviceSyncId: getDeviceSyncId(),
     workers, attendance, sites: (data.sites || []).map(x => ({ id: x.id, name: x.name, address: x.address || '', trajetZone: x.trajetZone || '', color: x.color || '' })) };
 }
 
