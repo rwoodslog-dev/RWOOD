@@ -1367,6 +1367,15 @@
   .eq-ok{ margin-top:10px; font-size:13px; font-weight:700; color:#3fbf6a; }
   .eq-df{ display:inline-flex; align-items:center; justify-content:center; min-width:26px; height:22px; border-radius:6px; font-size:11px; font-weight:900; padding:0 3px; }
   .eq-df.ok{ color:#3fbf6a; } .eq-df.s{ background:rgba(238,138,46,.18); } .eq-df.h{ background:rgba(238,138,46,.2); color:#EE8A2E; } .eq-df.m{ background:rgba(229,72,77,.15); color:#E5484D; font-size:9.5px; }
+  .bf-who{ display:inline-flex; align-items:center; gap:8px; min-width:180px; max-width:260px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:5px 10px 5px 6px; color:var(--ink); font-size:13px; font-weight:700; cursor:pointer; }
+  .bf-who-n{ flex:1; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .bf-who-c, .bf-who-x{ color:var(--ink-soft); font-size:12px; padding:0 2px; } .bf-who-x:hover{ color:var(--ink); }
+  .bf-who-av{ flex:0 0 auto; width:26px; height:26px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-size:10.5px; font-weight:800; letter-spacing:.3px; box-shadow:0 0 0 2px rgba(255,255,255,.08); }
+  .bf-who-av.all{ background:var(--line); font-size:13px; }
+  .bf-who-pop{ position:fixed; z-index:9000; width:260px; overflow-y:auto; background:var(--card, #1d1813); border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 34px rgba(0,0,0,.45); padding:6px; }
+  .bf-who-q{ width:100%; box-sizing:border-box; background:transparent; border:1px solid var(--line); border-radius:8px; padding:7px 9px; color:var(--ink); font-size:13px; margin-bottom:4px; }
+  .bf-who-gl{ font-size:10.5px; font-weight:800; text-transform:uppercase; letter-spacing:.5px; color:var(--ink-soft); padding:8px 8px 3px; }
+  .bf-who-it{ display:flex; align-items:center; gap:9px; width:100%; background:none; border:0; border-radius:8px; padding:6px 8px; color:var(--ink); font-size:13.5px; text-align:left; cursor:pointer; }
+  .bf-who-it:hover{ background:rgba(255,255,255,.06); } .bf-who-it.on{ background:rgba(240,138,36,.16); font-weight:700; }
   .rt-q{ width:140px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:7px 10px; color:var(--ink); font-size:13px; }
   table.rt{ border-collapse:separate; border-spacing:0; width:100%; min-width:max-content; font-size:13px; }
   table.rt th{ position:sticky; top:0; background:var(--bg-elev); font-size:11.5px; font-weight:800; color:var(--ink-soft); padding:9px 8px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -36598,6 +36607,46 @@ function _bfWeeks(){
   let a = _bfFrom == null ? 0 : Math.min(_bfFrom, n - 1), b = _bfTo == null ? n - 1 : Math.min(_bfTo, n - 1); if(b < a){ const t = a; a = b; b = t; }
   return all.slice(a, b + 1);
 }
+/* v5.46.2 — Fiches d'heures : menu déroulant « Personne » (tous les utilisateurs, rangés par rôle, initiales + pastille couleur) */
+let _bfWhoId = '';
+const BF_ROLES = [['patron','Patron'],['conducteur','Conducteurs de travaux'],['chef',"Chefs d'équipe"],['ouvrier','Ouvriers'],['comptable','Comptables'],['_','Sans compte Notybat']];
+function _bfWhoCol(n){ return RPL_COLORS[_rplHash(n) % RPL_COLORS.length]; }
+function _bfWhoAv(n){ return `<span class="bf-who-av" style="background:${_bfWhoCol(n)}">${escapeHtml(_chatInitials(n) || '?')}</span>`; }
+function _bfWhoBtnHtml(){ return _bfQ ? `${_bfWhoAv(_bfQ)}<span class="bf-who-n">${escapeHtml(_bfQ)}</span><span class="bf-who-x" onclick="event.stopPropagation();bfWhoPick('','')" title="Tout le monde">✕</span>` : `<span class="bf-who-av all">👥</span><span class="bf-who-n">Tout le monde</span><span class="bf-who-c">▾</span>`; }
+function _bfWhoList(){
+  const reg = (typeof _absRealUsers === 'function' ? _absRealUsers(window._usersRegistryCache || []) : (window._usersRegistryCache || []));
+  const seen = new Set(), out = [];
+  reg.forEach(u => { const k = _eqNorm(u.name); if(!k || seen.has(k)) return; seen.add(k); out.push({ name:u.name, id:u.authId || '', role:BF_ROLES.some(r => r[0] === u.role) ? u.role : 'ouvrier' }); });
+  (window._bfAllW || []).forEach(aw => { const k = _eqNorm(aw.name); if(!k || seen.has(k)) return; seen.add(k); out.push({ name:aw.name, id:'', role:'_' }); });
+  return out;
+}
+function bfWhoOpen(ev){
+  if(ev) ev.stopPropagation();
+  const old = document.getElementById('bfWhoPop'); if(old){ old.remove(); return; }
+  if(!window._usersRegistryCache && typeof _fetchUsersRegistry === 'function') _fetchUsersRegistry().then(u => { window._usersRegistryCache = u; const p = document.getElementById('bfWhoPop'); if(p){ p.remove(); bfWhoOpen(); } });
+  const L = _bfWhoList(), cur = _eqNorm(_bfQ);
+  const item = u => `<button type="button" class="bf-who-it${_eqNorm(u.name) === cur ? ' on' : ''}" data-n="${escapeHtml(_eqNorm(u.name))}" onclick="bfWhoPick(${escapeHtml(JSON.stringify(u.name))},'${escapeHtml(u.id)}')">${_bfWhoAv(u.name)}<span>${escapeHtml(u.name)}</span></button>`;
+  const groups = BF_ROLES.map(([k, l]) => { const g = L.filter(u => u.role === k).sort((a, b) => a.name.localeCompare(b.name, 'fr')); return g.length ? `<div class="bf-who-g"><div class="bf-who-gl">${l} · ${g.length}</div>${g.map(item).join('')}</div>` : ''; }).join('');
+  const pop = document.createElement('div'); pop.id = 'bfWhoPop'; pop.className = 'bf-who-pop';
+  pop.innerHTML = `<input type="search" class="bf-who-q" placeholder="🔍 Chercher" oninput="_bfWhoFilter(this.value)">
+    <button type="button" class="bf-who-it${!cur ? ' on' : ''}" data-n="tout le monde" onclick="bfWhoPick('','')"><span class="bf-who-av all">👥</span><span>Tout le monde</span></button>
+    ${groups || '<div class="hint" style="padding:10px;">Aucun utilisateur trouvé.</div>'}`;
+  document.body.appendChild(pop);
+  const b = document.getElementById('bfWhoBtn').getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(b.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+  const below = innerHeight - b.bottom - 12; pop.style.maxHeight = Math.max(220, below) + 'px';
+  pop.style.top = (below >= 220 ? b.bottom + 6 : Math.max(8, b.top - pop.offsetHeight - 6)) + 'px';
+  setTimeout(() => { document.addEventListener('click', _bfWhoOut, true); }, 0);
+  if(!('ontouchstart' in window)) pop.querySelector('.bf-who-q').focus();
+}
+function _bfWhoFilter(v){ const q = _eqNorm(v); document.querySelectorAll('#bfWhoPop .bf-who-it').forEach(b => b.style.display = !q || b.dataset.n.includes(q) ? '' : 'none'); document.querySelectorAll('#bfWhoPop .bf-who-g').forEach(g => g.style.display = [...g.querySelectorAll('.bf-who-it')].some(b => b.style.display !== 'none') ? '' : 'none'); }
+function _bfWhoOut(e){ const p = document.getElementById('bfWhoPop'); if(!p){ document.removeEventListener('click', _bfWhoOut, true); return; } if(p.contains(e.target) || (e.target.closest && e.target.closest('#bfWhoBtn'))) return; p.remove(); document.removeEventListener('click', _bfWhoOut, true); }
+function bfWhoPick(name, id){
+  _bfQ = name || ''; _bfWhoId = id || '';
+  const p = document.getElementById('bfWhoPop'); if(p) p.remove(); document.removeEventListener('click', _bfWhoOut, true);
+  const b = document.getElementById('bfWhoBtn'); if(b) b.innerHTML = _bfWhoBtnHtml();
+  renderComptableFichesContent(_comptableLiveData || []);
+}
 function bfPer(p){ _bfPer = p; _bfFrom = _bfTo = null; _bfCmp = false; _bfRenderAll(); }
 function bfNav(d){ if(_bfPer === 'semaine') _bfWk = d === 0 ? 0 : _bfWk + d; else { const m = _bfMonth || new Date(); _bfMonth = d === 0 ? null : new Date(m.getFullYear(), m.getMonth() + d, 1); _bfFrom = _bfTo = null; } _bfRenderAll(); }
 function bfView(v){ _bfView = v; _bfCmp = false; _bfRenderAll(); }
@@ -36624,7 +36673,7 @@ function _bfHeader(){
       <button type="button" class="btn btn-primary btn-sm" onclick="bfComparePick()">⚖️ Comparer</button>
     </div>
     <div class="rb-bar" style="margin-top:-2px;">
-      <input type="search" class="rt-q" placeholder="🔍 Nom" value="${escapeHtml(_bfQ)}" oninput="_bfQ=this.value;clearTimeout(window._bfT);window._bfT=setTimeout(()=>renderComptableFichesContent(_comptableLiveData||[]),250)">
+      <button type="button" class="bf-who" id="bfWhoBtn" onclick="bfWhoOpen(event)">${_bfWhoBtnHtml()}</button>
       <span class="rpl-sp"></span>
       <button type="button" class="pl-chip" onclick="refreshComptableLiveFiches(true)" id="comptableRefreshBtn" title="Actualiser">🔄</button><span id="comptableLastSync" style="font-size:11px;color:var(--ink-soft);"></span>
       <button type="button" class="pl-chip" onclick="openPDFWorkerSelector()">🖨 PDF/Excel du mois</button>
@@ -36841,7 +36890,8 @@ function _bfRender(rows, allWorkers){
   const ctx = _recapTeamContext();
   const buckets = weeks.map(mon => ({ keys:Array.from({ length:7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return _rplKey(d); }) }));
   const q = _eqNorm(_bfQ);
-  const list = allWorkers.filter(aw => (!q || _eqNorm(aw.name).includes(q)) && (!_bfCmp || _rtSel.has(aw.workerId)));
+  window._bfAllW = allWorkers;   // v5.46.2 — pour le menu « Personne »
+  const list = allWorkers.filter(aw => (!q || _eqNorm(aw.name) === q || (_bfWhoId && (aw.workerId === _bfWhoId || aw.device.ownerAuthId === _bfWhoId) && _eqNorm(aw.device.ownerName || '') === q)) && (!_bfCmp || _rtSel.has(aw.workerId)));
   const f = d => d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
   const last = new Date(weeks[weeks.length - 1]); last.setDate(last.getDate() + 6);
   const perLbl = weeks.length === 1 ? 'la semaine' : 'S' + getISOWeekNumber(weeks[0]) + ' → S' + getISOWeekNumber(weeks[weeks.length - 1]);
@@ -49843,9 +49893,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.45.0';
+const APP_VERSION = '5.46.2';
 
 const CHANGELOG = [
+  {
+    version: '5.46.2',
+    date: '25/10/2026',
+    entries: [
+      { icon: '👥', text: "Fiches d'heures : le champ « Nom » devient un menu déroulant avec tous les utilisateurs de l'entreprise, rangés par rôle (Patron, Conducteurs, Chefs d'équipe, Ouvriers, Comptables), avec leurs initiales et leur pastille de couleur. « ✕ » ou « Tout le monde » pour revoir toutes les fiches." }
+    ]
+  },
   {
     version: '5.45.0',
     date: '24/10/2026',
