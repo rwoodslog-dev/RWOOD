@@ -39200,7 +39200,7 @@ async function rwCoRemove(id){
 }
 function rwCoShare(){
   const co = _rwCo && _rwCo.company; if(!co) return;
-  const txt = 'Rejoins ' + (co.name || 'notre entreprise') + ' sur Notybat 👷\n1. Installe Notybat : https://play.google.com/store/apps/details?id=fr.rwood.app\n2. « Continuer avec Google » › Je rejoins mon entreprise\n3. Code entreprise : ' + co.code;
+  const txt = 'Rejoins ' + (co.name || 'notre entreprise') + ' sur Notybat 👷\n1. Installe Notybat : ' + RW_SHOP_URL + '#telecharger\n2. « Continuer avec Google » › Je rejoins mon entreprise\n3. Code entreprise : ' + co.code;
   if(navigator.share) navigator.share({ text: txt }).catch(() => {});
   else { try{ navigator.clipboard.writeText(co.code); showToast('Code copié : ' + co.code); }catch(e){ showToast('Code : ' + co.code); } }
 }
@@ -39212,7 +39212,25 @@ function _rwIsNativeApp(){ try{ return !!(window.Capacitor && window.Capacitor.i
 /* Prix visibles sur web / PC, jamais dans l'appli Android (règles Google Play).
    Passer RW_PRICES_ON à false pour les masquer partout. */
 const RW_PRICES_ON = true;
-function _rwHidePrices(){ return !RW_PRICES_ON || _rwIsNativeApp(); }
+/* v5.49.0 — 2 versions Android : « play » (fr.rwood.app, testeurs Google Play → aucun prix, règles Play)
+   et « direct » (APK du site, autre identifiant → prix et achat autorisés comme sur le web). */
+const RW_PLAY_ID = 'fr.rwood.app';
+const RW_SHOP_URL = 'https://rwoodslog-dev.github.io/RWOOD/presentation.html';
+window.RW_CHANNEL = _rwIsNativeApp() ? 'play' : 'web';   // prudent tant que l'identifiant n'est pas connu
+(function(){
+  if(!_rwIsNativeApp()) return;
+  try{ const A = window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if(A && A.getInfo) A.getInfo().then(i => { window.RW_CHANNEL = (i && i.id && i.id !== RW_PLAY_ID) ? 'direct' : 'play'; }).catch(() => {});
+  }catch(e){}
+})();
+function _rwHidePrices(){ return !RW_PRICES_ON || (_rwIsNativeApp() && window.RW_CHANNEL !== 'direct'); }
+/* Ouvre la boutique du site (panier pré-rempli) dans le navigateur */
+function rwShopOpen(params){
+  const q = new URLSearchParams(params || {}).toString();
+  const url = RW_SHOP_URL + (q ? '?' + q : '') + '#tarifs';
+  try{ const B = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser; if(B && B.open){ B.open({ url }); return; } }catch(e){}
+  window.open(url, '_blank', 'noopener');
+}
 function _rwPlanCardHtml(p){
   if(_rwHidePrices()){
     const pct0 = Math.min(100, Math.round(100 * (p.used || 0) / Math.max(1, p.seats || 1)));
@@ -39228,6 +39246,7 @@ function _rwPlanCardHtml(p){
     : escapeHtml(p.label) + (p.price ? ` <span style="color:var(--wood);">· ${p.price} €/mois</span>` : '');
   return `<div class="prm-sec">Ma formule</div><div class="card">
     <div class="hint">Formule actuelle</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${head}</div>
+    ${p.plan !== 'essai' && p.plan !== 'interne' ? `<button class="btn btn-outline btn-block btn-sm" style="margin-top:10px;" onclick="rwShopOpen({ gerer:'1', co: ((_rwCo && _rwCo.company && _rwCo.company.code) || '') })">💳 Gérer mon abonnement et mes factures</button>` : ''}
     ${p.offer === 'fondateur' ? '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(238,138,46,.14);border:1.5px solid var(--wood);"><b>⭐ Offre Fondateur</b><div class="hint" style="margin:2px 0 0;">Tu fais partie des 10 premières entreprises : 3 mois d\'essai, puis ton prix est bloqué à vie, même si les tarifs augmentent.</div></div>' : ''}
     ${p.plan === 'essai' ? '<div class="hint" style="margin-top:4px;">Toute l\'appli est incluse, quelle que soit la formule : seul le nombre de comptes change.</div>' : ''}
     <div class="hint" style="margin-top:10px;">Comptes utilisés : <b style="color:var(--ink);">${seatsTxt}</b></div>${unl ? '' : `<div class="rw-bar"><i style="width:${pct}%;${p.full ? 'background:var(--red);' : ''}"></i></div>`}
@@ -39238,15 +39257,12 @@ function _rwPlanCardHtml(p){
       <button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwPlanChoose('mes')">Demander un devis</button></div>`}
   </div>`;
 }
-/* Paiement en ligne à venir (étape F) : pour l'instant, demande par e-mail */
+/* v5.49.0 — Achat : ouvre le panier du site, formule + code entreprise déjà remplis */
 function rwPlanChoose(k){
   if(_rwHidePrices()) return;   // v5.41.421
-  const co = (_rwCo && _rwCo.company) || {}, o = RW_PLAN_OFFERS.find(x => x[0] === k);
-  const what = k === 'mes' ? 'un devis pour la mise en service' : ('la formule ' + (o ? o[1] + ' (' + o[2] + ' €/mois HT)' : k));
-  if(!confirm((k === 'mes' ? 'Demander ' : 'Choisir ') + what + ' pour « ' + (co.name || '') + ' » ?\n\n' + (k === 'mes' ? 'Un e-mail prêt à envoyer s\'ouvre vers Notybat.' : 'Le paiement en ligne arrive bientôt : en attendant, un e-mail prêt à envoyer s\'ouvre vers Notybat.'))) return;
-  const used = (_rwCo && _rwCo.plan && _rwCo.plan.used) || '';
-  const body = 'Bonjour,\n\nJe souhaite ' + what + ' pour mon entreprise « ' + (co.name || '') + ' » (code ' + (co.code || '') + ').' + (k === 'mes' ? '\n\nNombre de personnes : ' + used + '\nNombre de chantiers en cours : \nDonnées à reprendre (contacts, chantiers, stock…) : ' : '') + '\n\nMerci !';
-  location.href = 'mailto:rwoods.log@gmail.com?subject=' + encodeURIComponent('Notybat — ' + (co.name || '') + ' : ' + what) + '&body=' + encodeURIComponent(body);
+  const co = (_rwCo && _rwCo.company) || {};
+  if(k === 'mes') rwShopOpen({ mes:'1', co: co.code || '' });
+  else rwShopOpen({ plan:k, cycle:'month', co: co.code || '' });
 }
 async function rwCoTradeSet(t){ try{ await _rwCoOp('company_trade_set', { trade:t }); data.settings.companyTrade = t; saveData(); showToast('Métier mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); } }
 /* Patron : fin d'essai → rappel (une fois par jour) */
@@ -43926,7 +43942,7 @@ window.addEventListener('resize', () => { try{ if(ef && document.getElementById(
    Feuille de partage du téléphone (toutes les applis : WhatsApp, SMS, Messenger, Telegram, mail…).
    Le lien s'affiche avec le logo grâce aux balises og:* de la page. Sans feuille de partage (PC) : choix des applis + QR code. */
 const NB_SHARE_URL = 'https://rwoodslog-dev.github.io/RWOOD/';                      // appli web (iPhone, PC)
-const NB_PLAY_URL = 'https://play.google.com/store/apps/details?id=fr.rwood.app';    // appli Android
+const NB_PLAY_URL = 'https://rwoodslog-dev.github.io/RWOOD/presentation.html#telecharger';    // v5.49.0 — Android : téléchargement direct du site (plus le Play Store)
 function _nbShareText(){ return 'Découvre Notybat, le carnet de chantier des artisans du bâtiment 👷 Heures signées, planning, photos, tâches et calculs dans une seule appli.'; }
 /* v5.41.428 — un appui = la page Notybat (QR Android / iPhone, copier le lien) ; « Partager autrement » = feuille de partage du téléphone */
 function nbShareApp(){ _nbShareSheet(); }
@@ -50206,9 +50222,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.48.6';
+const APP_VERSION = '5.49.0';
 
 const CHANGELOG = [
+  {
+    version: '5.49.0',
+    date: '25/10/2026',
+    entries: [
+      { icon: '💳', text: "Ma formule : « Choisir » ouvre directement le panier du site Notybat, avec la formule et le code de l'entreprise déjà remplis (paiement sécurisé par carte dès l'ouverture de la boutique). Bouton « Gérer mon abonnement et mes factures »." },
+      { icon: '📲', text: "L'invitation « Rejoins mon entreprise » envoie vers la page de téléchargement du site (Android, iPhone, Windows) au lieu du Play Store. La version Google Play (testeurs) reste sans prix ni achat." }
+    ]
+  },
   {
     version: '5.48.6',
     date: '25/10/2026',
