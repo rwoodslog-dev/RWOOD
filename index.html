@@ -7711,6 +7711,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
             <div class="prm-row" data-k="adresses dépôt domicile maison" onclick="prmOpen('adresses')"><span class="prm-ic" style="background:#2b1f3d">📍</span><span class="prm-l">Adresses<small>Dépôt et domicile, pour calculer les trajets</small></span><span class="prm-v" id="prmVAdr"></span><span class="prm-chev">›</span></div>
             <div class="prm-row" data-k="prime de trajet barème zone indemnités heures contractuelles semaine" onclick="prmOpen('trajet')"><span class="prm-ic" style="background:#1f3330">💶</span><span class="prm-l">Prime de trajet et heures<small>Barème des zones, heures de la semaine</small></span><span class="prm-v" id="prmVTrj"></span><span class="prm-chev">›</span></div>
             <div class="prm-row" id="prmRowEntQ" data-k="questions entretien idées ouvriers annuel personnaliser" onclick="rmQEditorOpen()"><span class="prm-ic" style="background:#33281c">🗣️</span><span class="prm-l">Questions d'entretien<small>Les questions posées aux ouvriers</small></span><span class="prm-v"></span><span class="prm-chev">›</span></div>
+            <div class="prm-row" id="prmRowFact" data-role-hidden="1" style="display:none;" data-k="factures facture abonnement paiement carte reçu pdf comptabilité" onclick="prmOpen('factures')"><span class="prm-ic" style="background:#1f3330">🧾</span><span class="prm-l">Factures<small>Tes factures Notybat, à télécharger en PDF</small></span><span class="prm-v" id="prmVFact"></span><span class="prm-chev">›</span></div>
           </div></div>
           <div class="prm-grp"><div class="prm-sec">Aide et sauvegardes</div><div class="nb-prm-desc">Nouveautés, sauvegarde de tes données, partage</div><div class="prm-box">
             <div class="prm-row" data-k="mise à jour version nouveautés" onclick="prmOpen('maj')"><span class="prm-ic" style="background:#2a2a2a">🔄</span><span class="prm-l">Mise à jour<small>Voir les nouveautés de l'appli</small></span><span class="prm-v" id="prmVMaj"></span><span class="prm-chev">›</span></div>
@@ -8003,6 +8004,10 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
             <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="resetTrajetBareme()">Réinitialiser au barème Nouvelle-Aquitaine 2026</button>
           </div>
           </div>
+        </div>
+
+        <div class="prm-pg" data-pg="factures" data-title="Factures">
+          <div id="rwFactBody"><div class="hint" style="text-align:center;padding:20px;">Chargement…</div></div>
         </div>
 
         <div class="prm-pg" data-pg="entreprise" data-title="Mon entreprise">
@@ -37712,20 +37717,7 @@ async function generateSalaryXlsx(){
 
   // ── Remplir le MODÈLE avec ExcelJS (COPIE DU MODÈLE + DONNÉES, styles préservés) ──
   // Charger le modèle .xlsx depuis le repo
-  let templateBuf;
-  try{
-    const resp = await fetch('modele_salaire.xlsx');
-    if(!resp.ok) throw new Error('modele introuvable');
-    templateBuf = await resp.arrayBuffer();
-  }catch(e){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
-
-  const wb = new ExcelJS.Workbook();
-  try{ await wb.xlsx.load(templateBuf); }
-  catch(e){ showToast('Modèle illisible'); return; }
-  const ws = wb.getWorksheet('TABLEAUSALAIRE') || wb.worksheets[0];
-  if(!ws){ showToast('Feuille TABLEAUSALAIRE introuvable'); return; }
-
-  // Correspondance nom Notybat → colonne du modèle (normalisée, sans accents)
+  // v5.51.0 — modele_salaire.xlsx (sur mesure, noms déjà placés) ou, sinon, tableau au format Notybat (voir _htExcelBlob)
   const norm = s => (s||'').toString().toUpperCase()
                       .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
                       .replace(/\s+/g,' ').trim();
@@ -37738,7 +37730,7 @@ async function generateSalaryXlsx(){
   // pré-normaliser les clés du modèle une fois
   const normModel = Object.entries(colByName).map(([k,col])=>[norm(k),col]);
   // Colonnes du modèle → nom normalisé (secours par correspondance souple)
-  function resolveCol(name){
+  function resolveColCustom(name){
     const n = norm(name);
     for(const [mn,col] of normModel){ if(mn===n) return col; }
     // correspondance souple : tous les mots du nom Notybat présents dans un nom modèle
@@ -37748,6 +37740,28 @@ async function generateSalaryXlsx(){
     }
     return null;
   }
+
+  // Modèle sur mesure (option « modèle comptable ») seulement si au moins un salarié y figure déjà ;
+  // sinon : tableau au format Notybat (v5.51.0)
+  const useCustom = workers.some(w => resolveColCustom(w.name));
+  if(!useCustom){
+    _ht = _htBuild(new Set(selectedWorkers.map(s => s.key)), selectedWeeks);
+    closeModal('pdfWorkerSelector');
+    await htExcel();
+    return;
+  }
+  let templateBuf;
+  try{
+    const resp = await fetch('modele_salaire.xlsx');
+    if(!resp.ok) throw new Error('modele introuvable');
+    templateBuf = await resp.arrayBuffer();
+  }catch(e){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
+  const wb = new ExcelJS.Workbook();
+  try{ await wb.xlsx.load(templateBuf); }
+  catch(e){ showToast('Modèle illisible'); return; }
+  const ws = wb.getWorksheet('TABLEAUSALAIRE') || wb.worksheets[0];
+  if(!ws){ showToast('Feuille TABLEAUSALAIRE introuvable'); return; }
+  const resolveCol = (name) => resolveColCustom(name);
 
   // Écrit une valeur SANS toucher au style de la cellule (ExcelJS conserve le style existant).
   // Les dates sont écrites comme vraies dates → le format mm-dd-yy du modèle s'applique.
@@ -37767,7 +37781,7 @@ async function generateSalaryXlsx(){
   const unmatched = [];
 
   workers.forEach((w,idx)=>{
-    const col = resolveCol(w.name);
+    const col = resolveCol(w.name, w);
     if(!col){ unmatched.push(w.name); return; } // salarié absent du modèle → laissé vide pour la comptable
     matched++;
     const d = wd[idx];
@@ -37878,6 +37892,366 @@ async function generatePDFFromSelection(){
   _comptableLiveData = filteredData;
   await printComptableMonthPDF(null, dateFrom, dateTo, selectedWeeks);
   _comptableLiveData = _backup;
+}
+
+/* ═══ v5.51.0 — TABLEAU DES HEURES DU MOIS (comptable) ═══════════════════════════
+   Tout ce qui sert à préparer la paie, trié et lisible : récapitulatif par salarié
+   + détail jour par jour. Imprimable, enregistrable en Excel et en PDF, au format Notybat.
+   Mêmes règles de calcul que le tableau salaire Excel (semaines cochées, 35 h, zones). */
+const HT_NAVY = '0E1524', HT_OR = 'FF8A1E', HT_ZEBRA = 'F4F6FA', HT_LINE = 'DDE3EC';
+let _ht = null;            // { recap, days, weeks, title, period, company }
+let _htTab = 'recap', _htSort = { recap:{ k:'name', d:1 }, days:{ k:'date', d:1 } }, _htQ = '', _htWho = '';
+
+function _htSel(){
+  const selectedWorkers = _pdfWorkerCandidates.filter((_,i) => { const cb = document.getElementById('pdfCheck_' + i); return cb && cb.checked; });
+  const weeks = _getPDFMonthWeeks().filter((_,i) => { const cb = document.getElementById('pdfWeekCheck_' + i); return cb && cb.checked; });
+  return { keys: new Set(selectedWorkers.map(s => s.key)), weeks };
+}
+function _htSiteLabel(ad, e, sites){
+  if(_entryHasMultiSites(e)) return (_entrySiteLines(e) || []).map(l => l.name + (l.hours ? ' (' + String(l.hours).replace('.', ',') + ' h)' : '')).join(' + ');
+  if(e.customSite && e.customSite.name) return e.customSite.name;
+  const sid = (e._siteId != null) ? e._siteId : (ad && ad.siteId);
+  const st = sid ? (sites || []).find(x => x && x.id === sid) : null;
+  if(st) return st.name || '';
+  if(ad && ad.customSite && ad.customSite.name) return ad.customSite.name;
+  return '';
+}
+function _htBuild(keys, weeks){
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const workers = [];
+  (_comptableLiveData || []).forEach(device => (device.workers || []).forEach(w => { if(keys.has(_workerKey(device.deviceId, w.id))) workers.push({ name:w.name, workerId:w.id, device }); }));
+  workers.sort((a,b) => a.name.localeCompare(b.name, 'fr'));
+  const weekKeys = weeks.map(w => iso(w.monday));
+  const recap = [], days = [];
+  workers.forEach(w => {
+    const att = (typeof _attendanceWithOverridesForWorker === 'function') ? _attendanceWithOverridesForWorker(w.device, w.workerId) : ((w.device && w.device.attendance) || {});
+    const sites = ((w.device && w.device.sites) || []).filter(x => x && x.trajetZone).concat(data.sites || []);
+    const r = { name:w.name, wk: weekKeys.map(() => ({ h:0, worked:false, abs:{} })), hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0,
+      z:{ '1A':0, '1B':0, '2':0, '3':0, '4':0, '5':0, 'GD':0 }, perso:0, noZone:0 };
+    weekKeys.forEach((wk, wi) => {
+      const monday = new Date(wk + 'T00:00:00');
+      for(let i = 0; i < 7; i++){
+        const d = new Date(monday); d.setDate(d.getDate() + i); const k = iso(d);
+        const ad = att[k], e = ad && ad.workers && ad.workers[w.workerId]; if(!e) continue;
+        const tj = e.typeJournee || 'normal';
+        const base = { name:w.name, date:k, week:weeks[wi].weekNum, type: tj === 'normal' ? 'Travail' : ((TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].short) || tj), site:'', task:'', hours:'', panier:'', zone:'', perso:'' };
+        if(tj !== 'normal'){
+          r.wk[wi].abs[tj] = (r.wk[wi].abs[tj] || 0) + 1;
+          if(tj === 'cp') r.cp++; else if(tj === 'css') r.css++; else r.other++;
+          base.type = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
+          days.push(base); continue;
+        }
+        const h = _entryTotalHours(e);
+        r.wk[wi].h += h; r.wk[wi].worked = true; r.hours += h; if(h > 0) r.daysWorked++;
+        if(e.panier) r.paniers++;
+        const zone = _dayEntryZone(ad, e, sites);
+        if(zone && r.z[zone] !== undefined){ r.z[zone]++; }
+        else if(h > 0 && typeof _dayEntryZoneMissing === 'function' && _dayEntryZoneMissing(ad, e, sites)) r.noZone++;
+        const perso = !!(ad && ad.voiturePerso) && !!zone;
+        if(perso) r.perso++;
+        const task = _entryHasMultiSites(e) ? (_entrySiteLines(e) || []).map(l => l.task).filter(Boolean).join(' / ') : (e.task || '');
+        days.push(Object.assign(base, { site:_htSiteLabel(ad, e, sites), task, hours:h, panier:e.panier ? 'Oui' : '', zone:zone || '', perso:perso ? 'Oui' : '' }));
+      }
+    });
+    r.hs = r.wk.reduce((a, x) => a + (x.worked ? x.h - 35 : 0), 0);
+    recap.push(r);
+  });
+  const t0 = weeks[0].monday, t1 = weeks[weeks.length - 1].sunday || new Date(weeks[weeks.length - 1].monday.getTime() + 6 * 86400000);
+  const fd = d => d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' }).replace(/\./g, '');
+  const mid = new Date(t0.getTime() + (t1 - t0) / 2);
+  let mref = mid; try{ if(typeof _getPDFMonthTarget === 'function'){ const t = _getPDFMonthTarget(); if(t >= new Date(t0.getFullYear(), t0.getMonth(), 1) && t <= t1) mref = t; } }catch(e){}
+  const month = mref.toLocaleDateString('fr-FR', { month:'long', year:'numeric' });
+  const company = (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || '';
+  return { recap, days, weeks, month: month.charAt(0).toUpperCase() + month.slice(1), period:'du ' + fd(t0) + ' au ' + fd(t1), company,
+    edited: new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' }), slug: iso(mref).slice(0, 7) };
+}
+const _htNum = n => (n === '' || n == null) ? '' : (Math.round(n * 100) / 100).toLocaleString('fr-FR').replace(/[\u202f\u00a0]/g, ' ');
+const _htSigned = n => (n > 0 ? '+' : '') + _htNum(n);
+/* Colonnes : k (tri), l (titre), v (valeur affichée), s (valeur de tri), n (numérique), w (largeur PDF/Excel) */
+function _htCols(tab){
+  if(tab === 'days') return [
+    { k:'name', l:'Salarié', v:d => d.name, w:20 },
+    { k:'date', l:'Date', v:d => { const x = new Date(d.date + 'T00:00:00'); return x.toLocaleDateString('fr-FR', { weekday:'short', day:'2-digit', month:'2-digit' }).replace('.', ''); }, s:d => d.date, w:13 },
+    { k:'week', l:'Sem.', v:d => 'S' + d.week, s:d => d.week, n:1, w:7 },
+    { k:'type', l:'Journée', v:d => d.type, w:15 },
+    { k:'site', l:'Chantier', v:d => d.site, w:30 },
+    { k:'task', l:'Tâche', v:d => d.task, w:24 },
+    { k:'hours', l:'Heures', v:d => _htNum(d.hours), s:d => +d.hours || 0, n:1, w:8 },
+    { k:'panier', l:'Panier', v:d => d.panier, w:8 },
+    { k:'zone', l:'Zone', v:d => d.zone, w:7 },
+    { k:'perso', l:'Véh. perso', v:d => d.perso, w:9 }
+  ];
+  const cols = [ { k:'name', l:'Salarié', v:r => r.name, w:24 }, { k:'daysWorked', l:'Jours trav.', v:r => r.daysWorked, n:1, w:9 }, { k:'hours', l:'Heures', v:r => _htNum(r.hours), s:r => r.hours, n:1, w:9 } ];
+  (_ht ? _ht.weeks : []).forEach((w, i) => cols.push({ k:'w' + i, l:'S' + w.weekNum, n:1, w:9,
+    v:r => { const x = r.wk[i]; if(x.worked) return _htSigned(x.h - 35); const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : ''; },
+    s:r => r.wk[i].worked ? r.wk[i].h - 35 : -999 }));
+  cols.push({ k:'hs', l:'H. sup', v:r => _htSigned(r.hs), s:r => r.hs, n:1, w:9 },
+    { k:'cp', l:'CP (j)', v:r => r.cp || '', s:r => r.cp, n:1, w:7 }, { k:'css', l:'CSS (j)', v:r => r.css || '', s:r => r.css, n:1, w:7 },
+    { k:'other', l:'Autres abs.', v:r => r.other || '', s:r => r.other, n:1, w:9 }, { k:'paniers', l:'Paniers', v:r => r.paniers || '', s:r => r.paniers, n:1, w:8 });
+  ['1A','1B','2','3','4','5','GD'].forEach(z => cols.push({ k:'z' + z, l:'Zone ' + z, v:r => r.z[z] || '', s:r => r.z[z], n:1, w:9.5 }));
+  cols.push({ k:'perso', l:'Véh. perso', v:r => r.perso || '', s:r => r.perso, n:1, w:10 });
+  return cols;
+}
+function _htRows(tab){
+  if(!_ht) return [];
+  let rows = tab === 'days' ? _ht.days.slice() : _ht.recap.slice();
+  const q = _htQ.trim().toLowerCase();
+  if(tab === 'days' && _htWho) rows = rows.filter(d => d.name === _htWho);
+  if(q) rows = rows.filter(r => _htCols(tab).some(c => String(c.v(r)).toLowerCase().includes(q)));
+  const so = _htSort[tab], col = _htCols(tab).find(c => c.k === so.k) || _htCols(tab)[0];
+  const key = col.s || col.v;
+  rows.sort((a, b) => { const x = key(a), y = key(b); const c = (typeof x === 'number' && typeof y === 'number') ? x - y : String(x).localeCompare(String(y), 'fr', { numeric:true }); return (c || a.name.localeCompare(b.name, 'fr')) * so.d; });
+  return rows;
+}
+function _htTotals(rows){
+  const t = { name:'TOTAL', wk:(_ht ? _ht.weeks : []).map((_, i) => ({ h:rows.reduce((a, r) => a + r.wk[i].h, 0), worked:rows.some(r => r.wk[i].worked), abs:{} })),
+    hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0, z:{ '1A':0, '1B':0, '2':0, '3':0, '4':0, '5':0, 'GD':0 }, perso:0 };
+  rows.forEach(r => { ['hours','daysWorked','hs','cp','css','other','paniers','perso'].forEach(k => t[k] += r[k]); Object.keys(t.z).forEach(z => t.z[z] += r.z[z]); });
+  t.wk.forEach((x, i) => { x.h = rows.reduce((a, r) => a + (r.wk[i].worked ? r.wk[i].h - 35 : 0), 0) + 35; });   // affiche la somme des H. sup de la semaine
+  return t;
+}
+
+function openHoursTable(){
+  const { keys, weeks } = _htSel();
+  if(!keys.size){ showToast('Sélectionne au moins un salarié'); return; }
+  if(!weeks.length){ showToast('Sélectionne au moins une semaine'); return; }
+  _ht = _htBuild(keys, weeks); _htQ = ''; _htWho = '';
+  closeModal('pdfWorkerSelector');
+  openModal('hoursTable');
+  htRender();
+}
+function htSetTab(t){ _htTab = t; htRender(); }
+function htSortBy(k){ const s = _htSort[_htTab]; if(s.k === k) s.d = -s.d; else { s.k = k; s.d = 1; } htRender(); }
+function htRender(){
+  if(!_ht) return;
+  document.getElementById('htTitle').textContent = 'Tableau des heures — ' + _ht.month;
+  document.getElementById('htSub').textContent = (_ht.company ? _ht.company + ' · ' : '') + _ht.period + ' · ' + _ht.recap.length + ' salarié' + (_ht.recap.length > 1 ? 's' : '') + ' · ' + _ht.days.length + ' journée' + (_ht.days.length > 1 ? 's' : '');
+  document.querySelectorAll('#htTabs button').forEach(b => b.classList.toggle('on', b.dataset.t === _htTab));
+  const who = document.getElementById('htWho');
+  who.style.display = _htTab === 'days' ? '' : 'none';
+  who.innerHTML = '<option value="">Tous les salariés</option>' + _ht.recap.map(r => `<option ${r.name === _htWho ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('');
+  const cols = _htCols(_htTab), rows = _htRows(_htTab), so = _htSort[_htTab];
+  let h = '<table class="ht-t"><thead><tr>' + cols.map(c => `<th class="${c.n ? 'n' : ''}${c.k === so.k ? ' on' : ''}" onclick="htSortBy('${c.k}')">${escapeHtml(c.l)}<i>${c.k === so.k ? (so.d > 0 ? '▲' : '▼') : '↕'}</i></th>`).join('') + '</tr></thead><tbody>';
+  h += rows.map(r => '<tr>' + cols.map(c => { const v = c.v(r); const neg = c.n && typeof v === 'string' && v.startsWith('-'); return `<td class="${c.n ? 'n' : ''}${neg ? ' neg' : ''}${r.type && r.type !== 'Travail' && c.k === 'type' ? ' abs' : ''}">${escapeHtml(String(v))}</td>`; }).join('') + '</tr>').join('');
+  if(!rows.length) h += `<tr><td colspan="${cols.length}" class="empty-row">Aucune ligne</td></tr>`;
+  h += '</tbody>';
+  if(_htTab === 'recap' && rows.length) { const t = _htTotals(rows); h += '<tfoot><tr>' + cols.map(c => `<td class="${c.n ? 'n' : ''}">${escapeHtml(String(c.k === 'name' ? 'TOTAL' : c.v(t)))}</td>`).join('') + '</tr></tfoot>'; }
+  if(_htTab === 'days' && rows.length) { const tot = rows.reduce((a, d) => a + (+d.hours || 0), 0); h += `<tfoot><tr><td colspan="6">TOTAL · ${rows.length} jour${rows.length > 1 ? 's' : ''}</td><td class="n">${_htNum(tot)}</td><td class="n">${rows.filter(d => d.panier).length || ''}</td><td></td><td class="n">${rows.filter(d => d.perso).length || ''}</td></tr></tfoot>`; }
+  h += '</table>';
+  document.getElementById('htWrap').innerHTML = h;
+  const miss = _ht.recap.reduce((a, r) => a + r.noZone, 0);
+  document.getElementById('htNote').innerHTML = (_htTab === 'recap'
+    ? '<b>S + n°</b> : heures sup. de la semaine (au-delà de 35 h ; négatif = heures en moins), ou le motif si la semaine entière est une absence. <b>H. sup</b> : total à payer. <b>Zones</b> : nombre de trajets par zone ; <b>Véh. perso</b> : trajets faits avec la voiture personnelle.'
+    : 'Une ligne par journée pointée. Touche un titre de colonne pour trier.') + (miss ? `<br><span style="color:var(--red);">⚠️ ${miss} journée${miss > 1 ? 's' : ''} sans zone de trajet (adresse du chantier manquante).</span>` : '');
+}
+
+/* ── Excel au format Notybat ── */
+async function _htEnsureExcel(){
+  if(typeof ExcelJS !== 'undefined') return true;
+  const load = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  try{ await load('exceljs.min.js'); }catch(e){ try{ await load('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'); }catch(e2){} }
+  return typeof ExcelJS !== 'undefined';
+}
+async function _htLogo(){
+  try{ const r = await fetch('icons/logo-header-v2.png'); const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
+}
+async function _htExcelBlob(){
+  if(!(await _htEnsureExcel())) throw new Error('Moteur Excel introuvable');
+  const wb = new ExcelJS.Workbook(); wb.creator = 'Notybat'; wb.created = new Date();
+  const logo = await _htLogo(); const logoId = logo ? wb.addImage({ base64: logo, extension:'png' }) : null;
+  const thin = { style:'thin', color:{ argb:'FF' + HT_LINE } };
+  const sheet = (name, tab, rows, totalRow) => {
+    const cols = _htCols(tab);
+    const ws = wb.addWorksheet(name, { views:[{ state:'frozen', xSplit:1, ySplit:4 }],
+      pageSetup:{ orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{ left:.3, right:.3, top:.4, bottom:.4, header:.2, footer:.2 } },
+      headerFooter:{ oddFooter:'&L&8Notybat — Tableau des heures&R&8Page &P / &N' } });
+    ws.columns = cols.map(c => ({ width: Math.max(8, c.w * 0.95) }));
+    const last = cols.length;
+    ws.mergeCells(1, 1, 1, last); ws.mergeCells(2, 1, 2, last);
+    const t = ws.getCell(1, 1);
+    t.value = { richText:[ ...(logoId != null ? [{ text:'          ', font:{ size:18 } }] : []), { text:'Noty', font:{ bold:true, size:18, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:18, color:{ argb:'FF' + HT_OR } } },
+      { text:'   ·   ' + (tab === 'days' ? 'Détail des journées' : 'Tableau des heures') + ' — ' + _ht.month, font:{ bold:true, size:14, color:{ argb:'FFFFFFFF' } } } ] };
+    t.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_NAVY } }; t.alignment = { vertical:'middle', indent:1 };
+    ws.getRow(1).height = 36;
+    const s2 = ws.getCell(2, 1);
+    s2.value = (_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  ' + _ht.recap.length + ' salarié(s)  ·  édité le ' + _ht.edited;
+    s2.font = { size:10, bold:true, color:{ argb:'FF' + HT_NAVY } }; s2.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFE7CF' } }; s2.alignment = { vertical:'middle', indent:1 };
+    ws.getRow(2).height = 20;
+    if(logoId != null) ws.addImage(logoId, { tl:{ col:0.08, row:0.12 }, ext:{ width:38, height:38 } });
+    const hr = ws.getRow(4);
+    cols.forEach((c, i) => { const cell = hr.getCell(i + 1); cell.value = c.l; cell.font = { bold:true, color:{ argb:'FFFFFFFF' }, size:10 };
+      cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_NAVY } }; cell.alignment = { horizontal: c.n ? 'center' : 'left', vertical:'middle', wrapText:true };
+      cell.border = { bottom:{ style:'medium', color:{ argb:'FF' + HT_OR } } }; });
+    hr.height = 24;
+    rows.forEach((r, ri) => {
+      const row = ws.getRow(5 + ri);
+      cols.forEach((c, i) => {
+        const cell = row.getCell(i + 1); let v = c.v(r);
+        if(c.n){ const num = typeof v === 'number' ? v : (v !== '' && !isNaN(+String(v).replace(',', '.').replace('+', '')) ? +String(v).replace(',', '.').replace('+', '') : null); if(num != null && c.k !== 'week') { v = num; cell.numFmt = (/^w\d/.test(c.k) || c.k === 'hs') ? '+General;-General;0' : 'General'; } }
+        cell.value = v === '' ? null : v;
+        cell.alignment = { horizontal: c.n ? 'center' : 'left', vertical:'middle', wrapText: c.k === 'site' || c.k === 'task' };
+        cell.border = { top:thin, bottom:thin, left:thin, right:thin }; cell.font = { size:10, bold: c.k === 'name' };
+        if(ri % 2) cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + HT_ZEBRA } };
+        if(typeof v === 'number' && v < 0) cell.font = { size:10, color:{ argb:'FFC0392B' } };
+      });
+    });
+    if(totalRow){
+      const row = ws.getRow(5 + rows.length);
+      totalRow.forEach((v, i) => { const cell = row.getCell(i + 1); cell.value = v === '' ? null : v;
+        const ck = cols[i] && cols[i].k; if(typeof v === 'number') cell.numFmt = (ck && (/^w\d/.test(ck) || ck === 'hs')) ? '+General;-General;0' : 'General'; cell.font = { bold:true, size:10, color:{ argb:'FF' + HT_NAVY } };
+        cell.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFD3A8' } }; cell.alignment = { horizontal: i ? 'center' : 'left' };
+        cell.border = { top:{ style:'medium', color:{ argb:'FF' + HT_OR } }, bottom:thin, left:thin, right:thin }; });
+    }
+    ws.autoFilter = { from:{ row:4, column:1 }, to:{ row:4 + rows.length, column:last } };
+    ws.pageSetup.printTitlesRow = '4:4';
+    return ws;
+  };
+  const rec = _ht.recap.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  const tcols = _htCols('recap'), tt = _htTotals(rec);
+  sheet('Récapitulatif', 'recap', rec, rec.length ? tcols.map(c => { if(c.k === 'name') return 'TOTAL'; const v = c.v(tt); const n = +String(v).replace(',', '.').replace('+', ''); return v === '' ? '' : isNaN(n) ? v : n; }) : null);
+  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
+  sheet('Détail par jour', 'days', det, det.length ? ['TOTAL', '', '', '', '', '', det.reduce((a, d) => a + (+d.hours || 0), 0), det.filter(d => d.panier).length || '', '', det.filter(d => d.perso).length || ''] : null);
+  const info = wb.addWorksheet('À savoir');
+  info.columns = [{ width:110 }];
+  [['Comment lire ce tableau', true],
+   ['Période : ' + _ht.period + ' (semaines complètes, du lundi au dimanche).'],
+   ['S + n° de semaine : heures supplémentaires de la semaine (heures travaillées − 35 h). Négatif = heures en moins. Si la semaine entière est une absence, le motif est écrit (CP, CSS, Maladie…).'],
+   ['H. sup : total des heures supplémentaires du mois à payer (somme des semaines travaillées).'],
+   ['CP / CSS / Autres abs. : nombre de jours. Le détail jour par jour est dans l’onglet « Détail par jour ».'],
+   ['Paniers : nombre de jours avec panier repas.'],
+   ['Zones 1A à 5 : nombre de trajets par zone (1A : 0-5 km, 1B : 5-10 km, 2 : 10-20 km, 3 : 20-30 km, 4 : 30-40 km, 5 : 40 km et plus). GD : grand déplacement (sans prime de trajet).'],
+   ['Véh. perso : nombre de trajets faits avec la voiture personnelle du salarié.'],
+   [''], ['Document édité avec Notybat le ' + _ht.edited + '.']].forEach((l, i) => { const c = info.getCell(i + 1, 1); c.value = l[0]; c.alignment = { wrapText:true, vertical:'top' };
+     c.font = l[1] ? { bold:true, size:14, color:{ argb:'FF' + HT_NAVY } } : { size:11 }; });
+  const out = await wb.xlsx.writeBuffer();
+  return new Blob([out], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+async function htExcel(){
+  try{ showToast('Création du fichier Excel…'); const b = await _htExcelBlob();
+    await saveBlobToDevice(b, 'heures-' + _ht.slug + '.xlsx', b.type, ['.xlsx']); }
+  catch(e){ showToast('❌ Excel : ' + (e && e.message || e)); }
+}
+
+/* ── PDF au format Notybat (A4 paysage) ── */
+async function _htPdfBlob(){
+  if(typeof _qcEnsurePdfLib === 'function') await _qcEnsurePdfLib();
+  const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF; if(!J) throw new Error('PDF indisponible');
+  const doc = new J({ orientation:'landscape', unit:'mm', format:'a4' });
+  const W = 297, H = 210, M = 10, logo = await _htLogo();
+  const rgb = h => [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+  const head = (sub) => {
+    doc.setFillColor(...rgb(HT_NAVY)); doc.rect(0, 0, W, 20, 'F');
+    doc.setFillColor(...rgb(HT_OR)); doc.rect(0, 20, W, 1.2, 'F');
+    let x = M; if(logo){ try{ doc.addImage(logo, 'PNG', M, 3.5, 13, 13); x = M + 16; }catch(e){} }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(255, 255, 255); doc.text('Noty', x, 12.5);
+    const wN = doc.getTextWidth('Noty'); doc.setTextColor(...rgb(HT_OR)); doc.text('bat', x + wN, 12.5);
+    doc.setTextColor(255, 255, 255); doc.setFontSize(12.5); doc.text(sub + ' — ' + _ht.month, W - M, 10, { align:'right' });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(200, 208, 220);
+    doc.text((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited, W - M, 15.5, { align:'right' });
+  };
+  const table = (sub, tab, rows, total) => {
+    const cols = _htCols(tab), sw = cols.reduce((a, c) => a + c.w, 0), k = (W - 2 * M) / sw;
+    const xs = []; let acc = M; cols.forEach(c => { xs.push(acc); acc += c.w * k; });
+    const fs = cols.length > 16 ? 6.6 : 7.6, rh = 5.6;
+    let y;
+    const thead = () => {
+      doc.setFillColor(...rgb(HT_NAVY)); doc.rect(M, y, W - 2 * M, 7, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(fs); doc.setTextColor(255, 255, 255);
+      cols.forEach((c, i) => { const cw = c.w * k; const tx = doc.splitTextToSize(c.l, cw - 1.5)[0]; doc.text(tx, c.n ? xs[i] + cw / 2 : xs[i] + 1.2, y + 4.6, c.n ? { align:'center' } : undefined); });
+      doc.setFillColor(...rgb(HT_OR)); doc.rect(M, y + 7, W - 2 * M, .6, 'F'); y += 7.6;
+    };
+    const line = (r, ri, isTot) => {
+      if(y + rh > H - 12){ doc.addPage(); head(sub); y = 26; thead(); }
+      if(isTot){ doc.setFillColor(255, 211, 168); doc.rect(M, y, W - 2 * M, rh, 'F'); }
+      else if(ri % 2){ doc.setFillColor(...rgb(HT_ZEBRA)); doc.rect(M, y, W - 2 * M, rh, 'F'); }
+      doc.setDrawColor(...rgb(HT_LINE)); doc.setLineWidth(.15); doc.line(M, y + rh, W - M, y + rh);
+      cols.forEach((c, i) => {
+        let v = isTot ? r[i] : c.v(r); v = v == null ? '' : String(v);
+        const cw = c.w * k; const tx = doc.splitTextToSize(v, cw - 1.6)[0] || '';
+        doc.setFont('helvetica', (c.k === 'name' || isTot) ? 'bold' : 'normal'); doc.setFontSize(fs);
+        if(c.n && v.startsWith('-')) doc.setTextColor(192, 57, 43); else doc.setTextColor(27, 35, 51);
+        doc.text(tx, c.n ? xs[i] + cw / 2 : xs[i] + 1.2, y + 3.9, c.n ? { align:'center' } : undefined);
+      });
+      y += rh;
+    };
+    head(sub); y = 26; thead();
+    rows.forEach((r, ri) => line(r, ri, false));
+    if(total) line(total, 0, true);
+    if(!rows.length){ doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(120, 120, 120); doc.text('Aucune ligne', M + 2, y + 5); }
+  };
+  const rec = _htRows('recap'), tc = _htCols('recap'), tt = _htTotals(rec);
+  table('Tableau des heures', 'recap', rec, rec.length ? tc.map(c => c.k === 'name' ? 'TOTAL' : c.v(tt)) : null);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.2); doc.setTextColor(90, 100, 115);
+  doc.text(doc.splitTextToSize('S + n° : heures sup. de la semaine au-delà de 35 h (négatif = heures en moins) ou motif d\'absence. H. sup : total à payer. CP / CSS / Autres abs. : jours. Zones : trajets par zone (GD = grand déplacement). Véh. perso : trajets avec la voiture personnelle.', W - 2 * M), M, H - 15);
+  doc.addPage();
+  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
+  table('Détail des journées', 'days', det, det.length ? ['TOTAL', '', '', '', '', '', _htNum(det.reduce((a, d) => a + (+d.hours || 0), 0)), det.filter(d => d.panier).length || '', '', det.filter(d => d.perso).length || ''] : null);
+  const n = doc.getNumberOfPages();
+  for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140, 150, 165);
+    doc.text('Notybat — Tableau des heures — ' + _ht.month, M, H - 5); doc.text('Page ' + i + ' / ' + n, W - M, H - 5, { align:'right' }); }
+  return doc.output('blob');
+}
+async function htPdf(){
+  try{ showToast('Création du PDF…'); const b = await _htPdfBlob();
+    await saveBlobToDevice(b, 'heures-' + _ht.slug + '.pdf', 'application/pdf', ['.pdf']); }
+  catch(e){ showToast('❌ PDF : ' + (e && e.message || e)); }
+}
+
+/* ── Impression (navigateur / PC). Sur téléphone (appli) : PDF, à imprimer depuis le lecteur PDF ── */
+function htPrint(){
+  const native = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+  if(native){ htPdf(); return; }
+  const tbl = (sub, tab, rows, total) => {
+    const cols = _htCols(tab);
+    return `<h2>${escapeHtml(sub)}</h2><table><thead><tr>${cols.map(c => `<th class="${c.n ? 'n' : ''}">${escapeHtml(c.l)}</th>`).join('')}</tr></thead><tbody>` +
+      rows.map(r => '<tr>' + cols.map(c => { const v = String(c.v(r)); return `<td class="${c.n ? 'n' : ''}${c.n && v.startsWith('-') ? ' neg' : ''}${c.k === 'name' ? ' b' : ''}">${escapeHtml(v)}</td>`; }).join('') + '</tr>').join('') +
+      '</tbody>' + (total ? '<tfoot><tr>' + total.map((v, i) => `<td class="${i ? 'n' : ''}">${escapeHtml(String(v))}</td>`).join('') + '</tr></tfoot>' : '') + '</table>';
+  };
+  const rec = _htRows('recap'), tc = _htCols('recap'), tt = _htTotals(rec);
+  const det = _ht.days.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr') || a.date.localeCompare(b.date));
+  const logo = new URL('icons/logo-header-v2.png', location.href).href;
+  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Heures ${escapeHtml(_ht.month)}</title><style>
+    @page{ size:A4 landscape; margin:9mm; }
+    *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; box-sizing:border-box; }
+    body{ font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; color:#1B2333; margin:0; font-size:9.5px; }
+    .hd{ display:flex; align-items:center; gap:10px; background:#${HT_NAVY}; color:#fff; padding:10px 14px; border-bottom:3px solid #${HT_OR}; }
+    .hd img{ width:34px; height:34px; } .hd .br{ font-size:21px; font-weight:900; } .hd .br b{ color:#${HT_OR}; }
+    .hd .t{ margin-left:auto; text-align:right; } .hd .t div{ font-size:15px; font-weight:800; } .hd .t small{ color:#C8D0DC; font-size:10px; }
+    h2{ font-size:13px; margin:12px 0 6px; color:#${HT_NAVY}; } h2.pb{ page-break-before:always; }
+    table{ width:100%; border-collapse:collapse; } th{ background:#${HT_NAVY}; color:#fff; padding:5px 4px; text-align:left; border-bottom:2px solid #${HT_OR}; font-size:9px; }
+    td{ padding:4px; border-bottom:1px solid #${HT_LINE}; } tbody tr:nth-child(even) td{ background:#${HT_ZEBRA}; }
+    .n{ text-align:center; } .neg{ color:#C0392B; } .b{ font-weight:700; }
+    tfoot td{ background:#FFD3A8; font-weight:800; border-top:2px solid #${HT_OR}; } thead{ display:table-header-group; } tr{ page-break-inside:avoid; }
+    .lg{ color:#5A6473; font-size:8.5px; margin-top:6px; }
+  </style></head><body>
+    <div class="hd"><img src="${logo}" alt=""><div class="br">Noty<b>bat</b></div><div class="t"><div>Tableau des heures — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + ' · ' : '') + 'Période ' + _ht.period + ' · édité le ' + _ht.edited)}</small></div></div>
+    ${tbl('Récapitulatif par salarié', 'recap', rec, rec.length ? tc.map(c => c.k === 'name' ? 'TOTAL' : c.v(tt)) : null)}
+    <div class="lg">S + n° : heures sup. de la semaine au-delà de 35 h (négatif = heures en moins) ou motif d'absence. H. sup : total à payer. CP / CSS / Autres abs. : jours. Zones : trajets par zone (GD = grand déplacement). Véh. perso : trajets avec la voiture personnelle.</div>
+    ${tbl('Détail des journées', 'days', det, null).replace('<h2>', '<h2 class="pb">')}
+  </body></html>`;
+  let fr = document.getElementById('htPrintFrame');
+  if(fr) fr.remove();
+  fr = document.createElement('iframe'); fr.id = 'htPrintFrame';
+  fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(fr);
+  fr.onload = () => setTimeout(() => { try{ fr.contentWindow.focus(); fr.contentWindow.print(); }catch(e){ htPdf(); } }, 250);
+  fr.srcdoc = html;
+}
+
+/* ── Envoyer au comptable : partage Excel + PDF (ou téléchargement) ── */
+async function htShare(){
+  try{
+    showToast('Préparation des fichiers…');
+    const [x, p] = await Promise.all([_htExcelBlob(), _htPdfBlob()]);
+    const fx = new File([x], 'heures-' + _ht.slug + '.xlsx', { type:x.type }), fp = new File([p], 'heures-' + _ht.slug + '.pdf', { type:'application/pdf' });
+    if(navigator.canShare && navigator.canShare({ files:[fx, fp] })){
+      await navigator.share({ files:[fx, fp], title:'Heures ' + _ht.month, text:'Tableau des heures ' + _ht.month + (_ht.company ? ' — ' + _ht.company : '') });
+      return;
+    }
+    await saveBlobToDevice(x, fx.name, x.type, ['.xlsx']);
+    await saveBlobToDevice(p, fp.name, 'application/pdf', ['.pdf']);
+    showToast('✅ Excel et PDF enregistrés : joins-les à ton e-mail pour le comptable');
+  }catch(e){ if(!(e && e.name === 'AbortError')) showToast('❌ ' + (e && e.message || e)); }
 }
 
 /* [comptaedit] Pour un ouvrier donné, renvoie une copie de device.attendance
@@ -38829,6 +39203,7 @@ function prmOpen(pg){
     if(pg === 'pcstart' && typeof pcsRender === 'function') pcsRender();
     if(pg === 'donnees') renderTrash();
     if(pg === 'entreprise') rwCoRender();
+    if(pg === 'factures') rwFactRender();
   }catch(e){}
   const body = document.getElementById('parametresModalBody'); if(body) body.scrollTop = 0;
 }
@@ -39046,6 +39421,7 @@ function _paramApplyRoles(){
   const native = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
   { const r = document.getElementById('prmRowAuto'); if(r) r.dataset.roleHidden = (native || dev) ? '' : '1'; }
   { const r = document.getElementById('prmRowEntQ'); if(r) r.dataset.roleHidden = (dev || role === 'patron') ? '' : '1'; }   // v5.41.439 — patron : questions d'entretien
+  rwFactRow();   // v5.50.0 — Factures : patron, après un paiement
   // tuiles de l'accueil : seulement en mode simple (toujours actif sur PC)
   const sm = typeof simpleModeIsActive === 'function' ? simpleModeIsActive() : true;
   const cfg = document.getElementById('simpleModeConfig'); if(cfg && sm) cfg.style.display = '';
@@ -39242,27 +39618,95 @@ function _rwPlanCardHtml(p){
   const unl = p.plan === 'interne';
   const seatsTxt = unl ? (p.used + ' comptes · sans limite') : (p.used + ' / ' + p.seats + ' comptes');
   const head = p.plan === 'essai'
-    ? `Essai gratuit <span style="color:var(--wood);">· ${p.trialLeft > 0 ? p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' restant' + (p.trialLeft > 1 ? 's' : '') : 'terminé'}</span>`
+    ? `1er mois offert <span style="color:var(--wood);">· ${p.trialLeft > 0 ? p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' restant' + (p.trialLeft > 1 ? 's' : '') : 'terminé'}</span>`
     : escapeHtml(p.label) + (p.price ? ` <span style="color:var(--wood);">· ${p.price} €/mois</span>` : '');
   return `<div class="prm-sec">Ma formule</div><div class="card">
     <div class="hint">Formule actuelle</div><div style="font-size:19px;font-weight:900;margin-top:2px;">${head}</div>
-    ${p.plan !== 'essai' && p.plan !== 'interne' ? `<button class="btn btn-outline btn-block btn-sm" style="margin-top:10px;" onclick="rwShopOpen({ gerer:'1', co: ((_rwCo && _rwCo.company && _rwCo.company.code) || '') })">💳 Gérer mon abonnement et mes factures</button>` : ''}
-    ${p.offer === 'fondateur' ? '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(238,138,46,.14);border:1.5px solid var(--wood);"><b>⭐ Offre Fondateur</b><div class="hint" style="margin:2px 0 0;">Tu fais partie des 10 premières entreprises : 3 mois d\'essai, puis ton prix est bloqué à vie, même si les tarifs augmentent.</div></div>' : ''}
+    ${p.plan !== 'essai' && p.plan !== 'interne' ? `<button class="btn btn-outline btn-block btn-sm" style="margin-top:10px;" onclick="rwFactOrShop()">🧾 Mes factures et mon abonnement</button>` : ''}
+    ${p.offer === 'fondateur' ? '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(238,138,46,.14);border:1.5px solid var(--wood);"><b>⭐ Offre Fondateur</b><div class="hint" style="margin:2px 0 0;">Tu fais partie des 5 premières entreprises : −20 % sur ton 1er mois payé (mensuel) ou sur ta 1re année (annuel).</div></div>' : ''}
     ${p.plan === 'essai' ? '<div class="hint" style="margin-top:4px;">Toute l\'appli est incluse, quelle que soit la formule : seul le nombre de comptes change.</div>' : ''}
     <div class="hint" style="margin-top:10px;">Comptes utilisés : <b style="color:var(--ink);">${seatsTxt}</b></div>${unl ? '' : `<div class="rw-bar"><i style="width:${pct}%;${p.full ? 'background:var(--red);' : ''}"></i></div>`}
     ${p.full && !unl ? '<div class="hint" style="margin-top:6px;color:var(--red);">Entreprise complète : les nouveaux ne peuvent plus rejoindre.</div>' : ''}
     ${unl ? '' : `<div class="rw-plans">${RW_PLAN_OFFERS.map(([k, l, pr, n]) => `<div class="rw-pl ${k === p.plan ? 'on' : ''}" onclick="rwPlanChoose('${k}')"><b>${l}</b><div class="p">${pr} €</div><small>par mois HT</small><small>${n}</small></div>`).join('')}</div>
-    <div class="hint" style="margin-top:8px;">Entreprise : 4 € par compte au-delà de 25. Annuel : 2 mois offerts. Toutes les fonctions, le support, la maintenance et les mises à jour sont inclus dans chaque formule.</div>
-    <div style="margin-top:10px;padding:10px;border-radius:12px;border:1.5px dashed var(--line);"><b>🚀 Mise en service — sur devis (facultatif)</b><div class="hint" style="margin-top:4px;">On configure ton entreprise à ta place : reprise de tes chantiers, équipe, contacts et dépôt, puis prise en main avec tes chefs d'équipe. Prix selon la taille de l'entreprise et la quantité de données à reprendre.</div>
-      <button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwPlanChoose('mes')">Demander un devis</button></div>`}
+    <div class="hint" style="margin-top:8px;">Mensuel : 1er mois offert. Annuel : 2 mois offerts. Entreprise : 4 € par compte au-delà de 25. Toutes les fonctions, le support, la maintenance et les mises à jour sont inclus dans chaque formule. Paiement par carte, entreprise ou particulier.</div>
+    <div style="margin-top:10px;padding:10px;border-radius:12px;border:1.5px dashed var(--line);"><b>🚀 Mise en route personnalisée — sur devis</b><div class="hint" style="margin-top:4px;">On installe Notybat pour toi : équipe, chantiers, stock de machines, camions, tableau d'heures de ton comptable. Quelques questions, puis tu choisis quand on t'appelle.</div>
+      <button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwPlanChoose('mes')">📞 Demander un devis</button></div>`}
   </div>`;
 }
 /* v5.49.0 — Achat : ouvre le panier du site, formule + code entreprise déjà remplis */
 function rwPlanChoose(k){
   if(_rwHidePrices()) return;   // v5.41.421
   const co = (_rwCo && _rwCo.company) || {};
-  if(k === 'mes') rwShopOpen({ mes:'1', co: co.code || '' });
+  if(k === 'mes') rwShopOpen({ devis:'1', co: co.code || '' });   // v5.51.0 — mise en route sur devis
   else rwShopOpen({ plan:k, cycle:'month', co: co.code || '' });
+}
+/* ═══ v5.50.0 — Onglet Factures (Paramètres) : patron uniquement, visible après un 1er paiement ═══
+   Le serveur (notybat-shop, op « invoices ») vérifie le jeton de connexion et ne répond qu'au compte qui a payé. */
+const RW_SHOP_API = SUPA_URL + '/functions/v1/notybat-shop';
+let _rwFact = null;
+function _rwFactPaid(){ try{ const c = JSON.parse(localStorage.getItem('rwood-fact') || 'null'); return !!(c && c.paid); }catch(e){ return false; } }
+function _rwFactIsPatron(){ const role = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; return role === 'patron' || !!(_rwCo && _rwCo.me && _rwCo.me.isPatron); }
+function rwFactRow(){
+  const r = document.getElementById('prmRowFact'); if(!r) return;
+  const on = _rwFactIsPatron() && _rwFactPaid();
+  r.dataset.roleHidden = on ? '' : '1'; r.style.display = on ? '' : 'none';
+  const v = document.getElementById('prmVFact'); if(v) v.textContent = (on && _rwFact && _rwFact.invoices && _rwFact.invoices.length) ? String(_rwFact.invoices.length) : '';
+}
+async function rwFactFetch(){
+  if(!_rwFactIsPatron()) return null;
+  const tok = typeof rwGoogleToken === 'function' ? await rwGoogleToken() : null;
+  if(!tok) throw new Error('Connecte-toi avec Google pour voir tes factures');
+  const code = (_rwCo && _rwCo.company && !_rwCo.company.legacy && _rwCo.company.code) || (data.settings && data.settings.companyCode) || '';
+  const r = await fetch(RW_SHOP_API, { method:'POST', headers:{ 'Content-Type':'application/json', apikey:SUPA_KEY, Authorization:'Bearer ' + SUPA_KEY },
+    body: JSON.stringify({ op:'invoices', token:tok, company:code }) });
+  const j = await r.json().catch(() => ({}));
+  if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  try{ localStorage.setItem('rwood-fact', JSON.stringify({ paid: !!j.paid, t: Date.now() })); }catch(e){}
+  _rwFact = j; rwFactRow(); return j;
+}
+function rwFactOpenUrl(u){
+  if(!u) return;
+  try{ const B = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser; if(B && B.open){ B.open({ url:u }); return; } }catch(e){}
+  window.open(u, '_blank', 'noopener');
+}
+function rwFactOrShop(){
+  if(_rwFactPaid()) prmOpen('factures');
+  else rwShopOpen({ gerer:'1', co: ((_rwCo && _rwCo.company && _rwCo.company.code) || '') });
+}
+async function rwFactRender(){
+  const el = document.getElementById('rwFactBody'); if(!el) return;
+  if(!_rwFactIsPatron()){ el.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Les factures sont réservées au patron.</div>'; return; }
+  el.innerHTML = '<div class="hint" style="text-align:center;padding:20px;">Chargement…</div>';
+  let j; try{ j = await rwFactFetch(); }catch(e){ el.innerHTML = '<div class="card"><div class="hint">⚠️ ' + escapeHtml(e.message) + '</div><button class="btn btn-outline btn-block btn-sm" style="margin-top:8px;" onclick="rwFactRender()">Réessayer</button></div>'; return; }
+  if(!j || !j.paid){ el.innerHTML = '<div class="card"><div class="hint">Aucun paiement pour l\'instant : tes factures apparaîtront ici après ton premier paiement.</div></div>'; return; }
+  const PL = { solo:'Solo', equipe:'Équipe', entreprise:'Entreprise' };
+  const ST = { active:['Actif','var(--green)'], past_due:['Paiement en retard','var(--red)'], canceled:['Résilié','var(--ink-soft, #8a96a8)'], paid_once:['Mise en route payée','var(--green)'] };
+  const st = ST[j.status] || [j.status || '—', 'var(--ink-soft, #8a96a8)'];
+  const dt = t => { try{ return new Date(typeof t === 'number' ? t * 1000 : t).toLocaleDateString('fr-FR', { day:'numeric', month:'short', year:'numeric' }); }catch(e){ return ''; } };
+  const eur = n => (Math.round(n * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: n % 1 ? 2 : 0 }) + ' €';
+  let h = '<div class="prm-sec">Mon abonnement</div><div class="card">' +
+    '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;"><div style="font-size:18px;font-weight:900;">' + escapeHtml(j.plan ? 'Formule ' + (PL[j.plan] || j.plan) : 'Sans abonnement') + '</div>' +
+    '<span style="font-weight:800;font-size:13px;color:' + st[1] + ';">● ' + escapeHtml(st[0]) + '</span></div>' +
+    (j.plan ? '<div class="hint" style="margin-top:4px;">' + (j.cycle === 'year' ? 'Annuel' : 'Mensuel') + (j.period_end ? ' · prochaine échéance le ' + dt(j.period_end) : '') + '</div>' : '') + '</div>';
+  if(j.denied){
+    h += '<div class="card"><div class="hint">🔒 Les factures sont visibles uniquement avec le compte Google qui a payé (' + escapeHtml(j.payer || '') + '). Connecte-toi avec ce compte pour les voir.</div></div>';
+    el.innerHTML = h; return;
+  }
+  const inv = j.invoices || [];
+  h += '<div class="prm-sec">Mes factures</div>';
+  if(!inv.length) h += '<div class="card"><div class="hint">Aucune facture pour l\'instant. Pendant le mois offert, la première facture est à 0 €.</div></div>';
+  else h += '<div class="card" style="padding:4px 14px;">' + inv.map(i => {
+    const paid = i.status === 'paid';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line);">' +
+      '<div style="flex:1;min-width:0;"><div style="font-weight:800;">' + escapeHtml(dt(i.date)) + ' · ' + eur(i.amount || 0) + '</div>' +
+      '<div class="hint" style="margin:2px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(i.number || '') + (i.label ? ' · ' + escapeHtml(i.label) : '') + '</div>' +
+      '<div style="font-size:12px;font-weight:800;color:' + (paid ? 'var(--green)' : 'var(--red)') + ';">' + (paid ? '✓ Payée' : (i.status === 'open' ? 'À payer' : escapeHtml(i.status || ''))) + '</div></div>' +
+      (i.pdf ? '<button class="btn btn-outline btn-sm" onclick="rwFactOpenUrl(' + escapeHtml(JSON.stringify(i.pdf)) + ')">PDF</button>' : '') +
+      (i.url ? '<button class="btn btn-outline btn-sm" onclick="rwFactOpenUrl(' + escapeHtml(JSON.stringify(i.url)) + ')">' + (paid ? 'Voir' : 'Payer') + '</button>' : '') + '</div>';
+  }).join('') + '</div>';
+  if(j.portal && !_rwHidePrices()) h += '<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="rwFactOpenUrl(' + escapeHtml(JSON.stringify(j.portal)) + ')">💳 Changer de carte, de formule ou résilier</button>';
+  h += '<div class="hint" style="margin-top:10px;">Chaque facture est aussi envoyée par e-mail après le paiement.</div>';
+  el.innerHTML = h;
 }
 async function rwCoTradeSet(t){ try{ await _rwCoOp('company_trade_set', { trade:t }); data.settings.companyTrade = t; saveData(); showToast('Métier mis à jour'); }catch(e){ showToast('⚠️ ' + e.message); } }
 /* Patron : fin d'essai → rappel (une fois par jour) */
@@ -39274,7 +39718,7 @@ function _rwPlanNag(j){
   if(p.trialLeft > 3) return;
   const k = 'rwood-plan-nag-' + new Date().toISOString().slice(0, 10);
   try{ if(localStorage.getItem(k)) return; localStorage.setItem(k, '1'); }catch(e){}
-  showToast(p.trialLeft > 0 ? '⏳ Ton essai gratuit se termine dans ' + p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' : Paramètres › Mon entreprise › Ma formule' : '⏳ Ton essai gratuit est terminé : choisis ta formule dans Paramètres › Mon entreprise');
+  showToast(p.trialLeft > 0 ? '⏳ Ton mois offert se termine dans ' + p.trialLeft + ' jour' + (p.trialLeft > 1 ? 's' : '') + ' : Paramètres › Mon entreprise › Ma formule' : '⏳ Ton mois offert est terminé : choisis ta formule dans Paramètres › Mon entreprise');
 }
 /* DEV : entreprises et formules (avant le paiement Stripe) */
 async function rwDevCompanies(){
@@ -39329,6 +39773,7 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(async () => {
     if(_rwCoCheckSwitch(j)) return;
     _rwCoSyncRole(j);
     _rwPlanNag(j);
+    if(j.me && j.me.isPatron) rwFactFetch().catch(() => {});   // v5.50.0 — onglet Factures après un paiement
     if(j.pendingCount) showToast('🔔 ' + j.pendingCount + ' rôle' + (j.pendingCount > 1 ? 's' : '') + ' à valider : Paramètres › Mon entreprise');
   }catch(e){ /* porte d'entrée pas encore déployée : rien */ }
 }, 6000));
@@ -50222,9 +50667,27 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.49.0';
+const APP_VERSION = '5.51.0';
 
 const CHANGELOG = [
+  {
+    version: '5.51.0',
+    date: '25/10/2026',
+    entries: [
+      { icon: '📊', text: "Nouveau « Tableau des heures » du mois (Fiches d'heures › PDF/Excel du mois) : récapitulatif par salarié (heures, heures sup par semaine, CP, CSS, absences, paniers, zones de trajet, véhicule perso) et détail jour par jour (chantier, tâche, heures). Tri en touchant une colonne, recherche, filtre par salarié." },
+      { icon: '🖨', text: "Le tableau s'imprime et s'enregistre en Excel et en PDF, aux couleurs Notybat. Bouton « Envoyer au comptable » : Excel + PDF prêts à partager." },
+      { icon: '📞', text: "Mise en route personnalisée : sur devis. « Demander un devis » pose quelques questions puis te laisse choisir le jour et l'heure où on t'appelle." }
+    ]
+  },
+  {
+    version: '5.50.0',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🧾', text: "Nouvel onglet « Factures » dans les Paramètres (patron uniquement, après un premier paiement) : toutes les factures Notybat en PDF, l'état de l'abonnement et la prochaine échéance." },
+      { icon: '💳', text: "Paiement par carte pour les entreprises (avec SIRET) comme pour les particuliers (sans SIRET). Mensuel : 1er mois offert. Annuel : 2 mois offerts. Offre Fondateur pour les 5 premières entreprises : −20 % sur le 1er mois payé ou la 1re année." },
+      { icon: '📊', text: "Tableau des heures pour le comptable : modèle Excel pour toutes les entreprises." }
+    ]
+  },
   {
     version: '5.49.0',
     date: '25/10/2026',
@@ -90035,8 +90498,11 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       </div>
       <div id="pdfWeeksList" style="max-height:24vh; overflow-y:auto; display:flex; flex-direction:column; gap:5px;"></div>
 
-      <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="generatePDFFromSelection()">
-        🖨 Générer le PDF
+      <button class="btn btn-primary btn-block" style="margin-top:14px;" onclick="openHoursTable()">
+        📊 Tableau des heures (voir, trier, imprimer, Excel, PDF)
+      </button>
+      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generatePDFFromSelection()">
+        🖨 Fiches d'heures détaillées (PDF)
       </button>
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generateSalaryXlsx()">
         <img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Générer le tableau salaire (Excel)
@@ -90045,6 +90511,29 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   </div>
 </div>
 
+
+<!-- v5.51.0 — MODAL : Tableau des heures du mois (format Notybat) -->
+<div class="modal-overlay" id="modal-hoursTable">
+  <div class="modal ht-modal">
+    <div class="modal-header">
+      <div style="min-width:0;"><h2 id="htTitle" style="margin:0;font-family:inherit;">Tableau des heures</h2><div class="hint" id="htSub" style="margin:2px 0 0;"></div></div>
+      <button class="modal-close" onclick="closeModal('hoursTable')">×</button>
+    </div>
+    <div class="ht-bar">
+      <div class="ht-tabs" id="htTabs"><button type="button" data-t="recap" class="on" onclick="htSetTab('recap')">Récapitulatif</button><button type="button" data-t="days" onclick="htSetTab('days')">Détail par jour</button></div>
+      <select id="htWho" onchange="_htWho=this.value;htRender()" style="display:none;"></select>
+      <input id="htSearch" type="search" placeholder="🔎 Rechercher (nom, chantier…)" oninput="_htQ=this.value;htRender()">
+      <div class="ht-act">
+        <button class="btn btn-outline btn-sm" onclick="htPrint()">🖨 Imprimer</button>
+        <button class="btn btn-outline btn-sm" onclick="htExcel()">📊 Excel</button>
+        <button class="btn btn-outline btn-sm" onclick="htPdf()">📄 PDF</button>
+        <button class="btn btn-primary btn-sm" onclick="htShare()">📤 Envoyer au comptable</button>
+      </div>
+    </div>
+    <div class="ht-wrap" id="htWrap"></div>
+    <div class="hint" id="htNote" style="margin-top:8px;"></div>
+  </div>
+</div>
 
 <!-- [RETIRÉ] Ancienne modale "Panneau Mode Développeur" — remplacée par la
      vraie vue de navigation #view-dev (voir plus haut dans le fichier,
@@ -93822,6 +94311,27 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   .prm-ic .rw-emo{ width:18px; height:18px; vertical-align:middle; }
   .empty .icon .rw-emo{ width:1em; height:1em; stroke-width:1.6; color:var(--ink-soft); }
   /* v5.48.0 — émojis remplacés par les icônes PNG Notybat */
+  /* v5.51.0 — Tableau des heures */
+  .modal.ht-modal{ max-width:min(1400px,98vw); width:100%; display:flex; flex-direction:column; }
+  body.pc-mode .modal.ht-modal{ border-radius:18px; max-height:92vh; }
+  .ht-bar{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0 10px; }
+  .ht-tabs{ display:flex; background:var(--bg-elev); border:1.5px solid var(--line); border-radius:12px; padding:3px; }
+  .ht-tabs button{ border:0; background:transparent; color:var(--ink-soft); font:800 13px/1 inherit; font-family:inherit; padding:8px 12px; border-radius:9px; cursor:pointer; }
+  .ht-tabs button.on{ background:var(--wood); color:#1a0f04; }
+  #htSearch, #htWho{ flex:1; min-width:150px; padding:9px 11px; border-radius:11px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font:14px inherit; font-family:inherit; }
+  .ht-act{ display:flex; gap:6px; flex-wrap:wrap; }
+  .ht-wrap{ overflow:auto; border:1.5px solid var(--line); border-radius:14px; flex:1; min-height:200px; max-height:62vh; }
+  .ht-t{ border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+  .ht-t th{ position:sticky; top:0; z-index:2; background:#0E1524; color:#fff; text-align:left; padding:9px 8px; font-weight:800; font-size:12px; white-space:nowrap; cursor:pointer; user-select:none; border-bottom:2px solid #FF8A1E; }
+  .ht-t th i{ font-style:normal; opacity:.45; margin-left:4px; font-size:10px; } .ht-t th.on i{ opacity:1; color:#FF8A1E; }
+  .ht-t td{ padding:8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  .ht-t tbody tr:nth-child(even) td{ background:rgba(255,255,255,.03); }
+  .ht-t tbody tr:hover td{ background:rgba(255,138,30,.08); }
+  .ht-t th:first-child, .ht-t td:first-child{ position:sticky; left:0; z-index:1; background:var(--bg); font-weight:800; }
+  .ht-t th:first-child{ z-index:3; background:#0E1524; }
+  .ht-t .n{ text-align:center; } .ht-t td.neg{ color:var(--red); } .ht-t td.abs{ color:var(--wood); font-weight:700; }
+  .ht-t tfoot td{ position:sticky; bottom:0; background:#3a2a1a; color:var(--ink); font-weight:900; border-top:2px solid #FF8A1E; }
+  .ht-t .empty-row{ text-align:center; color:var(--ink-soft); padding:22px; }
   .rw-emo-i{ display:inline-block !important; width:1.2em; height:1.2em; vertical-align:-0.24em; object-fit:contain; flex-shrink:0; margin:0 .05em; -webkit-user-drag:none; user-select:none; }
   .empty .icon .rw-emo-i{ width:1em; height:1em; }
   /* sur fond orange ou rouge plein : icône en blanc */

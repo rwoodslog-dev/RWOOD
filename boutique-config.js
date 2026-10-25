@@ -39,11 +39,24 @@ window.NB_SHOP = {
     { id:'entreprise', name:'Entreprise', month:99, seats:25, seatsTxt:"jusqu'à 25 comptes", tag:'',
       pitch:'Pour les structures avec bureau, conducteurs et plusieurs pôles.' },
   ],
-  yearlyMonthsFree: 2,       // annuel : 2 mois offerts (paie 10 mois sur 12)
+  /* Réductions pour tous :
+     - mensuel : le 1er mois est offert (période gratuite Stripe, carte demandée, aucun débit avant 30 jours)
+     - annuel  : 2 mois offerts (on paie 10 mois sur 12) */
+  monthFreeFirst: true,
+  yearlyMonthsFree: 2,
   extraSeat: 4,              // € HT / mois par compte au-delà de 25 (formule Entreprise)
-  trialDays: 30,             // essai gratuit
-  founder: { on:true, label:'Offre Fondateur', text:'-30 % à vie pour les 10 premières entreprises', pct:30, left:10 },
-  onboarding: { on:true, name:'Mise en service', price:290, text:'On configure ton entreprise à ta place : chantiers, équipe, contacts, formation à distance (2 h).' },
+  /* Offre Fondateur : 5 premières entreprises — -20 % sur le 1er mois payé (mensuel) ou sur la 1re année (annuel) */
+  founder: { on:true, label:'Offre Fondateur', pct:20, max:5, left:5,
+             text:'-20 % sur ton 1er mois (mensuel) ou sur ta 1re année (annuel) — réservé aux 5 premières entreprises' },
+
+  /* Mise en route et options : SUR DEVIS (aucun prix affiché au client).
+     Le bouton « Demander un devis » pose les questions pas à pas puis fait choisir
+     un rendez-vous téléphonique. Les demandes arrivent dans Supabase › rwood_quotes (+ e-mail si Resend). */
+  quote: { on:true, title:'Mise en route personnalisée',
+           text:'On installe Notybat pour toi : équipe, chantiers, stock de machines, camions, et même le tableau d\u2019heures que reçoit ton comptable. Réponds à quelques questions et choisis quand on t\u2019appelle.',
+           days:14,                       // jours proposés pour l'appel
+           weekdays:[1,2,3,4,5],          // 1 = lundi … 5 = vendredi (6 = samedi)
+           slots:['08:00','09:00','10:00','11:00','12:00','13:30','14:30','15:30','16:30','17:30','18:30'] },
 
   /* 4) TÉLÉCHARGEMENTS DIRECTS (1 appui)
      ready:false → le bouton ouvre le guide d'installation à la place, en attendant le fichier. */
