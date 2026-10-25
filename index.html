@@ -13832,7 +13832,7 @@ function goTo(viewName, siteId){
   // toggleParametres()) : tout appel goTo('parametres') restant ailleurs
   // dans le code (tour guidé, tuile dashboard...) doit ouvrir cette pop-up
   // au lieu de chercher une vue inexistante.
-  if(viewName === 'absences'){ _absOpen = true; const _rr = data.settings && data.settings.myProfile && data.settings.myProfile.role; currentHeuresMode = 'absences'; goTo('heures'); return; } // v5.41.395 — absences dans le pointage
+  if(viewName === 'absences'){ _absOpen = true; const _rr = data.settings && data.settings.myProfile && data.settings.myProfile.role; currentHeuresMode = 'absences'; window._hmKeep = true; goTo('heures'); return; } // v5.41.395 — absences dans le pointage
   if(viewName === 'parametres'){ openModal('parametres'); renderParametres(); return; }
   // v5.41.150 — Ouvrier : navigation restreinte à 8 onglets précis (sur
   // demande de Rémi). Garde de sécurité au niveau du routeur lui-même (en
@@ -14028,7 +14028,12 @@ function goTo(viewName, siteId){
   updateFab(viewName, null);
 
   if(viewName === 'chantiers') renderSites();
-  if(viewName === 'heures'){ renderHeures(); setTimeout(() => { try{ _carPtOffer(); }catch(e){} }, 400); }
+  if(viewName === 'heures'){
+    // v5.52.5 — tous les rôles : « Heures » s'ouvre sur Fiches d'heures (sauf demande explicite : Absences, Suivi, Pointage…)
+    if(!window._hmKeep) currentHeuresMode = 'fiches';
+    window._hmKeep = false;
+    renderHeures(); setTimeout(() => { try{ _carPtOffer(); }catch(e){} }, 400);
+  }
   if(viewName === 'stock'){ if(typeof _stockCondReset === 'function') _stockCondReset(); renderStock(); }
   if(viewName === 'dev' && typeof _a3dRenderDevList === 'function') setTimeout(_a3dRenderDevList, 50); // v5.41.212
   if(viewName === 'dev' && typeof devRenderViewAs === 'function'){ devRenderViewAs(); const _dl = document.getElementById('devPanelList'); if(_dl && !_dl.innerHTML.trim() && typeof refreshDevPanel === 'function') refreshDevPanel(); } // v5.41.318 — données chargées tout de suite
@@ -38117,15 +38122,40 @@ function _htModel(){
 }
 
 /* ── Écran ── */
+/* v5.52.6 — choix des semaines directement dans le tableau (pastilles cochables) */
+let _htSrc = null;   // { keys, all:[semaines du mois], on:Set(index) }
 function openHoursTable(){
   const { keys, weeks } = _htSel();
   if(!keys.size){ showToast('Sélectionne au moins un salarié'); return; }
   if(!weeks.length){ showToast('Sélectionne au moins une semaine'); return; }
+  let all = []; try{ all = _getPDFMonthWeeks(); }catch(e){}
+  if(!all.length) all = weeks;
+  const on = new Set(all.map((w, i) => weeks.some(x => +x.monday === +w.monday) ? i : -1).filter(i => i >= 0));
+  _htSrc = { keys, all, on };
   _ht = _htBuild(keys, weeks);
   closeModal('pdfWorkerSelector');
   openModal('hoursTable');
-  htRender();
+  htRender(); htWeeksRender();
   _htLoadRoles().then(() => htRender()).catch(() => {});   // rôles (registre des comptes)
+}
+function htWeeksRender(){
+  const el = document.getElementById('htWeeks'); if(!el || !_htSrc) return;
+  const f = d => String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+  el.innerHTML = '<span class="ht-wl">Semaines :</span>' + _htSrc.all.map((w, i) => {
+    const sun = w.sunday || new Date(w.monday.getTime() + 6 * 86400000);
+    return `<button type="button" class="ht-wk${_htSrc.on.has(i) ? ' on' : ''}" onclick="htWeekToggle(${i})"><b>${_htSrc.on.has(i) ? '✓ ' : ''}S${w.weekNum}</b><small>${f(w.monday)} → ${f(sun)}</small></button>`;
+  }).join('') + (_htSrc.on.size < _htSrc.all.length ? '<button type="button" class="ht-wk all" onclick="htWeekToggle(-1)">Toutes</button>' : '');
+}
+function htWeekToggle(i){
+  if(!_htSrc) return;
+  if(i < 0) _htSrc.all.forEach((_, k) => _htSrc.on.add(k));
+  else if(_htSrc.on.has(i)){ if(_htSrc.on.size === 1){ showToast('Garde au moins une semaine'); return; } _htSrc.on.delete(i); }
+  else _htSrc.on.add(i);
+  const weeks = _htSrc.all.filter((_, k) => _htSrc.on.has(k));
+  const roles = new Map((_ht ? _ht.recap : []).map(p => [p.name, p.roleL]));
+  _ht = _htBuild(_htSrc.keys, weeks);
+  _ht.recap.forEach(p => { if(roles.has(p.name)) p.roleL = roles.get(p.name); });
+  htRender(); htWeeksRender();
 }
 function htRender(){
   if(!_ht) return;
@@ -50856,9 +50886,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.52.4';
+const APP_VERSION = '5.52.6';
 
 const CHANGELOG = [
+  {
+    version: '5.52.6',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🗓', text: "Tableau des heures du mois : choisis les semaines à mettre dans le tableau en touchant leurs pastilles (S40, S41…) en haut ; le tableau, l'Excel et le PDF se mettent à jour aussitôt." }
+    ]
+  },
+  {
+    version: '5.52.5',
+    date: '25/10/2026',
+    entries: [
+      { icon: '⏱', text: "Heures : s'ouvre maintenant sur « Fiches d'heures » pour tous les rôles (et plus sur Absences)." }
+    ]
+  },
   {
     version: '5.52.4',
     date: '25/10/2026',
@@ -90840,6 +90884,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       <div style="min-width:0;"><h2 id="htTitle" style="margin:0;font-family:inherit;">Tableau des heures</h2><div class="hint" id="htSub" style="margin:2px 0 0;"></div></div>
       <button class="modal-close" onclick="closeModal('hoursTable')">×</button>
     </div>
+    <div class="ht-weeks" id="htWeeks"></div>
     <div class="ht-bar">
       <div class="ht-act">
         <button class="btn btn-outline btn-sm" onclick="htPrint()">🖨 Imprimer</button>
@@ -94638,6 +94683,13 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   .ht-cta span{ flex:1; min-width:0; } .ht-cta b{ display:block; font-size:17px; font-weight:900; }
   .ht-cta small{ display:block; font-size:12.5px; font-weight:700; opacity:.8; margin-top:2px; }
   .ht-cta i{ font-style:normal; font-size:28px; font-weight:900; }
+  /* v5.52.6 — choix des semaines */
+  .ht-weeks{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:8px 0 4px; }
+  .ht-wl{ font-weight:800; font-size:13px; color:var(--ink-soft); margin-right:2px; }
+  .ht-wk{ border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink-soft); border-radius:11px; padding:6px 10px; cursor:pointer; font-family:inherit; text-align:left; line-height:1.15; }
+  .ht-wk b{ display:block; font-size:13px; } .ht-wk small{ display:block; font-size:10.5px; font-weight:600; }
+  .ht-wk.on{ border-color:#FF8A1E; background:rgba(255,138,30,.16); color:var(--ink); } .ht-wk.on b{ color:#FF8A1E; }
+  .ht-wk.all{ font-weight:800; font-size:12.5px; }
   /* v5.51.0 — Tableau des heures */
   .modal.ht-modal{ max-width:min(1400px,98vw); width:100%; display:flex; flex-direction:column; }
   body.pc-mode .modal.ht-modal{ border-radius:18px; max-height:92vh; }
