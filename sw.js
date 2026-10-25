@@ -1,11 +1,11 @@
-const CACHE_NAME = 'rwood-cache-v1193';
+const CACHE_NAME = 'rwood-cache-v1195';
 const ASSETS = [
   './manifest.json',
-  './icons/icon-192-v2.png',
-  './icons/icon-512-v2.png',
-  './icons/icon-192-maskable-v2.png',
-  './icons/icon-512-maskable-v2.png',
-  './icons/logo-header-v2.png',
+  './icons/icon-192-v4.png',
+  './icons/icon-512-v4.png',
+  './icons/icon-192-maskable-v4.png',
+  './icons/icon-512-maskable-v4.png',
+  './icons/logo-header-v4.png',
   './icons/chantier-v2.png',
   './icons/afaire-v2.png',
   './icons/note-v2.png',
@@ -169,7 +169,7 @@ self.addEventListener('push', (event) => {
   if(!event.data) return;
   let p; try { p = event.data.json(); } catch(e) { p = {title:'Notybat', body:event.data.text()}; }
   event.waitUntil(self.registration.showNotification(p.title||'Notybat', {
-    body:p.body||'', icon:'./icons/icon-192-v2.png', badge:'./icons/icon-192-v2.png',
+    body:p.body||'', icon:'./icons/icon-192-v4.png', badge:'./icons/icon-192-v4.png',
     tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
     renotify: String(p.tag||'').startsWith('conv-'), // v5.41.475 — 1 notif par conversation, qui sonne à chaque message
   }));
