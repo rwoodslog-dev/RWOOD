@@ -1,0 +1,51 @@
+name: Mise à jour auto de l'app Android (rwood-files.json)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Calculer rwood-files.json
+        run: |
+          node - <<'JS'
+          const fs = require('fs'), path = require('path'), crypto = require('crypto');
+          const root = path.resolve('.');
+          const SKIP = /^(\.git|\.github|supabase|node_modules|vitrine)(\/|$)|(^|\/)\.|\.zip$|\.md$|^rwood-files\.json$|^presentation\.html$/i;
+          const files = {};
+          (function walk(dir){
+            for(const name of fs.readdirSync(dir).sort()){
+              const full = path.join(dir, name);
+              const rel = path.relative(root, full).split(path.sep).join('/');
+              if(SKIP.test(rel)) continue;
+              if(fs.statSync(full).isDirectory()) walk(full);
+              else files[rel] = crypto.createHash('sha1').update(fs.readFileSync(full)).digest('hex');
+            }
+          })(root);
+          const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+          const m = html.match(/const APP_VERSION\s*=\s*'([^']+)'/);
+          const version = (m ? m[1] : 'inconnue') + '-' + files['index.html'].slice(0, 8);
+          fs.writeFileSync(path.join(root, 'rwood-files.json'), JSON.stringify({ version, files }, null, 0));
+          console.log('rwood-files.json :', version, Object.keys(files).length, 'fichiers');
+          JS
+
+      - name: Enregistrer s'il a changé
+        run: |
+          if git diff --quiet -- rwood-files.json; then echo "Déjà à jour"; exit 0; fi
+          git config user.name "rwood-bot"
+          git config user.email "rwood-bot@users.noreply.github.com"
+          git add rwood-files.json
+          git commit -m "rwood-files.json (automatique)"
+          git push
