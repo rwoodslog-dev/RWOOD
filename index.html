@@ -39777,6 +39777,8 @@ function _rwCoApplyLocalRole(role){
 }
 function _rwCoSyncRole(j){
   const me = j && j.me; if(!me || !j.company || !me.role) return;
+  // v5.52.9 — compte développeur : le rôle qu'il a choisi lui-même reste (le rôle de l'entreprise ne l'écrase plus)
+  try{ if(data.settings.devRoleOverride){ const known = Array.isArray(_devUsersCache) && _devUsersCache.length; if(!known || devAccessIsDevUser()) return; } }catch(e){}
   const local = (data.settings.myProfile && data.settings.myProfile.role) || '';
   const pend = me.pendingRole || '';
   if((data.settings.rolePending || '') !== pend){ data.settings.rolePending = pend; saveData(); }
@@ -50893,9 +50895,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.52.8';
+const APP_VERSION = '5.52.9';
 
 const CHANGELOG = [
+  {
+    version: '5.52.9',
+    date: '25/10/2026',
+    entries: [
+      { icon: '🔕', text: "Plus de message « Feuille de route de dépannage à faire » : les feuilles de route n'existent plus dans l'appli, elles sont aussi retirées du widget et d'Android Auto." },
+      { icon: '🔧', text: "Compte développeur : le rôle choisi (Paramètres › Profil › Choisir un rôle) reste en place ; il n'est plus remis au rôle de l'entreprise au démarrage." }
+    ]
+  },
   {
     version: '5.52.8',
     date: '25/10/2026',
@@ -77604,7 +77614,11 @@ setInterval(_pointageSuggestApplyPending, 5 * 60 * 1000);
 
 /* Charge les feuilles ACTIVES qui me concernent : ma clé + (ouvrier) celle
    du chef suivi. */
+/* v5.52.9 — Les feuilles de route n'existent plus dans l'appli (Dépannages retiré du menu) :
+   plus aucun chargement, message, badge ni affichage sur le widget / Android Auto. */
+const RW_ROUTES_OFF = true;
 async function routeLoadMine(){
+  if(RW_ROUTES_OFF){ _routeCache = []; return _routeCache; }
   const me = _routeMyAuthId();
   if(!me){ _routeCache = []; return _routeCache; }
   const keys = [ROUTE_KEY_PREFIX + me];
@@ -77626,7 +77640,7 @@ function _routeUpdateIndicators(){
   if(c) c.textContent = n ? '(' + n + ')' : '';
   try{ if(typeof _renderPinnedBubble === 'function' && typeof _getPinnedNote === 'function') _renderPinnedBubble(_getPinnedNote()); }catch(e){}
 }
-function routeActiveCount(){ return _routeCache.length; }
+function routeActiveCount(){ return RW_ROUTES_OFF ? 0 : _routeCache.length; }
 /* v5.41.476 — feuilles de route reçues pas encore vues (nouvelles ou modifiées) → point rouge chiffré sur l'onglet Dépannages */
 function _routeStamp(r){ return r.id + '|' + (r.editedAt || r.createdAt || ''); }
 function _routeSeenSet(){ try{ return new Set(JSON.parse(localStorage.getItem('rwood-route-seen') || '[]')); }catch(e){ return new Set(); } }
@@ -77643,6 +77657,7 @@ function _routeBadgesRefresh(){
    nouvelle feuille est arrivée. */
 let _routeSeenIds = null;
 async function routeBootCheck(){
+  if(RW_ROUTES_OFF){ _routeCache = []; try{ _routeUpdateIndicators(); }catch(e){} try{ if(typeof _rwPushRoute === 'function') _rwPushRoute(); }catch(e){} return; }
   if(!_routeMyAuthId()) return;
   const list = await routeLoadMine();
   const ids = new Set(list.map(r => r.id));
@@ -88032,7 +88047,7 @@ function routeFavDel(i){ const list = _routeFavs(); list.splice(i, 1); _routeFav
 function routeFavMove(i, d){ const list = _routeFavs(), j = i + d; if(j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; _routeFavsSet(list); }
 function _rwPushRoute(){
   const R = _rwW2(); if(!R) return;
-  const r = (typeof _routeCache !== 'undefined' && _routeCache) ? _routeCache[0] : null;
+  const r = (typeof RW_ROUTES_OFF !== 'undefined' && RW_ROUTES_OFF) ? null : ((typeof _routeCache !== 'undefined' && _routeCache) ? _routeCache[0] : null);   // v5.52.9 — efface la feuille de route du widget / Android Auto
   const extra = { fav: _routeFavs(), web: (typeof APP_VERSION !== 'undefined' ? APP_VERSION : '') };
   const json = !r ? JSON.stringify(extra) : JSON.stringify({ ...extra,
     count: _routeCache.length, routeId: r.id,
@@ -91732,6 +91747,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   if(typeof setMyProfileRole === 'function'){
     const _s = setMyProfileRole;
     window.setMyProfileRole = function(el, role){
+      if(isDev()){ data.settings.devRoleOverride = role; }   // v5.52.9 — rôle choisi par le dev : le serveur ne le remplace plus
       if(devUnlock() && role === 'comptable'){
         data.settings.myProfile = data.settings.myProfile || { workerId:null, role:'chef' };
         data.settings.myProfile.role = 'comptable';
