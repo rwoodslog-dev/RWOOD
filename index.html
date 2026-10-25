@@ -5460,6 +5460,16 @@
   .stk-acts{ display:flex; flex-wrap:wrap; gap:6px; width:100%; margin-top:10px; }
   .stk-acts button{ flex:1 1 auto; min-height:38px; padding:6px 10px; border-radius:10px; border:1px solid var(--line); background:rgba(255,255,255,.04); color:var(--ink); font-size:13px; font-weight:700; font-family:inherit; cursor:pointer; white-space:nowrap; }
   .stk-acts button.del{ color:#E5484D; }
+  /* v5.47.4 — SAV dans le stock camion */
+  .stk-acts button.sav{ color:#fff; background:#E5484D; border-color:#E5484D; }
+  #view-stock .stock-row.stk-sav{ border-left:5px solid #E5484D; }
+  .stk-savb{ background:#E5484D !important; color:#fff !important; margin-left:6px; }
+  .stk-savn{ display:flex; align-items:center; gap:8px; margin-top:6px; font-size:12.5px; color:#FFB4B6; }
+  .stk-savn img{ width:44px; height:44px; border-radius:8px; object-fit:cover; flex-shrink:0; cursor:zoom-in; border:1px solid rgba(229,72,77,.5); }
+  .stk-sav-ph:empty{ display:none; }
+  .stk-sav-ph{ position:relative; }
+  .stk-sav-ph img{ display:block; width:100%; max-height:240px; object-fit:cover; border-radius:12px; border:1px solid var(--line); cursor:zoom-in; }
+  .stk-sav-ph .x{ position:absolute; top:6px; right:6px; width:32px; height:32px; border-radius:50%; border:0; background:rgba(0,0,0,.65); color:#fff; font-size:18px; cursor:pointer; }
   .loan-sec{ font-size:12px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); margin:14px 2px 6px; }
   .loan-sec:first-child{ margin-top:0; }
   .loan-row{ display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-left:5px solid #4CAF79; border-radius:12px; padding:11px 12px; margin-bottom:6px; }
@@ -34357,16 +34367,18 @@ function renderStock(){
       const brandColor = (isTool && item.brand) ? sourceBrandColors[item.brand] : null;
       const borderStyle = brandColor ? `background:${cardTintBackground(brandColor)};` : '';
       const _sel = _stkSel === item.id;
+      const _sav = isTool && item.sav;
       const _acts = !_sel ? '' : (_condMode && isTool && !_stockCondState.loading)
         ? `<div class="stk-acts" onclick="event.stopPropagation()"><button onclick="_stockCondOpenToolEditor('${item.id}')">✏️ Modifier</button><button class="del" onclick="_stockCondDeleteTool('${item.id}')">🗑 Supprimer</button></div>`
-        : readOnly ? '' : `<div class="stk-acts" onclick="event.stopPropagation()"><button onclick="openEditStockModal('${item.id}')">✏️ Modifier</button>${isTool ? `<button onclick="openLoanSheet('${item.id}')">🤝 Prêter</button>` : ''}<button class="del" onclick="deleteStockItem('${item.id}')">🗑 Supprimer</button></div>`;
+        : readOnly ? '' : `<div class="stk-acts" onclick="event.stopPropagation()"><button onclick="openEditStockModal('${item.id}')">✏️ Modifier</button>${isTool ? `<button onclick="openLoanSheet('${item.id}')">🤝 Prêter</button><button class="sav" onclick="stkSavOpen('${item.id}')">⚠️ SAV</button>` : ''}<button class="del" onclick="deleteStockItem('${item.id}')">🗑 Supprimer</button></div>`;
       return _hdr + `
-        <div class="stock-row ${low?'qty-low':''}${_sel?' sel':''}" style="position:relative; ${borderStyle}" onclick="_stkSel=(_stkSel==='${item.id}'?null:'${item.id}');renderStock()">
+        <div class="stock-row ${low?'qty-low':''}${_sel?' sel':''}${_sav?' stk-sav':''}" style="position:relative; ${borderStyle}" onclick="${(_sav && !readOnly) ? `stkSavOpen('${item.id}')` : `_stkSel=(_stkSel==='${item.id}'?null:'${item.id}');renderStock()`}">
           ${(brandColor && !_grp) ? `<span class="stk-dot" style="background:${colorFull ? colorFull(brandColor) : brandColor};"></span>` : ''}
           ${photoHtml}
           <div class="info">
-            <h4>${isTool ? '' : (stockCategoryIcons[item.category || 'quincaillerie'] || '')} ${escapeHtml(item.name)} ${low?'<span class="badge alerte">Stock bas</span>':''}${_loanOutOf(item) ? `<span class="badge" style="background:#E8740C;color:#fff;">🤝 ${escapeHtml(_loanOutOf(item).person)}</span>` : ''}</h4>
+            <h4>${isTool ? '' : (stockCategoryIcons[item.category || 'quincaillerie'] || '')} ${escapeHtml(item.name)}${_sav ? '<span class="badge stk-savb">⚠️ SAV</span>' : ''} ${low?'<span class="badge alerte">Stock bas</span>':''}${_loanOutOf(item) ? `<span class="badge" style="background:#E8740C;color:#fff;">🤝 ${escapeHtml(_loanOutOf(item).person)}</span>` : ''}</h4>
             <div class="unit">${isTool ? escapeHtml(_grp ? metaParts.slice(1).filter(Boolean).join(' · ') : (toolMeta || '')) : escapeHtml(item.unit)}</div>
+            ${_sav ? `<div class="stk-savn">${item.sav.photo ? `<img src="${escapeHtml(item.sav.photo)}" alt="" onclick="event.stopPropagation();openPhotoFullscreen(this.src,'SAV')">` : ''}<span>${item.sav.note ? '« ' + escapeHtml(item.sav.note) + ' »' : 'En SAV'} · ${escapeHtml(item.sav.byName || '')} ${typeof _magSince === 'function' ? _magSince(item.sav.at) : ''}</span></div>` : ''}
           </div>
           ${!isTool ? `
           <div class="qty-controls">
@@ -34382,6 +34394,88 @@ function renderStock(){
     // Activer le lazy loading des photos après injection du HTML
     requestAnimationFrame(() => hydrateMediaElements(document.getElementById('view-stock')));
   }
+}
+
+/* ═══ v5.47.4 — SAV d'un outil du stock camion (tous les rôles) ═══
+   Bouton « ⚠️ SAV » sur l'outil → fenêtre : photo de la panne + texte en dessous.
+   item.sav = { byId, byName, at, note, photo }. Toucher un outil en SAV rouvre la fenêtre
+   (compléter, « ✓ Réparé »). Le conducteur de travaux est prévenu : notification native + centre 🔔. */
+let _stkSavId = null, _stkSavFile = null, _stkSavPhoto = null;
+function stkSavOpen(id){
+  const it = (data.stock || []).find(i => i.id === id); if(!it) return;
+  _stkSavId = id; _stkSavFile = null; _stkSavPhoto = (it.sav && it.sav.photo) || null; _stkSel = null;
+  const edit = !!it.sav;
+  const ex = document.getElementById('modal-stkSav'); if(ex) ex.remove();
+  const d = document.createElement('div'); d.className = 'modal-overlay open'; d.id = 'modal-stkSav';
+  const who = edit ? `<div class="hint" style="margin-top:2px;">Signalé par ${escapeHtml(it.sav.byName || '—')}${it.sav.at ? ' le ' + new Date(it.sav.at).toLocaleDateString('fr-FR', { day:'numeric', month:'long' }) : ''}</div>` : '';
+  d.innerHTML = `<div class="modal"><div class="modal-header"><h2 style="color:#E5484D;">⚠️ ${edit ? 'En SAV' : 'SAV'} : ${escapeHtml(it.name || '')}</h2><button class="modal-close" onclick="document.getElementById('modal-stkSav').remove()">×</button></div>${who}
+    <div class="field" style="margin-top:10px;"><label>Photo de la panne</label><div id="stkSavPh" class="stk-sav-ph"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;"><button type="button" class="btn btn-outline" style="flex:1;" onclick="document.getElementById('stkSavCam').click()">📷 Prendre une photo</button><button type="button" class="btn btn-outline" onclick="document.getElementById('stkSavGal').click()">Galerie</button></div>
+      <input type="file" id="stkSavCam" accept="image/*" capture="environment" style="display:none;" onchange="stkSavPick(this)"><input type="file" id="stkSavGal" accept="image/*" style="display:none;" onchange="stkSavPick(this)"></div>
+    <div class="field"><label>Ce qui ne va pas</label><textarea id="stkSavNote" rows="3" placeholder="Ex : mandrin cassé, ne démarre plus, câble abîmé…" style="width:100%;box-sizing:border-box;font-size:15px;">${escapeHtml(edit ? (it.sav.note || '') : '')}</textarea></div>
+    <button class="btn btn-block" id="stkSavGo" style="margin-top:6px;background:#E5484D;color:#fff;border-color:#E5484D;font-weight:800;height:50px;" onclick="stkSavSave()">${edit ? '💾 Enregistrer et prévenir' : '⚠️ Passer en SAV et prévenir'}</button>
+    ${edit ? `<button class="btn btn-outline btn-block" style="margin-top:8px;color:#4FAE6C;border-color:#2c4a37;" onclick="stkSavEnd()">✓ Réparé — sortir du SAV</button>` : ''}
+    <div class="hint" style="margin-top:8px;text-align:center;">🔔 Le conducteur de travaux est prévenu.</div></div>`;
+  d.addEventListener('click', e => { if(e.target === d) d.remove(); });
+  document.body.appendChild(d);
+  _stkSavPaint();
+}
+function _stkSavPaint(){
+  const box = document.getElementById('stkSavPh'); if(!box) return;
+  const src = _stkSavFile ? (_stkSavFile._url || (_stkSavFile._url = URL.createObjectURL(_stkSavFile))) : _stkSavPhoto;
+  box.innerHTML = src ? `<img src="${escapeHtml(src)}" alt="Photo de la panne" onclick="openPhotoFullscreen(this.src,'SAV')"><button type="button" class="x" title="Retirer la photo" onclick="_stkSavFile=null;_stkSavPhoto=null;_stkSavPaint()">×</button>` : '';
+}
+function stkSavPick(inp){ const f = inp && inp.files && inp.files[0]; if(!f) return; _stkSavFile = f; inp.value = ''; _stkSavPaint(); }
+function _stkMyName(){ const p = (data.settings && data.settings.myProfile) || {}; return ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || p.name || 'Quelqu\'un'; }
+async function _stkSavUpload(file){
+  try{
+    const small = (typeof _magImgToJpeg === 'function' ? await _magImgToJpeg(file, 1280, 0.82) : null) || file;
+    for(let i = 0; i < 2; i++){
+      try{ return await uploadFileToSupabase(small, 'stock-sav'); }catch(e){ await new Promise(r => setTimeout(r, 1200)); }
+    }
+    const th = typeof _magImgToJpeg === 'function' ? await _magImgToJpeg(file, 320, 0.7) : null;   // secours : miniature intégrée
+    if(th && typeof _magFileToDataUrl === 'function'){ showToast('⚠️ Photo gardée en miniature (réseau ?)'); return await _magFileToDataUrl(th); }
+  }catch(e){}
+  showToast('⚠️ Photo non envoyée (réseau ?)'); return null;
+}
+async function stkSavSave(){
+  const it = (data.stock || []).find(i => i.id === _stkSavId); if(!it) return;
+  const b = document.getElementById('stkSavGo'); if(b){ if(b.disabled) return; b.disabled = true; }
+  const note = ((document.getElementById('stkSavNote') || {}).value || '').trim();
+  let photo = _stkSavPhoto || null;
+  if(_stkSavFile){ if(b) b.textContent = '📷 Envoi de la photo…'; const u = await _stkSavUpload(_stkSavFile); if(u) photo = u; }
+  const edit = !!it.sav;
+  if(edit && note === (it.sav.note || '') && photo === (it.sav.photo || null)){ const m = document.getElementById('modal-stkSav'); if(m) m.remove(); return; }
+  if(edit){ it.sav.note = note; it.sav.photo = photo; it.sav.updatedAt = Date.now(); }
+  else it.sav = { byId:(data.settings && data.settings.auth && data.settings.auth.authId) || '', byName:_stkMyName(), at:Date.now(), note, photo };
+  saveData();
+  const m = document.getElementById('modal-stkSav'); if(m) m.remove();
+  renderStock();
+  showToast(edit ? '✓ SAV complété — conducteur prévenu' : '⚠️ ' + (it.name || 'Outil') + ' en SAV — conducteur prévenu');
+  _stkSavNotify(it, edit ? 'a complété le SAV de' : 'a mis en SAV', note, photo);
+}
+function stkSavEnd(){
+  const it = (data.stock || []).find(i => i.id === _stkSavId); if(!it || !it.sav) return;
+  if(!confirm('« ' + (it.name || '') + ' » est réparé ?')) return;
+  it.sav = null; saveData();
+  const m = document.getElementById('modal-stkSav'); if(m) m.remove();
+  renderStock(); showToast('✓ ' + (it.name || 'Outil') + ' sorti du SAV');
+  _stkSavNotify(it, 'a sorti du SAV', '', null, '✅');
+}
+async function _stkSavNotify(it, action, note, photo, icon){
+  try{
+    const tn = (data.settings && data.settings.truckName) || '';
+    const truck = tn ? ' (' + (/^camion/i.test(tn) ? tn : 'camion ' + tn) + ')' : '';
+    const tool = [it.name, it.brand].filter(Boolean).join(' ');
+    const text = (icon || '⚠️') + ' ' + _stkMyName() + ' ' + action + ' ' + tool + truck + (note ? ' — « ' + note + ' »' : '');
+    const roles = ['conducteur'];
+    if(typeof sendAlert === 'function') await sendAlert(text, 'roles', null, null, 'stock-sav', roles, null, null, null, null, null, photo ? { url:photo } : null, { stkItemId:it.id });
+    if(typeof _fetchUsersRegistry === 'function' && typeof notifyPush === 'function'){
+      const me = data.settings && data.settings.auth && data.settings.auth.authId;
+      const ids = ((await _fetchUsersRegistry()) || []).filter(u => u && roles.includes(u.role) && u.authId && u.authId !== me).map(u => u.authId);
+      if(ids.length) notifyPush(ids, (icon || '⚠️') + ' Notybat — SAV', text.replace(/^(⚠️|✅)\s*/, '') + (photo ? ' 📷' : ''), 'stock-sav', 'notifs');
+    }
+  }catch(e){ /* ne bloque jamais la mise en SAV */ }
 }
 
 /* v5.47.1 — vignette d'outil sans photo : icône au trait selon le type */
@@ -50062,9 +50156,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.47.3';
+const APP_VERSION = '5.47.4';
 
 const CHANGELOG = [
+  {
+    version: '5.47.4',
+    date: '25/10/2026',
+    entries: [
+      { icon: '⚠️', text: "Stock camion : bouton « ⚠️ SAV » sur chaque outil (touche l'outil). Une fenêtre s'ouvre pour prendre une photo de la panne, avec l'explication en dessous. L'outil passe en rouge « SAV » avec sa photo et son texte ; le toucher rouvre la fenêtre pour compléter ou « ✓ Réparé ». Pour tous les rôles." },
+      { icon: '🔔', text: "Le conducteur de travaux est prévenu à chaque mise en SAV (et quand c'est complété ou réparé) : notification sur son téléphone/PC et dans le centre 🔔. La toucher affiche la photo." }
+    ]
+  },
   {
     version: '5.47.3',
     date: '25/10/2026',
@@ -86044,8 +86146,8 @@ function _nfCollect(){
     const txt = String(a.text || '').replace(/^.*? : /, '').replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, ''), who = a.senderName || 'Quelqu\'un';
     if(_nfIsNotifRaw(a)){
       const k = a.kind || 'info';
-      const t = k === 'magasin' ? 'Magasin · ' + String(who).split(' ')[0] : k === 'nouveau-chantier' ? 'Nouveau chantier' : k === 'depannage' ? 'Tâche' : k === 'note' ? 'Note de ' + String(who).split(' ')[0] : 'Alerte de ' + who;
-      ch = _nfAdd({ id:'a:' + a.id, k, b0:0, ico:k === 'magasin' ? '🛒' : k === 'nouveau-chantier' ? '🏗️' : k === 'depannage' ? '🛠️' : k === 'note' ? '📝' : '📢', t, b:txt, at:a.createdAt, go:k === 'magasin' ? (a.magMachineId ? 'mag:' + a.magMachineId : 'magasin') : k === 'depannage' ? 'depannages' : k === 'note' && a.siteId ? 'note:' + a.siteId : a.siteId ? 'site:' + a.siteId : '' }) || ch;
+      const t = k === 'magasin' ? 'Magasin · ' + String(who).split(' ')[0] : k === 'stock-sav' ? 'SAV · ' + String(who).split(' ')[0] : k === 'nouveau-chantier' ? 'Nouveau chantier' : k === 'depannage' ? 'Tâche' : k === 'note' ? 'Note de ' + String(who).split(' ')[0] : 'Alerte de ' + who;
+      ch = _nfAdd({ id:'a:' + a.id, k, b0:0, ico:k === 'stock-sav' ? '⚠️' : k === 'magasin' ? '🛒' : k === 'nouveau-chantier' ? '🏗️' : k === 'depannage' ? '🛠️' : k === 'note' ? '📝' : '📢', t, b:txt, at:a.createdAt, go:k === 'stock-sav' ? 'act:' + a.id : k === 'magasin' ? (a.magMachineId ? 'mag:' + a.magMachineId : 'magasin') : k === 'depannage' ? 'depannages' : k === 'note' && a.siteId ? 'note:' + a.siteId : a.siteId ? 'site:' + a.siteId : '' }) || ch;
     } else if(!NF_ACT_KINDS.includes(a.kind)){
       ch = _nfAdd({ id:'m:' + a.id, k:'msg', ico:a.kind === 'photo' ? '📷' : a.kind === 'fichier' ? '📄' : a.kind === 'croquis' ? '📐' : '💬', t:'Message de ' + who, b:txt.slice(0, 400), at:a.createdAt, go:'act:' + a.id }) || ch;
     } else {
@@ -86132,6 +86234,7 @@ function _nfAct(id){
     else if(k === 'evenement') _addEventToAgendaFromAlert(id);
     else if(k === 'absence') _absFromAlert(id);
     else if(k === 'nouveau-chantier') _openSiteFromAlert(id, a.siteId || '');
+    else if(k === 'stock-sav'){ if(a.croquisUrl){ _pfsNavList = []; _pfsNavIndex = -1; openPhotoFullscreen(a.croquisUrl, String(a.text || '').replace(/^⚠️\s*/, '')); } else goTo('stock'); }
     else if((k === 'photo' || k === 'croquis') && a.croquisUrl){ _pfsNavList = []; _pfsNavIndex = -1; openPhotoFullscreen(a.croquisUrl, ''); }
     else if(k === 'fichier' && a.croquisUrl) window.open(a.croquisUrl, '_blank');
   }catch(e){}
