@@ -38257,14 +38257,32 @@ async function _htExcelBlob(){
   const out = await wb.xlsx.writeBuffer();
   return new Blob([out], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
-/* v5.51.6 — rôle de chaque salarié (registre des comptes, sinon fiche de l'appareil) */
+/* v5.52.4 — rôle de chaque salarié = son rôle dans l'appli.
+   Ordre : le profil de son propre appareil (ownerRole) → le registre des comptes (version brute, sans filtre)
+   → la fiche d'équipe. Noms rapprochés souplement (« Marcelli » = « David Marcelli »). « dev » n'est pas un rôle métier. */
+const HT_ROLES = ['patron','conducteur','chef','ouvrier','comptable'];
+function _htNameMatch(a, b){
+  const wa = _rmNameKey(a).split(' ').filter(w => w.length >= 3), wb = _rmNameKey(b).split(' ').filter(w => w.length >= 3);
+  if(!wa.length || !wb.length) return false;
+  if(wa.join(' ') === wb.join(' ')) return true;
+  const [sm, bg] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  return sm.every(w => bg.includes(w)) && sm.some(w => w.length >= 4);
+}
 async function _htLoadRoles(){
   let reg = [];
-  try{ reg = await Promise.race([ (typeof _fetchUsersRegistry === 'function' ? _fetchUsersRegistry() : []), new Promise(r => setTimeout(() => r([]), 4000)) ]) || []; }catch(e){}
-  const map = new Map((reg || []).filter(u => u && u.name).map(u => [_rmNameKey(u.name), u.role]));
+  try{ reg = await Promise.race([ (typeof _fetchUsersRegistryRaw === 'function' ? _fetchUsersRegistryRaw() : []), new Promise(r => setTimeout(() => r([]), 4000)) ]) || []; }catch(e){}
+  const devs = (_comptableLiveData || []).filter(d => d && d.ownerName && HT_ROLES.includes(d.ownerRole));
   (_ht ? _ht.recap : []).forEach(p => {
-    const k = _rmNameKey(p.name), w = p._rw || {};
-    const role = map.get(k) || w.role || (w.ownerName && _rmNameKey(w.ownerName) === k ? w.ownerRole : '') || '';
+    const w = p._rw || {};
+    let role = '';
+    const exactDev = devs.find(d => _rmNameKey(d.ownerName) === _rmNameKey(p.name)) || devs.find(d => _htNameMatch(d.ownerName, p.name));
+    if(exactDev) role = exactDev.ownerRole;
+    if(!role){
+      const u = (reg || []).find(u => u && u.name && _rmNameKey(u.name) === _rmNameKey(p.name) && HT_ROLES.includes(u.role))
+             || (reg || []).find(u => u && u.name && HT_ROLES.includes(u.role) && _htNameMatch(u.name, p.name));
+      if(u) role = u.role;
+    }
+    if(!role && HT_ROLES.includes(w.role)) role = w.role;
     p.roleL = role ? _roleLabel(role) : '';
   });
 }
@@ -50838,9 +50856,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.52.3';
+const APP_VERSION = '5.52.4';
 
 const CHANGELOG = [
+  {
+    version: '5.52.4',
+    date: '25/10/2026',
+    entries: [
+      { icon: '👷', text: "Tableau des heures : le rôle affiché sous chaque nom est maintenant le rôle de la personne dans l'appli (celui de son profil), même si son nom est écrit un peu différemment (« Marcelli » / « David Marcelli »)." }
+    ]
+  },
   {
     version: '5.52.3',
     date: '25/10/2026',
