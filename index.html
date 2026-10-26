@@ -7524,7 +7524,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
                la journée, la prime de trajet est automatiquement DOUBLÉE (voir
                _trajetDayFactor) sur les récaps, fiches d'heures et l'export Excel. -->
           <div id="voiturePersoHint" style="display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--line); font-size:12px; color:var(--wood); font-weight:700;">
-            🚗 Prime de trajet doublée pour cette journée
+            🚗 Trajet + indemnité de transport (véhicule perso) pour cette journée
           </div>
         </div>
 
@@ -30902,7 +30902,7 @@ function _eqFicheHtml(days, A, B, bName){
       if(dh){ nDiff++; return `<td><span class="eq-df h">${dh > 0 ? '+' : ''}${_rplFmtH(dh)} h</span></td>`; }
       return `<td><span class="eq-df ok">✓</span></td>`; }).join('') : '';
   const rPan = rowA.map(g => (!g || !g.c || g.c.abs) ? E : `<td>${g.it.entry.panier ? '✓' : '—'}</td>`).join('');
-  const rTr = rowA.map(g => { if(!g || !g.c || g.c.abs) return E; let t = null; try{ t = _dayEntryTrajet(g.it.day, g.it.entry, A.ctx.sites); }catch(e){} if(!t || !t.rates) return E; trA += t.amount; return `<td class="hours-cell">Z${escapeHtml(String(t.zone))}/${t.amount.toFixed(2).replace('.', ',')}${t.factor > 1 ? ' ×2' : ''}</td>`; }).join('');
+  const rTr = rowA.map(g => { if(!g || !g.c || g.c.abs) return E; let t = null; try{ t = _dayEntryTrajet(g.it.day, g.it.entry, A.ctx.sites); }catch(e){} if(!t || !t.rates) return E; trA += t.amount; return `<td class="hours-cell">Z${escapeHtml(String(t.zone))}/${t.amount.toFixed(2).replace('.', ',')}${t.factor > 1 ? ' VP' : ''}</td>`; }).join('');
   const rT = rowA.map(g => (!g || !g.c || g.c.abs) ? E : `<td class="task-cell">${escapeHtml(g.c.parts.map(p => p.task).filter(Boolean).join(' / ')) || '—'}</td>`).join('');
   const hasTr = rTr.includes('hours-cell');
   const dt = Math.round((tA - tB) * 100) / 100;
@@ -31218,10 +31218,10 @@ function _computeRecap(workerId, weekBuckets, ctx){
   const _zl = _recapZoneList(zonesCount, zonesCountPerso);
   const zonesLignes = _zl
     .map(z => ({ z, n: zonesCount[z] || 0 }))
-    .filter(o => o.n > 0)
+    .filter(o => o.n > 0 && !(window._rwCfg && _rwCfg().zonesOn === false))
     .map(o => {
       const rate = getTrajetRates(o.z);
-      const tj = rate ? rate.trajet : 0;
+      const tj = rate ? _rwTrAmt(rate, 1) : 0;   // v5.54.0
       const sous = tj * o.n;
       cumulTrajet += sous;
       return { z:o.z, n:o.n, rate:tj, sous };
@@ -31231,7 +31231,7 @@ function _computeRecap(workerId, weekBuckets, ctx){
     .filter(o => o.n > 0)
     .map(o => {
       const rate = getTrajetRates(o.z);
-      const tj = rate ? rate.trajet : 0;
+      const tj = rate ? (_rwTrAmt(rate, 2) - _rwTrAmt(rate, 1)) : 0;   // v5.54.0 — en plus du trajet : transport (convention) ou montant perso
       const sous = tj * o.n;
       cumulTrajet += sous;
       return { z:o.z, n:o.n, rate:tj, sous };
@@ -31250,7 +31250,7 @@ function _recapCardHtml(r, title, nameLabel){
   // été utilisé : n'apparaît que s'il y en a au moins un, pour ne pas
   // alourdir le récap des ouvriers qui ne prennent jamais leur voiture.
   const zonesPersoHtml = (r.zonesLignesPerso && r.zonesLignesPerso.length)
-    ? `<div class="recap-sub">Trajet véhicule personnel</div>`
+    ? `<div class="recap-sub">Indemnité véhicule personnel (en plus du trajet)</div>`
       + r.zonesLignesPerso.map(o => `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${o.rate.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${o.sous.toFixed(2).replace('.',',')} €</strong></div>`).join('')
     : '';
   const motifHtml = Object.keys(r.parMotif).length
@@ -31677,10 +31677,10 @@ function _buildRecapDoc(jsPDFLib, opts){
         siteLabel = multiLines.map(l=>l.name).join(' / ') || '—';
         taskLabel = multiLines.map(l=>l.task||'—').join(' / ');
         const info = _entryFirstSiteInfo(e);
-        if(info && info.zone && info.zone !== 'GD'){ const r=getTrajetRates(info.zone); if(r) trajet=`Z${r.zone}/${(r.trajet*voitureFactor).toFixed(2).replace('.',',')}${voitureFactor>1?'×2':''}`; }
+        if(info && info.zone && info.zone !== 'GD'){ const r=getTrajetRates(info.zone); if(r) trajet=`Z${r.zone}/${_rwTrAmt(r,voitureFactor).toFixed(2).replace('.',',')}${voitureFactor>1?' VP':''}`; }
       } else {
         const zone = _dayEntryZone(ad, e, sites);   // v5.41.436 — règle commune
-        if(zone&&zone!=='GD'){ const r=getTrajetRates(zone); if(r) trajet=`Z${r.zone}/${(r.trajet*voitureFactor).toFixed(2).replace('.',',')}${voitureFactor>1?'×2':''}`; }
+        if(zone&&zone!=='GD'){ const r=getTrajetRates(zone); if(r) trajet=`Z${r.zone}/${_rwTrAmt(r,voitureFactor).toFixed(2).replace('.',',')}${voitureFactor>1?' VP':''}`; }
         siteLabel = (e.customSite&&e.customSite.name)||(site?site.name:((ad&&ad.customSite&&ad.customSite.name)||'—'));
         taskLabel = e.task||'—';
       }
@@ -32215,7 +32215,7 @@ function _dayEntryTrajet(day, entry, sites){
   const zone = _dayEntryZone(day, entry, sites);
   const rates = (zone && zone !== 'GD') ? getTrajetRates(zone) : null;
   const f = (entry && entry._voiturePersoEff != null) ? (entry._voiturePersoEff ? 2 : 1) : _trajetDayFactor(day);
-  return { zone, rates, factor: f, amount: rates ? rates.trajet * f : 0 };
+  return { zone, rates, factor: f, amount: rates ? _rwTrAmt(rates, f) : 0 };
 }
 /* Journée travaillée dont le chantier n'a pas de zone (adresse manquante ou zone pas encore calculée) */
 function _dayEntryZoneMissing(day, entry, sites){
@@ -32237,6 +32237,13 @@ function _recapZoneList(){
    la prime doublée n'apparaît pas dans les récaps. */
 function _trajetDayFactor(dayObj){
   return (dayObj && dayObj.voiturePerso) ? 2 : 1;
+}
+/* v5.54.0 — montant d'une journée : véhicule entreprise = trajet ; véhicule perso (f>1) = trajet + transport
+   de la zone (convention) ou + montant perso choisi par le patron. Sans transport connu : ancien calcul (×2). */
+function _rwTrAmt(r, f){
+  if(!r) return 0;
+  if(typeof window._rwTrAmtCfg === 'function') return window._rwTrAmtCfg(r, f);
+  return (+r.trajet || 0) * (f > 1 ? 2 : 1);
 }
 
 /* Nom affichable d'une ligne de chantier multi (site réel ou chantier libre). */
@@ -36227,14 +36234,14 @@ function renderFiches(){
         const info = _entryFirstSiteInfo(entry);
         if(info && info.zone && info.zone !== 'GD'){
           trajetRates = getTrajetRates(info.zone);
-          if(trajetRates){ totalTrajet += trajetRates.trajet * voitureFactor; }
+          if(trajetRates){ totalTrajet += _rwTrAmt(trajetRates, voitureFactor); }
         }
       } else {
         // v5.41.436 — règle commune (chantier libre de l'ouvrier ou du jour, zone corrigée, chantier)
         if(!hasTypeJournee){
           const _z = _dayEntryZone(entryDay, entry);
           trajetRates = (_z && _z !== 'GD') ? getTrajetRates(_z) : null;
-          if(trajetRates){ totalTrajet += trajetRates.trajet * voitureFactor; }
+          if(trajetRates){ totalTrajet += _rwTrAmt(trajetRates, voitureFactor); }
         }
         siteLabel = custom && custom.name ? custom.name : (site ? site.name : ((entryDay && entryDay.customSite && entryDay.customSite.name) || '—'));
         hoursLabel = (entry.hours || '0') + 'h';
@@ -36271,8 +36278,8 @@ function renderFiches(){
     const rowTask = cells.map(c => c.empty ? `<td class="empty-cell">—</td>` : c.isAbsence ? `<td class="empty-cell">—</td>` : `<td class="task-cell">${(c.taskIsHtml ? c.task : escapeHtml(c.task)) || '—'}</td>`).join('');
     const rowTrajet = cells.map(c => {
       if(c.empty || c.isAbsence || !c.trajetRates) return `<td class="empty-cell">—</td>`;
-      const amount = c.trajetRates.trajet * (c.voiturePerso ? 2 : 1);
-      const doubled = c.voiturePerso ? ' ×2' : '';
+      const amount = _rwTrAmt(c.trajetRates, c.voiturePerso ? 2 : 1);
+      const doubled = c.voiturePerso ? ' VP' : '';
       return `<td class="hours-cell">Z${escapeHtml(c.trajetRates.zone)}/${amount.toFixed(2).replace('.',',')}${doubled}</td>`;
     }).join('');
     const rowVoiture = cells.map(c => {
@@ -36409,11 +36416,11 @@ function buildFicheData(workerId, weekNum, year){
       const info = _entryFirstSiteInfo(entry);
       if(info && info.zone && info.zone !== 'GD'){
         const rates = getTrajetRates(info.zone);
-        if(rates){ trajet = rates.trajet * voitureFactor; trajetZone = info.zone; totalTrajet += trajet; }
+        if(rates){ trajet = _rwTrAmt(rates, voitureFactor); trajetZone = info.zone; totalTrajet += trajet; }
       }
     } else {   // v5.41.436 — règle commune
       const _z = _dayEntryZone(entryDay, entry); const rates = (_z && _z !== 'GD') ? getTrajetRates(_z) : null;
-      if(rates){ trajet = rates.trajet * voitureFactor; trajetZone = _z; totalTrajet += trajet; }
+      if(rates){ trajet = _rwTrAmt(rates, voitureFactor); trajetZone = _z; totalTrajet += trajet; }
     }
     return {
       date: key,
@@ -36517,12 +36524,12 @@ async function buildFichePDF(workerId, weekNum, year){
       const info = _entryFirstSiteInfo(entry);
       if(info && info.zone && info.zone !== 'GD'){
         const rates = getTrajetRates(info.zone);
-        if(rates){ const amt = rates.trajet * voitureFactor; totalTrajet += amt; trajetLabel = `Z${rates.zone}/${amt.toFixed(2).replace('.',',')}${voitureFactor>1?' ×2':''}`; }
+        if(rates){ const amt = _rwTrAmt(rates, voitureFactor); totalTrajet += amt; trajetLabel = `Z${rates.zone}/${amt.toFixed(2).replace('.',',')}${voitureFactor>1?' VP':''}`; }
       }
     } else {   // v5.41.436 — règle commune
       const _z = _dayEntryZone(entryDay, entry); const rates = (_z && _z !== 'GD') ? getTrajetRates(_z) : null;
       if(rates){
-        const amt = rates.trajet * voitureFactor;
+        const amt = _rwTrAmt(rates, voitureFactor);
         totalTrajet += amt;
         trajetLabel = `Z${rates.zone}/${amt.toFixed(2).replace('.',',')}${voitureFactor>1?' ×2':''}`;
       }
@@ -37118,7 +37125,7 @@ function _bfWeekTable(aw, offset){
   const rH = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="hours-cell">${r.multiLines.map(l => String(l.hours).replace('.', ',') + 'h').join('<br>')}<br><strong>Total ${String(r.h).replace('.', ',')}h</strong></td>` : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
   const rP = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : `<td>${r.panier ? '✓' : '—'}</td>`).join('');
   const hasTr = dayRows.some(r => r.trajetRates); let trTot = 0;
-  const rTr = dayRows.map(r => { if(!r.hasContent || r.isAbsence || !r.trajetRates) return E; const amt = r.trajetRates.trajet * (r.voiturePerso ? 2 : 1); trTot += amt; return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.', ',')}${r.voiturePerso ? ' ×2' : ''}</td>`; }).join('');
+  const rTr = dayRows.map(r => { if(!r.hasContent || r.isAbsence || !r.trajetRates) return E; const amt = _rwTrAmt(r.trajetRates, r.voiturePerso ? 2 : 1); trTot += amt; return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.', ',')}${r.voiturePerso ? ' ×2' : ''}</td>`; }).join('');
   const rT = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="task-cell">${r.multiLines.map(l => escapeHtml(l.task || '—')).join('<br>')}</td>` : `<td class="task-cell">${escapeHtml(r.task) || '—'}</td>`).join('');
   const rE = editEnabled ? dayRows.map(r => `<td><button class="edit-cell-btn" onclick="event.stopPropagation(); comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')" title="Corriger ce jour">✎</button></td>`).join('') : '';
   return { weekTotal, dayRows, html:`<div class="bf-wk">Semaine ${weekNum} · du ${fs(days[0])} au ${fs(days[6])} ${_wkBadgeFor(aw, offset)}</div><div class="timesheet-table-wrap"><table class="timesheet"><thead><tr><th></th>${days.map((d, i) => `<th>${lbl[i]}<br>${fs(d)}</th>`).join('')}</tr></thead><tbody>
@@ -37233,9 +37240,9 @@ function _wkBadgeFor(aw, offset){
 /* v5.41.489 — récap calculé à partir des MÊMES lignes que le tableau affiché (une seule source) :
    heures, h sup, paniers, zones et primes de trajet, absences ne peuvent plus diverger du tableau. */
 function _bfRecapFromWeeks(tabs){
-  const base = parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35;
+  const base = (window._rwWH ? _rwWH() : parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35);
   let totalHeures = 0, heuresSup = 0, paniers = 0;
-  const zc = {}, zcP = {}, parMotif = {}, zonesMissing = [], rateOf = {};
+  const zc = {}, zcP = {}, parMotif = {}, zonesMissing = [], rateOf = {}, rateP = {};
   tabs.forEach(t => {
     let wk = 0;
     (t.dayRows || []).forEach(r => {
@@ -37243,14 +37250,14 @@ function _bfRecapFromWeeks(tabs){
       if(r.isAbsence){ const lbl = (TYPE_JOURNEE[r.typeJournee] && TYPE_JOURNEE[r.typeJournee].label) || r.typeJournee; parMotif[lbl] = (parMotif[lbl] || 0) + 1; return; }
       const h = parseFloat(r.h) || 0; wk += h; totalHeures += h;
       if(r.panier) paniers++;
-      if(r.trajetRates){ const z = String(r.trajetRates.zone); rateOf[z] = r.trajetRates.trajet; zc[z] = (zc[z] || 0) + 1; if(r.voiturePerso) zcP[z] = (zcP[z] || 0) + 1; }
+      if(r.trajetRates){ const z = String(r.trajetRates.zone); rateOf[z] = _rwTrAmt(r.trajetRates, 1); rateP[z] = _rwTrAmt(r.trajetRates, 2) - _rwTrAmt(r.trajetRates, 1); zc[z] = (zc[z] || 0) + 1; if(r.voiturePerso) zcP[z] = (zcP[z] || 0) + 1; }
       else if(h > 0 && String(r.zone || '') !== 'GD') zonesMissing.push(r.dateKey);
     });
     heuresSup += Math.max(0, wk - base);
   });
   let cumulTrajet = 0;
-  const lines = m => Object.keys(m).sort((a, b) => a.localeCompare(b, 'fr', { numeric:true })).map(z => { const rate = rateOf[z] || 0, sous = rate * m[z]; cumulTrajet += sous; return { z, n:m[z], rate, sous }; });
-  const zonesLignes = lines(zc), zonesLignesPerso = lines(zcP);
+  const lines = (m, ro) => Object.keys(m).sort((a, b) => a.localeCompare(b, 'fr', { numeric:true })).map(z => { const rate = ro[z] || 0, sous = rate * m[z]; cumulTrajet += sous; return { z, n:m[z], rate, sous }; });
+  const zonesLignes = (window._rwCfg && _rwCfg().zonesOn === false) ? (lines(zc, rateOf), []) : lines(zc, rateOf), zonesLignesPerso = lines(zcP, rateP);
   return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing };
 }
 function _bfRender(rows, allWorkers){
@@ -37387,7 +37394,7 @@ function _renderComptableWorkerWeek(aw){
   const hasAnyTrajet = dayRows.some(r=>r.trajetRates);
   const rowTrajet = dayRows.map(r => {
     if(!r.hasContent || r.isAbsence || !r.trajetRates) return `<td class="empty-cell">—</td>`;
-    const amt = r.trajetRates.trajet * (r.voiturePerso ? 2 : 1);
+    const amt = _rwTrAmt(r.trajetRates, r.voiturePerso ? 2 : 1);
     return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.',',')}${r.voiturePerso?' ×2':''}</td>`;
   }).join('');
   // [voiturePerso] Ligne dédiée "Voiture" (icône seule, même rendu que
@@ -37989,7 +37996,7 @@ function _htBuild(keys, weeks){
     const att = (typeof _attendanceWithOverridesForWorker === 'function') ? _attendanceWithOverridesForWorker(w.device, w.workerId) : ((w.device && w.device.attendance) || {});
     const sites = ((w.device && w.device.sites) || []).filter(x => x && x.trajetZone).concat(data.sites || []);
     const r = { name:w.name, wk: weekKeys.map(() => ({ h:0, worked:false, abs:{} })), hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0,
-      z:{ '1A':0, '1B':0, '2':0, '3':0, '4':0, '5':0, 'GD':0 }, zp:{ '1A':0, '1B':0, '2':0, '3':0, '4':0, '5':0 }, perso:0, noZone:0,
+      z:_htZ0(true), zp:_htZ0(false), zpAmt:0, perso:0, noZone:0,
       cpD:[], cssD:[], absD:[], sites:{}, _rw:{ role:w.role, ownerName:w.device && w.device.ownerName, ownerRole:w.device && w.device.ownerRole } };
     weekKeys.forEach((wk, wi) => {
       const monday = new Date(wk + 'T00:00:00');
@@ -38011,7 +38018,7 @@ function _htBuild(keys, weeks){
         if(zone && r.z[zone] !== undefined){ r.z[zone]++; }
         else if(h > 0 && typeof _dayEntryZoneMissing === 'function' && _dayEntryZoneMissing(ad, e, sites)) r.noZone++;
         const perso = !!(ad && ad.voiturePerso) && !!zone;
-        if(perso){ r.perso++; if(r.zp[zone] !== undefined) r.zp[zone]++; }
+        if(perso){ r.perso++; if(r.zp[zone] !== undefined) r.zp[zone]++; try{ const rr = getTrajetRates(zone); if(rr) r.zpAmt += _rwTrAmt(rr, 2) - _rwTrAmt(rr, 1); }catch(_){} }
         const task = _entryHasMultiSites(e) ? (_entrySiteLines(e) || []).map(l => l.task).filter(Boolean).join(' / ') : (e.task || '');
         const siteLbl = _htSiteLabel(ad, e, sites);
         let main = siteLbl, nSites = 1;
@@ -38020,7 +38027,7 @@ function _htBuild(keys, weeks){
         days.push(Object.assign(base, { site:siteLbl, main:main || 'Sans chantier', nSites, task, hours:h, panier:e.panier ? 'Oui' : '', zone:zone || '', perso:perso ? 'Oui' : '' }));
       }
     });
-    r.hs = r.wk.reduce((a, x) => a + (x.worked ? x.h - 35 : 0), 0);
+    r.hs = r.wk.reduce((a, x) => a + (x.worked ? x.h - _rwWH() : 0), 0);
     recap.push(r);
   });
   const t0 = weeks[0].monday, t1 = weeks[weeks.length - 1].sunday || new Date(weeks[weeks.length - 1].monday.getTime() + 6 * 86400000);
@@ -38050,8 +38057,8 @@ function _htCols(tab){
   ];
   const cols = [ { k:'name', l:'Salarié', v:r => r.name, w:24 }, { k:'daysWorked', l:'Jours trav.', v:r => r.daysWorked, n:1, w:9 }, { k:'hours', l:'Heures', v:r => _htNum(r.hours), s:r => r.hours, n:1, w:9 } ];
   (_ht ? _ht.weeks : []).forEach((w, i) => cols.push({ k:'w' + i, l:'S' + w.weekNum, n:1, w:9,
-    v:r => { const x = r.wk[i]; if(x.worked) return _htSigned(x.h - 35); const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : ''; },
-    s:r => r.wk[i].worked ? r.wk[i].h - 35 : -999 }));
+    v:r => { const x = r.wk[i]; if(x.worked) return _htSigned(x.h - _rwWH()); const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : ''; },
+    s:r => r.wk[i].worked ? r.wk[i].h - _rwWH() : -999 }));
   cols.push({ k:'hs', l:'H. sup', v:r => _htSigned(r.hs), s:r => r.hs, n:1, w:9 },
     { k:'cp', l:'CP (j)', v:r => r.cp || '', s:r => r.cp, n:1, w:7 }, { k:'css', l:'CSS (j)', v:r => r.css || '', s:r => r.css, n:1, w:7 },
     { k:'other', l:'Autres abs.', v:r => r.other || '', s:r => r.other, n:1, w:9 }, { k:'paniers', l:'Paniers', v:r => r.paniers || '', s:r => r.paniers, n:1, w:8 });
@@ -38072,16 +38079,26 @@ function _htRows(tab){
 }
 function _htTotals(rows){
   const t = { name:'TOTAL', wk:(_ht ? _ht.weeks : []).map((_, i) => ({ h:rows.reduce((a, r) => a + r.wk[i].h, 0), worked:rows.some(r => r.wk[i].worked), abs:{} })),
-    hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0, z:{ '1A':0, '1B':0, '2':0, '3':0, '4':0, '5':0, 'GD':0 }, perso:0 };
+    hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0, z:_htZ0(true), perso:0 };
   rows.forEach(r => { ['hours','daysWorked','hs','cp','css','other','paniers','perso'].forEach(k => t[k] += r[k]); Object.keys(t.z).forEach(z => t.z[z] += r.z[z]); });
-  t.wk.forEach((x, i) => { x.h = rows.reduce((a, r) => a + (r.wk[i].worked ? r.wk[i].h - 35 : 0), 0) + 35; });   // affiche la somme des H. sup de la semaine
+  t.wk.forEach((x, i) => { x.h = rows.reduce((a, r) => a + (r.wk[i].worked ? r.wk[i].h - _rwWH() : 0), 0) + _rwWH(); });   // affiche la somme des H. sup de la semaine
   return t;
 }
 
 /* ═══ v5.52.0 — TABLEAU DES HEURES = le « Résumé » (1 colonne par salarié), partout pareil :
    à l'écran, en Excel, en PDF et à l'impression. Un seul modèle (_htModel) → 4 rendus. ═══ */
 const HT_ZONE_COLORS = { '1A':'5B8DEF', '1B':'2F6FD6', '2':'16A085', '3':'C99A12', '4':'E67E22', '5':'C0392B', 'GD':'8E44AD' };
-const HT_ZONE_KM = [['1A','0 à 5 km'],['1B','5 à 10 km'],['2','10 à 20 km'],['3','20 à 30 km'],['4','30 à 40 km'],['5','40 km et +']];
+let HT_ZONE_KM = [['1A','0 à 5 km'],['1B','5 à 10 km'],['2','10 à 20 km'],['3','20 à 30 km'],['4','30 à 40 km'],['5','40 km et +']];
+/* v5.54.0 — zones du barème de l'entreprise (selon la région : 1A/1B…5, 1…6, jusqu'à 7 zones) */
+function _htZonesRefresh(){
+  try{
+    const b = (data.settings && data.settings.trajetBareme) || [];
+    if(!b.length) return;
+    HT_ZONE_KM = b.map((z, i) => [String(z.zone), (i === b.length - 1 && !(z.maxKm < 999)) ? z.minKm + ' km et +' : z.minKm + ' à ' + z.maxKm + ' km']);
+    b.forEach(z => { const k = String(z.zone); if(!HT_ZONE_COLORS[k]){ let c = '#EE8A2E'; try{ c = _zoneColor(k); }catch(e){} HT_ZONE_COLORS[k] = String(c).replace('#', '').slice(0, 6).toUpperCase(); } });
+  }catch(e){}
+}
+function _htZ0(gd){ _htZonesRefresh(); const o = {}; HT_ZONE_KM.forEach(([z]) => { o[z] = 0; }); if(gd) o.GD = 0; return o; }
 const HT_ICONS = { horloge:'icons/ui/horloge.png', hsup:'icons/ui/fleche-haut.png', cal:'icons/ui/calendrier.png', cp:'icons/ui/conges.png', maladie:'icons/ui/maladie.png',
   css:'icons/monnaie.png', abs:'icons/ui/interdit.png', repas:'icons/ui/repas.png', zone:'icons/zone.png', van:'icons/ui/camionnette.png', car:'icons/voiture.png', gd:'icons/valise.png' };
 const _htFill = argb => ({ type:'pattern', pattern:'solid', fgColor:{ argb:'FF' + argb } });
@@ -38105,14 +38122,14 @@ function _htMergePeople(recap){
   recap.forEach(p => {
     const k = _rmNameKey(p.name); const q = by.get(k);
     if(!q){ by.set(k, p); return; }
-    ['hours','daysWorked','cp','css','other','paniers','perso','noZone'].forEach(f => q[f] += p[f] || 0);
+    ['hours','daysWorked','cp','css','other','paniers','perso','noZone','zpAmt'].forEach(f => q[f] = (q[f] || 0) + (p[f] || 0));
     Object.keys(q.z).forEach(z => q.z[z] += p.z[z] || 0); Object.keys(q.zp).forEach(z => q.zp[z] += p.zp[z] || 0);
     q.wk.forEach((x, i) => { const y = p.wk[i]; x.h += y.h; x.worked = x.worked || y.worked; Object.keys(y.abs).forEach(t => x.abs[t] = (x.abs[t] || 0) + y.abs[t]); });
     q.cpD = [...new Set(q.cpD.concat(p.cpD))]; q.cssD = [...new Set(q.cssD.concat(p.cssD))]; q.absD = q.absD.concat(p.absD.filter(a => !q.absD.some(b => b.date === a.date)));
     if(!q.roleL && p.roleL) q.roleL = p.roleL;
   });
   const out = [...by.values()].filter(p => (p.daysWorked > 0 || p.hours > 0 || (p.cp + p.css + p.other) > 0) && !_isRemovedUser(_rmUsersCache, '', p.name));
-  out.forEach(p => { p.hs = p.wk.reduce((a, x) => a + (x.worked ? x.h - 35 : 0), 0); });
+  out.forEach(p => { p.hs = p.wk.reduce((a, x) => a + (x.worked ? x.h - _rwWH() : 0), 0); });
   return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 
@@ -38129,15 +38146,15 @@ function _htModel(){
     const sun = w.sunday || new Date(w.monday.getTime() + 6 * 86400000);
     line(null, 'Semaine ' + w.weekNum, f(w.monday) + ' → ' + f(sun), p => {
       const x = p.wk[i];
-      if(x.worked){ const hs = x.h - 35;
-        return { main:_htNum(x.h) + ' h', sub: hs === 0 ? '35 h pile' : sign(hs) + ' h sup', subColor: hs < 0 ? 'C0392B' : hs > 0 ? 'C46A12' : '5A6473', bg: hs > 0 ? 'FFF3E6' : hs < 0 ? 'FBE9E7' : null }; }
+      if(x.worked){ const hs = x.h - _rwWH();
+        return { main:_htNum(x.h) + ' h', sub: hs === 0 ? _rwWH() + ' h pile' : sign(hs) + ' h sup', subColor: hs < 0 ? 'C0392B' : hs > 0 ? 'C46A12' : '5A6473', bg: hs > 0 ? 'FFF3E6' : hs < 0 ? 'FBE9E7' : null }; }
       const t = Object.keys(x.abs); if(!t.length) return {};
       const tc = t.length === 1 ? _htTJColor(t[0]) : '5A6473';
       return { main: t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].label) || t[0]) : 'Absences', mainColor:tc, small:true, bg:_htLighten(tc, .85) };
     });
   });
   line('horloge', 'Total heures du mois', '', p => ({ main:_htNum(p.hours) + ' h' }), { big:true });
-  line('hsup', 'Heures sup à payer', 'au-delà de 35 h par semaine', p => ({ main:sign(p.hs) + ' h', mainColor: p.hs < 0 ? 'C0392B' : '1B2333', bg: p.hs < 0 ? 'FBE3E0' : 'FFD3A8' }), { big:true, hl:true });
+  line('hsup', 'Heures sup à payer', 'au-delà de ' + _rwWH() + ' h par semaine', p => ({ main:sign(p.hs) + ' h', mainColor: p.hs < 0 ? 'C0392B' : '1B2333', bg: p.hs < 0 ? 'FBE3E0' : 'FFD3A8' }), { big:true, hl:true });
   sec('cal', 'Congés et absences');
   [['cp','cp','Congés payés'],['maladie','maladie','Arrêt maladie'],['css','css','Congé sans solde'],['abs','autres','Autres absences']].forEach(([icon, type, label]) => {
     line(icon, label, 'jours et dates', p => {
@@ -38149,6 +38166,8 @@ function _htModel(){
   });
   sec('repas', 'Repas');
   line('repas', 'Paniers repas', 'nombre de jours', p => p.paniers ? { main:p.paniers + ' paniers' } : {});
+  const _cf = (window._rwCfg && _rwCfg()) || {};
+  if(_cf.zonesOn !== false){
   sec('zone', 'Trajets par zone');
   HT_ZONE_KM.forEach(([z, km]) => {
     const zc = HT_ZONE_COLORS[z];
@@ -38156,7 +38175,11 @@ function _htModel(){
   });
   line('gd', 'Grand déplacement', 'pas de prime de trajet', p => p.z.GD ? { main:p.z.GD + ' j', mainColor:HT_ZONE_COLORS.GD, bg:_htLighten(HT_ZONE_COLORS.GD, .88) } : {}, { labelColor:HT_ZONE_COLORS.GD });
   line('van', 'Total jours de trajet', '', p => { const n = Object.values(p.z).reduce((a, b) => a + b, 0); return n ? { main:n + ' j' } : {}; }, { big:true });
-  line('car', 'dont avec sa voiture perso', '', p => p.perso ? { main:p.perso + ' j', mainColor:'2F6FD6', bg:'DCE9FB' } : {});
+  }
+  if(_cf.persoOn !== false){
+    if(_cf.zonesOn === false) sec('car', 'Véhicule personnel');
+    line('car', 'Indemnités véhicule personnel', _cf.persoMode === 'perso' ? 'montant fixé par l\u2019entreprise' : 'en plus du trajet (indemnité de transport)', p => p.perso ? { main:p.perso + ' j', mainColor:'2F6FD6', sub: p.zpAmt ? _htNum(Math.round(p.zpAmt * 100) / 100) + ' €' : '', subColor:'2F6FD6', bg:'DCE9FB' } : {});
+  }
   return { people, rows };
 }
 
@@ -40450,12 +40473,12 @@ async function _trajetCfgFetch(){
 }
 async function _trajetCfgPush(){
   const st = data.settings || {};
-  if(!st.depotAddress || typeof getSupaUserId !== 'function' || !getSupaUserId() || !navigator.onLine) return false;
+  if((!st.depotAddress && !st.companyCfg) || typeof getSupaUserId !== 'function' || !getSupaUserId() || !navigator.onLine) return false;
   if(!st.trajetCfgAt) st.trajetCfgAt = new Date().toISOString();
   try{
     const res = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ user_id:TRAJET_CFG_KEY, updated_at:new Date().toISOString(),
-        data: JSON.stringify({ depotAddress:st.depotAddress, depotCoords:st.depotCoords || null, trajetBareme:st.trajetBareme || [], at:st.trajetCfgAt }) }) });
+        data: JSON.stringify({ depotAddress:st.depotAddress || '', depotCoords:st.depotCoords || null, trajetBareme:st.trajetBareme || [], cfg:st.companyCfg || null, at:st.trajetCfgAt }) }) });
     return !!(res && res.ok);
   }catch(e){ return false; }
 }
@@ -40469,16 +40492,17 @@ async function trajetEnsure(force){
       const r = await _trajetCfgFetch();
       if(r !== undefined){
         const la = st.trajetCfgAt || '', ra = (r && r.at) || '';
-        if(r && r.depotAddress && (!st.depotAddress || ra > la)){
+        if(r && (r.depotAddress || r.cfg) && (!st.depotAddress || ra > la) && (ra >= la || !st.companyCfg)){
           const depotChanged = (r.depotAddress || '').trim() !== (st.depotAddress || '').trim();
-          st.depotAddress = r.depotAddress;
+          st.depotAddress = r.depotAddress || '';
           st.depotCoords = r.depotCoords || (depotChanged ? null : st.depotCoords);
           if(Array.isArray(r.trajetBareme) && r.trajetBareme.length) st.trajetBareme = r.trajetBareme;
+          if(r.cfg){ st.companyCfg = r.cfg; try{ if(window.OB && OB.cfgApply) OB.cfgApply(); }catch(e){} }   // v5.54.0 — choix du patron (zones, véhicule perso, heures)
           st.trajetCfgAt = ra || new Date().toISOString();
           if(depotChanged){ (data.sites || []).forEach(s => { if(s && s.address){ s.trajetZone = null; s.trajetDistanceKm = null; } }); _trajetAutoFailed.clear(); }
           else _trajetRezoneFromKm();
           saveData();
-        } else if(_trajetCfgCanPush() && st.depotAddress && (!r || !r.depotAddress || la > ra)){
+        } else if(_trajetCfgCanPush() && (st.depotAddress || st.companyCfg) && (!r || la > ra || (!r.depotAddress && !r.cfg) || (st.companyCfg && !r.cfg))){
           await _trajetCfgPush();
         }
       }
@@ -42559,7 +42583,7 @@ async function downloadMonthlyRecapPDF(){
         let effRates = (_mz && _mz !== 'GD') ? getTrajetRates(_mz) : null;
         if(entry && (entry.hours || _entryHasMultiSites(entry)) && effRates){
           // [voiturePerso] ×2 si la voiture perso était activée ce jour-là
-          workerStats[w.id].trajetTotal = (workerStats[w.id].trajetTotal || 0) + effRates.trajet * _trajetDayFactor(entryDay);
+          workerStats[w.id].trajetTotal = (workerStats[w.id].trajetTotal || 0) + _rwTrAmt(effRates, _trajetDayFactor(entryDay));
           if(entryDay && entryDay.voiturePerso){
             workerStats[w.id].voiturePersoCount = (workerStats[w.id].voiturePersoCount || 0) + 1;
           }
@@ -50927,9 +50951,20 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.53.3';
+const APP_VERSION = '5.54.0';
 
 const CHANGELOG = [
+  {
+    version: '5.54.0',
+    date: '26/10/2026',
+    entries: [
+      { icon: '✉️', text: "Inscription avec Google ou avec ton e-mail (mot de passe + e-mail d'activation), téléphone facultatif, « Mot de passe oublié » avec l'e-mail et le code entreprise." },
+      { icon: '✍️', text: "Engagements à l'inscription : CGV, clause de confidentialité de l'entreprise et signature au doigt. Le patron contre-signe la clause et génère le PDF." },
+      { icon: '🏢', text: "Assistant du patron : formule (carrousel mensuel / annuel), zones de trajet (convention ou barème personnalisé), véhicule personnel, heures par semaine, puis le code entreprise à partager. Un PDF des choix est envoyé à Notybat." },
+      { icon: '🗺️', text: "Barèmes régionaux 2026 (Bâtiment) : zones, trajet, transport et panier selon la région ; véhicule perso = trajet + transport (règle de la convention). Paramètres › Prime de trajet : barème verrouillé, carte et test d'adresse." },
+      { icon: '⏳', text: "Fin d'essai : lecture seule pendant 15 jours et message au patron à chaque ouverture." }
+    ]
+  },
   {
     version: '5.53.3',
     date: '26/10/2026',
@@ -58782,7 +58817,7 @@ async function generateFichePDFFromQR(fiche){
         hours:      day.h || '0',
         panier:     !!day.p,
         trajetZone: day.z || null,
-        trajet:     day.z ? (getTrajetRates(day.z) || {trajet:0}).trajet * (day.v ? 2 : 1) : null,
+        trajet:     day.z ? _rwTrAmt(getTrajetRates(day.z) || {trajet:0}, day.v ? 2 : 1) : null,
         voiturePerso: !!day.v,
         task:       day.tk || '',
       };
@@ -95529,5 +95564,1543 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 </script>
 <!-- ═══ fin MODULE — Bulle Pense-bête v5.53.3 ═══ -->
 
+<!-- ═══ MODULE — v5.54.0 — Inscription Google / e-mail, engagements signés, assistant du patron, barèmes régionaux, fin d'essai ═══ -->
+<style>
+/* ═══ v5.54.0 — Inscription · assistant patron · barèmes ═══ */
+#rwObAuth{ position:fixed; inset:0; z-index:9400; background:var(--bg); overflow-y:auto; -webkit-overflow-scrolling:touch; display:none; }
+#rwObAuth.on{ display:block; }
+.ob-pg{ max-width:400px; margin:0 auto; padding:calc(18px + env(safe-area-inset-top,0px)) 16px calc(28px + env(safe-area-inset-bottom,0px)); }
+.ob-pg.wide{ max-width:560px; }
+.ob-head{ display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.ob-head img.lg{ width:38px; height:38px; border-radius:10px; }
+.ob-head .t{ font-weight:900; font-size:16px; color:var(--ink); }
+.ob-head .t span{ color:#F29A3F; }
+.ob-pg h2{ font-size:21px; font-weight:900; margin:4px 0 4px; color:var(--ink); }
+.ob-sub{ color:var(--ink-soft); font-size:13.5px; margin:0 0 12px; line-height:1.4; }
+.ob-steps{ display:flex; gap:5px; margin:0 0 14px; }
+.ob-steps i{ flex:1; height:5px; border-radius:4px; background:var(--line); }
+.ob-steps i.on{ background:var(--wood); }
+.ob-ic{ width:22px; height:22px; object-fit:contain; vertical-align:-5px; flex-shrink:0; }
+.ob-ic.s{ width:17px; height:17px; vertical-align:-3px; }
+.ob-ic.l{ width:34px; height:34px; }
+.ob-ic.xl{ width:54px; height:54px; }
+.ob-f{ margin:0 0 11px; }
+.ob-f label{ display:block; font-size:12px; font-weight:700; color:var(--ink-soft); margin:0 0 4px; }
+.ob-f input[type=text], .ob-f input[type=email], .ob-f input[type=password], .ob-f input[type=tel], .ob-f input[type=number], .ob-f select{
+  width:100%; box-sizing:border-box; padding:12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:15px; }
+.ob-f input:focus, .ob-f select:focus{ outline:none; border-color:var(--wood); }
+.ob-f input[readonly]{ opacity:.75; }
+.ob-row2{ display:flex; gap:8px; } .ob-row2 > *{ flex:1; min-width:0; }
+.ob-hint{ font-size:12px; color:var(--ink-soft); line-height:1.4; margin:2px 0 8px; }
+.ob-id{ display:inline-block; background:rgba(238,138,46,.16); color:var(--wood); font-weight:800; border-radius:8px; padding:2px 8px; font-size:13px; }
+.ob-err{ display:none; color:var(--red); font-size:13px; font-weight:600; margin:6px 0; line-height:1.4; }
+.ob-err.on{ display:block; }
+.ob-ok{ color:var(--green); font-weight:700; }
+.ob-tabs{ display:flex; gap:8px; margin:6px 0 12px; }
+.ob-tab{ flex:1; border:1.5px solid var(--line); border-radius:14px; padding:11px 6px; text-align:center; background:var(--card); color:var(--ink); cursor:pointer; font:inherit; font-weight:800; font-size:13.5px; }
+.ob-tab small{ display:block; font-weight:600; color:var(--ink-soft); font-size:11.5px; margin-top:2px; }
+.ob-tab .ob-ic{ display:block; margin:0 auto 4px; }
+.ob-tab.on{ border-color:var(--wood); background:rgba(238,138,46,.13); }
+.ob-chips{ display:flex; flex-wrap:wrap; gap:7px; }
+.ob-chip{ display:inline-flex; align-items:center; gap:6px; border:1.5px solid var(--line); border-radius:99px; padding:8px 12px; background:var(--card); color:var(--ink); font:inherit; font-size:13.5px; font-weight:700; cursor:pointer; }
+.ob-chip img{ width:18px; height:18px; object-fit:contain; }
+.ob-chip.on{ border-color:var(--wood); background:rgba(238,138,46,.15); }
+.ob-card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:12px; margin:0 0 10px; }
+.ob-card.hl{ border-color:var(--wood); }
+.ob-btn{ display:flex; align-items:center; justify-content:center; gap:8px; width:100%; border-radius:14px; padding:13px 12px; font:inherit; font-weight:800; font-size:15px; cursor:pointer; border:1.5px solid transparent; margin-top:8px; }
+.ob-btn.p{ background:var(--wood); color:#1A0F04; }
+.ob-btn.p:disabled{ opacity:.5; cursor:default; }
+.ob-btn.o{ background:transparent; color:var(--ink); border-color:var(--line); }
+.ob-btn.g{ background:#fff; color:#222; }
+.ob-btn.sm{ padding:9px 10px; font-size:13.5px; border-radius:11px; }
+.ob-link{ background:none; border:0; color:var(--ink-soft); text-decoration:underline; font:inherit; font-size:13px; cursor:pointer; padding:8px; display:block; margin:4px auto 0; }
+.ob-ck{ display:flex; gap:10px; align-items:flex-start; margin:0 0 10px; font-size:13.5px; line-height:1.4; color:var(--ink); cursor:pointer; }
+.ob-ck input{ width:22px; height:22px; accent-color:var(--wood); flex-shrink:0; margin:0; }
+.ob-ck a{ color:var(--wood); font-weight:700; }
+.ob-ck small{ display:block; color:var(--ink-soft); font-size:12px; }
+.ob-sig{ position:relative; height:140px; border:2px dashed var(--wood); border-radius:14px; background:#F6F1EA; touch-action:none; overflow:hidden; }
+.ob-sig canvas{ position:absolute; inset:0; width:100%; height:100%; }
+.ob-sig .ph{ position:absolute; left:0; right:0; top:50%; transform:translateY(-50%); text-align:center; color:#9a8f84; font-size:13px; pointer-events:none; }
+.ob-sig button{ position:absolute; right:6px; bottom:6px; border:0; background:rgba(0,0,0,.08); color:#5a4f45; border-radius:8px; padding:5px 9px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+.ob-seg{ display:flex; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:4px; margin:4px 0 12px; }
+.ob-seg button{ flex:1; border:0; background:transparent; color:var(--ink-soft); font:inherit; font-weight:800; font-size:14px; padding:10px 6px; border-radius:10px; cursor:pointer; }
+.ob-seg button.on{ background:var(--wood); color:#1A0F04; }
+.ob-seg button em{ font-style:normal; font-size:11px; display:block; font-weight:700; opacity:.85; }
+.ob-car{ display:flex; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; padding:4px 2px 10px; margin:0 -16px; padding-left:16px; padding-right:16px; scrollbar-width:none; }
+.ob-car::-webkit-scrollbar{ display:none; }
+.ob-plan{ scroll-snap-align:center; flex:0 0 82%; max-width:300px; background:var(--card); border:1.5px solid var(--line); border-radius:20px; padding:16px; position:relative; display:flex; flex-direction:column; gap:6px; }
+.ob-plan.on{ border-color:var(--wood); background:rgba(238,138,46,.08); }
+.ob-plan .tag{ position:absolute; top:-10px; left:14px; background:var(--wood); color:#1A0F04; font-size:11px; font-weight:900; text-transform:uppercase; padding:3px 9px; border-radius:99px; }
+.ob-plan h3{ margin:0; font-size:19px; display:flex; align-items:center; gap:8px; }
+.ob-plan .seats{ color:var(--wood); font-weight:800; font-size:13px; }
+.ob-plan .pitch{ color:var(--ink-soft); font-size:13px; margin:0; min-height:36px; }
+.ob-plan .price b{ font-size:34px; letter-spacing:-.02em; }
+.ob-plan .price s{ color:var(--ink-soft); margin-left:6px; }
+.ob-plan .price small{ color:var(--ink-soft); font-size:12.5px; margin-left:4px; }
+.ob-plan .sub{ color:var(--ink-soft); font-size:12px; min-height:16px; }
+.ob-dots{ display:flex; justify-content:center; gap:6px; margin:2px 0 6px; }
+.ob-dots i{ width:7px; height:7px; border-radius:50%; background:var(--line); }
+.ob-dots i.on{ background:var(--wood); }
+.ob-tbl{ width:100%; border-collapse:collapse; font-size:13px; }
+.ob-tbl th{ color:var(--ink-soft); font-weight:700; font-size:11.5px; text-align:right; padding:5px 4px; border-bottom:1px solid var(--line); }
+.ob-tbl td{ text-align:right; padding:6px 4px; border-bottom:1px solid rgba(70,54,42,.5); }
+.ob-tbl th:first-child, .ob-tbl td:first-child{ text-align:left; }
+.ob-tbl td .zd{ display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+.ob-tbl input{ width:62px; padding:6px; border-radius:8px; border:1.5px solid var(--line); background:var(--bg-elev); color:var(--ink); font-size:13px; text-align:right; }
+.ob-tbl input.z{ width:42px; text-align:left; }
+.ob-tbl .vp{ color:var(--wood); font-weight:800; }
+.ob-map{ height:180px; border-radius:14px; overflow:hidden; margin:8px 0; background:#1d2a22; }
+.ob-choice{ display:flex; gap:10px; align-items:flex-start; border:1.5px solid var(--line); border-radius:14px; padding:11px; margin:0 0 8px; cursor:pointer; background:var(--card); }
+.ob-choice.on{ border-color:var(--wood); background:rgba(238,138,46,.1); }
+.ob-choice.dis{ opacity:.45; cursor:default; }
+.ob-choice b{ display:block; font-size:14px; }
+.ob-choice span{ font-size:12px; color:var(--ink-soft); }
+.ob-choice .rd{ width:18px; height:18px; border-radius:50%; border:2px solid var(--line); flex-shrink:0; margin-top:2px; }
+.ob-choice.on .rd{ border-color:var(--wood); background:radial-gradient(var(--wood) 45%, transparent 50%); }
+.ob-legal{ background:rgba(238,138,46,.08); border:1.5px solid var(--gold-border); border-radius:14px; padding:11px; margin:6px 0 10px; }
+.ob-legal p{ margin:0 0 8px; font-size:12.5px; color:var(--ink-soft); line-height:1.45; }
+.ob-code{ font-size:38px; font-weight:900; letter-spacing:8px; color:var(--wood); text-align:center; margin:4px 0 8px; }
+.ob-share{ display:flex; gap:8px; }
+.ob-share button{ flex:1; border:0; border-radius:12px; padding:11px 4px; font:inherit; font-weight:800; font-size:13px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; }
+.ob-share .wa .ob-ic, .ob-share .sms .ob-ic{ filter:brightness(0) invert(1); }
+.ob-share .wa{ background:#1F9D55; color:#fff; } .ob-share .sms{ background:#2F6FD6; color:#fff; } .ob-share .ot{ background:var(--card); color:var(--ink); border:1.5px solid var(--line); }
+.ob-center{ text-align:center; }
+.ob-logo-pick{ display:flex; align-items:center; gap:10px; border:1.5px dashed var(--line); border-radius:12px; padding:8px; cursor:pointer; }
+.ob-logo-pick .bx{ width:46px; height:46px; border-radius:10px; background:var(--bg-elev); display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.ob-logo-pick .bx img{ max-width:100%; max-height:100%; }
+.ob-x{ background:none; border:0; color:var(--ink-soft); font-size:13px; text-decoration:underline; cursor:pointer; }
+/* Modale de contre-signature / clause */
+.ob-modal{ position:fixed; inset:0; z-index:9600; background:rgba(0,0,0,.65); display:flex; align-items:flex-end; justify-content:center; }
+.ob-modal > div{ background:var(--bg); border:1.5px solid var(--line); border-radius:20px 20px 0 0; width:100%; max-width:520px; max-height:92vh; overflow-y:auto; padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px)); }
+@media (min-width:700px){ .ob-modal{ align-items:center; } .ob-modal > div{ border-radius:20px; } }
+.ob-clause p{ font-size:13px; line-height:1.5; color:var(--ink); margin:0 0 8px; }
+.ob-sigimg{ background:#F6F1EA; border-radius:10px; height:70px; display:flex; align-items:center; justify-content:center; }
+.ob-sigimg img{ max-height:64px; max-width:100%; }
+/* Fin d'essai */
+#rwTrialBar{ position:fixed; left:0; right:0; top:0; z-index:850; background:#B23B2A; color:#fff; font-size:12.5px; font-weight:700; text-align:center; padding:calc(5px + env(safe-area-inset-top,0px)) 10px 5px; display:none; }
+body.rw-ro #rwTrialBar{ display:block; }
+.ob-lock{ position:fixed; inset:0; z-index:9300; background:rgba(10,7,5,.78); display:flex; align-items:center; justify-content:center; padding:18px; }
+.ob-lock > div{ background:var(--card); border:2px solid var(--red); border-radius:20px; max-width:380px; width:100%; padding:20px 16px; text-align:center; }
+/* Réglages : barème lecture seule */
+.ob-cfg-k{ display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:5px 0; border-bottom:1px solid rgba(70,54,42,.5); }
+.ob-cfg-k:last-child{ border-bottom:0; }
+.ob-cfg-k b{ color:var(--ink); text-align:right; }
+.ob-lockline{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ink-soft); margin:0 0 8px; }
+/* Zones / véhicule perso désactivés par le patron */
+body.rw-novp .card:has(#voiturePersoToggle), body.rw-novp .section-title:has(+ .card #voiturePersoToggle),
+body.rw-novp .panier-row:has(#editFicheVoiturePerso), body.rw-novp .ce-field:has(#comptaEditVoiturePerso){ display:none !important; }
+body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important; }
+/* Dev */
+#rwObDev .ob-btn{ margin-top:6px; }
+#rwObDev .dev-row{ display:flex; gap:6px; flex-wrap:wrap; }
+#rwObDev .dev-row .ob-btn{ flex:1 1 45%; }
+</style>
+<script>
+/* ═══ v5.54.0 — Barèmes des indemnités de petits déplacements (Bâtiment, IDCC 1596/1597) ═══
+   Valeurs par défaut embarquées. La table centrale du serveur (onglet Dev › Barèmes) les remplace
+   dès qu'elle est remplie : toutes les entreprises de la région sont mises à jour d'un coup.
+   verif:true = texte non encore vérifié sur l'accord officiel (affiché « à vérifier » dans Dev).
+   zones:null = barème pas encore disponible (le patron doit choisir un barème personnalisé). */
+(function(){
+  const Z = (zone, minKm, maxKm, trajet, transport) => ({ zone, minKm, maxKm, trajet, transport });
+  const STD5 = (a) => [Z('1', 0, 10, a[0][0], a[0][1]), Z('2', 10, 20, a[1][0], a[1][1]), Z('3', 20, 30, a[2][0], a[2][1]), Z('4', 30, 40, a[3][0], a[3][1]), Z('5', 40, 50, a[4][0], a[4][1])];
+  window.RW_BAREMES = {
+    naq:{ name:'Nouvelle-Aquitaine', depts:['16','17','19','23','24','33','40','47','64','79','86','87'], year:2026, from:'01/01/2026', panier:11.20,
+      zones:[Z('1A',0,5,0.74,0.89), Z('1B',5,10,1.67,2.35), Z('2',10,20,3.45,5.12), Z('3',20,30,4.90,8.50), Z('4',30,40,6.37,11.93), Z('5',40,50,7.88,15.33)] },
+    occ:{ name:'Occitanie', depts:['09','11','12','30','31','32','34','46','48','65','66','81','82'], year:2026, from:'01/05/2026', panier:13.20, verif:true,
+      zones:[Z('1A',0,5,2.06,3.19), Z('1B',5,10,2.06,3.19), Z('2',10,20,4.38,6.43), Z('3',20,30,5.58,9.59), Z('4',30,40,7.42,12.70), Z('5',40,50,9.40,16.13)] },
+    bre:{ name:'Bretagne', depts:['22','29','35','56'], year:2026, from:'01/01/2026', panier:12.30, verif:true,
+      zones:[Z('1A',0,4,0.58,0.47), Z('1B',4,10,2.86,1.51), Z('2',10,20,5.73,2.08), Z('3',20,30,7.86,3.11), Z('4',30,40,10.08,4.36), Z('5',40,50,12.27,5.21)] },
+    idf:{ name:'Île-de-France', depts:['75','77','78','91','92','93','94','95'], year:2026, from:'05/02/2026', panier:11.85,
+      zones:[Z('1',0,10,2.54,2.69), Z('2',10,20,3.44,3.39), Z('3',20,30,5.07,5.07), Z('4',30,40,5.78,6.33), Z('5',40,50,7.29,8.07), Z('6',50,999,8.23,9.55)] },
+    hdf:{ name:'Hauts-de-France', depts:['02','59','60','62','80'], year:2026, from:'01/01/2026', panier:14.00,
+      zones:STD5([[1.57,2.71],[3.14,6.44],[4.71,9.96],[6.28,13.09],[7.86,16.74]]) },
+    nor:{ name:'Normandie', depts:['14','27','50','61','76'], year:2026, from:'01/04/2026', panier:12.50, verif:true,
+      zones:STD5([[1.68,3.04],[3.36,6.70],[5.03,10.05],[6.67,14.08],[8.39,18.10]]) },
+    cvl:{ name:'Centre-Val de Loire', depts:['18','28','36','37','41','45'], year:2026, from:'01/05/2026', panier:11.17,
+      zones:[Z('1A',0,3,0.42,0.54), Z('1B',3,10,2.63,3.82), Z('2',10,20,4.29,8.03), Z('3',20,30,5.28,11.87), Z('4',30,40,6.62,16.43), Z('5',40,50,8.25,21.02)] },
+    pdl:{ name:'Pays de la Loire', depts:['44','49','53','72','85'], year:2026, from:'2026', panier:12.00, verif:true,
+      zones:[Z('1A',0,5,0.48,0.90), Z('1B',5,10,0.67,1.14), Z('2',10,20,1.90,4.46), Z('3',20,30,4.08,8.42), Z('4',30,40,5.12,12.88), Z('5',40,50,6.11,19.19), Z('6',50,65,6.86,20.54), Z('7',65,80,8.17,24.88)] },
+    cor:{ name:'Corse', depts:['2A','2B','20'], year:2026, from:'01/04/2026', panier:11.00,
+      zones:[Z('1',0,10,1.56,2.54), Z('2',10,20,2.90,5.26), Z('3',20,30,4.24,8.22), Z('4',30,40,5.69,11.26), Z('5',40,50,8.55,14.36), Z('6',50,65,10.89,18.18), Z('7',65,80,12.91,22.25)] },
+    bfc:{ name:'Bourgogne-Franche-Comté', depts:['21','25','39','58','70','71','89','90'], year:2024, from:'01/06/2024', panier:11.44, verif:true,
+      zones:STD5([[1.76,2.65],[3.38,5.57],[4.70,9.06],[6.60,11.67],[7.77,14.51]]) },
+    pac:{ name:'Provence-Alpes-Côte d’Azur', depts:['04','05','06','13','83','84'], year:2023, from:'01/11/2023', panier:11.80, verif:true,
+      zones:STD5([[2.03,3.61],[3.23,6.34],[4.35,8.53],[5.77,11.13],[6.85,14.61]]) },
+    ges:{ name:'Grand Est', depts:['08','10','51','52','54','55','57','88','67','68'], subLabel:'Secteur',
+      subs:{
+        alsace:{ name:'Alsace (67, 68)', depts:['67','68'], year:2024, from:'01/03/2024', panier:11.50, verif:true,
+          zones:STD5([[2.00,2.65],[3.15,3.65],[4.30,4.85],[5.75,6.60],[7.00,7.90]]) },
+        lorraine:{ name:'Lorraine (54, 55, 57, 88)', depts:['54','55','57','88'], year:2024, from:'01/03/2024', panier:11.50, verif:true,
+          zones:STD5([[2.00,2.65],[3.15,4.70],[4.40,7.60],[5.75,11.45],[7.40,13.35]]) },
+        champagne:{ name:'Champagne-Ardenne (08, 10, 51, 52)', depts:['08','10','51','52'], year:2024, from:'01/03/2024', panier:11.50, verif:true,
+          zones:STD5([[2.00,2.65],[3.15,4.70],[4.60,7.30],[5.75,9.50],[8.25,11.65]]) } } },
+    ara:{ name:'Auvergne-Rhône-Alpes', depts:['01','03','07','15','26','38','42','43','63','69','73','74'], subLabel:'Département',
+      subs:{
+        auvergne:{ name:'Auvergne (03, 15, 43, 63)', depts:['03','15','43','63'], year:2026, from:'01/04/2026', panier:12.00, verif:true,
+          zones:[Z('1A',0,5,0.66,0.86), Z('1B',5,10,1.40,1.96), Z('2',10,20,2.73,5.77), Z('3',20,30,3.97,9.10), Z('4',30,40,5.03,12.58), Z('5',40,50,6.57,15.90)] },
+        rhone_metro:{ name:'Rhône : siège dans la Métropole de Lyon', depts:[], year:2025, from:'01/01/2025', panier:12.05, verif:true,
+          zones:STD5([[1.59,4.43],[2.93,7.99],[4.21,12.11],[5.49,16.57],[6.69,20.78]]) },
+        rhone:{ name:'Rhône : siège hors Métropole de Lyon', depts:['69'], year:2025, from:'01/01/2025', panier:12.05, verif:true,
+          zones:[Z('1A',0,4,0.97,3.65), Z('1B',4,10,1.59,4.43), Z('2',10,20,2.93,7.99), Z('3',20,30,4.21,12.11), Z('4',30,40,5.49,16.57), Z('5',40,50,6.69,20.78)] },
+        ain:{ name:'Ain (01)', depts:['01'], panier:12.06, zones:null },
+        drome_ardeche:{ name:'Drôme-Ardèche (26, 07)', depts:['26','07'], panier:12.00, zones:null },
+        isere:{ name:'Isère (38)', depts:['38'], panier:12.06, zones:null },
+        loire:{ name:'Loire (42)', depts:['42'], panier:12.11, zones:null },
+        savoie:{ name:'Savoie (73)', depts:['73'], panier:12.25, zones:null },
+        hsavoie:{ name:'Haute-Savoie (74)', depts:['74'], panier:12.88, zones:null } } },
+    gua:{ name:'Guadeloupe', depts:['971'], zones:null },
+    mar:{ name:'Martinique', depts:['972'], zones:null },
+    guy:{ name:'Guyane', depts:['973'], zones:null },
+    reu:{ name:'La Réunion', depts:['974'], zones:null },
+    may:{ name:'Mayotte', depts:['976'], zones:null }
+  };
+  window.RW_REGION_ORDER = ['ara','bfc','bre','cvl','cor','ges','hdf','idf','nor','naq','occ','pdl','pac','gua','mar','guy','reu','may'];
+})();
+
+/* ═══ MODULE — v5.54.0 — Inscription Google / e-mail · engagements signés · assistant du patron ·
+   barèmes régionaux · fin d'essai. Partie 1 : socle, barèmes, réglages entreprise, inscription. ═══ */
+(function(){
+  const OB = window.OB = window.OB || {};
+  OB.API = SUPA_URL + '/functions/v1/notybat-onboard';
+  OB.WEB_URL = 'https://rwoodslog-dev.github.io/RWOOD/';
+  const E = s => (typeof escapeHtml === 'function' ? escapeHtml(String(s == null ? '' : s)) : String(s == null ? '' : s));
+  const IC = (n, cls) => `<img src="icons/ui/${n}.png" alt="" class="ob-ic${cls ? ' ' + cls : ''}">`;
+  const eur = n => (n == null || n === '' || isNaN(n)) ? '—' : Number(n).toFixed(2).replace('.', ',') + ' €';
+  OB.E = E; OB.IC = IC; OB.eur = eur;
+  OB.isDev = () => { try{ return typeof devAccessIsDevUser === 'function' && !!devAccessIsDevUser(); }catch(e){ return false; } };
+  OB.$ = id => document.getElementById(id);
+  OB.slug = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  OB.today = () => { const d = new Date(); return d.toLocaleDateString('fr-FR') + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); };
+
+  /* ── Notification (native Android, sinon navigateur) ── */
+  OB.notify = async function(title, body, key){
+    try{ if(key){ const k = 'rwood-obn-' + key; if(localStorage.getItem(k)) return; localStorage.setItem(k, '1'); } }catch(e){}
+    try{ showToast(title + ' — ' + body); }catch(e){}
+    const LN = (typeof _rnPlug === 'function') ? _rnPlug('LocalNotifications') : null;
+    if(LN){ try{ try{ await LN.requestPermissions(); }catch(_){}
+      await LN.schedule({ notifications:[{ id: 800000000 + Math.floor(Math.random() * 9e7), title, body, schedule:{ at:new Date(Date.now() + 1500), allowWhileIdle:true }, channelId:'rwood_general', smallIcon:'ic_stat_rwood', iconColor:'#EE8A2E', extra:{ url:'parametres' } }] });
+      return; }catch(e){} }
+    try{ if('Notification' in window && Notification.permission === 'granted') new Notification(title, { body, tag:key || 'rwood-ob' }); }catch(e){}
+  };
+
+  /* ── Appel à la fonction serveur notybat-onboard ── */
+  OB.api = async function(payload, withToken){
+    let tok = null; if(withToken !== false){ try{ tok = await rwGoogleToken(); }catch(e){} }
+    const r = await fetch(OB.API, { method:'POST', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + (tok || SUPA_KEY), 'Content-Type':'application/json' },
+      body: JSON.stringify(Object.assign({ token: tok || '' }, payload)) });
+    let j = null; try{ j = await r.json(); }catch(e){}
+    if(!r.ok || !j || j.error){ const er = new Error((j && (j.message || j.error)) || ('HTTP ' + r.status)); er.status = r.status; throw er; }
+    return j;
+  };
+
+  /* ═══ Barèmes ═══ */
+  function overrides(){ try{ return JSON.parse(localStorage.getItem('rwood-baremes') || '{}') || {}; }catch(e){ return {}; } }
+  OB.barKey = (region, sub) => region + (sub ? '/' + sub : '');
+  window.rwBareme = function(region, sub){
+    const R = (window.RW_BAREMES || {})[region]; if(!R) return null;
+    if(R.subs && !(sub && R.subs[sub])) sub = Object.keys(R.subs)[0];
+    const base = R.subs ? R.subs[sub] : R;
+    const ov = overrides()[OB.barKey(region, R.subs ? sub : '')];
+    const b = Object.assign({}, base, ov || {});
+    b.zones = Array.isArray(b.zones) ? b.zones.map(z => Object.assign({}, z)) : null;
+    b.region = region; b.sub = R.subs ? sub : ''; b.regionName = R.name; b.label = R.name + (R.subs ? ' — ' + base.name : '');
+    return b;
+  };
+  window.rwBaremeFetch = async function(force){
+    try{
+      const last = +(localStorage.getItem('rwood-baremes-at') || 0);
+      if(!force && Date.now() - last < 6 * 3600000) return false;
+      if(!navigator.onLine) return false;
+      const j = await OB.api({ op:'baremes' }, false);
+      const map = {}; (j.rows || []).forEach(r => { if(r && r.id && r.data) map[r.id] = r.data; });
+      localStorage.setItem('rwood-baremes', JSON.stringify(map));
+      localStorage.setItem('rwood-baremes-at', String(Date.now()));
+      return true;
+    }catch(e){ return false; }
+  };
+  window.rwRegionFromDept = function(dept){
+    dept = String(dept || '').toUpperCase(); if(/^\d$/.test(dept)) dept = '0' + dept;
+    for(const k of (window.RW_REGION_ORDER || [])){
+      const R = RW_BAREMES[k];
+      if(R.subs){ for(const s in R.subs){ if((R.subs[s].depts || []).includes(dept)) return { region:k, sub:s }; } }
+      else if((R.depts || []).includes(dept)) return { region:k, sub:'' };
+    }
+    return null;
+  };
+
+  /* ═══ Réglages de l'entreprise (partagés à toute l'équipe via company_trajet_v1) ═══
+     companyCfg = { zonesOn, zonesMode:'convention'|'perso', region, sub, custom:[zones], persoOn,
+                    persoMode:'convention'|'perso', vp:{zone:€}, weeklyHours, plan, at } */
+  window._rwCfg = function(){ try{ return (data && data.settings && data.settings.companyCfg) || {}; }catch(e){ return {}; } };
+  window._rwWH = function(){
+    const c = _rwCfg(); const v = parseFloat(c.weeklyHours || (typeof data !== 'undefined' && data && data.settings && data.settings.weeklyHours) || 35);
+    return v > 0 ? v : 35;
+  };
+  /* Barème effectif (zones + montants) d'après les choix du patron */
+  OB.effectiveBareme = function(c){
+    c = c || _rwCfg();
+    if(c.zonesOn === false && c.persoOn === false) return [];
+    let zones = null;
+    if(c.zonesMode === 'perso' && Array.isArray(c.custom) && c.custom.length) zones = c.custom.map(z => Object.assign({}, z));
+    else { const b = c.region ? rwBareme(c.region, c.sub) : null; zones = b && b.zones ? b.zones : null; }
+    if(!zones) zones = (typeof defaultTrajetBareme === 'function') ? defaultTrajetBareme() : [];
+    zones.forEach(z => { delete z.vp; if(c.persoMode === 'perso' && c.vp && c.vp[z.zone] != null && c.vp[z.zone] !== '') z.vp = +c.vp[z.zone]; });
+    return zones;
+  };
+  OB.cfgApply = function(){
+    try{
+      const st = data.settings, c = st.companyCfg; if(!c) return;
+      if(c.weeklyHours) st.weeklyHours = c.weeklyHours;
+      const b = OB.effectiveBareme(c);
+      if(b.length) st.trajetBareme = b;
+      OB.bodyClasses();
+    }catch(e){ console.warn('[ob] cfgApply', e); }
+  };
+  OB.bodyClasses = function(){
+    const c = _rwCfg();
+    document.body.classList.toggle('rw-nozones', c.zonesOn === false);
+    document.body.classList.toggle('rw-novp', c.persoOn === false);
+  };
+  /* Comptes existants (entreprise d'origine, BCM) : pas d'assistant, barème Nouvelle-Aquitaine 2026 */
+  OB.cfgMigrate = function(){
+    try{
+      const st = data && data.settings; if(!st || !st.auth || !st.auth.authId) return;
+      if(st.companyCfg || st.companyCode) return;
+      st.companyCfg = { v:1, legacy:true, zonesOn:true, zonesMode:'convention', region:'naq', sub:'', persoOn:true, persoMode:'convention',
+        weeklyHours: parseFloat(st.weeklyHours) || 35, at:new Date().toISOString() };
+      OB.cfgApply();
+      if(typeof _trajetRezoneFromKm === 'function') _trajetRezoneFromKm();
+      saveData();
+      if(typeof _trajetCfgCanPush === 'function' && _trajetCfgCanPush()) setTimeout(() => { try{ _trajetCfgPush(); }catch(e){} }, 5000);
+    }catch(e){ console.warn('[ob] migrate', e); }
+  };
+  /* Montant d'une journée de trajet : véhicule entreprise = trajet ; véhicule perso = trajet + transport
+     (convention) ou trajet + montant perso choisi par le patron. Zones désactivées : seul le véhicule perso compte. */
+  window._rwTrAmtCfg = function(r, f){
+    if(!r) return 0;
+    const c = _rwCfg(), t = +r.trajet || 0, perso = f > 1 && c.persoOn !== false;
+    const add = !perso ? 0 : (c.persoMode === 'perso' && r.vp != null ? +r.vp : (r.transport != null ? +r.transport : t));
+    if(c.zonesOn === false) return perso ? t + add : 0;
+    return t + add;
+  };
+
+  /* Zones et véhicule perso tous deux désactivés : plus aucun montant ; véhicule perso désactivé : jamais ×perso */
+  const _gtr = window.getTrajetRates;
+  if(typeof _gtr === 'function') window.getTrajetRates = function(){ const c = _rwCfg(); if(c.zonesOn === false && c.persoOn === false) return null; return _gtr.apply(this, arguments); };
+  const _tdf = window._trajetDayFactor;
+  if(typeof _tdf === 'function') window._trajetDayFactor = function(){ const c = _rwCfg(); if(c.persoOn === false) return 1; return _tdf.apply(this, arguments); };
+
+  /* ═══ Signature au doigt ═══ */
+  OB.sigPad = function(hostId, onChange){
+    const host = OB.$(hostId); if(!host) return null;
+    host.innerHTML = '<canvas></canvas><div class="ph">Signe ici avec ton doigt</div><button type="button">Effacer</button>';
+    const cv = host.querySelector('canvas'), ph = host.querySelector('.ph'), btn = host.querySelector('button');
+    const pad = { empty:true };
+    const size = () => { const r = host.getBoundingClientRect(), k = window.devicePixelRatio || 1; cv.width = Math.max(10, r.width * k); cv.height = Math.max(10, r.height * k); const g = cv.getContext('2d'); g.scale(k, k); g.lineWidth = 2.6; g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = '#14100C'; };
+    size();
+    let drawing = false, last = null;
+    const pos = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    cv.addEventListener('pointerdown', e => { e.preventDefault(); drawing = true; last = pos(e); try{ cv.setPointerCapture(e.pointerId); }catch(_){} });
+    cv.addEventListener('pointermove', e => { if(!drawing) return; e.preventDefault(); const p = pos(e), g = cv.getContext('2d'); g.beginPath(); g.moveTo(last[0], last[1]); g.lineTo(p[0], p[1]); g.stroke(); last = p;
+      if(pad.empty){ pad.empty = false; ph.style.display = 'none'; onChange && onChange(pad); } });
+    const up = () => { if(drawing){ drawing = false; onChange && onChange(pad); } };
+    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up); cv.addEventListener('pointerleave', up);
+    btn.onclick = () => { size(); pad.empty = true; ph.style.display = ''; onChange && onChange(pad); };
+    /* Image réduite (PNG transparent ~360 px) : légère pour le registre et le PDF */
+    pad.data = function(){
+      if(pad.empty) return '';
+      const w = 360, h = Math.round(w * cv.height / cv.width), o = document.createElement('canvas'); o.width = w; o.height = h;
+      o.getContext('2d').drawImage(cv, 0, 0, w, h); return o.toDataURL('image/png');
+    };
+    return pad;
+  };
+
+  /* ═══ Textes juridiques ═══ */
+  OB.clauseText = function(coName){
+    const co = coName || 'l’entreprise';
+    return [
+      'Clause de confidentialité des données de l’entreprise ' + co + '.',
+      'En utilisant Notybat dans le cadre de mon travail pour ' + co + ', j’ai accès à des informations qui appartiennent à l’entreprise : chantiers et adresses, clients et contacts, plans, photos, documents, devis, prix, stocks, plannings, heures et informations sur mes collègues.',
+      'Je m’engage à : 1) utiliser ces informations uniquement pour mon travail chez ' + co + ' ; 2) ne pas les communiquer, copier, publier ou transférer à une personne extérieure à l’entreprise, par quelque moyen que ce soit (photo d’écran, réseaux sociaux, messagerie, export), sans l’accord de mon employeur ; 3) ne pas utiliser les données des clients ou des chantiers pour mon compte personnel ou pour une autre entreprise ; 4) protéger l’accès à mon compte (ne pas prêter mon téléphone déverrouillé ni mes identifiants) ; 5) prévenir mon employeur sans attendre en cas de perte ou de vol de mon téléphone ou d’accès suspect à mon compte.',
+      'Cet engagement s’applique pendant toute la durée de mon contrat et continue après mon départ de l’entreprise. Le non-respect de cette clause peut entraîner des sanctions disciplinaires et, le cas échéant, des poursuites.',
+      'Les données personnelles me concernant (identité, heures, pointages) sont traitées par ' + co + ' pour la gestion du travail et de la paie, et hébergées par Notybat dans l’Union européenne. Je peux exercer mes droits d’accès et de rectification auprès de mon employeur. Ma position n’est ni enregistrée ni envoyée par Notybat.'
+    ];
+  };
+  OB.openText = function(title, paras){
+    const m = document.createElement('div'); m.className = 'ob-modal';
+    m.innerHTML = `<div><h2 style="margin:0 0 10px;font-size:18px;">${E(title)}</h2><div class="ob-clause">${paras.map(p => '<p>' + E(p) + '</p>').join('')}</div>
+      <button type="button" class="ob-btn p">J'ai lu</button></div>`;
+    m.querySelector('button').onclick = () => m.remove();
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    document.body.appendChild(m);
+  };
+
+  /* ═══ Conteneur plein écran (inscription, assistant, simulations) ═══ */
+  OB.host = function(){
+    let h = OB.$('rwObAuth');
+    if(!h){ h = document.createElement('div'); h.id = 'rwObAuth'; document.body.appendChild(h); }
+    return h;
+  };
+  OB.render = function(html, wide){
+    const h = OB.host(); h.innerHTML = `<div class="ob-pg${wide ? ' wide' : ''}">${html}</div>`; h.classList.add('on'); h.scrollTop = 0;
+  };
+  OB.close = function(){ const h = OB.$('rwObAuth'); if(h){ h.classList.remove('on'); h.innerHTML = ''; } };
+  OB.head = (sim) => `<div class="ob-head"><img class="lg" src="icons/logo-header-v4.png" alt=""><div class="t">Noty<span>bat</span></div>${sim ? '<span class="ob-id" style="margin-left:auto;">Simulation</span>' : ''}</div>`;
+  OB.steps = (n, of) => '<div class="ob-steps">' + Array.from({ length:of }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('') + '</div>';
+  OB.err = (id, t) => { const e = OB.$(id); if(e){ e.innerHTML = t || ''; e.classList.toggle('on', !!t); } };
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     INSCRIPTION
+     ═══════════════════════════════════════════════════════════════════════ */
+  const S = OB.su = { via:'google', first:'', last:'', email:'', pwd:'', pwd2:'', phone:'', mode:'join', code:'', coName:'', coChecked:null,
+    role:'ouvrier', trade:'charpente', tradeLabel:'', logo:'', news:false, cgv:false, clause:false, sig:'', sim:false };
+  const ROLES = [['ouvrier','role-ouvrier-v2','Ouvrier'],['chef','role-chef-v2','Chef d’équipe'],['conducteur','role-conducteur-v2','Conducteur de travaux'],['comptable','role-compta-v2','Comptable']];
+  const TRADES = [['charpente','charpente','Charpente'],['couverture','tuile','Couverture'],['zinguerie','gouttiere','Zinguerie'],['menuiserie','fenetre-toit','Menuiserie'],['autre','etiquette','Autre métier']];
+  OB.TRADES = TRADES;
+  function readForm(){
+    const v = id => { const e = OB.$(id); return e ? (e.type === 'checkbox' ? e.checked : String(e.value || '').trim()) : undefined; };
+    [['obFirst','first'],['obLast','last'],['obEmail','email'],['obPwd','pwd'],['obPwd2','pwd2'],['obPhone','phone'],['obCode','code'],['obCoName','coName'],['obTradeLabel','tradeLabel']]
+      .forEach(([id, k]) => { const x = v(id); if(x !== undefined) S[k] = x; });
+    [['obNews','news'],['obCgv','cgv'],['obClause','clause']].forEach(([id, k]) => { const x = v(id); if(x !== undefined) S[k] = x; });
+    if(S.code) S.code = S.code.toUpperCase().replace(/\s+/g, '');
+  }
+  OB.suInput = function(){ readForm(); const p = OB.$('obIdPrev'); if(p) p.textContent = (OB.slug(S.first) || 'prenom') + '.' + (OB.slug(S.last) || 'nom'); };
+
+  OB.show = function(step){
+    const sim = S.sim;
+    if(step === 'account'){
+      const g = S.via === 'google';
+      OB.render(`${OB.head(sim)}${OB.steps(1, 3)}<h2>Créer mon compte</h2><p class="ob-sub">${g ? 'Connecté avec Google : ton adresse est déjà remplie.' : 'Ton identifiant est créé avec ton prénom et ton nom.'}</p>
+        <div class="ob-row2"><div class="ob-f"><label>Prénom *</label><input type="text" id="obFirst" autocomplete="given-name" value="${E(S.first)}" oninput="OB.suInput()"></div>
+          <div class="ob-f"><label>Nom *</label><input type="text" id="obLast" autocomplete="family-name" value="${E(S.last)}" oninput="OB.suInput()"></div></div>
+        <div class="ob-hint">Ton identifiant : <span class="ob-id" id="obIdPrev">${E((OB.slug(S.first) || 'prenom') + '.' + (OB.slug(S.last) || 'nom'))}</span></div>
+        <div class="ob-f"><label>Adresse e-mail *</label><input type="email" id="obEmail" autocomplete="email" value="${E(S.email)}" ${g || S.lockEmail ? 'readonly' : ''} placeholder="nom@exemple.fr"></div>
+        ${g || S.lockEmail ? '' : `<div class="ob-row2"><div class="ob-f"><label>Mot de passe * (8 car. min.)</label><input type="password" id="obPwd" autocomplete="new-password" value="${E(S.pwd)}"></div>
+          <div class="ob-f"><label>Confirmer *</label><input type="password" id="obPwd2" autocomplete="new-password" value="${E(S.pwd2)}"></div></div>`}
+        <div class="ob-f"><label>Téléphone (facultatif)</label><input type="tel" id="obPhone" autocomplete="tel" value="${E(S.phone)}" placeholder="06 12 34 56 78"></div>
+        <div class="ob-tabs"><button type="button" class="ob-tab ${S.mode === 'join' ? 'on' : ''}" onclick="OB.suMode('join')">${IC('casque', 'l')}Je rejoins<small>mon entreprise</small></button>
+          <button type="button" class="ob-tab ${S.mode === 'create' ? 'on' : ''}" onclick="OB.suMode('create')">${IC('immeuble', 'l')}Je crée<small>mon entreprise</small></button></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" onclick="OB.suNext('account')">Continuer ${IC('fleche-droite', 's')}</button>
+        <button type="button" class="ob-link" onclick="OB.suBack('account')">Retour</button>`);
+      return;
+    }
+    if(step === 'join'){
+      const taken = (S.coChecked && S.coChecked.taken) || [];
+      const roles = ROLES.filter(r => !taken.includes(r[0]));
+      if(!roles.some(r => r[0] === S.role)) S.role = 'ouvrier';
+      OB.render(`${OB.head(sim)}${OB.steps(2, 3)}<h2>Rejoindre mon entreprise</h2><p class="ob-sub">Ton patron te donne le code de l'entreprise.</p>
+        <div class="ob-f"><label>Code entreprise *</label><input type="text" id="obCode" maxlength="10" autocomplete="off" autocapitalize="characters" value="${E(S.code)}" placeholder="Ex : K7P2QX"
+          style="text-align:center;font-size:22px;font-weight:900;letter-spacing:5px;text-transform:uppercase;" oninput="OB.suCodeInput()"></div>
+        <div id="obCoName" class="ob-hint" style="text-align:center;min-height:18px;">${S.coChecked && S.coChecked.name ? IC('valider', 's') + ' <b class="ob-ok">' + E(S.coChecked.name) + '</b>' : ''}</div>
+        <div class="ob-f"><label>Je suis</label><div class="ob-chips">${roles.map(([k, ic, l]) => `<button type="button" class="ob-chip ${S.role === k ? 'on' : ''}" onclick="OB.suRole('${k}')"><img src="icons/${ic}.png" alt="">${E(l)}</button>`).join('')}</div></div>
+        <div class="ob-card" id="obRoleHint" style="display:${S.role === 'conducteur' || S.role === 'comptable' ? 'block' : 'none'};"><div class="ob-hint" style="margin:0;">${IC('attente', 's')} Ton patron reçoit une notification pour valider ton rôle. En attendant, tu as l'accès chef d'équipe.</div></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" onclick="OB.suNext('join')">Continuer ${IC('fleche-droite', 's')}</button>
+        <button type="button" class="ob-link" onclick="OB.show('account')">Retour</button>`);
+      if(S.code && !S.coChecked) OB.suCodeInput();
+      return;
+    }
+    if(step === 'create'){
+      OB.render(`${OB.head(sim)}${OB.steps(2, 3)}<h2>Créer mon entreprise</h2><p class="ob-sub">Tu en deviens le <b>patron</b> : tu as accès à toutes les fonctions.</p>
+        <div class="ob-f"><label>Nom de l'entreprise *</label><input type="text" id="obCoName" maxlength="60" value="${E(S.coName)}" placeholder="Ex : Charpente Dupont"></div>
+        <div class="ob-f"><label>Logo (facultatif)</label>
+          <label class="ob-logo-pick"><span class="bx">${S.logo ? `<img src="${S.logo}" alt="">` : IC('appareil-photo')}</span><span class="ob-hint" style="margin:0;">${S.logo ? 'Changer le logo' : 'Ajouter le logo de l’entreprise'}</span>
+          <input type="file" accept="image/*" style="display:none;" onchange="OB.suLogo(this)"></label>
+          ${S.logo ? '<button type="button" class="ob-x" onclick="OB.su.logo=\'\';OB.show(\'create\')">Retirer le logo</button>' : ''}</div>
+        <div class="ob-f"><label>Ton métier *</label><div class="ob-chips">${TRADES.map(([k, ic, l]) => `<button type="button" class="ob-chip ${S.trade === k ? 'on' : ''}" onclick="OB.suTrade('${k}')">${IC(ic, 's')}${E(l)}</button>`).join('')}</div></div>
+        <div class="ob-f" id="obTradeOther" style="display:${S.trade === 'autre' ? 'block' : 'none'};"><label>Quel métier ? *</label><input type="text" id="obTradeLabel" maxlength="40" value="${E(S.tradeLabel)}" placeholder="Ex : ossature bois"></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" onclick="OB.suNext('create')">Continuer ${IC('fleche-droite', 's')}</button>
+        <button type="button" class="ob-link" onclick="OB.show('account')">Retour</button>`);
+      return;
+    }
+    if(step === 'engage'){
+      const coName = S.mode === 'create' ? S.coName : ((S.coChecked && S.coChecked.name) || 'ton entreprise');
+      OB.render(`${OB.head(sim)}${OB.steps(3, 3)}<h2>Derniers réglages</h2><p class="ob-sub">Lis et accepte les conditions, puis signe.</p>
+        <label class="ob-ck"><input type="checkbox" id="obNews" ${S.news ? 'checked' : ''}><span>J'accepte que Notybat m'envoie un e-mail lors des nouveautés<small>Facultatif : tu peux te désinscrire à tout moment.</small></span></label>
+        <label class="ob-ck"><input type="checkbox" id="obCgv" ${S.cgv ? 'checked' : ''}><span>J'ai lu et j'accepte les <a href="cgv.html" target="_blank" rel="noopener" onclick="event.stopPropagation()">conditions générales de vente</a> et la <a href="confidentialite.html" target="_blank" rel="noopener" onclick="event.stopPropagation()">politique de confidentialité</a> de Notybat *</span></label>
+        <label class="ob-ck"><input type="checkbox" id="obClause" ${S.clause ? 'checked' : ''}><span>J'ai lu et j'accepte la <a href="#" onclick="event.preventDefault();event.stopPropagation();OB.openText('Clause de confidentialité',OB.clauseText(${E(JSON.stringify(coName))}))">clause de confidentialité des données</a> de ${E(coName)} *</span></label>
+        <div class="ob-f"><label>Ma signature *</label><div class="ob-sig" id="obSig"></div></div>
+        <div class="ob-hint">${S.mode === 'create' ? 'Ta signature sert aussi à valider les choix de ton entreprise à l’étape suivante.' : 'La clause signée est envoyée à ton patron, qui la contre-signe.'}</div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" id="obGo" onclick="OB.suSubmit()">${IC('signature', 's')} Signer et créer mon compte</button>
+        <button type="button" class="ob-link" onclick="OB.show('${S.mode}')">Retour</button>`);
+      OB._pad = OB.sigPad('obSig');
+      return;
+    }
+    if(step === 'mail'){
+      OB.render(`${OB.head(sim)}<div class="ob-center" style="margin-top:20px;">${IC('email', 'xl')}</div><h2 class="ob-center">Vérifie ta boîte mail</h2>
+        <p class="ob-sub ob-center">On a envoyé un lien d'activation à<br><b style="color:var(--ink);">${E(S.email)}</b></p>
+        <div class="ob-card"><div class="ob-hint" style="margin:0;">1. Ouvre l'e-mail « Notybat » (regarde aussi dans les spams).<br>2. Appuie sur le lien pour activer ton compte.<br>3. Reviens ici et appuie sur « J'ai activé mon compte ».</div></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" onclick="OB.suActivated()">${IC('valider', 's')} J'ai activé mon compte</button>
+        <button type="button" class="ob-btn o" onclick="OB.suResend()">${IC('envoyer', 's')} Renvoyer l'e-mail</button>
+        <button type="button" class="ob-link" onclick="OB.close(); showAuthWelcome();">Retour à l'accueil</button>`);
+      return;
+    }
+    if(step === 'busy'){
+      OB.render(`${OB.head(sim)}<div class="ob-center" style="margin-top:60px;">${IC('synchro', 'xl')}<h2>Création de ton compte…</h2><p class="ob-sub">Quelques secondes.</p></div><div class="ob-err" id="obErr"></div>`);
+      return;
+    }
+    if(step === 'login'){
+      OB.render(`${OB.head(sim)}<h2>Me connecter</h2><p class="ob-sub">Avec l'e-mail et le mot de passe choisis à l'inscription.</p>
+        <button type="button" class="ob-btn g" onclick="OB.close(); rwGoogleStart('login')">${IC('globe', 's')} Continuer avec Google</button>
+        <div class="ob-hint ob-center" style="margin:10px 0;">ou</div>
+        <div class="ob-f"><label>Adresse e-mail</label><input type="email" id="obEmail" autocomplete="email" value="${E(S.email)}"></div>
+        <div class="ob-f"><label>Mot de passe</label><input type="password" id="obPwd" autocomplete="current-password"></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" id="obGo" onclick="OB.loginMail()">${IC('connexion', 's')} Se connecter</button>
+        <button type="button" class="ob-link" onclick="OB.show('forgot')">Mot de passe oublié ?</button>
+        <button type="button" class="ob-link" onclick="OB.close(); showAuthLoginForm();">J'ai un ancien identifiant Notybat (prenom.nom)</button>
+        <button type="button" class="ob-link" onclick="OB.close(); showAuthWelcome();">Retour</button>`);
+      return;
+    }
+    if(step === 'forgot'){
+      OB.render(`${OB.head(sim)}<div class="ob-center">${IC('cadenas-ouvert', 'xl')}</div><h2 class="ob-center">Mot de passe oublié</h2>
+        <p class="ob-sub ob-center">Indique ton e-mail et le code de ton entreprise : tu reçois un lien pour choisir un nouveau mot de passe.</p>
+        <div class="ob-f"><label>Adresse e-mail</label><input type="email" id="obEmail" autocomplete="email" value="${E(S.email)}"></div>
+        <div class="ob-f"><label>Code entreprise</label><input type="text" id="obCode" maxlength="10" autocapitalize="characters" value="${E(S.code)}" style="text-transform:uppercase;letter-spacing:3px;font-weight:800;"></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" id="obGo" onclick="OB.forgot()">${IC('envoyer', 's')} Recevoir le lien</button>
+        <button type="button" class="ob-link" onclick="OB.show('login')">Retour</button>`);
+      return;
+    }
+    if(step === 'newpwd'){
+      OB.render(`${OB.head(sim)}<div class="ob-center">${IC('cadenas-ouvert', 'xl')}</div><h2 class="ob-center">Nouveau mot de passe</h2>
+        <div class="ob-f"><label>Nouveau mot de passe (8 car. min.)</label><input type="password" id="obPwd" autocomplete="new-password"></div>
+        <div class="ob-f"><label>Confirmer</label><input type="password" id="obPwd2" autocomplete="new-password"></div>
+        <div class="ob-err" id="obErr"></div>
+        <button type="button" class="ob-btn p" id="obGo" onclick="OB.newPwd()">${IC('valider', 's')} Enregistrer</button>`);
+      return;
+    }
+  };
+  OB.suMode = function(m){ readForm(); S.mode = m === 'create' ? 'create' : 'join'; OB.show('account'); };
+  OB.suRole = function(r){ readForm(); S.role = r; OB.show('join'); };
+  OB.suTrade = function(t){ readForm(); S.trade = t; OB.show('create'); };
+  OB.suLogo = function(inp){
+    const f = inp.files && inp.files[0]; if(!f) return;
+    const fr = new FileReader();
+    fr.onload = () => { const im = new Image(); im.onload = () => {
+      const k = Math.min(1, 300 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); readForm(); S.logo = c.toDataURL('image/png'); OB.show('create'); }; im.src = fr.result; };
+    fr.readAsDataURL(f);
+  };
+  let _codeT = null;
+  OB.suCodeInput = function(){
+    readForm(); S.coChecked = null;
+    const el = OB.$('obCoName'); if(el) el.innerHTML = '';
+    clearTimeout(_codeT);
+    if(!/^[A-Z0-9]{4,10}$/.test(S.code)) return;
+    _codeT = setTimeout(async () => {
+      if(S.sim){ S.coChecked = { name:'Entreprise test', taken:['comptable'] }; OB.show('join'); return; }
+      try{
+        const r = await _rwGwCall({ op:'code_check', code:S.code });
+        const j = await r.json().catch(() => null);
+        if(r.ok && j && j.ok){ S.coChecked = { name:j.name || j.companyName || '', taken:(j.taken || []).filter(x => x !== 'patron') }; OB.show('join'); }
+        else if(j && (j.error === 'not_found' || j.error === 'code_inconnu')){ const e2 = OB.$('obCoName'); if(e2) e2.innerHTML = '<span style="color:var(--red);">Code inconnu : vérifie-le avec ton patron.</span>'; }
+      }catch(e){ /* porte d'entrée sans « code_check » : on continue sans contrôle */ }
+    }, 450);
+  };
+  OB.suBack = function(){ if(S.sim){ OB.close(); return; } if(S.via === 'google'){ try{ rwGoogleSignOut(true); }catch(e){} } OB.close(); showAuthWelcome(); };
+  OB.suNext = function(step){
+    readForm();
+    const say = t => OB.err('obErr', t);
+    if(step === 'account'){
+      if(!S.first || !S.last) return say('Indique ton prénom et ton nom.');
+      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(S.email)) return say('Indique une adresse e-mail valide.');
+      if(S.via === 'email' && !S.lockEmail){
+        if(S.pwd.length < 8) return say('Le mot de passe doit faire au moins 8 caractères.');
+        if(S.pwd !== S.pwd2) return say('Les deux mots de passe ne sont pas identiques.');
+      }
+      if(S.phone && S.phone.replace(/[^\d+]/g, '').length < 10) return say('Le numéro de téléphone semble incomplet.');
+      return OB.show(S.mode);
+    }
+    if(step === 'join'){
+      if(!/^[A-Z0-9]{4,10}$/.test(S.code)) return say('Le code entreprise fait 6 lettres ou chiffres.');
+      return OB.show('engage');
+    }
+    if(step === 'create'){
+      if(S.coName.length < 2) return say('Indique le nom de ton entreprise.');
+      if(S.trade === 'autre' && S.tradeLabel.length < 2) return say('Indique ton métier.');
+      return OB.show('engage');
+    }
+  };
+  /* Données d'inscription à garder jusqu'à l'activation (e-mail) — jamais le mot de passe */
+  function pendingData(){
+    return { first:S.first, last:S.last, email:S.email.toLowerCase(), phone:S.phone, mode:S.mode, code:S.code, coName:S.coName, role:S.role,
+      trade:S.trade, tradeLabel:S.tradeLabel, news:!!S.news, cgvAt:S.cgvAt, clauseAt:S.clauseAt, sig:S.sig, coClause:S.coClauseName || '' };
+  }
+  OB.suSubmit = async function(){
+    readForm();
+    const say = t => OB.err('obErr', t);
+    if(!S.cgv) return say('Coche l’acceptation des conditions générales de vente.');
+    if(!S.clause) return say('Coche l’acceptation de la clause de confidentialité.');
+    if(!OB._pad || OB._pad.empty) return say('Signe dans le cadre avec ton doigt.');
+    S.sig = OB._pad.data(); S.cgvAt = new Date().toISOString(); S.clauseAt = S.cgvAt;
+    S.coClauseName = S.mode === 'create' ? S.coName : ((S.coChecked && S.coChecked.name) || '');
+    if(S.sim){
+      if(S.via === 'email'){ OB.show('mail'); return; }
+      if(S.mode === 'create'){ OB.wizardStart({ sim:true }); return; }
+      OB.render(`${OB.head(true)}<div class="ob-center" style="margin-top:40px;">${IC('reussi', 'xl')}<h2>Compte créé</h2><p class="ob-sub">Simulation terminée : rien n'a été envoyé.</p></div><button type="button" class="ob-btn p" onclick="OB.close()">Fermer</button>`);
+      return;
+    }
+    if(!navigator.onLine) return say('Pas de connexion internet.');
+    try{ localStorage.setItem('rwood-ob-pending', JSON.stringify(pendingData())); }catch(e){}
+    if(S.logo){ try{ localStorage.setItem('rwood-ob-logo', S.logo); }catch(e){} }
+    if(S.via === 'email') return OB.signupMail();
+    return OB.serverSignup();
+  };
+  /* Envoi à la porte d'entrée : on réutilise le formulaire d'origine (gestion du compte existant, du patron, etc.) */
+  OB.serverSignup = async function(){
+    OB.show('busy');
+    const set = (id, v) => { const e = OB.$(id); if(e) e.value = v; };
+    try{
+      rwSuMode(S.mode);
+      set('rwSuFirst', S.first); set('rwSuLast', S.last); set('rwSuCode', S.code); set('rwSuCoName', S.coName);
+      const ts = OB.$('rwSuTrade');
+      if(ts){ const k = ['charpente','couverture','menuiserie'].includes(S.trade) ? S.trade : 'autre'; if(!ts.options.length && typeof _rwTradeOptions === 'function') ts.innerHTML = _rwTradeOptions(k); ts.value = k; }
+      document.querySelectorAll('#rwSuRoles .chip').forEach(c => c.classList.toggle('selected', c.dataset.role === S.role));
+      const er = OB.$('rwSuErr'); if(er){ er.textContent = ''; er.style.display = 'none'; }
+      window._obExtra = { email:S.email.toLowerCase(), phone:S.phone, tradeLabel: S.trade === 'autre' ? S.tradeLabel : (S.trade === 'zinguerie' ? 'Zinguerie' : ''),
+        consents:{ news:!!S.news, cgvAt:S.cgvAt, clauseAt:S.clauseAt }, via:S.via };
+      window._obSignupRunning = true;
+      await rwSignupSubmit();
+    }catch(e){ OB.err('obErr', E(e.message || e)); }
+    window._obSignupRunning = false;
+    const er = OB.$('rwSuErr');
+    if(er && er.style.display !== 'none' && (er.textContent || '').trim()){
+      let msg = er.innerHTML;
+      if(/google_required|reconnecte-toi/i.test(er.textContent) && S.via === 'email') msg = 'L’inscription par e-mail n’est pas encore ouverte sur le serveur. Utilise « Continuer avec Google » ou réessaie plus tard.';
+      OB.show('engage'); OB.err('obErr', msg);
+    }
+  };
+  /* Inscription par e-mail : compte Supabase + lien d'activation. Les réponses du formulaire voyagent avec le compte. */
+  OB.redirectUrl = function(){
+    const native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    return native || !/^https?:/.test(location.protocol) ? OB.WEB_URL : (location.origin + location.pathname);
+  };
+  OB.signupMail = async function(){
+    const btn = OB.$('obGo'); if(btn) btn.disabled = true;
+    try{
+      const meta = { full_name:S.first + ' ' + S.last, given_name:S.first, family_name:S.last, rw_signup:pendingData() };
+      const r = await fetch(SUPA_URL + '/auth/v1/signup?redirect_to=' + encodeURIComponent(OB.redirectUrl()), { method:'POST',
+        headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' }, body: JSON.stringify({ email:S.email.toLowerCase(), password:S.pwd, data:meta }) });
+      const j = await r.json().catch(() => ({}));
+      if(!r.ok){
+        const m = String(j.msg || j.error_description || j.message || j.error || r.status);
+        if(/already|registered|exists/i.test(m)) throw new Error('Un compte existe déjà avec cet e-mail : connecte-toi avec « J’ai déjà un compte ».');
+        if(/signup.*disabled|not enabled|provider/i.test(m)) throw new Error('L’inscription par e-mail n’est pas encore ouverte. Utilise « Continuer avec Google ».');
+        throw new Error(m);
+      }
+      if(j.access_token){ _rwGSave(j); return OB.resumePending(); }   // confirmation désactivée côté Supabase
+      OB.show('mail');
+    }catch(e){ OB.err('obErr', E(e.message || e)); if(btn) btn.disabled = false; }
+  };
+  OB.suResend = async function(){
+    if(S.sim){ showToast('E-mail renvoyé (simulation)'); return; }
+    try{
+      const r = await fetch(SUPA_URL + '/auth/v1/resend', { method:'POST', headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' },
+        body: JSON.stringify({ type:'signup', email:S.email.toLowerCase(), options:{ email_redirect_to:OB.redirectUrl() } }) });
+      showToast(r.ok ? 'E-mail renvoyé' : 'Attends une minute avant de renvoyer l’e-mail');
+    }catch(e){ showToast('Pas de connexion internet'); }
+  };
+  OB.suActivated = async function(){
+    if(S.sim){ if(S.mode === 'create') OB.wizardStart({ sim:true }); else { OB.close(); showToast('Simulation terminée'); } return; }
+    if(S.pwd) return OB.loginMail(S.email, S.pwd, true);
+    OB.show('login');
+  };
+  OB.loginMail = async function(email, pwd, fromMail){
+    if(!email){ readForm(); email = S.email; pwd = S.pwd; }
+    const say = t => OB.err('obErr', t);
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return say('Indique ton adresse e-mail.');
+    if(!pwd) return say('Indique ton mot de passe.');
+    if(S.sim){ OB.close(); showToast('Connexion (simulation)'); return; }
+    const btn = OB.$('obGo'); if(btn) btn.disabled = true;
+    try{
+      const r = await fetch(SUPA_URL + '/auth/v1/token?grant_type=password', { method:'POST', headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' },
+        body: JSON.stringify({ email:String(email).toLowerCase(), password:pwd }) });
+      const j = await r.json().catch(() => ({}));
+      if(!r.ok || !j.access_token){
+        const m = String(j.error_description || j.msg || j.error || '');
+        if(/confirm/i.test(m)) throw new Error(fromMail ? 'Ton compte n’est pas encore activé : appuie sur le lien reçu par e-mail.' : 'Active d’abord ton compte avec le lien reçu par e-mail.');
+        throw new Error('E-mail ou mot de passe incorrect.');
+      }
+      _rwGSave(j);
+      OB.close();
+      await _rwGoogleAfter('login');
+    }catch(e){ say(E(e.message || e)); if(btn) btn.disabled = false; }
+  };
+  OB.forgot = async function(){
+    readForm();
+    const say = t => OB.err('obErr', t);
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(S.email)) return say('Indique ton adresse e-mail.');
+    if(!/^[A-Z0-9]{4,10}$/.test(S.code)) return say('Indique le code de ton entreprise.');
+    const btn = OB.$('obGo'); if(btn) btn.disabled = true;
+    try{ await OB.api({ op:'reset', email:S.email.toLowerCase(), code:S.code, redirect:OB.redirectUrl() }, false); }catch(e){ /* réponse identique dans tous les cas */ }
+    OB.render(`${OB.head()}<div class="ob-center" style="margin-top:30px;">${IC('email', 'xl')}<h2>Regarde tes e-mails</h2>
+      <p class="ob-sub">Si l'adresse <b style="color:var(--ink);">${E(S.email)}</b> est bien reliée au code <b style="color:var(--ink);">${E(S.code)}</b>, tu reçois un lien pour choisir un nouveau mot de passe.</p></div>
+      <button type="button" class="ob-btn p" onclick="OB.show('login')">Retour à la connexion</button>`);
+  };
+  OB.newPwd = async function(){
+    readForm();
+    const say = t => OB.err('obErr', t);
+    if(S.pwd.length < 8) return say('Le mot de passe doit faire au moins 8 caractères.');
+    if(S.pwd !== S.pwd2) return say('Les deux mots de passe ne sont pas identiques.');
+    try{
+      const tok = await rwGoogleToken();
+      const r = await fetch(SUPA_URL + '/auth/v1/user', { method:'PUT', headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' }, body: JSON.stringify({ password:S.pwd }) });
+      if(!r.ok) throw new Error('Lien expiré : refais une demande « Mot de passe oublié ».');
+      showToast('Mot de passe enregistré');
+      OB.close();
+      await _rwGoogleAfter('login');
+    }catch(e){ say(E(e.message || e)); }
+  };
+  /* Après l'activation (lien e-mail) : on reprend les réponses et on crée le compte Notybat */
+  OB.resumePending = async function(){
+    let p = null;
+    try{ p = JSON.parse(localStorage.getItem('rwood-ob-pending') || 'null'); }catch(e){}
+    const sess = rwGoogleSession();
+    let user = null;
+    try{ const tok = await rwGoogleToken(); const u = await fetch(SUPA_URL + '/auth/v1/user', { headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + tok } }); if(u.ok) user = await u.json(); }catch(e){}
+    const email = String((user && user.email) || (sess && sess.user && sess.user.email) || '').toLowerCase();
+    const meta = (user && user.user_metadata && user.user_metadata.rw_signup) || null;
+    if(!(p && p.email === email) && meta) p = meta;
+    const provider = (user && user.app_metadata && user.app_metadata.provider) || 'google';
+    Object.assign(S, { sim:false, via: provider === 'email' ? 'email' : 'google', email, pwd:'', pwd2:'', lockEmail:true });
+    if(p && p.email === email && p.sig && p.cgvAt){
+      Object.assign(S, { first:p.first, last:p.last, phone:p.phone || '', mode:p.mode, code:p.code || '', coName:p.coName || '', role:p.role || 'ouvrier', trade:p.trade || 'charpente',
+        tradeLabel:p.tradeLabel || '', news:!!p.news, cgv:true, clause:true, sig:p.sig, cgvAt:p.cgvAt, clauseAt:p.clauseAt, coClauseName:p.coClause || '' });
+      try{ S.logo = localStorage.getItem('rwood-ob-logo') || ''; }catch(e){}
+      return OB.serverSignup();
+    }
+    try{ const m = (user && user.user_metadata) || (sess && sess.user && sess.user.user_metadata) || {};
+      if(!S.first) S.first = m.given_name || String(m.full_name || '').split(' ')[0] || '';
+      if(!S.last) S.last = m.family_name || String(m.full_name || '').split(' ').slice(1).join(' ') || ''; }catch(e){}
+    OB.show('account');
+  };
+
+  /* ── Branchements sur l'écran de connexion existant ── */
+  const _aso = window._authShowOnly;
+  window._authShowOnly = function(id){
+    if(id === 'authSignupForm' && !window._obSignupRunning){ _aso('__none'); OB.resumePending(); return; }
+    if(id === 'authSignupDone'){ _aso('__none'); OB.wizardStart({}); return; }
+    if(id === 'authWelcome' || id === 'authLoginForm' || id === 'authGoogleLinkForm'){ const h = OB.$('rwObAuth'); if(h && h.classList.contains('on') && !OB.su.sim) OB.close(); }
+    return _aso(id);
+  };
+  const _rgr = window.rwGoogleResume;
+  window.rwGoogleResume = async function(){
+    const h = window._rwGHash || '';
+    const q = new URLSearchParams(h);
+    if(q.get('type') === 'recovery' && q.get('access_token')){
+      window._rwGHash = null;
+      const sess = { access_token:q.get('access_token'), refresh_token:q.get('refresh_token'), expires_at:q.get('expires_at'), expires_in:q.get('expires_in') };
+      try{ const u = await fetch(SUPA_URL + '/auth/v1/user', { headers:{ apikey:SUPA_KEY, Authorization:'Bearer ' + sess.access_token } }); if(u.ok) sess.user = await u.json(); }catch(e){}
+      _rwGSave(sess);
+      S.sim = false; OB.show('newpwd');
+      return;
+    }
+    return _rgr.apply(this, arguments);
+  };
+  /* Champs en plus envoyés avec l'inscription (téléphone, e-mail, engagements) */
+  const _gw = window._rwGwCall;
+  window._rwGwCall = function(payload){
+    if(payload && payload.op === 'signup' && window._obExtra) payload = Object.assign({}, payload, window._obExtra);
+    return _gw.call(this, payload);
+  };
+  /* Juste avant d'entrer dans l'appli : on range les engagements, le logo, le téléphone */
+  const _sue = window._rwSuEnter;
+  window._rwSuEnter = async function(){
+    try{
+      let p = null; try{ p = JSON.parse(localStorage.getItem('rwood-ob-pending') || 'null'); }catch(e){}
+      const st = data.settings;
+      if(p){
+        st.signup = { via:S.via || 'google', email:p.email, phone:p.phone || '', news:!!p.news, cgvAt:p.cgvAt, clauseAt:p.clauseAt, sig:p.sig, company:p.coClause || '' };
+        if(p.phone || p.email){
+          data.contacts = data.contacts || [];
+          let me = data.contacts.find(c => c.role === 'Moi');
+          if(!me){ me = { id:uid(), name:(p.first + ' ' + p.last).trim(), role:'Moi', phone:'', email:'' }; data.contacts.push(me); }
+          if(p.phone && !me.phone) me.phone = p.phone; if(p.email && !me.email) me.email = p.email;
+        }
+        if(p.trade === 'autre' && p.tradeLabel) st.companyTradeLabel = p.tradeLabel;
+        if(p.trade === 'zinguerie') st.companyTradeLabel = 'Zinguerie';
+      }
+      try{ const lg = localStorage.getItem('rwood-ob-logo'); if(lg && p && p.mode === 'create') st.companyLogo = lg; }catch(e){}
+      await saveData();
+      ['rwood-ob-pending','rwood-ob-logo'].forEach(k => { try{ localStorage.removeItem(k); }catch(e){} });
+    }catch(e){ console.warn('[ob] enter', e); }
+    return _sue.apply(this, arguments);
+  };
+
+  /* Accueil : boutons e-mail */
+  OB.welcomeButtons = function(){
+    const w = OB.$('authWelcome'); if(!w || w.dataset.ob) return; w.dataset.ob = '1';
+    const g = w.querySelector('.rw-gbtn');
+    const hint = [...w.querySelectorAll('.hint')].find(h => /Continue avec Google/.test(h.textContent));
+    if(hint) hint.innerHTML = 'Nouveau sur Notybat ? Inscris-toi avec <b>Google</b> ou ton <b>e-mail</b> : tu rejoins ton entreprise avec son code, ou tu crées la tienne.';
+    if(g){
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-outline btn-block'; b.style.marginBottom = '8px';
+      b.innerHTML = IC('email', 's') + ' S’inscrire avec mon e-mail';
+      b.onclick = () => { Object.assign(S, { sim:false, via:'email', lockEmail:false, email:'', pwd:'', pwd2:'', coChecked:null }); OB.show('account'); };
+      g.insertAdjacentElement('afterend', b);
+    }
+    const login = [...w.querySelectorAll('button')].find(x => /déjà un compte/.test(x.textContent));
+    if(login){
+      login.setAttribute('onclick', ''); login.onclick = () => { S.sim = false; OB.show('login'); };
+      const f = document.createElement('button'); f.type = 'button'; f.className = 'ob-link'; f.textContent = 'Mot de passe oublié ?';
+      f.onclick = () => { S.sim = false; OB.show('forgot'); };
+      login.insertAdjacentElement('afterend', f);
+    }
+  };
+})();
+
+/* ═══ MODULE — v5.54.0 — Partie 2 : assistant du patron (formule, zones, véhicule perso, heures, bienvenue) + PDF des choix ═══ */
+(function(){
+  const OB = window.OB, E = OB.E, IC = OB.IC, eur = OB.eur;
+  const W = OB.wz = {};
+  const YEAR_FREE = 2;
+  const PITCH = { solo:'Pour l’artisan et son équipe de 1 à 3 personnes.', equipe:'Pour une entreprise avec plusieurs équipes sur les chantiers.', entreprise:'Pour les structures avec bureau, conducteurs et plusieurs pôles.' };
+  const hidePrices = () => { try{ return typeof _rwHidePrices === 'function' && _rwHidePrices(); }catch(e){ return true; } };
+  const company = () => { const j = (typeof _rwSuJ !== 'undefined' && _rwSuJ) || null; const co = (j && j.company) || (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company) || {};
+    return { code: co.code || (data.settings && data.settings.companyCode) || '', name: co.name || OB.su.coName || (data.settings && data.settings.teamName) || 'Mon entreprise' }; };
+
+  OB.wizardStart = function(opts){
+    opts = opts || {};
+    const c = (data && data.settings && data.settings.companyCfg) || {};
+    Object.assign(W, { sim:!!opts.sim, reconf:!!opts.reconf, step:'plan', plan:'essai', cycle:'month',
+      zonesOn: opts.reconf ? c.zonesOn !== false : null, depot:(data.settings && data.settings.depotAddress) || '', depotCoords:(data.settings && data.settings.depotCoords) || null,
+      region:c.region || '', sub:c.sub || '', regionManual:!!c.region, zonesMode:c.zonesMode || 'convention', custom:Array.isArray(c.custom) ? c.custom.map(z => Object.assign({}, z)) : null,
+      zonesAcc:false, persoOn: opts.reconf ? c.persoOn !== false : null, persoMode:c.persoMode || 'convention', vp:Object.assign({}, c.vp || {}), persoAcc:false,
+      hours: c.weeklyHours && ![35, 39].includes(+c.weeklyHours) ? 'libre' : String(c.weeklyHours || 35), hoursFree: c.weeklyHours && ![35, 39].includes(+c.weeklyHours) ? String(c.weeklyHours) : '' });
+    if(opts.sim && !W.depot){ W.depot = '12 rue des Pins, 33600 Pessac'; }
+    OB.wShow(opts.reconf ? 'zones' : 'plan');
+  };
+  const N = 5;
+  OB.wShow = function(step){
+    W.step = step;
+    const head = OB.head(W.sim) + (W.reconf ? '<p class="ob-sub" style="margin-top:-6px;">Réglages de l’entreprise</p>' : '');
+    if(step === 'plan') return OB.render(head + OB.steps(1, N) + planHtml(), true), planBind();
+    if(step === 'zones') return OB.render(head + OB.steps(2, N) + zonesHtml(), true), zonesBind();
+    if(step === 'vp') return OB.render(head + OB.steps(3, N) + vpHtml(), true), vpBind();
+    if(step === 'hours') return OB.render(head + OB.steps(4, N) + hoursHtml(), true);
+    if(step === 'done') return OB.render(head + OB.steps(5, N) + doneHtml(), true);
+  };
+
+  /* ── A · Formule (même présentation que sur le site : carrousel + mensuel / annuel) ── */
+  function planHtml(){
+    const hp = hidePrices(), y = W.cycle === 'year';
+    const cards = [`<div class="ob-plan ${W.plan === 'essai' ? 'on' : ''}" data-p="essai"><span class="tag">Sans carte</span><h3>${IC('cadeau')} Mois d'essai</h3><div class="seats">Toute l'équipe, toutes les fonctions</div>
+        <p class="pitch">30 jours pour essayer Notybat sur tes chantiers. Tu choisis ta formule quand tu veux.</p>${hp ? '' : '<div class="price"><b>0 €</b><small>pendant 30 jours</small></div>'}
+        <button type="button" class="ob-btn ${W.plan === 'essai' ? 'p' : 'o'} sm" onclick="OB.wPlan('essai')">${W.plan === 'essai' ? IC('valider', 's') + ' Choisi' : 'Commencer l’essai'}</button></div>`]
+      .concat((typeof RW_PLAN_OFFERS !== 'undefined' ? RW_PLAN_OFFERS : []).map(([k, l, pr, n]) => {
+        const m = y ? pr * (12 - YEAR_FREE) / 12 : pr;
+        const price = hp ? '' : `<div class="price"><b>${Number.isInteger(m) ? m : m.toFixed(2).replace('.', ',')} €</b>${y ? `<s>${pr} €</s>` : ''}<small>HT / mois</small></div>
+          <div class="sub">${y ? 'soit ' + (pr * (12 - YEAR_FREE)) + ' € HT par an' : '1er mois offert, puis chaque mois'}</div>`;
+        return `<div class="ob-plan ${W.plan === k ? 'on' : ''}" data-p="${k}">${k === 'equipe' ? '<span class="tag">Le plus choisi</span>' : ''}<h3>${IC(k === 'solo' ? 'personne' : k === 'equipe' ? 'equipe' : 'immeuble')} ${E(l)}</h3>
+          <div class="seats">${E(n)} comptes</div><p class="pitch">${E(PITCH[k] || '')}</p>${price}
+          <button type="button" class="ob-btn ${W.plan === k ? 'p' : 'o'} sm" onclick="OB.wPlan('${k}')">${W.plan === k ? IC('valider', 's') + ' Choisi' : 'Choisir ' + E(l)}</button></div>`;
+      }))
+      .concat([`<div class="ob-plan" data-p="devis"><h3>${IC('options')} Mise en route</h3><div class="seats">Sur devis</div>
+        <p class="pitch">On installe Notybat pour toi : équipe, chantiers, stock, camions, tableau d'heures du comptable.</p>
+        <button type="button" class="ob-btn o sm" onclick="OB.wDevis()">Demander un devis</button></div>`]);
+    return `<h2>Choisis ta formule</h2><p class="ob-sub">Toutes les formules donnent accès à toute l'appli : seul le nombre de comptes change.${hp ? ' Les tarifs sont sur notre site.' : ''}</p>
+      ${hp ? '' : `<div class="ob-seg"><button type="button" class="${y ? '' : 'on'}" onclick="OB.wCycle('month')">Mensuel<em>1er mois offert</em></button><button type="button" class="${y ? 'on' : ''}" onclick="OB.wCycle('year')">Annuel<em>${YEAR_FREE} mois offerts</em></button></div>`}
+      <div class="ob-car" id="obCar">${cards.join('')}</div><div class="ob-dots" id="obDots">${cards.map((_, i) => `<i class="${i === 0 ? 'on' : ''}"></i>`).join('')}</div>
+      <div class="ob-card"><div class="ob-hint" style="margin:0;">${IC('info', 's')} Sans formule à la fin de l'essai, l'appli passe en lecture seule pour toute l'entreprise pendant 15 jours, puis les données sont supprimées.</div></div>
+      <button type="button" class="ob-btn p" onclick="OB.wShow('zones')">Continuer ${IC('fleche-droite', 's')}</button>`;
+  }
+  function planBind(){
+    const car = OB.$('obCar'), dots = OB.$('obDots'); if(!car || !dots) return;
+    const on = car.querySelector('.ob-plan.on'); if(on && !car.dataset.kept) car.scrollLeft = Math.max(0, car.scrollLeft + on.getBoundingClientRect().left - car.getBoundingClientRect().left - 16);
+    const upd = () => { const kids = [...car.children]; let best = 0, bd = 1e9; const mid = car.scrollLeft + car.clientWidth / 2;
+      kids.forEach((k, i) => { const d = Math.abs(k.offsetLeft + k.offsetWidth / 2 - mid); if(d < bd){ bd = d; best = i; } });
+      [...dots.children].forEach((d, i) => d.classList.toggle('on', i === best)); };
+    car.addEventListener('scroll', () => requestAnimationFrame(upd), { passive:true }); upd();
+  }
+  OB.wPlan = function(k){ W.plan = k; const sl = (OB.$('obCar') || {}).scrollLeft || 0; OB.wShow('plan'); const c = OB.$('obCar'); if(c) c.scrollLeft = sl; };
+  OB.wCycle = function(c){ W.cycle = c; const sl = (OB.$('obCar') || {}).scrollLeft || 0; OB.wShow('plan'); const car = OB.$('obCar'); if(car) car.scrollLeft = sl; };
+  OB.wDevis = function(){
+    if(W.sim){ showToast('Demande de devis (simulation)'); return; }
+    if(hidePrices()){ showToast('Demande de devis : depuis notre site, onglet Tarifs'); return; }
+    try{ rwShopOpen({ devis:'1', co: company().code }); }catch(e){}
+  };
+
+  /* ── Bloc commun : dépôt + région ── */
+  function regionOptions(){
+    return (window.RW_REGION_ORDER || []).map(k => `<option value="${k}" ${W.region === k ? 'selected' : ''}>${E(RW_BAREMES[k].name)}</option>`).join('');
+  }
+  function depotBlock(){
+    const R = W.region && RW_BAREMES[W.region];
+    return `<div class="ob-f"><label>Adresse du dépôt ou du siège *</label><input type="text" id="obDepot" value="${E(W.depot)}" placeholder="Ex : 12 rue de l'Atelier, 33700 Mérignac" onchange="OB.wDepot(this.value)">
+        <div class="ob-hint" id="obDepotSt">${W.depotCoords ? IC('gps', 's') + ' Adresse trouvée · les distances sont mesurées à vol d’oiseau depuis ce point.' : 'Les zones sont mesurées à vol d’oiseau depuis cette adresse.'}</div></div>
+      <div class="ob-row2"><div class="ob-f"><label>Région *</label><select id="obRegion" onchange="OB.wRegion(this.value)"><option value="">Choisir…</option>${regionOptions()}</select></div>
+      ${R && R.subs ? `<div class="ob-f"><label>${E(R.subLabel || 'Secteur')} *</label><select id="obSub" onchange="OB.wSub(this.value)">${Object.keys(R.subs).map(s => `<option value="${s}" ${W.sub === s ? 'selected' : ''}>${E(R.subs[s].name)}</option>`).join('')}</select></div>` : ''}</div>`;
+  }
+  OB.wDepot = async function(v){
+    W.depot = String(v || '').trim(); W.depotCoords = null;
+    const st = OB.$('obDepotSt'); if(st) st.textContent = 'Recherche de l’adresse…';
+    try{
+      const g = W.depot ? await geocodeAddressWithDept(W.depot) : null;
+      if(g){ W.depotCoords = { lat:g.lat, lng:g.lng };
+        if(!W.regionManual){ const rr = rwRegionFromDept(g.dept); if(rr){ W.region = rr.region; W.sub = rr.sub; } } }
+    }catch(e){}
+    OB.wShow(W.step);
+    if(!W.depotCoords){ const s2 = OB.$('obDepotSt'); if(s2) s2.innerHTML = '<span style="color:var(--red);">Adresse introuvable : ajoute la ville ou le code postal.</span>'; }
+  };
+  OB.wRegion = function(v){ readTables(); W.region = v; W.regionManual = true; const R = RW_BAREMES[v]; W.sub = R && R.subs ? Object.keys(R.subs)[0] : ''; W.zonesAcc = false; W.persoAcc = false; OB.wShow(W.step); };
+  OB.wSub = function(v){ readTables(); W.sub = v; W.zonesAcc = false; W.persoAcc = false; OB.wShow(W.step); };
+  function conv(){ return W.region ? rwBareme(W.region, W.sub) : null; }
+  const zoneColor = z => { try{ return _zoneColor(z); }catch(e){ return '#EE8A2E'; } };
+  const kmTxt = z => (z.maxKm >= 999 ? 'plus de ' + z.minKm : z.minKm + ' à ' + z.maxKm) + ' km';
+  function zonesNow(){
+    if(W.zonesMode === 'perso' && W.custom && W.custom.length) return W.custom;
+    const b = conv(); return b && b.zones ? b.zones : null;
+  }
+  function miniMap(){
+    if(!W.depotCoords) return '';
+    return `<div class="ob-map" id="obMap"></div>`;
+  }
+  function drawMap(){
+    const el = OB.$('obMap'); if(!el || !window.L || !W.depotCoords) return;
+    try{
+      const m = L.map(el, { zoomControl:false, attributionControl:false, dragging:true, scrollWheelZoom:false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:18 }).addTo(m);
+      const zs = (zonesNow() || []).filter(z => z.maxKm < 999);
+      zs.slice().reverse().forEach(z => L.circle([W.depotCoords.lat, W.depotCoords.lng], { radius:z.maxKm * 1000, color:zoneColor(z.zone), weight:2, fillOpacity:.06, interactive:false }).addTo(m));
+      L.circleMarker([W.depotCoords.lat, W.depotCoords.lng], { radius:7, color:'#fff', weight:2, fillColor:'#EE8A2E', fillOpacity:1 }).addTo(m);
+      const maxKm = zs.length ? zs[zs.length - 1].maxKm : 30;
+      m.fitBounds(L.latLng(W.depotCoords.lat, W.depotCoords.lng).toBounds(maxKm * 2000));
+      setTimeout(() => m.invalidateSize(), 150);
+    }catch(e){ el.style.display = 'none'; }
+  }
+  function tableRO(zones, withVp){
+    return `<table class="ob-tbl"><tr><th>Zone</th><th>Distance</th><th>Trajet</th><th>Transport</th>${withVp ? '<th>Véh. perso</th>' : ''}</tr>
+      ${zones.map(z => `<tr><td><i class="zd" style="background:${zoneColor(z.zone)}"></i>${E(z.zone)}</td><td>${E(kmTxt(z))}</td><td>${eur(z.trajet)}</td><td>${eur(z.transport)}</td>${withVp ? `<td class="vp">${eur((+z.trajet || 0) + (W.persoMode === 'perso' && W.vp[z.zone] != null && W.vp[z.zone] !== '' ? +W.vp[z.zone] : (+z.transport || 0)))}</td>` : ''}</tr>`).join('')}</table>`;
+  }
+  function tableEdit(zones){
+    return `<table class="ob-tbl" id="obCustom"><tr><th>Zone</th><th>Km min</th><th>Km max</th><th>Trajet €</th><th>Transport €</th><th></th></tr>
+      ${zones.map((z, i) => `<tr><td><input class="z" data-i="${i}" data-k="zone" value="${E(z.zone)}"></td><td><input type="number" step="1" data-i="${i}" data-k="minKm" value="${z.minKm}"></td>
+        <td><input type="number" step="1" data-i="${i}" data-k="maxKm" value="${z.maxKm}"></td><td><input type="number" step="0.01" data-i="${i}" data-k="trajet" value="${z.trajet}"></td>
+        <td><input type="number" step="0.01" data-i="${i}" data-k="transport" value="${z.transport == null ? '' : z.transport}"></td><td><button type="button" class="ob-x" onclick="OB.wZoneDel(${i})">${IC('retirer', 's')}</button></td></tr>`).join('')}</table>
+      <button type="button" class="ob-btn o sm" onclick="OB.wZoneAdd()">${IC('ajouter', 's')} Ajouter une zone</button>`;
+  }
+  function readTables(){
+    const t = OB.$('obCustom');
+    if(t && W.custom) t.querySelectorAll('input').forEach(i => { const z = W.custom[+i.dataset.i]; if(!z) return; const k = i.dataset.k; z[k] = k === 'zone' ? i.value.trim().toUpperCase() : (i.value === '' ? null : +i.value); });
+    const v = OB.$('obVpTbl');
+    if(v) v.querySelectorAll('input').forEach(i => { W.vp[i.dataset.z] = i.value === '' ? '' : +i.value; });
+    const a = OB.$('obZonesAcc'); if(a) W.zonesAcc = a.checked;
+    const b = OB.$('obPersoAcc'); if(b) W.persoAcc = b.checked;
+    const d = OB.$('obDepot'); if(d && d.value.trim() !== W.depot){ W.depot = d.value.trim(); }
+  }
+  OB.wZoneAdd = function(){ readTables(); const last = W.custom[W.custom.length - 1]; W.custom.push({ zone:String(W.custom.length + 1), minKm:last ? last.maxKm : 0, maxKm:(last ? last.maxKm : 0) + 10, trajet:0, transport:0 }); OB.wShow('zones'); };
+  OB.wZoneDel = function(i){ readTables(); W.custom.splice(i, 1); OB.wShow('zones'); };
+
+  /* Textes d'acceptation (chaque choix est repris dans le PDF signé) */
+  OB.ACC = {
+    zonesConv: 'J’applique le barème des indemnités de petits déplacements de la convention collective du Bâtiment de ma région, tel qu’il est repris dans Notybat. Je reste responsable de vérifier qu’il correspond à ma situation (convention, accord d’entreprise, usage plus favorable). Notybat reprend les montants publiés et ne peut être tenu responsable d’une erreur, d’un oubli ou d’un retard de mise à jour.',
+    zonesPerso: 'Je choisis de personnaliser le barème de la convention collective. Je prends conscience que ces montants peuvent être différents de ceux fixés par la convention et j’accepte cette personnalisation à mes risques et périls. J’en assume seul(e) la responsabilité, notamment envers mes salariés, l’URSSAF et l’inspection du travail. Notybat applique uniquement les montants que je saisis et se dégage de toute responsabilité quant à leur conformité.',
+    zonesOff: 'Je n’utilise pas les indemnités de zone de trajet dans Notybat. Les zones et leurs montants ne seront ni affichés ni calculés. Je reste seul(e) responsable du respect de mes obligations envers mes salariés.',
+    vpConv: 'J’indemnise l’utilisation du véhicule personnel selon la règle de la convention : véhicule de l’entreprise = indemnité de trajet seule ; véhicule personnel = indemnité de trajet + indemnité de transport de la zone. Notybat ne peut être tenu responsable d’une erreur ou d’un retard de mise à jour des montants.',
+    vpPerso: 'Je choisis de personnaliser l’indemnité versée pour le véhicule personnel. Je prends conscience que ces montants peuvent être différents de ceux fixés par la convention et j’accepte cette personnalisation à mes risques et périls. Notybat applique uniquement les montants que je saisis et se dégage de toute responsabilité quant à leur conformité.',
+    vpOff: 'Je n’indemnise pas l’utilisation du véhicule personnel dans Notybat : l’option disparaît du pointage et des tableaux. Je reste seul(e) responsable du respect de mes obligations envers mes salariés.'
+  };
+
+  /* ── B · Zones de trajet ── */
+  function zonesHtml(){
+    let h = `<h2>Indemnités de zone de trajet</h2><p class="ob-sub">Verses-tu à tes salariés les indemnités de petits déplacements (trajet / transport) selon la distance du chantier ?</p>
+      <div class="ob-seg"><button type="button" class="${W.zonesOn === true ? 'on' : ''}" onclick="OB.wZonesOn(true)">Oui</button><button type="button" class="${W.zonesOn === false ? 'on' : ''}" onclick="OB.wZonesOn(false)">Non</button></div>`;
+    if(W.zonesOn === false){
+      h += `<div class="ob-legal"><p>${E(OB.ACC.zonesOff)}</p></div><label class="ob-ck"><input type="checkbox" id="obZonesAcc" ${W.zonesAcc ? 'checked' : ''}><span>J'ai lu et j'accepte</span></label>`;
+    } else if(W.zonesOn === true){
+      const b = conv(), has = !!(b && b.zones);
+      if(W.zonesMode === 'convention' && W.region && !has) W.zonesMode = 'perso';
+      h += depotBlock();
+      if(W.region){
+        h += `<div class="ob-choice ${W.zonesMode === 'convention' ? 'on' : ''} ${has ? '' : 'dis'}" onclick="${has ? "OB.wZonesMode('convention')" : ''}"><i class="rd"></i><div><b>Barème de la convention (recommandé)</b>
+            <span>${has ? E(b.label) + ' · ' + (b.year ? 'en vigueur depuis le ' + E(b.from || b.year) : '') : 'Le barème de ce secteur n’est pas encore disponible dans Notybat.'}</span></div></div>
+          <div class="ob-choice ${W.zonesMode === 'perso' ? 'on' : ''}" onclick="OB.wZonesMode('perso')"><i class="rd"></i><div><b>Barème personnalisé</b><span>Tu fixes toi-même les zones et les montants.</span></div></div>`;
+        if(W.zonesMode === 'convention' && has){
+          h += `<div class="ob-card">${tableRO(b.zones)}<div class="ob-hint" style="margin:8px 0 0;">${IC('repas', 's')} Panier repas de la région : <b>${eur(b.panier)}</b> · ${IC('cadenas-ouvert', 's')} non modifiable ensuite (seul Notybat le met à jour chaque année).</div></div>`;
+        } else if(W.zonesMode === 'perso'){
+          if(!W.custom || !W.custom.length) W.custom = ((has ? b.zones : null) || defaultTrajetBareme()).map(z => Object.assign({ transport:null }, z));
+          h += `<div class="ob-card" style="overflow-x:auto;">${tableEdit(W.custom)}</div>`;
+        }
+        h += miniMap();
+        h += `<div class="ob-legal"><p>${E(W.zonesMode === 'perso' ? OB.ACC.zonesPerso : OB.ACC.zonesConv)}</p></div>
+          <label class="ob-ck"><input type="checkbox" id="obZonesAcc" ${W.zonesAcc ? 'checked' : ''}><span>${W.zonesMode === 'perso' ? 'Je prends conscience et j’accepte la personnalisation du barème de la convention à mes risques et périls' : 'J’ai lu et j’accepte'}</span></label>`;
+      }
+    }
+    return h + `<div class="ob-err" id="obErr"></div><button type="button" class="ob-btn p" onclick="OB.wNext('zones')">Continuer ${IC('fleche-droite', 's')}</button>
+      ${W.reconf ? '<button type="button" class="ob-link" onclick="OB.close()">Annuler</button>' : '<button type="button" class="ob-link" onclick="OB.wShow(\'plan\')">Retour</button>'}`;
+  }
+  function zonesBind(){ drawMap(); }
+  OB.wZonesOn = function(v){ readTables(); W.zonesOn = v; W.zonesAcc = false; OB.wShow('zones'); };
+  OB.wZonesMode = function(m){ readTables(); W.zonesMode = m; W.zonesAcc = false; OB.wShow('zones'); };
+
+  /* ── C · Véhicule personnel ── */
+  function vpHtml(){
+    let h = `<h2>Véhicule personnel</h2><p class="ob-sub">Tes salariés viennent-ils parfois sur les chantiers avec leur propre véhicule, et les indemnises-tu ?</p>
+      <div class="ob-seg"><button type="button" class="${W.persoOn === true ? 'on' : ''}" onclick="OB.wPersoOn(true)">Oui</button><button type="button" class="${W.persoOn === false ? 'on' : ''}" onclick="OB.wPersoOn(false)">Non</button></div>`;
+    if(W.persoOn === false){
+      h += `<div class="ob-legal"><p>${E(OB.ACC.vpOff)}</p></div><label class="ob-ck"><input type="checkbox" id="obPersoAcc" ${W.persoAcc ? 'checked' : ''}><span>J'ai lu et j'accepte</span></label>`;
+    } else if(W.persoOn === true){
+      if(W.zonesOn !== true) h += depotBlock();
+      else h += `<div class="ob-hint">${IC('gps', 's')} Même région que les zones : <b>${E((conv() || {}).label || '—')}</b></div>`;
+      const zones = zonesNow();
+      if(W.region && zones){
+        h += `<div class="ob-choice ${W.persoMode === 'convention' ? 'on' : ''}" onclick="OB.wPersoMode('convention')"><i class="rd"></i><div><b>Règle de la convention (recommandé)</b>
+            <span>${IC('camionnette', 's')} Véhicule entreprise : trajet seul · ${IC('personne', 's')} Véhicule perso : trajet + transport</span></div></div>
+          <div class="ob-choice ${W.persoMode === 'perso' ? 'on' : ''}" onclick="OB.wPersoMode('perso')"><i class="rd"></i><div><b>Montant personnalisé</b><span>Tu fixes le montant ajouté au trajet pour chaque zone.</span></div></div>`;
+        if(W.persoMode === 'perso'){
+          h += `<div class="ob-card"><table class="ob-tbl" id="obVpTbl"><tr><th>Zone</th><th>Trajet</th><th>+ véhicule perso €</th></tr>${zones.map(z => `<tr><td><i class="zd" style="background:${zoneColor(z.zone)}"></i>${E(z.zone)}</td><td>${eur(z.trajet)}</td>
+            <td><input type="number" step="0.01" data-z="${E(z.zone)}" value="${W.vp[z.zone] != null && W.vp[z.zone] !== '' ? W.vp[z.zone] : (z.transport != null ? z.transport : '')}"></td></tr>`).join('')}</table></div>`;
+        } else h += `<div class="ob-card">${tableRO(zones, true)}</div>`;
+        const ex = zones.find(z => z.minKm <= 18 && 18 < z.maxKm) || zones[Math.min(2, zones.length - 1)];
+        if(ex){
+          const add = W.persoMode === 'perso' && W.vp[ex.zone] != null && W.vp[ex.zone] !== '' ? +W.vp[ex.zone] : (+ex.transport || 0);
+          h += `<div class="ob-card hl"><b style="font-size:13.5px;">Exemple</b><div class="ob-hint" style="margin:4px 0 0;">Chantier à 18 km du dépôt → zone ${E(ex.zone)}<br>
+            ${IC('camionnette', 's')} Véhicule entreprise : <b style="color:var(--ink);">${eur(W.zonesOn === false ? 0 : ex.trajet)}</b> / jour<br>
+            ${IC('personne', 's')} Véhicule perso : ${eur(ex.trajet)} + ${eur(add)} = <b style="color:var(--wood);">${eur((+ex.trajet || 0) + add)}</b> / jour</div></div>`;
+        }
+        h += `<div class="ob-legal"><p>${E(W.persoMode === 'perso' ? OB.ACC.vpPerso : OB.ACC.vpConv)}</p></div>
+          <label class="ob-ck"><input type="checkbox" id="obPersoAcc" ${W.persoAcc ? 'checked' : ''}><span>${W.persoMode === 'perso' ? 'Je prends conscience et j’accepte la personnalisation de l’indemnité de la convention à mes risques et périls' : 'J’ai lu et j’accepte'}</span></label>`;
+      } else if(W.region) h += `<div class="ob-card"><div class="ob-hint" style="margin:0;">Le barème de ce secteur n’est pas encore disponible : reviens à l’étape précédente et choisis un barème personnalisé.</div></div>`;
+      if(W.zonesOn !== true) h += miniMap();
+    }
+    return h + `<div class="ob-err" id="obErr"></div><button type="button" class="ob-btn p" onclick="OB.wNext('vp')">Continuer ${IC('fleche-droite', 's')}</button>
+      <button type="button" class="ob-link" onclick="OB.wShow('zones')">Retour</button>`;
+  }
+  function vpBind(){ drawMap(); }
+  OB.wPersoOn = function(v){ readTables(); W.persoOn = v; W.persoAcc = false; OB.wShow('vp'); };
+  OB.wPersoMode = function(m){ readTables(); W.persoMode = m; W.persoAcc = false; OB.wShow('vp'); };
+
+  /* ── D · Heures ── */
+  function hoursHtml(){
+    return `<h2>Heures par semaine</h2><p class="ob-sub">Au-delà de ce nombre, les heures comptent en heures supplémentaires.</p>
+      <div class="ob-seg"><button type="button" class="${W.hours === '35' ? 'on' : ''}" onclick="OB.wHours('35')">35 h</button><button type="button" class="${W.hours === '39' ? 'on' : ''}" onclick="OB.wHours('39')">39 h</button><button type="button" class="${W.hours === 'libre' ? 'on' : ''}" onclick="OB.wHours('libre')">Libre</button></div>
+      ${W.hours === 'libre' ? `<div class="ob-f"><label>Nombre d'heures par semaine *</label><input type="number" id="obHoursFree" min="1" max="60" step="0.5" value="${E(W.hoursFree)}" placeholder="Ex : 37"></div>` : ''}
+      <div class="ob-card"><div class="ob-hint" style="margin:0;">${IC('horloge', 's')} Exemple : ${W.hours === 'libre' ? (W.hoursFree || 37) : W.hours} h prévues, ${(+(W.hours === 'libre' ? (W.hoursFree || 37) : W.hours) + 3)} h travaillées → <b style="color:var(--ink);">3 h sup</b>.<br>Les taux de majoration restent gérés par ton comptable.</div></div>
+      <div class="ob-err" id="obErr"></div><button type="button" class="ob-btn p" onclick="OB.wNext('hours')">Terminer ${IC('fleche-droite', 's')}</button>
+      <button type="button" class="ob-link" onclick="OB.wShow('vp')">Retour</button>`;
+  }
+  OB.wHours = function(v){ const f = OB.$('obHoursFree'); if(f) W.hoursFree = f.value; W.hours = v; OB.wShow('hours'); };
+
+  OB.wNext = function(step){
+    readTables();
+    const say = t => OB.err('obErr', t);
+    if(step === 'zones'){
+      if(W.zonesOn == null) return say('Réponds oui ou non.');
+      if(W.zonesOn){
+        if(!W.depot) return say('Indique l’adresse du dépôt ou du siège.');
+        if(!W.depotCoords && !W.sim) return say('Adresse du dépôt introuvable : ajoute la ville ou le code postal.');
+        if(!W.region) return say('Choisis ta région.');
+        if(W.zonesMode === 'perso'){
+          const ok = W.custom && W.custom.length && W.custom.every(z => z.zone && z.maxKm > z.minKm && z.trajet != null);
+          if(!ok) return say('Complète le barème : zone, km min < km max et montant de trajet pour chaque ligne.');
+          W.custom.sort((a, b) => a.minKm - b.minKm);
+        }
+      }
+      if(!W.zonesAcc) return say('Coche la case d’acceptation pour continuer.');
+      return OB.wShow('vp');
+    }
+    if(step === 'vp'){
+      if(W.persoOn == null) return say('Réponds oui ou non.');
+      if(W.persoOn){
+        if(W.zonesOn !== true){ if(!W.depot) return say('Indique l’adresse du dépôt.'); if(!W.region) return say('Choisis ta région.'); }
+        if(!zonesNow()) return say('Le barème de ta région n’est pas disponible : choisis un barème personnalisé à l’étape des zones.');
+      }
+      if(!W.persoAcc) return say('Coche la case d’acceptation pour continuer.');
+      return W.reconf ? OB.wNext('hours') : OB.wShow('hours');
+    }
+    if(step === 'hours'){
+      const f = OB.$('obHoursFree'); if(f) W.hoursFree = f.value;
+      const h = W.hours === 'libre' ? parseFloat(String(W.hoursFree).replace(',', '.')) : +W.hours;
+      if(!(h >= 1 && h <= 60)) return say('Indique un nombre d’heures entre 1 et 60.');
+      W.weeklyHours = h;
+      return OB.wFinish();
+    }
+  };
+
+  /* Choix → réglages de l'entreprise */
+  OB.wCfg = function(){
+    const cfg = { v:1, zonesOn:!!W.zonesOn, zonesMode:W.zonesMode, region:W.region || '', sub:W.sub || '', custom: W.zonesOn && W.zonesMode === 'perso' ? W.custom.map(z => Object.assign({}, z)) : null,
+      persoOn:!!W.persoOn, persoMode:W.persoMode, vp: W.persoOn && W.persoMode === 'perso' ? Object.assign({}, W.vp) : null,
+      weeklyHours: W.weeklyHours || +((data.settings && data.settings.weeklyHours) || 35), plan:W.plan, cycle:W.cycle, at:new Date().toISOString() };
+    const b = conv(); if(b){ cfg.baremeYear = b.year || ''; cfg.panier = b.panier || null; }
+    cfg.accepted = { zones:OB.ACC[W.zonesOn ? (W.zonesMode === 'perso' ? 'zonesPerso' : 'zonesConv') : 'zonesOff'], vp:OB.ACC[W.persoOn ? (W.persoMode === 'perso' ? 'vpPerso' : 'vpConv') : 'vpOff'], at:cfg.at };
+    return cfg;
+  };
+  OB.wFinish = async function(){
+    const cfg = OB.wCfg();
+    W.cfg = cfg;
+    if(!W.sim){
+      const st = data.settings;
+      if(W.zonesOn || W.persoOn){ st.depotAddress = W.depot; st.depotCoords = W.depotCoords || null; }
+      st.companyCfg = cfg; st.weeklyHours = cfg.weeklyHours;
+      OB.cfgApply();
+      try{ _trajetRezoneFromKm(); }catch(e){}
+      if(W.depot){ (data.sites || []).forEach(s => { if(s && s.address){ s.trajetZone = null; s.trajetDistanceKm = null; } }); }
+      try{ _trajetCfgTouch(); }catch(e){}
+      await saveData();
+      try{ await _trajetCfgPush(); }catch(e){}
+    }
+    OB.wPdfSend();   // en arrière-plan
+    if(W.reconf){ OB.close(); showToast('Réglages de l’entreprise enregistrés'); try{ OB.cfgViewRender(); }catch(e){} return; }
+    OB.wShow('done');
+  };
+
+  /* ── E · Bienvenue ── */
+  function shareText(){
+    const co = company();
+    return 'Rejoins ' + co.name + ' sur Notybat !\n1. Installe Notybat : ' + (window.NB_INSTALL_URL || 'https://play.google.com/store/apps/details?id=fr.rwood.app') +
+      '\n2. Inscris-toi avec Google ou ton e-mail\n3. Entre le code entreprise : ' + co.code;
+  }
+  function doneHtml(){
+    const co = company(), code = co.code || (W.sim ? 'K7P2QX' : '');
+    const paid = W.plan && W.plan !== 'essai' && !hidePrices();
+    return `<div class="ob-center">${IC('fete', 'xl')}</div><h2 class="ob-center">Bienvenue chez Notybat !</h2>
+      <p class="ob-sub ob-center"><b style="color:var(--ink);">${E(co.name)}</b> est prête. Chantiers, pointages, fiches d'heures, stock et planning : toute ton équipe travaille sur la même appli, synchronisée en temps réel, même sans réseau sur le chantier.</p>
+      <div class="ob-card hl ob-center"><div class="ob-hint" style="margin:0;">Ton code entreprise</div><div class="ob-code">${E(code)}</div>
+        <button type="button" class="ob-btn o sm" onclick="OB.wCopy('${E(code)}')">${IC('copier', 's')} Copier le code</button>
+        <div class="ob-hint" style="margin:8px 0 0;">Garde-le précieusement et envoie-le à tes salariés : ils le tapent en créant leur compte.</div></div>
+      <div class="ob-share"><button type="button" class="wa" onclick="OB.wShare('wa')">${IC('message', 's')}WhatsApp</button><button type="button" class="sms" onclick="OB.wShare('sms')">${IC('smartphone', 's')}SMS</button><button type="button" class="ot" onclick="OB.wShare('other')">${IC('partager', 's')}Autre…</button></div>
+      <div class="ob-hint ob-center" style="margin-top:8px;">Tu le retrouves dans Paramètres › Mon entreprise.</div>
+      ${paid ? `<button type="button" class="ob-btn o" onclick="OB.wPay()">${IC('cadeau', 's')} Activer ma formule (1er mois offert)</button>` : ''}
+      <button type="button" class="ob-btn o" onclick="OB.wPdfDownload()">${IC('pdf', 's')} Télécharger le récapitulatif de mes choix</button>
+      <button type="button" class="ob-btn p" onclick="OB.wEnter()">Entrer dans l'appli ${IC('fleche-droite', 's')}</button>`;
+  }
+  OB.wCopy = function(code){ try{ navigator.clipboard.writeText(code); showToast('Code copié'); }catch(e){ showToast('Code : ' + code); } };
+  OB.wShare = function(k){
+    const t = shareText();
+    if(k === 'wa') return void window.open('https://wa.me/?text=' + encodeURIComponent(t), '_blank');
+    if(k === 'sms') return void (location.href = 'sms:?&body=' + encodeURIComponent(t));
+    if(navigator.share) navigator.share({ text:t }).catch(() => {}); else OB.wCopy(t);
+  };
+  OB.wPay = function(){ if(W.sim){ showToast('Paiement (simulation)'); return; } try{ rwShopOpen({ plan:W.plan, cycle:W.cycle, co: company().code }); }catch(e){} };
+  OB.wEnter = async function(){
+    if(W.sim){ OB.close(); showToast('Simulation terminée : rien n’a été enregistré'); return; }
+    OB.render(OB.head() + `<div class="ob-center" style="margin-top:60px;">${IC('synchro', 'xl')}<h2>Préparation de ton appli…</h2></div>`);
+    try{ await Promise.race([W.pdfP || Promise.resolve(), new Promise(r => setTimeout(r, 6000))]); }catch(e){}
+    _rwSuEnter();
+  };
+
+  /* ═══ PDF des choix de l'entreprise ═══ */
+  OB.pdfDoc = async function(){
+    await _qcEnsurePdfLib();
+    const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+    return new J({ unit:'mm', format:'a4' });
+  };
+  OB.pdfTools = function(doc){
+    const T = { y:16, M:16, W:178 };
+    const clean = s => String(s == null ? '' : s).replace(/[’‘]/g, '\'').replace(/[“”]/g, '"').replace(/→/g, '->').replace(/[  ]/g, ' ').replace(/…/g, '...');
+    T.page = () => { if(T.y > 272){ doc.addPage(); T.y = 16; } };
+    T.title = (t) => { doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(27, 42, 68); doc.text(clean(t), T.M, T.y); T.y += 8; };
+    T.h = (t) => { if(T.y > 255){ doc.addPage(); T.y = 16; } T.y += 2; doc.setFillColor(27, 42, 68); doc.rect(T.M, T.y - 4.5, T.W, 7, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(10.5); doc.setTextColor(255, 255, 255); doc.text(clean(t), T.M + 2, T.y); T.y += 7; doc.setTextColor(30, 30, 30); };
+    T.p = (t, o) => { o = o || {}; doc.setFont('helvetica', o.b ? 'bold' : 'normal'); doc.setFontSize(o.s || 9.5); doc.setTextColor(...(o.c || [30, 30, 30]));
+      doc.splitTextToSize(clean(t), T.W).forEach(l => { T.page(); doc.text(l, T.M, T.y); T.y += (o.s || 9.5) * 0.45; }); T.y += 1.5; };
+    T.kv = (k, v) => { T.page(); doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(90, 100, 115); doc.text(clean(k), T.M, T.y);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 30, 30); const ls = doc.splitTextToSize(clean(v), T.W - 55); ls.forEach((l, i) => { doc.text(l, T.M + 55, T.y + i * 4.4); }); T.y += Math.max(1, ls.length) * 4.4 + 1; };
+    T.check = (t) => { T.page(); doc.setDrawColor(238, 138, 46); doc.setLineWidth(.5); doc.rect(T.M, T.y - 3.2, 3.6, 3.6); doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(238, 138, 46); doc.text('X', T.M + .7, T.y - .2);
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 30, 30); const ls = doc.splitTextToSize(clean(t), T.W - 7); ls.forEach((l, i) => { if(i) T.page(); doc.text(l, T.M + 6, T.y + i * 4.2); }); T.y += ls.length * 4.2 + 2; };
+    T.table = (head, rows) => { const cw = T.W / head.length; T.page(); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setFillColor(238, 242, 248); doc.rect(T.M, T.y - 4, T.W, 6, 'F'); doc.setTextColor(27, 42, 68);
+      head.forEach((h, i) => doc.text(clean(h), T.M + 1.5 + i * cw, T.y)); T.y += 5; doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 30, 30);
+      rows.forEach(r => { T.page(); r.forEach((c, i) => doc.text(clean(c), T.M + 1.5 + i * cw, T.y)); doc.setDrawColor(225, 225, 225); doc.setLineWidth(.2); doc.line(T.M, T.y + 1.6, T.M + T.W, T.y + 1.6); T.y += 5.2; }); T.y += 2; };
+    T.img = (src, w, h, label) => { if(!src) return; if(T.y + h + 8 > 285){ doc.addPage(); T.y = 16; } if(label){ doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(90, 100, 115); doc.text(clean(label), T.M, T.y); T.y += 2; }
+      doc.setDrawColor(200, 200, 200); doc.rect(T.M, T.y, w, h); try{ doc.addImage(src, 'PNG', T.M + 1, T.y + 1, w - 2, h - 2, undefined, 'FAST'); }catch(e){} T.y += h + 4; };
+    T.foot = (t) => { const n = doc.getNumberOfPages(); for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140, 140, 140); doc.text(clean(t) + ' - page ' + i + '/' + n, T.M, 291); } };
+    return T;
+  };
+  async function logoData(){
+    if(OB._logo) return OB._logo;
+    try{ const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'icons/logo-header-v4.png'; });
+      const c = document.createElement('canvas'); c.width = c.height = 128; c.getContext('2d').drawImage(im, 0, 0, 128, 128); return (OB._logo = c.toDataURL('image/png')); }catch(e){ return null; }
+  }
+  OB.logoData = logoData;
+  OB.wPdfBuild = async function(){
+    const doc = await OB.pdfDoc(), T = OB.pdfTools(doc), cfg = W.cfg || OB.wCfg(), co = company();
+    const lg = await logoData();
+    doc.setFillColor(27, 42, 68); doc.rect(0, 0, 210, 24, 'F'); if(lg){ try{ doc.addImage(lg, 'PNG', 12, 4, 16, 16); }catch(e){} }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(255, 255, 255); doc.text('Notybat', 32, 13); doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text('Carnet de chantier', 32, 18);
+    T.y = 34; T.title('Choix et engagements de l\'entreprise');
+    const p = data.settings && data.settings.myProfile || {}, su = OB.su;
+    const name = ((p.firstName || su.first || '') + ' ' + (p.lastName || su.last || '')).trim();
+    const email = (data.settings && data.settings.signup && data.settings.signup.email) || su.email || (rwGoogleSession() && rwGoogleSession().user && rwGoogleSession().user.email) || '';
+    T.h('Entreprise');
+    T.kv('Entreprise', co.name); T.kv('Code entreprise', co.code || '-'); T.kv('Patron', name || '-'); T.kv('E-mail', email || '-');
+    T.kv('Identifiant', (data.settings && data.settings.auth && data.settings.auth.authId) || '-'); T.kv('Date et heure', OB.today());
+    if(W.sim) T.p('DOCUMENT DE SIMULATION - SANS VALEUR', { b:true, c:[192, 57, 43] });
+    T.h('1. Formule');
+    T.kv('Formule choisie', cfg.plan === 'essai' ? 'Mois d\'essai gratuit (30 jours)' : (cfg.plan + (cfg.cycle === 'year' ? ' - annuel' : ' - mensuel')));
+    T.p('A la fin de l\'essai sans formule, l\'appli passe en lecture seule pour toute l\'entreprise pendant 15 jours, puis les données sont supprimées. Un e-mail est envoyé le dernier jour de l\'essai et 4 jours avant la suppression.');
+    T.h('2. Indemnités de zone de trajet');
+    const b = cfg.region ? rwBareme(cfg.region, cfg.sub) : null;
+    T.kv('Zones de trajet', cfg.zonesOn ? (cfg.zonesMode === 'perso' ? 'Oui - barème personnalisé' : 'Oui - barème de la convention') : 'Non');
+    if(cfg.zonesOn || cfg.persoOn){ T.kv('Dépôt / siège', W.depot || (data.settings && data.settings.depotAddress) || '-'); T.kv('Région', b ? b.label : '-'); }
+    const zs = OB.effectiveBareme(cfg);
+    if(cfg.zonesOn && zs.length){ T.table(['Zone', 'Distance', 'Trajet', 'Transport'], zs.map(z => [z.zone, kmTxt(z), eur(z.trajet), eur(z.transport)])); if(b && b.panier && cfg.zonesMode !== 'perso') T.kv('Panier repas (région)', eur(b.panier)); }
+    T.check(cfg.accepted.zones);
+    T.h('3. Véhicule personnel');
+    T.kv('Véhicule personnel', cfg.persoOn ? (cfg.persoMode === 'perso' ? 'Oui - montant personnalisé' : 'Oui - règle de la convention (trajet + transport)') : 'Non');
+    if(cfg.persoOn && zs.length) T.table(['Zone', 'Véhicule entreprise', 'Véhicule perso'], zs.map(z => [z.zone, eur(cfg.zonesOn ? z.trajet : 0), eur(_rwTrAmtCfgWith(cfg, z, 2))]));
+    T.check(cfg.accepted.vp);
+    T.h('4. Heures');
+    T.kv('Heures par semaine', cfg.weeklyHours + ' h (au-delà : heures supplémentaires, majorations gérées par le comptable)');
+    T.h('5. Conditions acceptées');
+    const sg = (data.settings && data.settings.signup) || {};
+    T.check('Conditions générales de vente et politique de confidentialité de Notybat acceptées le ' + (sg.cgvAt || su.cgvAt ? new Date(sg.cgvAt || su.cgvAt).toLocaleString('fr-FR') : OB.today()) + '.');
+    T.check('Je certifie avoir lu les choix ci-dessus et les accepter au nom de l\'entreprise ' + co.name + '.');
+    T.img(sg.sig || su.sig, 70, 26, 'Signature du patron');
+    T.foot('Notybat - ' + co.name + ' (' + (co.code || '-') + ') - document généré le ' + OB.today() + ' - conservé par Notybat');
+    return doc;
+  };
+  window._rwTrAmtCfgWith = function(cfg, z, f){
+    const t = +z.trajet || 0, perso = f > 1 && cfg.persoOn !== false;
+    const add = !perso ? 0 : (cfg.persoMode === 'perso' && cfg.vp && cfg.vp[z.zone] != null && cfg.vp[z.zone] !== '' ? +cfg.vp[z.zone] : (z.transport != null ? +z.transport : t));
+    return cfg.zonesOn === false ? (perso ? t + add : 0) : t + add;
+  };
+  OB.blobToB64 = b => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.readAsDataURL(b); });
+  OB.wPdfSend = function(){
+    W.pdfP = (async () => {
+      try{
+        const doc = await OB.wPdfBuild(); const blob = doc.output('blob'); W.pdfBlob = blob;
+        if(W.sim) return;
+        const co = company();
+        await OB.api({ op:'consent', kind:'company', company:{ code:co.code, name:co.name }, rwoodId:(data.settings.auth || {}).authId || '',
+          payload:W.cfg, filename:'notybat-choix-' + (co.code || 'entreprise') + '.pdf', pdf: await OB.blobToB64(blob) });
+        data.settings.companyCfg.pdfSentAt = new Date().toISOString(); saveData();
+      }catch(e){ console.warn('[ob] pdf', e); try{ localStorage.setItem('rwood-ob-pdf-retry', '1'); }catch(_){} }
+    })();
+    return W.pdfP;
+  };
+  OB.wPdfDownload = async function(){
+    try{ if(W.pdfP) await W.pdfP; const blob = W.pdfBlob || (await OB.wPdfBuild()).output('blob'); OB.saveBlob(blob, 'notybat-choix-entreprise.pdf'); }catch(e){ showToast('PDF impossible : ' + e.message); }
+  };
+  OB.saveBlob = function(blob, name){
+    try{
+      const f = new File([blob], name, { type:'application/pdf' });
+      if(navigator.canShare && navigator.canShare({ files:[f] })){ navigator.share({ files:[f], title:name }).catch(() => {}); return; }
+    }catch(e){}
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  };
+})();
+
+/* ═══ MODULE — v5.54.0 — Partie 3 : clauses à contre-signer, fin d'essai, réglages (barème verrouillé), outils Dev, démarrage ═══ */
+(function(){
+  const OB = window.OB, E = OB.E, IC = OB.IC, eur = OB.eur;
+  const role = () => (data && data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const isPatron = () => role() === 'patron' || !!(typeof _rwCo !== 'undefined' && _rwCo && _rwCo.me && _rwCo.me.isPatron);
+  const coName = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || (data.settings && data.settings.teamName) || 'l’entreprise';
+  const coCode = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || (data.settings && data.settings.companyCode) || '';
+
+  /* ═══ Clause de confidentialité : signature du salarié → contre-signature du patron → PDF ═══ */
+  OB.clausesPending = async function(){
+    const users = await _fetchUsersRegistry();
+    const me = data.settings.auth && data.settings.auth.authId;
+    return (users || []).filter(u => u && u.clause && u.clause.at && !u.clauseCs && u.authId !== me);
+  };
+  OB.clauseCheck = async function(){
+    try{
+      if(!isPatron() || !navigator.onLine) return;
+      const list = await OB.clausesPending();
+      list.forEach(u => OB.notify('Clause de confidentialité à contre-signer', (u.name || u.authId) + ' a signé : contre-signe dans Paramètres › Mon entreprise', 'clause-' + u.authId));
+      OB._clauses = list; OB.clauseCard();
+    }catch(e){}
+  };
+  OB.clauseCard = function(){
+    const host = OB.$('rwCoBody'); if(!host || !isPatron()) return;
+    let el = OB.$('obClauseCard');
+    const list = OB._clauses || [];
+    if(!list.length){ if(el) el.remove(); return; }
+    if(!el){ el = document.createElement('div'); el.id = 'obClauseCard'; host.insertBefore(el, host.firstChild); }
+    el.innerHTML = `<div class="card" style="border-color:var(--wood);"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;gap:8px;">${IC('signature')} ${list.length} clause${list.length > 1 ? 's' : ''} à contre-signer</div>
+      ${list.map(u => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line);"><div style="flex:1;min-width:0;"><b>${E(u.name || u.authId)}</b><div class="hint" style="margin:0;">Signée le ${E(new Date(u.clause.at).toLocaleDateString('fr-FR'))}</div></div>
+        <button class="btn btn-primary btn-sm" onclick="OB.clauseOpen('${E(u.authId)}')">Contre-signer</button></div>`).join('')}</div>`;
+  };
+  OB.clauseOpen = function(authId, sim){
+    const u = sim ? sim : (OB._clauses || []).find(x => x.authId === authId); if(!u) return;
+    const m = document.createElement('div'); m.className = 'ob-modal'; m.id = 'obClauseModal';
+    const name = coName();
+    m.innerHTML = `<div><h2 style="margin:0 0 4px;font-size:18px;">Clause de confidentialité</h2><div class="ob-hint">${E(u.name || u.authId)} · signée le ${E(new Date(u.clause.at).toLocaleString('fr-FR'))}${sim ? ' · <b>simulation</b>' : ''}</div>
+      <div class="ob-clause" style="max-height:30vh;overflow:auto;margin:8px 0;">${OB.clauseText(name).map(p => '<p>' + E(p) + '</p>').join('')}</div>
+      <div class="ob-f"><label>Signature du salarié</label><div class="ob-sigimg">${u.clause.sig ? `<img src="${u.clause.sig}" alt="">` : '<span class="ob-hint">—</span>'}</div></div>
+      <div class="ob-f"><label>Ta signature (patron) *</label><div class="ob-sig" id="obCsSig"></div></div>
+      <div class="ob-err" id="obCsErr"></div>
+      <button type="button" class="ob-btn p" id="obCsGo">${IC('signature', 's')} Signer et générer le PDF</button>
+      <button type="button" class="ob-link" onclick="document.getElementById('obClauseModal').remove()">Plus tard</button></div>`;
+    document.body.appendChild(m);
+    const pad = OB.sigPad('obCsSig');
+    m.querySelector('#obCsGo').onclick = async () => {
+      if(!pad || pad.empty){ OB.err('obCsErr', 'Signe dans le cadre avec ton doigt.'); return; }
+      const btn = m.querySelector('#obCsGo'); btn.disabled = true; btn.textContent = 'Génération…';
+      try{
+        const sigP = pad.data(), at = new Date().toISOString();
+        const doc = await OB.clausePdf(u, sigP, at, !!sim); const blob = doc.output('blob');
+        const fname = 'clause-confidentialite-' + OB.slug(u.name || u.authId) + '.pdf';
+        if(!sim){
+          try{ await OB.api({ op:'consent', kind:'clause', company:{ code:coCode(), name:coName() }, rwoodId:u.authId, payload:{ worker:u.name, workerAt:u.clause.at, patronAt:at, by:(data.settings.auth || {}).authId },
+            filename:fname, pdf: await OB.blobToB64(blob) }); }catch(e){ console.warn('[ob] clause send', e); }
+          const users = await _fetchUsersRegistry(); const x = users.find(v => v.authId === u.authId);
+          if(x){ x.clauseCs = { at, by:(data.settings.auth || {}).authId || '' }; await _saveUsersRegistry(users); }
+          OB._clauses = (OB._clauses || []).filter(v => v.authId !== u.authId); OB.clauseCard();
+        }
+        m.remove();
+        OB.saveBlob(blob, fname);
+        showToast('Clause contre-signée');
+      }catch(e){ OB.err('obCsErr', E(e.message || e)); btn.disabled = false; btn.textContent = 'Signer et générer le PDF'; }
+    };
+  };
+  OB.clausePdf = async function(u, sigP, at, sim){
+    const doc = await OB.pdfDoc(), T = OB.pdfTools(doc);
+    const lg = await OB.logoData();
+    doc.setFillColor(27, 42, 68); doc.rect(0, 0, 210, 24, 'F'); if(lg){ try{ doc.addImage(lg, 'PNG', 12, 4, 16, 16); }catch(e){} }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(255, 255, 255); doc.text('Notybat', 32, 13); doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.text('Carnet de chantier', 32, 18);
+    T.y = 34; T.title('Clause de confidentialité des données');
+    if(sim) T.p('DOCUMENT DE SIMULATION - SANS VALEUR', { b:true, c:[192, 57, 43] });
+    T.kv('Entreprise', coName() + (coCode() ? ' (' + coCode() + ')' : '')); T.kv('Salarié', (u.name || '') + ' - ' + (u.authId || '')); if(u.email) T.kv('E-mail', u.email);
+    T.h('Texte de la clause');
+    OB.clauseText(coName()).forEach(p => T.p(p));
+    T.h('Signatures');
+    T.kv('Signée par le salarié le', new Date(u.clause.at).toLocaleString('fr-FR'));
+    T.img(u.clause.sig, 70, 26, 'Signature du salarié');
+    const me = data.settings.myProfile || {};
+    T.kv('Contre-signée par le patron le', new Date(at).toLocaleString('fr-FR'));
+    T.kv('Patron', ((me.firstName || '') + ' ' + (me.lastName || '')).trim() || '-');
+    T.img(sigP, 70, 26, 'Signature du patron');
+    T.foot('Notybat - clause de confidentialité - ' + coName() + ' - générée le ' + OB.today());
+    return doc;
+  };
+  /* Registre : la signature du salarié et la contre-signature du patron voyagent avec la fiche du compte */
+  OB.registryPatch = function(){
+    const orig = window._saveUsersRegistry;
+    window._saveUsersRegistry = async function(users){
+      try{
+        const me = data.settings.auth && data.settings.auth.authId, sg = data.settings.signup;
+        if(me && Array.isArray(users)){
+          const x = users.find(u => u && u.authId === me);
+          if(x && sg && sg.clauseAt && !x.clause) x.clause = { at:sg.clauseAt, sig:sg.sig || '' };
+          if(x && sg){ if(!x.email && sg.email) x.email = sg.email; if(!x.phone && sg.phone) x.phone = sg.phone; }
+          if(x && !x.clauseCs){ const prev = (OB._regPrev || []).find(u => u && u.authId === me); if(prev && prev.clauseCs) x.clauseCs = prev.clauseCs; }
+        }
+      }catch(e){}
+      return orig.apply(this, arguments);
+    };
+    const f0 = window._fetchUsersRegistry;
+    window._fetchUsersRegistry = async function(){ const r = await f0.apply(this, arguments); try{ OB._regPrev = JSON.parse(JSON.stringify(r || [])); }catch(e){} return r; };
+  };
+
+  /* ═══ Fin de l'essai : lecture seule 15 jours + message bloquant au patron ═══ */
+  const DAY = 86400000;
+  OB.trial = null;
+  OB.trialState = function(j){
+    const sim = (() => { try{ return localStorage.getItem('rwood-sim-trial'); }catch(e){ return null; } })();
+    if(sim === 'expired') return { expired:true, delAt:Date.now() + 12 * DAY, daysLeft:12, sim:true };
+    const p = j && j.plan; if(!p || p.plan !== 'essai' || p.trialLeft == null) return null;
+    if(j.company && j.company.legacy) return null;
+    if(p.trialLeft > 0) return { expired:false, trialLeft:p.trialLeft };
+    const key = 'rwood-trial-exp-' + ((j.company && j.company.code) || '');
+    let expAt = Date.parse(p.trialEnd || p.trial_end || p.trialEndsAt || '') || 0;
+    if(!expAt){ try{ expAt = +(localStorage.getItem(key) || 0); if(!expAt){ expAt = Date.now(); localStorage.setItem(key, String(expAt)); } }catch(e){ expAt = Date.now(); } }
+    const delAt = expAt + 15 * DAY;
+    return { expired:true, expAt, delAt, daysLeft:Math.max(0, Math.ceil((delAt - Date.now()) / DAY)) };
+  };
+  OB.trialApply = function(j){
+    if(OB.isDev() && !(function(){ try{ return localStorage.getItem('rwood-sim-trial'); }catch(e){ return null; } })()) { document.body.classList.remove('rw-ro'); return; }
+    const s = OB.trial = OB.trialState(j);
+    document.body.classList.toggle('rw-ro', !!(s && s.expired));
+    let bar = OB.$('rwTrialBar');
+    if(s && s.expired){
+      if(!bar){ bar = document.createElement('div'); bar.id = 'rwTrialBar'; document.body.appendChild(bar); }
+      bar.textContent = 'Essai terminé : lecture seule · données supprimées dans ' + s.daysLeft + ' jour' + (s.daysLeft > 1 ? 's' : '') + (s.sim ? ' (simulation)' : '');
+      if(isPatron() || s.sim) OB.trialLock();
+    }
+  };
+  OB.trialLock = function(){
+    const s = OB.trial; if(!s || !s.expired || OB.$('obLock')) return;
+    const hp = (() => { try{ return _rwHidePrices(); }catch(e){ return true; } })();
+    const d = new Date(s.delAt).toLocaleDateString('fr-FR');
+    const m = document.createElement('div'); m.className = 'ob-lock'; m.id = 'obLock';
+    m.innerHTML = `<div>${IC('attente', 'xl')}<h2 style="margin:6px 0;">Ton essai est terminé</h2>
+      <p class="ob-sub">Notybat est en <b style="color:var(--ink);">lecture seule</b> pour toute ton entreprise : tes équipes voient leurs données mais ne peuvent plus rien enregistrer.</p>
+      <div class="ob-legal" style="text-align:left;"><p style="margin:0;color:var(--ink);">Sans formule, <b>toutes les données de l'entreprise seront supprimées définitivement le ${E(d)}</b> (dans ${s.daysLeft} jour${s.daysLeft > 1 ? 's' : ''}). Un e-mail te le rappellera 4 jours avant.</p></div>
+      ${hp ? '<p class="ob-sub">Pour choisir ta formule, connecte-toi à Notybat depuis un ordinateur.</p>' : `<button type="button" class="ob-btn p" onclick="OB.trialPay()">${IC('cadeau', 's')} Choisir ma formule</button>`}
+      <button type="button" class="ob-btn o" onclick="document.getElementById('obLock').remove()">Continuer en lecture seule</button>${s.sim ? '<div class="ob-hint" style="margin-top:8px;">Simulation (onglet Dev)</div>' : ''}</div>`;
+    document.body.appendChild(m);
+  };
+  OB.trialPay = function(){ try{ rwShopOpen({ plan:'equipe', cycle:'month', co:coCode() }); }catch(e){} };
+  OB.readOnlyPatch = function(){
+    const sd = window.saveData;
+    let lastToast = 0;
+    window.saveData = async function(){
+      if(document.body.classList.contains('rw-ro') && !window._obAllowSave){
+        if(Date.now() - lastToast > 8000){ lastToast = Date.now(); try{ showToast('Lecture seule : essai terminé, rien n’est enregistré'); }catch(e){} }
+        return;
+      }
+      return sd.apply(this, arguments);
+    };
+    const sp = window.syncPush;
+    if(typeof sp === 'function') window.syncPush = async function(){ if(document.body.classList.contains('rw-ro') && !window._obAllowSave) return; return sp.apply(this, arguments); };
+  };
+  /* Branchement sur la lecture de l'entreprise au démarrage */
+  const _pn = window._rwPlanNag;
+  window._rwPlanNag = function(j){
+    try{ OB.trialApply(j); }catch(e){}
+    try{ if(j && j.me && j.me.isPatron && j.pendingCount) OB.notify('Rôle à valider', j.pendingCount + ' demande' + (j.pendingCount > 1 ? 's' : '') + ' de rôle (conducteur / comptable) : Paramètres › Mon entreprise', 'pending-' + j.pendingCount + '-' + new Date().toISOString().slice(0, 10)); }catch(e){}
+    if(OB.trial && OB.trial.expired) return;
+    return _pn.apply(this, arguments);
+  };
+
+  /* ═══ Paramètres › Prime de trajet et heures : barème verrouillé, carte, test d'adresse ═══ */
+  OB.cfgViewRender = function(){
+    const wrap = OB.$('prmTrajetWrap'); if(!wrap) return;
+    let el = OB.$('obCfgView');
+    if(!el){ el = document.createElement('div'); el.id = 'obCfgView'; wrap.insertBefore(el, wrap.firstChild); }
+    const c = _rwCfg(), dev = OB.isDev(), b = c.region ? rwBareme(c.region, c.sub) : null, zs = (data.settings.trajetBareme || []);
+    const vpOf = z => _rwTrAmt(z, 2);
+    const ro = wrap.querySelector('.prm-ro-hint'); if(ro) ro.style.display = 'none';
+    const oldCard = OB.$('trajetBaremeTable') && OB.$('trajetBaremeTable').closest('.card');
+    if(oldCard){ oldCard.style.display = dev ? '' : 'none'; const t = oldCard.previousElementSibling; if(t && t.classList.contains('prm-sec')) t.style.display = dev ? '' : 'none'; }
+    el.innerHTML = `<div class="prm-sec">Barème de l'entreprise</div>
+      <div class="ob-lockline">${IC('cadenas-ouvert', 's')} Visible par toute l'équipe · modifiable uniquement par Notybat</div>
+      <div class="card">
+        <div class="ob-cfg-k"><span>Zones de trajet</span><b>${c.zonesOn === false ? 'Non utilisées' : (c.zonesMode === 'perso' ? 'Barème personnalisé' : 'Convention collective')}</b></div>
+        <div class="ob-cfg-k"><span>Véhicule personnel</span><b>${c.persoOn === false ? 'Non indemnisé' : (c.persoMode === 'perso' ? 'Montant personnalisé' : 'Trajet + transport')}</b></div>
+        ${b ? `<div class="ob-cfg-k"><span>Région</span><b>${E(b.label)}${b.year ? ' · ' + E(b.year) : ''}</b></div>` : ''}
+        ${data.settings.depotAddress ? `<div class="ob-cfg-k"><span>Calcul depuis</span><b>${E(data.settings.depotAddress)}</b></div>` : ''}
+        <div class="ob-cfg-k"><span>Heures par semaine</span><b>${E(_rwWH())} h</b></div>
+        ${b && b.panier && c.zonesMode !== 'perso' ? `<div class="ob-cfg-k"><span>Panier repas (région)</span><b>${eur(b.panier)}</b></div>` : ''}
+      </div>
+      ${(c.zonesOn !== false || c.persoOn !== false) && zs.length ? `<div class="card" style="overflow-x:auto;"><table class="ob-tbl"><tr><th>Zone</th><th>Distance</th>${c.zonesOn !== false ? '<th>Trajet</th>' : ''}${c.persoOn !== false ? '<th>Véh. perso</th>' : ''}</tr>
+        ${zs.map(z => `<tr><td><i class="zd" style="background:${(() => { try{ return _zoneColor(z.zone); }catch(e){ return '#EE8A2E'; } })()}"></i>${E(z.zone)}</td><td>${E(z.maxKm >= 999 ? '+' + z.minKm + ' km' : z.minKm + '-' + z.maxKm + ' km')}</td>${c.zonesOn !== false ? `<td>${eur(z.trajet)}</td>` : ''}${c.persoOn !== false ? `<td class="vp">${eur(vpOf(z))}</td>` : ''}</tr>`).join('')}</table>
+        <button type="button" class="ob-btn o sm" onclick="goTo('zone-chantier')">${IC('itineraire', 's')} Voir les zones sur la carte</button>
+        <div class="ob-f" style="margin-top:10px;"><label>Tester une adresse</label><div style="display:flex;gap:6px;"><input type="text" id="obZoneTest" placeholder="Ex : Mérignac" style="flex:1;min-width:0;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">
+          <button type="button" class="btn btn-outline" onclick="zoneTestAddress('obZoneTest','obZoneTestRes')">Tester</button></div><div id="obZoneTestRes" class="hint" style="margin-top:6px;"></div></div></div>` : ''}
+      ${isPatron() || dev ? `<button type="button" class="ob-btn o sm" onclick="OB.cfgPdf()">${IC('pdf', 's')} Récapitulatif des choix de l'entreprise (PDF)</button>` : ''}
+      ${dev ? `<button type="button" class="ob-btn o sm" onclick="OB.wizardStart({ reconf:true })">${IC('options', 's')} Modifier les choix de l'entreprise (dev)</button>` : ''}`;
+  };
+  OB.cfgPdf = async function(){
+    try{
+      const c = _rwCfg();
+      Object.assign(OB.wz, { sim:false, cfg:Object.assign({ accepted:{ zones:'', vp:'' } }, c, { accepted:c.accepted || { zones:'(choix enregistrés avant la v5.54)', vp:'(choix enregistrés avant la v5.54)' } }), depot:data.settings.depotAddress || '', plan:c.plan || 'essai', cycle:c.cycle || 'month' });
+      const doc = await OB.wPdfBuild(); OB.saveBlob(doc.output('blob'), 'notybat-choix-entreprise.pdf');
+    }catch(e){ showToast('PDF impossible : ' + e.message); }
+  };
+  const _po = window.prmOpen;
+  if(typeof _po === 'function') window.prmOpen = function(pg){
+    const r = _po.apply(this, arguments);
+    try{ if(pg === 'trajet') setTimeout(OB.cfgViewRender, 30); if(pg === 'entreprise') setTimeout(() => { OB.clauseCard(); OB.clauseCheck(); }, 600); }catch(e){}
+    return r;
+  };
+  const _rtb = window.renderTrajetBaremeTable;
+  if(typeof _rtb === 'function') window.renderTrajetBaremeTable = function(){ const r = _rtb.apply(this, arguments); try{ OB.cfgViewRender(); }catch(e){} return r; };
+  /* Heures contractuelles modifiées dans les réglages → partagées */
+  const _uwh = window.updateWeeklyHoursSetting;
+  if(typeof _uwh === 'function') window.updateWeeklyHoursSetting = function(v){
+    const r = _uwh.apply(this, arguments);
+    try{ const h = parseFloat(v); if(h > 0 && data.settings.companyCfg){ data.settings.companyCfg.weeklyHours = h; saveData(); _trajetCfgTouch(); } }catch(e){}
+    return r;
+  };
+  const _rco = window.rwCoRender;
+  if(typeof _rco === 'function') window.rwCoRender = async function(){ const r = await _rco.apply(this, arguments); try{ OB.clauseCard(); }catch(e){} return r; };
+
+  /* ═══ Onglet Dev : tests de l'inscription + barèmes ═══ */
+  OB.devRender = function(){
+    const v = OB.$('view-dev'); if(!v) return;
+    let el = OB.$('rwObDev');
+    if(!el){
+      const sec = document.createElement('div'); sec.className = 'dev-sec'; sec.textContent = 'Inscription, essai et barèmes';
+      el = document.createElement('div'); el.id = 'rwObDev';
+      const ref = [...v.querySelectorAll('.dev-sec')].find(s => /Réglages/.test(s.textContent));
+      if(ref){ v.insertBefore(sec, ref); v.insertBefore(el, ref); } else { v.appendChild(sec); v.appendChild(el); }
+    }
+    const simT = (() => { try{ return localStorage.getItem('rwood-sim-trial') === 'expired'; }catch(e){ return false; } })();
+    const c = _rwCfg();
+    const reg = OB._devReg || c.region || 'naq', R = RW_BAREMES[reg] || {}, sub = OB._devSub || (R.subs ? (reg === c.region && c.sub) || Object.keys(R.subs)[0] : '');
+    const b = rwBareme(reg, sub) || {}, zs = b.zones || [];
+    el.innerHTML = `<div class="card">
+      <div class="dev-row"><button type="button" class="ob-btn o sm" onclick="OB.devSignup('google')">${IC('casque', 's')} Inscription Google (simulation)</button>
+        <button type="button" class="ob-btn o sm" onclick="OB.devSignup('email')">${IC('email', 's')} Inscription e-mail (simulation)</button></div>
+      <div class="dev-row"><button type="button" class="ob-btn o sm" onclick="OB.wizardStart({ sim:true })">${IC('immeuble', 's')} Assistant patron (simulation)</button>
+        <button type="button" class="ob-btn o sm" onclick="OB.devClause()">${IC('signature', 's')} Clause à contre-signer (simulation)</button></div>
+      <div class="dev-row"><button type="button" class="ob-btn o sm" onclick="OB.devTrial()">${IC('attente', 's')} ${simT ? 'Revenir à la normale (essai)' : 'Simuler la fin d’essai'}</button>
+        <button type="button" class="ob-btn o sm" onclick="OB.notify('Rôle à valider','Julien Dupont s’est inscrit en conducteur de travaux (simulation)')">${IC('cloche', 's')} Notif conducteur (simulation)</button></div>
+      <div class="dev-row"><button type="button" class="ob-btn o sm" onclick="OB.wizardStart({ reconf:true })">${IC('options', 's')} Modifier les choix de mon entreprise</button>
+        <button type="button" class="ob-btn o sm" onclick="OB.devTrialDays()">${IC('calendrier', 's')} Jours d'essai d'une entreprise</button></div>
+      <div class="ob-hint" style="margin-top:8px;">Les simulations n'envoient rien au serveur et ne modifient pas ton compte.</div></div>
+      <div class="card"><div style="font-weight:800;margin-bottom:6px;">Barèmes régionaux (toutes les entreprises)</div>
+        <div class="ob-row2"><select onchange="OB._devReg=this.value;OB._devSub='';OB.devRender()" style="padding:8px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${RW_REGION_ORDER.map(k => `<option value="${k}" ${k === reg ? 'selected' : ''}>${E(RW_BAREMES[k].name)}</option>`).join('')}</select>
+        ${R.subs ? `<select onchange="OB._devSub=this.value;OB.devRender()" style="padding:8px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">${Object.keys(R.subs).map(s => `<option value="${s}" ${s === sub ? 'selected' : ''}>${E(R.subs[s].name)}</option>`).join('')}</select>` : ''}</div>
+        <div class="ob-hint" style="margin-top:6px;">${b.verif ? '<b style="color:var(--wood);">À vérifier</b> sur l’accord officiel · ' : ''}${zs.length ? 'Année ' + E(b.year || '?') + ' · depuis ' + E(b.from || '?') : '<b style="color:var(--red);">Barème manquant</b>'}</div>
+        <div style="overflow-x:auto;"><table class="ob-tbl" id="obDevBar"><tr><th>Zone</th><th>Km min</th><th>Km max</th><th>Trajet</th><th>Transport</th></tr>
+          ${(zs.length ? zs : [{ zone:'1A', minKm:0, maxKm:5 }]).map((z, i) => `<tr><td><input class="z" data-i="${i}" data-k="zone" value="${E(z.zone)}"></td><td><input type="number" data-i="${i}" data-k="minKm" value="${z.minKm}"></td><td><input type="number" data-i="${i}" data-k="maxKm" value="${z.maxKm}"></td>
+            <td><input type="number" step="0.01" data-i="${i}" data-k="trajet" value="${z.trajet == null ? '' : z.trajet}"></td><td><input type="number" step="0.01" data-i="${i}" data-k="transport" value="${z.transport == null ? '' : z.transport}"></td></tr>`).join('')}</table></div>
+        <div class="ob-row2" style="margin-top:6px;"><div class="ob-f"><label>Panier €</label><input type="number" step="0.01" id="obDevPanier" value="${b.panier || ''}"></div><div class="ob-f"><label>Année</label><input type="number" id="obDevYear" value="${b.year || new Date().getFullYear()}"></div><div class="ob-f"><label>Depuis</label><input type="text" id="obDevFrom" value="${E(b.from || '')}"></div></div>
+        <div class="dev-row"><button type="button" class="ob-btn o sm" onclick="OB.devBarRow()">${IC('ajouter', 's')} Ligne</button><button type="button" class="ob-btn p sm" onclick="OB.devBarPublish('${reg}','${sub}')">${IC('envoyer', 's')} Publier pour toutes les entreprises</button></div>
+        <div class="ob-hint" id="obDevBarSt"></div></div>`;
+  };
+  OB.devSignup = function(via){
+    Object.assign(OB.su, { sim:true, via, lockEmail:false, first:'Julien', last:'Dupont', email: via === 'google' ? 'julien.dupont@gmail.com' : '', pwd:'', pwd2:'', phone:'', mode:'join', code:'', coChecked:null, coName:'', logo:'', news:false, cgv:false, clause:false });
+    OB.show('account');
+  };
+  OB.devClause = function(){
+    const sig = (data.settings.signup && data.settings.signup.sig) || '';
+    OB.clauseOpen('sim', { authId:'julien.dupont', name:'Julien Dupont (test)', clause:{ at:new Date(Date.now() - 3600000).toISOString(), sig } });
+  };
+  OB.devTrial = function(){
+    try{ if(localStorage.getItem('rwood-sim-trial') === 'expired') localStorage.removeItem('rwood-sim-trial'); else localStorage.setItem('rwood-sim-trial', 'expired'); }catch(e){}
+    const l = OB.$('obLock'); if(l) l.remove();
+    document.body.classList.remove('rw-ro');
+    OB.trialApply((typeof _rwCo !== 'undefined' && _rwCo) || {});
+    OB.devRender();
+  };
+  OB.devTrialDays = async function(){
+    const code = prompt('Code de l’entreprise (ex : entreprise de test) ?', ''); if(!code) return;
+    const d = prompt('Jours d’essai restants à partir d’aujourd’hui ? (0 = essai terminé)', '0'); if(d === null) return;
+    try{ await rwDevPlanSet(code.trim().toUpperCase(), { trialDays:+d }); }catch(e){ showToast('⚠️ ' + e.message); }
+  };
+  OB.devBarRow = function(){
+    const t = OB.$('obDevBar'); if(!t) return; const n = t.rows.length - 1;
+    const tr = t.insertRow(); tr.innerHTML = ['zone', 'minKm', 'maxKm', 'trajet', 'transport'].map(k => `<td><input ${k === 'zone' ? 'class="z"' : 'type="number" step="0.01"'} data-i="${n}" data-k="${k}"></td>`).join('');
+  };
+  OB.devBarPublish = async function(reg, sub){
+    const rows = {}; (OB.$('obDevBar') || { querySelectorAll:() => [] }).querySelectorAll('input').forEach(i => { const r = rows[i.dataset.i] = rows[i.dataset.i] || {}; r[i.dataset.k] = i.dataset.k === 'zone' ? i.value.trim().toUpperCase() : (i.value === '' ? null : +i.value); });
+    const zones = Object.values(rows).filter(z => z.zone && z.maxKm > z.minKm && z.trajet != null).sort((a, b) => a.minKm - b.minKm);
+    if(!zones.length){ showToast('Barème vide'); return; }
+    const dataB = { zones, panier:+(OB.$('obDevPanier') || {}).value || null, year:+(OB.$('obDevYear') || {}).value || null, from:(OB.$('obDevFrom') || {}).value || '', verif:false };
+    const st = OB.$('obDevBarSt'); if(st) st.textContent = 'Envoi…';
+    try{
+      await OB.api({ op:'bareme_set', id:OB.barKey(reg, RW_BAREMES[reg].subs ? sub : ''), data:dataB });
+      await rwBaremeFetch(true);
+      if(_rwCfg().region === reg){ OB.cfgApply(); try{ _trajetRezoneFromKm(); }catch(e){} saveData(); }
+      if(st) st.innerHTML = '<span class="ob-ok">Publié : toutes les entreprises de ce secteur reçoivent ce barème.</span>';
+    }catch(e){ if(st) st.innerHTML = '<span style="color:var(--red);">' + E(e.message) + (e.status === 404 ? ' — la fonction serveur notybat-onboard n’est pas encore installée' : '') + '</span>'; }
+  };
+
+  /* ═══ Démarrage ═══ */
+  function boot(){
+    try{ OB.welcomeButtons(); }catch(e){}
+    try{ OB.registryPatch(); OB.readOnlyPatch(); }catch(e){}
+    try{ OB.cfgMigrate(); OB.cfgApply(); }catch(e){}
+    rwBaremeFetch().then(ch => { if(ch){ const c = _rwCfg(); if(c.region && c.zonesMode !== 'perso'){ OB.cfgApply(); try{ _trajetRezoneFromKm(); }catch(e){} saveData(); } } }).catch(() => {});
+    setTimeout(() => { try{ OB.devRender(); }catch(e){} }, 1500);
+    setTimeout(() => { OB.clauseCheck(); }, 9000);
+    setInterval(() => { OB.clauseCheck(); }, 15 * 60000);
+    try{ if(localStorage.getItem('rwood-sim-trial') === 'expired') setTimeout(() => OB.trialApply({}), 2500); }catch(e){}
+    try{ if(localStorage.getItem('rwood-ob-pdf-retry') && data.settings.companyCfg && !data.settings.companyCfg.pdfSentAt && isPatron()){
+      setTimeout(async () => { try{ await OB.cfgPdfSend(); localStorage.removeItem('rwood-ob-pdf-retry'); }catch(e){} }, 12000); } }catch(e){}
+  }
+  OB.cfgPdfSend = async function(){
+    const c = _rwCfg(); Object.assign(OB.wz, { sim:false, cfg:c, depot:data.settings.depotAddress || '', plan:c.plan || 'essai', cycle:c.cycle || 'month' });
+    const doc = await OB.wPdfBuild(); const blob = doc.output('blob');
+    await OB.api({ op:'consent', kind:'company', company:{ code:coCode(), name:coName() }, rwoodId:(data.settings.auth || {}).authId || '', payload:c, filename:'notybat-choix-' + (coCode() || 'entreprise') + '.pdf', pdf: await OB.blobToB64(blob) });
+    c.pdfSentAt = new Date().toISOString(); saveData();
+  };
+  const _dav = window.devAccessApplyNav;
+  if(typeof _dav === 'function') window.devAccessApplyNav = function(){ const r = _dav.apply(this, arguments); try{ OB.devRender(); }catch(e){} return r; };
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(boot, 400)); else setTimeout(boot, 400);
+})();
+
+</script>
 </body>
 </html>
