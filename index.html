@@ -50951,9 +50951,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.54.0';
+const APP_VERSION = '5.54.1';
 
 const CHANGELOG = [
+  {
+    version: '5.54.1',
+    date: '26/10/2026',
+    entries: [
+      { icon: '✉️', text: "Inscription par e-mail : après le lien d'activation, plus d'erreur « Signup requires a valid password » ; si le lien est ouvert sur un autre appareil, les réponses sont reprises et il suffit de signer à nouveau." }
+    ]
+  },
   {
     version: '5.54.0',
     date: '26/10/2026',
@@ -96149,7 +96156,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(!navigator.onLine) return say('Pas de connexion internet.');
     try{ localStorage.setItem('rwood-ob-pending', JSON.stringify(pendingData())); }catch(e){}
     if(S.logo){ try{ localStorage.setItem('rwood-ob-logo', S.logo); }catch(e){} }
-    if(S.via === 'email') return OB.signupMail();
+    if(S.via === 'email' && !S.lockEmail && !(typeof rwGoogleSession === 'function' && rwGoogleSession())) return OB.signupMail();   // v5.54.1 — compte déjà activé : on crée directement le compte Notybat
     return OB.serverSignup();
   };
   /* Envoi à la porte d'entrée : on réutilise le formulaire d'origine (gestion du compte existant, du patron, etc.) */
@@ -96184,7 +96191,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   OB.signupMail = async function(){
     const btn = OB.$('obGo'); if(btn) btn.disabled = true;
     try{
-      const meta = { full_name:S.first + ' ' + S.last, given_name:S.first, family_name:S.last, rw_signup:pendingData() };
+      const meta = { full_name:S.first + ' ' + S.last, given_name:S.first, family_name:S.last, rw_signup:Object.assign({}, pendingData(), { sig:'' }) };   // v5.54.1 — signature hors du jeton (trop lourde)
       const r = await fetch(SUPA_URL + '/auth/v1/signup?redirect_to=' + encodeURIComponent(OB.redirectUrl()), { method:'POST',
         headers:{ apikey:SUPA_KEY, 'Content-Type':'application/json' }, body: JSON.stringify({ email:S.email.toLowerCase(), password:S.pwd, data:meta }) });
       const j = await r.json().catch(() => ({}));
@@ -96269,6 +96276,14 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(!(p && p.email === email) && meta) p = meta;
     const provider = (user && user.app_metadata && user.app_metadata.provider) || 'google';
     Object.assign(S, { sim:false, via: provider === 'email' ? 'email' : 'google', email, pwd:'', pwd2:'', lockEmail:true });
+    if(p && p.email === email && p.cgvAt && !p.sig){
+      /* v5.54.1 — lien ouvert sur un autre appareil / navigateur : on garde les réponses, il ne manque que la signature */
+      Object.assign(S, { first:p.first, last:p.last, phone:p.phone || '', mode:p.mode, code:p.code || '', coName:p.coName || '', role:p.role || 'ouvrier', trade:p.trade || 'charpente',
+        tradeLabel:p.tradeLabel || '', news:!!p.news, cgv:true, clause:true, coClauseName:p.coClause || '' });
+      OB.show('engage');
+      OB.err('obErr', '<span style="color:var(--green);">Compte activé. Signe à nouveau pour terminer ton inscription.</span>');
+      return;
+    }
     if(p && p.email === email && p.sig && p.cgvAt){
       Object.assign(S, { first:p.first, last:p.last, phone:p.phone || '', mode:p.mode, code:p.code || '', coName:p.coName || '', role:p.role || 'ouvrier', trade:p.trade || 'charpente',
         tradeLabel:p.tradeLabel || '', news:!!p.news, cgv:true, clause:true, sig:p.sig, cgvAt:p.cgvAt, clauseAt:p.clauseAt, coClauseName:p.coClause || '' });
