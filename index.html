@@ -11409,6 +11409,7 @@ function stripBlobsForSync(d){
     (site.documents || []).forEach(doc => { if(doc.data && isDataUrlRef(doc.data)) delete doc.data; });
   });
   if(copy.settings && copy.settings.companyLogo && isDataUrlRef(copy.settings.companyLogo)) delete copy.settings.companyLogo;
+  if(copy.settings && copy.settings.companyCfg && copy.settings.companyCfg.brand && copy.settings.companyCfg.brand.logo){ copy.settings.companyCfg = Object.assign({}, copy.settings.companyCfg, { brand:Object.assign({}, copy.settings.companyCfg.brand) }); delete copy.settings.companyCfg.brand.logo; }   // v5.56.0 — le logo voyage par la fiche entreprise, pas par chaque compte
   // v5.41.218 — l'état de verrouillage reste local à l'appareil
   if(copy.settings && copy.settings.auth){ copy.settings.auth.locked = false; delete copy.settings.auth.lockPin; delete copy.settings.auth.autoLock; }
   (copy.payslips || []).forEach(p => { if(p.data && isDataUrlRef(p.data)) delete p.data; });
@@ -38035,7 +38036,7 @@ function _htBuild(keys, weeks){
   const mid = new Date(t0.getTime() + (t1 - t0) / 2);
   let mref = mid; try{ if(typeof _getPDFMonthTarget === 'function'){ const t = _getPDFMonthTarget(); if(t >= new Date(t0.getFullYear(), t0.getMonth(), 1) && t <= t1) mref = t; } }catch(e){}
   const month = mref.toLocaleDateString('fr-FR', { month:'long', year:'numeric' });
-  const company = (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || '';
+  const company = (data.settings && data.settings.companyLabel) || (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || '';
   return { recap, days, weeks, month: month.charAt(0).toUpperCase() + month.slice(1), period:'du ' + fd(t0) + ' au ' + fd(t1), company,
     edited: new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' }), slug: iso(mref).slice(0, 7), mMonth: mref.getMonth() };
 }
@@ -38239,7 +38240,8 @@ function htRender(){
   let st = document.getElementById('htCss'); if(!st){ st = document.createElement('style'); st.id = 'htCss'; document.head.appendChild(st); }
   st.textContent = _htTableCss(false);
   // v5.52.1 — même présentation que le PDF : bandeau Notybat + tableau clair
-  const head = `<div class="ht-hd"><img src="icons/logo-header-v4.png" alt=""><div class="br">Noty<b>bat</b></div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
+  const _cl = data.settings && data.settings.companyLogo, _br = _htBrand();
+  const head = `<div class="ht-hd"><img src="${_cl && /^data:image\/png/.test(_cl) ? _cl : 'icons/logo-header-v4.png'}" alt="" style="object-fit:contain;"><div class="br">${_br ? escapeHtml(_br) : 'Noty<b>bat</b>'}</div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
   document.getElementById('htWrap').innerHTML = '<div class="ht-doc">' + head + h + '<p class="ht-lg">Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.</p></div>';
   const miss = m.people.reduce((a, r) => a + (r.noZone || 0), 0);
   document.getElementById('htNote').innerHTML = '' +
@@ -38256,7 +38258,8 @@ async function _htEnsureExcel(){
 async function _htImg(url){
   try{ const r = await fetch(url); if(!r.ok) return null; const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
 }
-async function _htLogo(){ return _htImg('icons/logo-header-v4.png'); }
+async function _htLogo(){ const cl = data.settings && data.settings.companyLogo; if(cl && /^data:image\/png/.test(cl)) return cl; return _htImg('icons/logo-header-v4.png'); }   // v5.56.0 — logo de l'entreprise
+function _htBrand(){ return (data.settings && data.settings.companyLabel) || ''; }
 /* Image posée DANS une cellule (ancrage début/fin : fiable dans Excel, LibreOffice, Google Sheets) */
 /* Icône centrée dans une cellule : positions données directement en EMU (nativeCol/RowOff),
    car ExcelJS calcule mal les fractions de colonne/ligne. Ancrage début/fin (twoCellAnchor), valide dans Excel. */
@@ -38289,7 +38292,7 @@ async function _htExcelBlob(){
   merge(1, 1, 2, 1); merge(1, 2, 2, 2); merge(1, C0, 1, last); merge(2, C0, 2, last);
   _htPlace(ws, logoId, 1, 1, 30, 5, 28);
   const br = ws.getCell(1, 2);
-  br.value = { richText:[ { text:'Noty', font:{ bold:true, size:17, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:17, color:{ argb:'FF' + HT_OR } } } ] };
+  br.value = _htBrand() ? { richText:[ { text:_htBrand(), font:{ bold:true, size:15, color:{ argb:'FFFFFFFF' } } } ] } : { richText:[ { text:'Noty', font:{ bold:true, size:17, color:{ argb:'FFFFFFFF' } } }, { text:'bat', font:{ bold:true, size:17, color:{ argb:'FF' + HT_OR } } } ] };
   br.alignment = { vertical:'middle', indent:1 };
   const t = ws.getCell(1, C0); t.value = 'Heures du mois — ' + _ht.month;
   t.font = { bold:true, size:13, color:{ argb:'FFFFFFFF' } }; t.alignment = { horizontal:'right', vertical:'bottom', indent:1 };
@@ -38407,8 +38410,8 @@ async function _htPdfBlob(){
   // En-tête
   doc.setFillColor(...rgb(HT_NAVY)); doc.rect(0, 0, W, 17 * k, 'F'); doc.setFillColor(...rgb(HT_OR)); doc.rect(0, 17 * k, W, 0.9, 'F');
   let x0 = M; if(logo){ try{ doc.addImage(logo, 'PNG', M, 2.5 * k, 12 * k, 12 * k); x0 = M + 15 * k; }catch(e){} }
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(15 * k); doc.setTextColor(255, 255, 255); T('Noty', x0, 11 * k);
-  const wN = doc.getTextWidth('Noty'); doc.setTextColor(...rgb(HT_OR)); T('bat', x0 + wN, 11 * k);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15 * k); doc.setTextColor(255, 255, 255);
+  if(_htBrand()) T(_htBrand(), x0, 11 * k); else { T('Noty', x0, 11 * k); const wN = doc.getTextWidth('Noty'); doc.setTextColor(...rgb(HT_OR)); T('bat', x0 + wN, 11 * k); }
   doc.setTextColor(255, 255, 255); doc.setFontSize(11 * k); T('Heures du mois — ' + _ht.month, W - M, 8.5 * k, { align:'right' });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5 * k); doc.setTextColor(200, 208, 220);
   T((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited, W - M, 13.5 * k, { align:'right' });
@@ -40478,7 +40481,7 @@ async function _trajetCfgPush(){
   try{
     const res = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ user_id:TRAJET_CFG_KEY, updated_at:new Date().toISOString(),
-        data: JSON.stringify({ depotAddress:st.depotAddress || '', depotCoords:st.depotCoords || null, trajetBareme:st.trajetBareme || [], cfg:st.companyCfg || null, at:st.trajetCfgAt }) }) });
+        data: JSON.stringify({ depotAddress:st.depotAddress || '', depotCoords:st.depotCoords || null, trajetBareme:st.trajetBareme || [], cfg:st.companyCfg || null, brandLogo:(st.companyCfg && st.companyCfg.brand && st.companyCfg.brand.hasLogo && st.companyLogo) || '', at:st.trajetCfgAt }) }) });
     return !!(res && res.ok);
   }catch(e){ return false; }
 }
@@ -40497,7 +40500,7 @@ async function trajetEnsure(force){
           st.depotAddress = r.depotAddress || '';
           st.depotCoords = r.depotCoords || (depotChanged ? null : st.depotCoords);
           if(Array.isArray(r.trajetBareme) && r.trajetBareme.length) st.trajetBareme = r.trajetBareme;
-          if(r.cfg){ st.companyCfg = r.cfg; try{ if(window.OB && OB.cfgApply) OB.cfgApply(); }catch(e){} }   // v5.54.0 — choix du patron (zones, véhicule perso, heures)
+          if(r.cfg){ st.companyCfg = r.cfg; if(r.brandLogo) st.companyLogo = r.brandLogo; try{ if(window.OB && OB.cfgApply) OB.cfgApply(); }catch(e){} }   // v5.54.0 — choix du patron (zones, véhicule perso, heures)
           st.trajetCfgAt = ra || new Date().toISOString();
           if(depotChanged){ (data.sites || []).forEach(s => { if(s && s.address){ s.trajetZone = null; s.trajetDistanceKm = null; } }); _trajetAutoFailed.clear(); }
           else _trajetRezoneFromKm();
@@ -50951,9 +50954,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.55.0';
+const APP_VERSION = '5.56.0';
 
 const CHANGELOG = [
+  {
+    version: '5.56.0',
+    date: '26/10/2026',
+    entries: [
+      { icon: '✅', text: "La secrétaire valide les absences à la place du patron (réglable) : bouton « Valider les congés » dans l'e-mail, qui ouvre directement la demande dans l'appli. L'ouvrier reçoit la notification « Absence acceptée ». Le patron peut toujours valider lui aussi." },
+      { icon: '📧', text: "E-mails automatiques : adresse du secrétariat (obligatoire, remplie par le patron) + adresses « en copie »." },
+      { icon: '📄', text: "PDF des demandes d'absence : plus de mention « en attente de validation » ; la signature de la secrétaire apparaît quand c'est elle qui valide." },
+      { icon: '🏢', text: "Paramètres › Mon entreprise (patron) : logo et nom de l'entreprise, partagés à toute l'équipe et utilisés sur les PDF, l'Excel des heures et les documents." }
+    ]
+  },
   {
     version: '5.55.0',
     date: '26/10/2026',
@@ -88392,6 +88405,7 @@ async function _absFetch(){
 function _absComputeStatus(r){
   if(r.status === 'refused' || r.status === 'cancelled') return r.status;
   const need = Array.isArray(r.needs) ? r.needs : ['patron'];
+  if(r.approvals && r.approvals.patron) return 'approved';   // v5.56.0 — l'accord du patron suffit toujours
   return need.every(k => r.approvals && r.approvals[k]) ? 'approved' : 'pending';
 }
 function _absMergeOne(a, b){
@@ -88630,8 +88644,9 @@ async function absSubmit(){
   if(!sig){ showToast('Signe ta demande'); return; }
   const reg = await _absRegistry();
   let needs = ['patron'];
-  if(_absIdsByRole(reg, 'comptable').length) needs.push('comptable');
+  if(_absIdsByRole(reg, 'comptable').length) needs = (((window._rwCfg && _rwCfg().mail) || {}).secValidates === false) ? ['patron', 'comptable'] : ['comptable'];   // v5.56.0 — la secrétaire valide à la place du patron
   needs = needs.filter(k => k !== me.role);
+  if(!needs.length && me.role === 'comptable') needs = ['patron'];   // la demande de la secrétaire est validée par le patron
   const now = new Date().toISOString();
   const prev = _absEditId ? (_absList || []).find(x => x.id === _absEditId) : null;
   if(_absEditId && (!prev || prev.status !== 'pending')){ showToast('Cette demande a été traitée entre-temps : elle ne peut plus être modifiée'); closeModal('absReq'); _absEditId = null; absRender(); return; }
@@ -89325,16 +89340,13 @@ async function _absPdfPage(doc, r, logo){
   y += 18;
   const ap = r.approvals || {}, resp = ap.patron || ap.comptable;
   doc.setFont('helvetica', 'bold'); doc.text("Signature de l'intéressé(e)", 22, y); doc.text('Signature du responsable hiérarchique :', 118, y);
-  doc.setFont('helvetica', 'normal'); doc.text('Le : ' + _absAtTxtFull(r.createdAt), 22, y + 7); doc.text('Le : ' + (ap.patron ? _absAtTxtFull(ap.patron.at) : ''), 118, y + 7);
+  doc.setFont('helvetica', 'normal'); doc.text('Le : ' + _absAtTxtFull(r.createdAt), 22, y + 7); doc.text('Le : ' + (resp ? _absAtTxtFull(resp.at) : ''), 118, y + 7);
   _absPdfFit(doc, await _absImg(r.sigWorker), 22, y + 10, 60, 24);
-  if(ap.patron){ _absPdfFit(doc, await _absImg(ap.patron.sig), 118, y + 10, 60, 24); doc.setFontSize(8.5); doc.text(String(ap.patron.name || ''), 118, y + 38); }
-  if(ap.comptable){ const yy = y + 46; doc.setFontSize(10.5); doc.setFont('helvetica', 'bold'); doc.text('Visa comptabilité :', 118, yy); doc.setFont('helvetica', 'normal'); doc.text('Le : ' + _absAtTxtFull(ap.comptable.at), 118, yy + 7); _absPdfFit(doc, await _absImg(ap.comptable.sig), 118, yy + 10, 60, 20); }
-  if(r.status === 'pending' && (r.approvals || {}).patron){   // v5.41.456 — signée par le patron, visa compta à venir
-    doc.setTextColor(120, 120, 120); doc.setFont('helvetica', 'italic'); doc.setFontSize(9);
-    doc.text('Validée et signée par le responsable · visa comptabilité en attente', W / 2, 282, { align:'center' }); doc.setTextColor(0, 0, 0);
-  } else if(r.status !== 'approved'){
+  if(resp){ _absPdfFit(doc, await _absImg(resp.sig), 118, y + 10, 60, 24); doc.setFontSize(8.5); doc.text(String(resp.name || '') + (resp === ap.comptable ? ' (secrétariat)' : ''), 118, y + 38); }
+  if(ap.comptable && ap.patron){ const yy = y + 46; doc.setFontSize(10.5); doc.setFont('helvetica', 'bold'); doc.text('Visa comptabilité :', 118, yy); doc.setFont('helvetica', 'normal'); doc.text('Le : ' + _absAtTxtFull(ap.comptable.at), 118, yy + 7); _absPdfFit(doc, await _absImg(ap.comptable.sig), 118, yy + 10, 60, 20); }
+  if(r.status === 'refused' || r.status === 'cancelled'){   // v5.56.0 — plus de mention « en attente de validation »
     doc.setTextColor(200, 40, 40); doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
-    doc.text(r.status === 'refused' ? 'DEMANDE REFUSÉE' : r.status === 'cancelled' ? 'DEMANDE ANNULÉE' : 'EN ATTENTE DE VALIDATION', W / 2, 282, { align:'center' });
+    doc.text(r.status === 'refused' ? 'DEMANDE REFUSÉE' : 'DEMANDE ANNULÉE', W / 2, 282, { align:'center' });
     doc.setTextColor(0, 0, 0);
   }
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(120, 120, 120);
@@ -97126,7 +97138,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 
 </script>
 <script>
-/* ═══ MODULE — v5.55.0 — E-mails automatiques de l'entreprise (demande d'absence signée + réponse) ═══
+/* ═══ MODULE — v5.55.0 / v5.56.0 — E-mails automatiques + logo de l'entreprise de l'entreprise (demande d'absence signée + réponse) ═══
    Le patron enregistre la ou les adresses (secrétaire…) dans Paramètres › Mon entreprise.
    Le serveur (notybat-onboard, op « mail_doc ») écrit lui-même le texte et n'envoie qu'aux adresses
    enregistrées pour l'entreprise : impossible d'envoyer un mail libre à n'importe qui. */
@@ -97153,7 +97165,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       const slug = OB.slug(r.name || 'salarie') || 'salarie';
       const me = _absMe();
       await OB.api({ op:'mail_doc', kind: kind === 'reply' ? 'absence_reply' : 'absence', company:{ code:coCode(), name:coName() }, ccSelf: kind === 'request' && !!m.copyWorker,
-        doc:{ rwoodId:r.authId, name:r.name, role:r.role, type:r.type, label:(ABS_TYPES[r.type] || {}).label || '', from:r.from, to:r.to, days:r.days, recupHours:r.recupHours || '',
+        doc:{ id:r.id, rwoodId:r.authId, name:r.name, role:r.role, type:r.type, label:(ABS_TYPES[r.type] || {}).label || '', from:r.from, to:r.to, days:r.days, recupHours:r.recupHours || '',
           status:r.status, by: kind === 'reply' ? (me.name || me.authId) : '', reason: r.refusal && r.refusal.reason || '' },
         filename:'demande-absence-' + slug + '-' + r.from + '.pdf', pdf: await OB.blobToB64(blob) });
       if(kind === 'request') showToast('E-mail envoyé à ' + (m.label || 'la secrétaire'));
@@ -97184,16 +97196,16 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(!el){ el = document.createElement('div'); el.id = 'obMailCard'; const cl = OB.$('obClauseCard'); if(cl && cl.nextSibling) host.insertBefore(el, cl.nextSibling); else host.appendChild(el); }
     const m = mailCfg();
     el.innerHTML = `<div class="prm-sec">E-mails automatiques</div><div class="card">
-      <div class="ob-hint" style="margin:0 0 8px;">${IC('email', 's')} Quand un salarié signe et envoie sa demande d'absence, le PDF signé part tout seul par e-mail à ces adresses (secrétaire…).</div>
+      <div class="ob-hint" style="margin:0 0 8px;">${IC('email', 's')} Quand un salarié signe et envoie sa demande d'absence, le PDF signé part tout seul par e-mail au secrétariat, avec un bouton « Valider les congés ».</div>
       <label class="ob-ck"><input type="checkbox" id="obMailOn" ${m.on ? 'checked' : ''}><span><b>Activer les e-mails automatiques</b></span></label>
-      <div class="ob-f"><label>Adresse(s) qui reçoivent les e-mails</label><input type="text" id="obMailTo" value="${E((m.to || []).join(', '))}" placeholder="secretariat@exemple.fr"
-        style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
-      <div class="ob-f"><label>Nom affiché (facultatif)</label><input type="text" id="obMailLabel" value="${E(m.label || '')}" placeholder="Ex : la secrétaire"
-        style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
+      <div class="ob-f"><label>Adresse e-mail du secrétariat *</label><input type="text" id="obMailTo" value="${E((m.to || []).join(', '))}" placeholder="secretariat@exemple.fr" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
       <div id="obMailSugg"></div>
-      <label class="ob-ck"><input type="checkbox" id="obMailReq" ${m.absReq !== false ? 'checked' : ''}><span>Demandes d'absence signées</span></label>
-      <label class="ob-ck"><input type="checkbox" id="obMailReply" ${m.absReply !== false ? 'checked' : ''}><span>Réponses (validée / refusée) avec le PDF contre-signé</span></label>
+      <div class="ob-f"><label>Mettre en copie (facultatif, plusieurs adresses séparées par une virgule)</label><input type="text" id="obMailCc" value="${E((m.cc || []).join(', '))}" placeholder="patron@exemple.fr, compta@exemple.fr" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
+      <label class="ob-ck"><input type="checkbox" id="obMailSec" ${m.secValidates !== false ? 'checked' : ''}><span><b>La secrétaire valide les absences à la place du patron</b><small>Elle voit les congés à valider dans l'appli et dans l'e-mail. Le patron peut toujours valider lui aussi.</small></span></label>
+      <label class="ob-ck"><input type="checkbox" id="obMailReq" ${m.absReq !== false ? 'checked' : ''}><span>E-mail à chaque demande d'absence signée</span></label>
+      <label class="ob-ck"><input type="checkbox" id="obMailReply" ${m.absReply !== false ? 'checked' : ''}><span>E-mail quand la demande est validée ou refusée (PDF contre-signé)</span></label>
       <label class="ob-ck"><input type="checkbox" id="obMailCopy" ${m.copyWorker ? 'checked' : ''}><span>Copie de sa demande au salarié (sur son adresse de connexion)</span></label>
+      <div class="ob-f"><label>Nom affiché dans l'appli (facultatif)</label><input type="text" id="obMailLabel" value="${E(m.label || '')}" placeholder="Ex : Marie" style="width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
       <div class="ob-err" id="obMailErr"></div>
       <div style="display:flex;gap:8px;"><button type="button" class="btn btn-primary" style="flex:1;" onclick="OB.mailSave()">Enregistrer</button>
         <button type="button" class="btn btn-outline" onclick="OB.mailTest()">Envoyer un test</button></div></div>`;
@@ -97210,21 +97222,24 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     }catch(e){}
   };
   OB.mailAdd = function(email){ const i = OB.$('obMailTo'); if(!i) return; const v = i.value.trim(); i.value = v ? v + ', ' + email : email; const on = OB.$('obMailOn'); if(on) on.checked = true; OB.mailSugg(); };
+  const splitMails = t => String(t || '').split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
   OB.mailSave = async function(){
     const v = id => OB.$(id);
-    const to = String(v('obMailTo').value || '').split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
-    const bad = to.filter(x => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+    const to = splitMails(v('obMailTo').value), cc = splitMails(v('obMailCc').value).filter(x => !to.includes(x));
+    const bad = to.concat(cc).filter(x => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
     if(bad.length){ OB.err('obMailErr', 'Adresse invalide : ' + E(bad.join(', '))); return; }
-    if(v('obMailOn').checked && !to.length){ OB.err('obMailErr', 'Indique au moins une adresse.'); return; }
-    if(to.length > 5){ OB.err('obMailErr', '5 adresses maximum.'); return; }
-    const m = { on:v('obMailOn').checked, to, label:String(v('obMailLabel').value || '').trim().slice(0, 40), absReq:v('obMailReq').checked, absReply:v('obMailReply').checked, copyWorker:v('obMailCopy').checked };
+    if(v('obMailOn').checked && !to.length){ OB.err('obMailErr', 'Indique l\u2019adresse e-mail du secrétariat.'); return; }
+    if(to.length > 3){ OB.err('obMailErr', '3 adresses maximum pour le secrétariat.'); return; }
+    if(cc.length > 5){ OB.err('obMailErr', '5 adresses maximum en copie.'); return; }
+    const m = { on:v('obMailOn').checked, to, cc, label:String(v('obMailLabel').value || '').trim().slice(0, 40), secValidates:v('obMailSec').checked,
+      absReq:v('obMailReq').checked, absReply:v('obMailReply').checked, copyWorker:v('obMailCopy').checked };
     OB.err('obMailErr', '');
     try{
-      await OB.api({ op:'mail_set', company:{ code:coCode(), name:coName() }, to:m.on ? to : [] });
+      await OB.api({ op:'mail_set', company:{ code:coCode(), name:coName() }, to:m.on ? to : [], cc:m.on ? cc : [] });
       const st = data.settings; st.companyCfg = st.companyCfg || { v:1, at:new Date().toISOString() }; st.companyCfg.mail = m;
       saveData(); try{ _trajetCfgTouch(); }catch(e){}
       showToast('E-mails automatiques enregistrés');
-    }catch(e){ OB.err('obMailErr', E(e.status === 404 ? 'La fonction serveur notybat-onboard n’est pas encore à jour.' : e.message)); }
+    }catch(e){ OB.err('obMailErr', E(e.status === 404 ? 'La fonction serveur notybat-onboard n\u2019est pas encore à jour.' : e.message)); }
   };
   OB.mailTest = async function(){
     const me = _absMe(), d = new Date(), iso = x => x.toISOString().slice(0, 10);
@@ -97238,8 +97253,70 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       showToast('E-mail de test envoyé');
     }catch(e){ OB.err('obMailErr', E(e.message)); }
   };
+  /* Lien « Valider les congés » de l'e-mail : …/RWOOD/?abs=ID → ouvre la demande à valider */
+  OB.absLink = async function(){
+    let id = null;
+    try{ const q = new URLSearchParams(location.search); id = q.get('abs'); if(id){ sessionStorage.setItem('rwood-abs-link', id); history.replaceState(history.state, '', location.pathname + location.hash); } }catch(e){}
+    try{ id = id || sessionStorage.getItem('rwood-abs-link'); }catch(e){}
+    if(!id) return;
+    const as = document.getElementById('authScreen');
+    if(as && as.style.display && as.style.display !== 'none'){ setTimeout(OB.absLink, 4000); return; }   // pas encore connecté : on attend
+    try{ sessionStorage.removeItem('rwood-abs-link'); }catch(e){}
+    try{
+      goTo('absences');
+      await _absLoad(true);
+      const r = (_absList || []).find(x => x.id === id);
+      if(!r){ showToast('Demande introuvable (déjà supprimée ?)'); return; }
+      if(r.status !== 'pending'){ showToast('Cette demande est déjà ' + (r.status === 'approved' ? 'validée' : r.status === 'refused' ? 'refusée' : 'annulée')); absRender(); return; }
+      if(!_absIsValidator()){ showToast('Réservé au patron et à la secrétaire'); return; }
+      absOpenDecide(id, true);
+    }catch(e){ console.warn('[abs] lien', e); }
+  };
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(OB.absLink, 3500)); else setTimeout(OB.absLink, 3500);
+  /* ── Logo et nom de l'entreprise (patron) : utilisés sur tous les PDF / Excel, partagés à toute l'équipe ── */
+  OB.brandApply = function(){
+    try{ const b = (_rwCfg().brand) || null, st = data.settings; if(!b) return;
+      if(b.hasLogo === false) delete st.companyLogo;
+      if(b.label){ st.companyLabel = b.label; window._rwCoName = b.label; } else delete st.companyLabel;
+    }catch(e){}
+  };
+  const _ca = OB.cfgApply;
+  OB.cfgApply = function(){ const r = _ca.apply(this, arguments); OB.brandApply(); return r; };
+  OB.brandCard = function(){
+    const host = OB.$('rwCoBody'); if(!host || !(isPatron() || OB.isDev())) return;
+    let el = OB.$('obBrandCard');
+    if(!el){ el = document.createElement('div'); el.id = 'obBrandCard'; const mc = OB.$('obMailCard'); if(mc) host.insertBefore(el, mc); else host.appendChild(el); }
+    const st = data.settings, lg = st.companyLogo, lb = st.companyLabel || coName();
+    el.innerHTML = `<div class="prm-sec">Logo et nom sur les documents</div><div class="card">
+      <div class="ob-hint" style="margin:0 0 8px;">${IC('documents', 's')} Ton logo et le nom de ton entreprise apparaissent sur les PDF, l'Excel des heures et les documents de l'appli, pour toute l'équipe.</div>
+      <label class="ob-logo-pick"><span class="bx" style="background:#fff;width:64px;height:64px;">${lg ? `<img src="${lg}" alt="">` : IC('appareil-photo')}</span>
+        <span class="ob-hint" style="margin:0;">${lg ? 'Changer le logo' : 'Ajouter le logo de l\u2019entreprise'}<br><small>PNG ou JPG, fond transparent conseillé</small></span>
+        <input type="file" accept="image/*" style="display:none;" onchange="OB.brandLogo(this)"></label>
+      ${lg ? '<button type="button" class="ob-x" onclick="OB.brandSave(\'\', null)">Retirer le logo</button>' : ''}
+      <div class="ob-f" style="margin-top:10px;"><label>Nom affiché sur les documents</label><div style="display:flex;gap:6px;"><input type="text" id="obBrandLabel" maxlength="60" value="${E(lb)}" placeholder="Ex : Charpente Dupont"
+        style="flex:1;min-width:0;padding:11px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"><button type="button" class="btn btn-primary" onclick="OB.brandSave(null, document.getElementById('obBrandLabel').value)">OK</button></div></div></div>`;
+  };
+  OB.brandLogo = function(inp){
+    const f = inp.files && inp.files[0]; if(!f) return;
+    const fr = new FileReader();
+    fr.onload = () => { const im = new Image(); im.onload = () => {
+      let side = 400, out = '';
+      for(let k = 0; k < 3; k++){ const z = Math.min(1, side / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.width * z)); c.height = Math.max(1, Math.round(im.height * z));
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); out = c.toDataURL('image/png'); if(out.length < 160000) break; side = Math.round(side * 0.7); }
+      OB.brandSave(out, null); }; im.src = fr.result; };
+    fr.readAsDataURL(f);
+  };
+  OB.brandSave = function(logo, label){
+    const st = data.settings; st.companyCfg = st.companyCfg || { v:1, at:new Date().toISOString() };
+    const b = Object.assign({}, st.companyCfg.brand || {});
+    if(logo !== null && logo !== undefined){ if(logo) st.companyLogo = logo; else delete st.companyLogo; b.hasLogo = !!logo; b.logoAt = new Date().toISOString(); delete b.logo; }
+    if(label !== null && label !== undefined) b.label = String(label).trim().slice(0, 60);
+    st.companyCfg.brand = b; OB.brandApply(); saveData(); try{ _trajetCfgTouch(); }catch(e){}
+    showToast(logo !== null && logo !== undefined ? (logo ? 'Logo enregistré' : 'Logo retiré') : 'Nom enregistré');
+    OB.brandCard();
+  };
   const _rco = window.rwCoRender;
-  if(typeof _rco === 'function') window.rwCoRender = async function(){ const r = await _rco.apply(this, arguments); try{ OB.mailCard(); }catch(e){} return r; };
+  if(typeof _rco === 'function') window.rwCoRender = async function(){ const r = await _rco.apply(this, arguments); try{ OB.mailCard(); OB.brandCard(); }catch(e){} return r; };
 })();
 </script>
 </body>
