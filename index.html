@@ -37993,13 +37993,37 @@ function _htSiteLabel(ad, e, sites){
 }
 function _htBuild(keys, weeks){
   const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  // v5.60.6 — UNE colonne par personne, fusionnée JOUR PAR JOUR (plus d'addition de deux copies de la même fiche).
+  // Pour chaque jour on prend la meilleure source : 1) le téléphone connecté au compte de la personne,
+  // 2) un téléphone à une seule fiche sans compte, 3) la copie chez un collègue ; à égalité, la plus récente.
+  const _nk = n => String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim().split(' ').sort().join(' ');
+  const wanted = new Set();
+  (_comptableLiveData || []).forEach(device => (device.workers || []).forEach(w => { if(keys.has(_workerKey(device.deviceId, w.id))) wanted.add(_nk(w.name)); }));
+  const groups = new Map();
+  (_comptableLiveData || []).forEach(device => (device.workers || []).forEach(w => {
+    const k = _nk(w.name); if(!k || !wanted.has(k)) return;
+    const acc = !!device.ownerAuthId && ((w.authId && w.authId === device.ownerAuthId) || _nk(w.name) === _nk(device.ownerName));
+    const tier = acc ? 0 : ((device.workers || []).length === 1 ? 1 : 2);
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push({ name:w.name, workerId:w.id, device, role:w.role || '', tier, at:new Date(device.updatedAt || 0).getTime() || 0 });
+  }));
   const workers = [];
-  (_comptableLiveData || []).forEach(device => (device.workers || []).forEach(w => { if(keys.has(_workerKey(device.deviceId, w.id))) workers.push({ name:w.name, workerId:w.id, device, role:w.role || '' }); }));
+  groups.forEach(slots => {
+    slots.sort((a, b) => a.tier - b.tier || b.at - a.at);
+    const PID = '__ht_' + slots[0].workerId, att = {}, seenSite = new Set(), siteList = [];
+    slots.forEach(sl => {
+      const a = (typeof _attendanceWithOverridesForWorker === 'function') ? _attendanceWithOverridesForWorker(sl.device, sl.workerId) : ((sl.device && sl.device.attendance) || {});
+      Object.keys(a || {}).forEach(k => { const ad = a[k], e = ad && ad.workers && ad.workers[sl.workerId]; if(!e || att[k]) return; att[k] = Object.assign({}, ad, { workers:{ [PID]:e } }); });
+      ((sl.device && sl.device.sites) || []).forEach(x => { if(x && x.id && !seenSite.has(x.id)){ seenSite.add(x.id); siteList.push(x); } });
+    });
+    const best = slots[0];
+    workers.push({ name:best.name, workerId:PID, role:best.role, _att:att, device:Object.assign({}, best.device, { sites:siteList }) });
+  });
   workers.sort((a,b) => a.name.localeCompare(b.name, 'fr'));
   const weekKeys = weeks.map(w => iso(w.monday));
   const recap = [], days = [];
   workers.forEach(w => {
-    const att = (typeof _attendanceWithOverridesForWorker === 'function') ? _attendanceWithOverridesForWorker(w.device, w.workerId) : ((w.device && w.device.attendance) || {});
+    const att = w._att || {};
     const sites = ((w.device && w.device.sites) || []).filter(x => x && x.trajetZone).concat(data.sites || []);
     const r = { name:w.name, wk: weekKeys.map(() => ({ h:0, worked:false, abs:{} })), hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0,
       z:_htZ0(true), zp:_htZ0(false), zpAmt:0, perso:0, noZone:0,
@@ -50961,9 +50985,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.60.5';
+const APP_VERSION = '5.60.6';
 
 const CHANGELOG = [
+  {
+    version: '5.60.6',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🛠️', text: "Tableau des heures du mois (PDF / Excel / comptable) : quand la fiche d'une personne existe en plusieurs exemplaires (ancien téléphone, téléphone pas connecté, copie chez le chef), les jours sont fusionnés un par un au lieu d'être additionnés. Fini les heures doublées (ex. 77 h au lieu de 38,5 h)." }
+    ]
+  },
   {
     version: '5.60.5',
     date: '27/10/2026',
