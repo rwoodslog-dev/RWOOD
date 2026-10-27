@@ -31638,12 +31638,12 @@ function _weeksFileSuffix(weekKeys){
 /* Construit un document PDF récap (format identique au récap perso).
    opts: { attendance, sites, name, weekKeys[], signature } → retourne le doc jsPDF. */
 function _buildRecapDoc(jsPDFLib, opts){
-  const { attendance, sites, name, weekKeys, signature } = opts;
+  const { attendance, sites, name, weekKeys, signature } = opts;   // v5.61.6 — opts.doc : ajoute au PDF existant (une feuille par salarié dans un seul fichier)
   const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const fmt = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
   const dayLabels = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
 
-  const doc = new jsPDFLib({ orientation:'landscape', unit:'mm', format:'a4' });
+  const doc = opts.doc || new jsPDFLib({ orientation:'landscape', unit:'mm', format:'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const margin = 10;
@@ -31652,9 +31652,9 @@ function _buildRecapDoc(jsPDFLib, opts){
   let textLeft = margin;
   if(logo){ try{ const p=doc.getImageProperties(logo); let w=24,h=(p.height/p.width)*w; if(h>16){h=16;w=(p.width/p.height)*h;} doc.addImage(logo,'PNG',margin,6,w,h); textLeft=margin+w+4; }catch(e){} }
   doc.setFont('helvetica','bold'); doc.setFontSize(15);
-  doc.text("Récapitulatif d'heures", textLeft, 13);
+  doc.text(opts.title || "Récapitulatif d'heures", textLeft, 13);
   doc.setFont('helvetica','normal'); doc.setFontSize(10);
-  doc.text(name || 'Salarié', textLeft, 20);
+  doc.text((name || 'Salarié') + (opts.sub ? '  ·  ' + opts.sub : ''), textLeft, 20);
 
   const colLabelW = 24;
   const colW = (pageW - margin*2 - colLabelW) / 7;
@@ -31665,7 +31665,10 @@ function _buildRecapDoc(jsPDFLib, opts){
   weekKeys.slice().sort().forEach(wkKey => {
     const rows = ['Chantier','Heures','Panier','Trajet','Voiture','Tâche'];
     const tblH = rowH * (rows.length+1);
-    if(y + tblH + 12 > pageH - 30){ doc.addPage(); y = 18; }
+    if(y + tblH + 8 > pageH - 8){   // v5.61.6 — la page est remplie jusqu'en bas (avant : saut de page dès la 3e semaine, grand vide)
+      doc.addPage(); y = 18;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120); doc.text((name || 'Salarié') + ' — suite', margin, 10); doc.setTextColor(0);
+    }
     const monday = new Date(wkKey + 'T00:00:00');
     const days=[]; for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(d.getDate()+i); days.push(d); }
     const wn = getISOWeekNumber(monday);
@@ -37054,6 +37057,41 @@ function bfPer(p){ _bfPer = p; _bfFrom = _bfTo = null; _bfCmp = false; _bfRender
 function bfNav(d){ if(_bfPer === 'semaine') _bfWk = d === 0 ? 0 : _bfWk + d; else { const m = _bfMonth || new Date(); _bfMonth = d === 0 ? null : new Date(m.getFullYear(), m.getMonth() + d, 1); _bfFrom = _bfTo = null; } _bfRenderAll(); }
 function bfView(v){ _bfView = v; _bfCmp = false; _bfRenderAll(); }
 function _bfRenderAll(){ _bfHeader(); renderComptableFichesContent(_comptableLiveData || []); }
+/* v5.61.6 — « Feuilles d'heures à imprimer » : UN seul PDF papier (A4 paysage), une feuille détaillée par salarié
+   (chantier, heures, panier, trajet, voiture, tâche, jour par jour), logo de l'entreprise en haut à gauche, signature du salarié.
+   Période = celle affichée (semaine, ou mois : semaines dont le jeudi est dans le mois) ; salariés = ceux affichés (filtre « Personne »). */
+async function bfPrintTimesheets(){
+  try{
+    if(!(_comptableLiveData && _comptableLiveData.length)){ showToast('Aucune donnée : touche 🔄 pour actualiser'); return; }
+    if(!window._bfAllW) renderComptableFichesContent(_comptableLiveData || []);
+    const q = _eqNorm(_bfQ);
+    const list = (window._bfAllW || []).filter(aw => !q || _eqNorm(aw.name) === q);
+    let mons = _bfWeeks();
+    if(_bfPer !== 'semaine'){ const m0 = _bfMonth || new Date(); mons = mons.filter(m => { const th = new Date(m); th.setDate(th.getDate() + 3); return th.getMonth() === m0.getMonth() && th.getFullYear() === m0.getFullYear(); }); }
+    const weekKeys = mons.map(m => dateKeyOf(m));
+    if(!list.length || !weekKeys.length){ showToast('Personne à imprimer sur cette période'); return; }
+    showToast('Création des feuilles d\'heures…');
+    if(typeof _qcEnsurePdfLib === 'function') await _qcEnsurePdfLib();
+    const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF; if(!J){ showToast('PDF indisponible'); return; }
+    const m0 = _bfMonth || new Date();
+    const perLbl = _bfPer === 'semaine' ? 'Semaine ' + getISOWeekNumber(mons[0]) : (l => l.charAt(0).toUpperCase() + l.slice(1))(m0.toLocaleDateString('fr-FR', { month:'long', year:'numeric' }));
+    let doc = null, n = 0;
+    for(const aw of list){
+      const att = _attendanceWithOverridesForWorker(aw.device, aw.workerId);
+      const has = weekKeys.some(wk => { const mo = new Date(wk + 'T00:00:00'); for(let i = 0; i < 7; i++){ const d = new Date(mo); d.setDate(mo.getDate() + i); const day = att[dateKeyOf(d)]; if(day && day.workers && day.workers[aw.workerId]) return true; } return false; });
+      if(!has) continue;
+      const dw = ((aw.device && aw.device.workers) || []).find(w => w.id === aw.workerId) || {};
+      const lw = (data.workers || []).find(w => w.id === aw.workerId) || {};
+      if(doc) doc.addPage('a4', 'landscape');
+      doc = _buildRecapDoc(J, { doc, title:"Feuille d'heures", sub:perLbl, attendance:att, sites:(aw.device && aw.device.sites) || data.sites, workerId:aw.workerId, name:aw.name, weekKeys, signature: dw.signature || lw.signature || null });
+      n++;
+    }
+    if(!doc){ showToast('Aucune heure sur cette période'); return; }
+    const slug = _bfPer === 'semaine' ? 'S' + getISOWeekNumber(mons[0]) + '-' + mons[0].getFullYear() : m0.getFullYear() + '-' + String(m0.getMonth() + 1).padStart(2, '0');
+    await saveBlobToDevice(doc.output('blob'), 'feuilles-heures-' + slug + (q ? '-' + _bfQ.replace(/[^a-z0-9]+/gi, '-') : '') + '.pdf', 'application/pdf', ['.pdf']);
+    showToast('✅ ' + n + ' feuille' + (n > 1 ? 's' : '') + ' d\'heures prête' + (n > 1 ? 's' : '') + ' à imprimer');
+  }catch(e){ showToast('❌ PDF : ' + (e && e.message || e)); }
+}
 function _bfHeader(){
   const h = document.getElementById('fichesWeekHeader'); if(!h) return;
   const ws = _bfWeeks(), f = d => d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
@@ -37079,7 +37117,7 @@ function _bfHeader(){
       <button type="button" class="bf-who" id="bfWhoBtn" onclick="bfWhoOpen(event)">${_bfWhoBtnHtml()}</button>
       <span class="rpl-sp"></span>
       <button type="button" class="pl-chip" onclick="refreshComptableLiveFiches(true)" id="comptableRefreshBtn" title="Actualiser">🔄</button><span id="comptableLastSync" style="font-size:11px;color:var(--ink-soft);"></span>
-      <button type="button" class="pl-chip" onclick="openPDFWorkerSelector()">🖨 PDF/Excel du mois</button>
+      <button type="button" class="pl-chip" onclick="bfPrintTimesheets()" title="Feuilles d'heures détaillées, une par salarié, avec sa signature et le logo de l'entreprise">🖨 Feuilles d'heures à imprimer</button>
       <button type="button" class="pl-chip" onclick="openAlertComposer()">📣 Alerte</button>
     </div>
     <button type="button" class="ht-cta" onclick="htGenerateMonth()"><img src="icons/ui/tableau.png" alt=""><span><b>Générer le tableau des heures du mois</b><small>${(() => { const m = _htCtaMonth(); const l = m.toLocaleDateString('fr-FR', { month:'long', year:'numeric' }); return l.charAt(0).toUpperCase() + l.slice(1); })()} · tous les salariés · Excel, PDF, impression</small></span><i>›</i></button>`;
@@ -51210,9 +51248,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.61.5';
+const APP_VERSION = '5.61.6';
 
 const CHANGELOG = [
+  {
+    version: '5.61.6',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🖨', text: "Fiches d'heures (patron, secrétaire) : « PDF/Excel du mois » devient « Feuilles d'heures à imprimer ». Un seul PDF au format papier, une feuille détaillée par salarié (chantier, heures, panier, trajet, tâche, jour par jour), avec le logo de l'entreprise en haut à gauche et la signature du salarié. Période et personne : celles affichées à l'écran. Les pages sont remplies jusqu'en bas (plus de grand vide après la 2e semaine)." }
+    ]
+  },
   {
     version: '5.61.5',
     date: '27/10/2026',
