@@ -38360,6 +38360,10 @@ function _htMergePeople(recap){
   return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 
+/* v5.61.5 — tarifs par zone : trajet (par jour) et supplément véhicule perso (par jour), selon le barème de l'entreprise */
+const _htEur = n => (Math.round((+n || 0) * 100) / 100).toFixed(2).replace('.', ',') + ' €';
+function _htRateT(z){ try{ const rr = getTrajetRates(z); return rr ? _rwTrAmt(rr, 1) : 0; }catch(e){ return 0; } }
+function _htRateP(z){ try{ const rr = getTrajetRates(z); return rr ? _rwTrAmt(rr, 2) - _rwTrAmt(rr, 1) : 0; }catch(e){ return 0; } }
 /* Le modèle : sections + lignes ; chaque cellule = { main, mainColor, sub, subColor, bg } */
 function _htModel(){
   const people = _htMergePeople(_ht.recap);
@@ -38398,15 +38402,20 @@ function _htModel(){
   if(_cf.zonesOn !== false){
   sec('zone', 'Trajets par zone');
   HT_ZONE_KM.forEach(([z, km]) => {
-    const zc = HT_ZONE_COLORS[z];
-    line(null, 'Zone ' + z, km, p => p.z[z] ? { main:p.z[z] + ' j', mainColor:zc, sub: p.zp[z] ? 'dont ' + p.zp[z] + ' en voiture perso' : '', subColor:'2F6FD6', bg:_htLighten(zc, .88) } : {}, { labelColor:zc });
+    const zc = HT_ZONE_COLORS[z], tr = _htRateT(z);
+    line(null, 'Zone ' + z, km + (tr ? ' · ' + _htEur(tr) + '/j' : ''), p => p.z[z] ? { main:p.z[z] + ' j', mainColor:zc, sub: tr ? _htEur(tr * p.z[z]) : '', subColor:'1B2333', bg:_htLighten(zc, .88) } : {}, { labelColor:zc });   // v5.61.5 — km + tarif ; plus de « dont … en voiture perso »
   });
   line('gd', 'Grand déplacement', 'pas de prime de trajet', p => p.z.GD ? { main:p.z.GD + ' j', mainColor:HT_ZONE_COLORS.GD, bg:_htLighten(HT_ZONE_COLORS.GD, .88) } : {}, { labelColor:HT_ZONE_COLORS.GD });
-  line('van', 'Total jours de trajet', '', p => { const n = Object.values(p.z).reduce((a, b) => a + b, 0); return n ? { main:n + ' j' } : {}; }, { big:true });
+  line('van', 'Total jours de trajet', '', p => { const n = Object.values(p.z).reduce((a, b) => a + b, 0); const eur = HT_ZONE_KM.reduce((a, [z]) => a + _htRateT(z) * (p.z[z] || 0), 0); return n ? { main:n + ' j', sub: eur ? _htEur(eur) : '' } : {}; }, { big:true });
   }
   if(_cf.persoOn !== false){
-    if(_cf.zonesOn === false) sec('car', 'Véhicule personnel');
-    line('car', 'Indemnités véhicule personnel', _cf.persoMode === 'perso' ? 'montant fixé par l\u2019entreprise' : 'en plus du trajet (indemnité de transport)', p => p.perso ? { main:p.perso + ' j', mainColor:'2F6FD6', sub: p.zpAmt ? _htNum(Math.round(p.zpAmt * 100) / 100) + ' €' : '', subColor:'2F6FD6', bg:'DCE9FB' } : {});
+    // v5.61.5 — même présentation que « Trajets par zone » : une ligne par zone (km + tarif), jours et montant par salarié
+    sec('car', 'Trajets véhicule personnel');
+    HT_ZONE_KM.forEach(([z, km]) => {
+      const zc = HT_ZONE_COLORS[z], tp = _htRateP(z);
+      line(null, 'Zone ' + z, km + (tp ? ' · ' + _htEur(tp) + '/j' : ''), p => p.zp[z] ? { main:p.zp[z] + ' j', mainColor:'2F6FD6', sub: tp ? _htEur(tp * p.zp[z]) : '', subColor:'1B2333', bg:'DCE9FB' } : {}, { labelColor:zc });
+    });
+    line('car', 'Total véhicule personnel', _cf.persoMode === 'perso' ? 'montant fixé par l\u2019entreprise' : 'en plus du trajet (indemnité de transport)', p => p.perso ? { main:p.perso + ' j', mainColor:'2F6FD6', sub: p.zpAmt ? _htEur(p.zpAmt) : '', subColor:'2F6FD6', bg:'DCE9FB' } : {}, { big:true });
   }
   return { people, rows };
 }
@@ -51201,9 +51210,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.61.4';
+const APP_VERSION = '5.61.5';
 
 const CHANGELOG = [
+  {
+    version: '5.61.5',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🚗', text: "Tableau NotyBat : nouvelle partie « Trajets véhicule personnel », zone par zone comme les trajets (km et tarif devant chaque zone, nombre de jours et montant par salarié), plus le total. Les trajets par zone affichent aussi leur tarif et leur montant ; la mention « dont … en voiture perso » disparaît." }
+    ]
+  },
   {
     version: '5.61.4',
     date: '27/10/2026',
