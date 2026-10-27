@@ -50956,9 +50956,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.60.1';
+const APP_VERSION = '5.60.2';
 
 const CHANGELOG = [
+  {
+    version: '5.60.2',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🖨', text: "PDF du mois (compta) : un salarié dont un ancien compte du même nom avait été supprimé n'était plus proposé. Corrigé." },
+      { icon: '🔎', text: "PDF du mois : la liste indique les salariés inscrits qui n'apparaissent pas, avec la raison (aucune fiche synchronisée, compte supprimé…)." }
+    ]
+  },
   {
     version: '5.60.1',
     date: '27/10/2026',
@@ -64472,7 +64480,9 @@ async function _saveRemovedUsers(list){
 function _isRemovedUser(list, authId, name){
   if(!list || !list.length) return false;
   const id = _rmId(authId), nk = _rmNameKey(name);
-  return list.some(x => (id && x.id && x.id === id) || (nk && x.name && _rmNameKey(x.name) === nk));
+  // v5.60.2 — un nom identique ne suffit plus quand les deux identifiants sont connus et différents
+  // (un ancien compte supprimé cachait le nouveau compte du même nom, ex. dans les PDF de la compta)
+  return list.some(x => (id && x.id && x.id === id) || (nk && x.name && _rmNameKey(x.name) === nk && !(id && x.id && _rmId(x.id) !== id)));
 }
 
 async function _fetchUsersRegistry(){
@@ -97621,6 +97631,40 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     try{ OB.myWorkEmailCard(); OB.workEmailsCard(); OB.tplCard(); }catch(e){}
     return r;
   };
+})();
+</script>
+
+<script id="ob-js6">
+/* v5.60.2 — PDF du mois (compta) : « Un salarié manque ? » — inscrits absents de la liste, avec la raison */
+(function(){
+  const norm = s => (typeof _rmNameKey === 'function') ? _rmNameKey(s) : String(s || '').trim().toLowerCase();
+  async function missingCard(){
+    const list = document.getElementById('pdfWorkerSelectorList'); if(!list) return;
+    let box = document.getElementById('pdfMissing');
+    if(!box){ box = document.createElement('div'); box.id = 'pdfMissing'; box.style.cssText = 'margin-top:10px;font-size:13px;'; list.after(box); }
+    box.innerHTML = '';
+    let reg = [], rm = [];
+    try{ rm = await _fetchRemovedUsers(true) || []; }catch(e){}
+    try{ reg = await _fetchUsersRegistryRaw() || []; }catch(e){}
+    const seen = new Set((_pdfWorkerCandidates || []).map(w => norm(w.name)));
+    const roles = { ouvrier:1, chef:1, conducteur:1, apprenti:1, interimaire:1 };
+    const miss = [], done = new Set();
+    reg.forEach(u => {
+      if(!u || !u.name) return;
+      const k = norm(u.name); if(seen.has(k) || done.has(k)) return;
+      if(u.role && !roles[u.role]) return;          // patron, secrétaire : pas de fiche d'heures
+      done.add(k);
+      const why = _isRemovedUser(rm, u.authId, u.name) ? 'compte supprimé (Dev › Comptes › Comptes supprimés pour le restaurer)'
+        : (u.active === false ? 'compte désactivé' : 'aucune fiche synchronisée : il doit ouvrir Notybat avec du réseau pour envoyer ses pointages');
+      miss.push({ name: u.name, why });
+    });
+    if(!miss.length) return;
+    box.innerHTML = `<div style="padding:10px 12px;border:1px dashed var(--line);border-radius:10px;background:var(--card);">
+      <b>Un salarié manque ? (${miss.length})</b>
+      ${miss.map(m => `<div style="margin-top:6px;"><b>${escapeHtml(m.name)}</b><br><span style="color:var(--ink-soft);">${escapeHtml(m.why)}</span></div>`).join('')}</div>`;
+  }
+  const _r = window.renderPDFWorkerList;
+  if(typeof _r === 'function') window.renderPDFWorkerList = function(){ const out = _r.apply(this, arguments); missingCard(); return out; };
 })();
 </script>
 </body>
