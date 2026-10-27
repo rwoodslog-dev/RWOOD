@@ -50956,9 +50956,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.58.0';
+const APP_VERSION = '5.59.0';
 
 const CHANGELOG = [
+  {
+    version: '5.59.0',
+    date: '27/10/2026',
+    entries: [
+      { icon: '⚡', text: "Validation des congés en un appui depuis l'e-mail : « Valider » ou « Refuser » enregistre la décision dans Notybat sans ouvrir l'appli, puis ouvre l'e-mail de réponse au salarié déjà écrit (modèle de l'entreprise). Le salarié reçoit la notification « Absence acceptée / refusée »." }
+    ]
+  },
   {
     version: '5.58.0',
     date: '27/10/2026',
@@ -96874,7 +96881,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   const role = () => (data && data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
   const isPatron = () => role() === 'patron' || !!(typeof _rwCo !== 'undefined' && _rwCo && _rwCo.me && _rwCo.me.isPatron);
   const coName = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || (data.settings && data.settings.teamName) || 'l’entreprise';
-  const coCode = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || (data.settings && data.settings.companyCode) || '';
+  const coCode = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || (data.settings && (data.settings.companyCode || data.settings._coCode)) || '';
 
   /* ═══ Clause de confidentialité : signature du salarié → contre-signature du patron → PDF ═══ */
   OB.clausesPending = async function(){
@@ -97032,6 +97039,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   /* Branchement sur la lecture de l'entreprise au démarrage */
   const _pn = window._rwPlanNag;
   window._rwPlanNag = function(j){
+    try{ if(j && j.company && j.company.code){ data.settings._coCode = j.company.code; data.settings._coLegacy = !!j.company.legacy; } }catch(e){}   // v5.59.0
     try{ OB.trialApply(j); }catch(e){}
     try{ if(j && j.me && j.me.isPatron && j.pendingCount) OB.notify('Rôle à valider', j.pendingCount + ' demande' + (j.pendingCount > 1 ? 's' : '') + ' de rôle (conducteur / secrétaire) : Paramètres › Mon entreprise', 'pending-' + j.pendingCount + '-' + new Date().toISOString().slice(0, 10)); }catch(e){}
     if(OB.trial && OB.trial.expired) return;
@@ -97197,7 +97205,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 (function(){
   const OB = window.OB, E = OB.E, IC = OB.IC;
   const mailCfg = () => (_rwCfg().mail) || {};
-  const coCode = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || (data.settings && data.settings.companyCode) || '';
+  const coCode = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || (data.settings && (data.settings.companyCode || data.settings._coCode)) || '';
   const coName = () => (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.name) || (data.settings && data.settings.teamName) || '';
   const isPatron = () => ((data.settings && data.settings.myProfile && data.settings.myProfile.role) === 'patron') || !!(typeof _rwCo !== 'undefined' && _rwCo && _rwCo.me && _rwCo.me.isPatron);
 
@@ -97217,6 +97225,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       const slug = OB.slug(r.name || 'salarie') || 'salarie';
       const me = _absMe();
       await OB.api({ op:'mail_doc', kind: kind === 'reply' ? 'absence_reply' : 'absence', company:{ code:coCode(), name:coName() }, ccSelf: kind === 'request' && !!m.copyWorker,
+        legacy: !!((data.settings && data.settings._coLegacy) || (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.legacy) || window._rwGwLegacy),
         doc:{ id:r.id, email: await OB.absWorkerEmail(r), first:r.first || '', rwoodId:r.authId, name:r.name, role:r.role, type:r.type, label:(ABS_TYPES[r.type] || {}).label || '', from:r.from, to:r.to, days:r.days, recupHours:r.recupHours || '',
           status:r.status, by: kind === 'reply' ? (me.name || me.authId) : '', reason: r.refusal && r.refusal.reason || '' },
         filename:'demande-absence-' + slug + '-' + r.from + '.pdf', pdf: await OB.blobToB64(blob) });
@@ -97558,8 +97567,28 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   OB.tplSave = function(){
     data.settings.absMailTpl = { okSubj:OB.$('obTplOkS').value, okBody:OB.$('obTplOkB').value, noSubj:OB.$('obTplNoS').value, noBody:OB.$('obTplNoB').value };
     saveData(); showToast('Modèles enregistrés');
+    const code = (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || data.settings.companyCode || data.settings._coCode || '';
+    if(code) OB.api({ op:'tpl_set', company:{ code }, tpl:data.settings.absMailTpl }).catch(() => {});   // v5.59.0 — aussi pour les réponses depuis l'e-mail
   };
-  OB.tplReset = function(){ delete data.settings.absMailTpl; saveData(); OB.tplCard(); showToast('Modèles d’origine remis'); };
+  OB.tplReset = function(){ delete data.settings.absMailTpl; saveData(); OB.tplCard(); showToast('Modèles d\u2019origine remis');
+    const code = (typeof _rwCo !== 'undefined' && _rwCo && _rwCo.company && _rwCo.company.code) || data.settings.companyCode || data.settings._coCode || '';
+    if(code) OB.api({ op:'tpl_set', company:{ code }, tpl:{} }).catch(() => {}); };
+  /* v5.59.0 — décision prise depuis l'e-mail (ou par un autre appareil) : notification au salarié à la prochaine synchro */
+  const _asy = window.absSync;
+  if(typeof _asy === 'function') window.absSync = async function(){
+    const r0 = await _asy.apply(this, arguments);
+    try{
+      const me = _absMe().authId; let seen = null; try{ seen = JSON.parse(localStorage.getItem('rwood-abs-notified') || 'null'); }catch(e){}
+      const first = !seen; seen = seen || {};
+      (_absList || []).filter(r => r && r.authId === me && (r.status === 'approved' || r.status === 'refused') && seen[r.id] !== r.status).forEach(r => {
+        seen[r.id] = r.status; if(first) return;   // 1re fois : on mémorise sans notifier l'historique
+        const fr = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || '')); return m ? m[3] + '/' + m[2] : d; };
+        OB.notify(r.status === 'approved' ? 'Absence acceptée' : 'Absence refusée', ((ABS_TYPES[r.type] || {}).label || 'Absence') + ' du ' + fr(r.from) + ' au ' + fr(r.to) + (r.status === 'approved' ? ' : validée.' : ' : refusée.'));
+      });
+      localStorage.setItem('rwood-abs-notified', JSON.stringify(seen));
+    }catch(e){}
+    return r0;
+  };
 
   const _rco = window.rwCoRender;
   if(typeof _rco === 'function') window.rwCoRender = async function(){
