@@ -37612,6 +37612,7 @@ function showPDFStep(n){
 }
 
 function renderPDFWorkerList(){
+  try{ _htCoBtnSync(); }catch(e){}   // v5.61.1
   const list = document.getElementById('pdfWorkerSelectorList');
   list.innerHTML = _pdfWorkerCandidates.map((w,i) => `
     <label style="display:flex; align-items:center; gap:12px; padding:10px 12px;
@@ -37727,12 +37728,13 @@ function syncPDFWeeksFromDates(){
 /* MODULE — Tableau salaire mensuel (.xlsx) au format de la secrétaire.
    Colonnes = salariés, lignes = rubriques. Rempli avec les données Notybat ;
    cases inconnues laissées vides pour la comptable. */
-async function generateSalaryXlsx(){
+async function generateSalaryXlsx(opt){
+ opt = (opt && opt.keys) ? opt : null;   // v5.61.1 — appelé depuis le tableau NotyBat : salariés + semaines du tableau
  try {
-  const selectedWorkers = _pdfWorkerCandidates.filter((_,i)=>{ const cb=document.getElementById('pdfCheck_'+i); return cb&&cb.checked; });
+  const selectedWorkers = opt ? [...opt.keys].map(key => ({ key })) : _pdfWorkerCandidates.filter((_,i)=>{ const cb=document.getElementById('pdfCheck_'+i); return cb&&cb.checked; });
   if(!selectedWorkers.length){ showToast('Aucun ouvrier sélectionné'); return; }
-  const allWeeks = _getPDFMonthWeeks();
-  const selectedWeeks = allWeeks.filter((_,i)=>{ const cb=document.getElementById('pdfWeekCheck_'+i); return cb&&cb.checked; });
+  const allWeeks = opt ? [] : _getPDFMonthWeeks();
+  const selectedWeeks = opt ? opt.weeks : allWeeks.filter((_,i)=>{ const cb=document.getElementById('pdfWeekCheck_'+i); return cb&&cb.checked; });
   if(!selectedWeeks.length){ showToast('Sélectionne au moins une semaine'); return; }
 
   // Moteur Excel : ExcelJS (préserve styles/couleurs/fusions du modèle, contrairement à SheetJS Community)
@@ -37850,6 +37852,7 @@ async function generateSalaryXlsx(){
   // sinon : tableau au format Notybat (v5.51.0)
   const useCustom = workers.some(w => resolveColCustom(w.name));
   if(!useCustom){
+    if(opt){ if(opt.blobOnly) return null; await htExcel(); return; }   // v5.61.1 — personne dans le modèle : tableau NotyBat
     _ht = _htBuild(new Set(selectedWorkers.map(s => s.key)), selectedWeeks);
     closeModal('pdfWorkerSelector');
     await htExcel();
@@ -37953,6 +37956,7 @@ async function generateSalaryXlsx(){
   const monthSlug = `${selectedWeeks[0].monday.getFullYear()}-${String(selectedWeeks[0].monday.getMonth()+1).padStart(2,'0')}`;
   const out = await wb.xlsx.writeBuffer();
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  if(opt && opt.blobOnly) return { blob, name:`tableau-salaire-${monthSlug}.xlsx` };   // v5.61.1 — « Envoyer au comptable »
   await saveBlobToDevice(blob, `tableau-salaire-${monthSlug}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']);
   closeModal('pdfWorkerSelector');
   if(unmatched.length){
@@ -38005,6 +38009,41 @@ async function generatePDFFromSelection(){
    Mêmes règles de calcul que le tableau salaire Excel (semaines cochées, 35 h, zones). */
 const HT_NAVY = '0E1524', HT_OR = 'FF8A1E', HT_ZEBRA = 'F4F6FA', HT_LINE = 'DDE3EC';
 let _ht = null;            // { recap, days, weeks, title, period, company }
+/* v5.61.1 — Tableaux PROPRES à une entreprise, mis en place par le dev (clé = code entreprise ; 'BCMAJB' = entreprise d'origine).
+   Sans entrée ici : boutons « Excel NotyBat » / « PDF NotyBat » (tableau NotyBat, sans logo d'entreprise).
+   Avec entrée : « Excel: <nom> » (modèle de l'entreprise) / « PDF: <nom> » (tableau aux couleurs de l'entreprise : logo + nom). */
+const RW_CO_TABLES = { BCMAJB: { name:'Bois Concept', xlsx:'modele_salaire.xlsx' } };
+let _htCoMode = false;   // true pendant un export « à l'entreprise » (logo + nom de l'entreprise)
+function _htCoTable(){
+  let code = '';
+  try{ code = String(window._rwDevAsCompany || (data.settings && data.settings.companyCode) || '').toUpperCase(); }catch(e){}
+  const t = RW_CO_TABLES[code || 'BCMAJB'];
+  return t ? Object.assign({ code: code || 'BCMAJB' }, t) : null;
+}
+function _htExpBtnsHtml(){
+  const co = _htCoTable(), n = co ? escapeHtml(co.name) : '';
+  return co
+    ? `<button class="btn btn-outline btn-sm" onclick="htCoExcel()">📊 Excel: ${n}</button><button class="btn btn-outline btn-sm" onclick="htCoPdf()">📄 PDF: ${n}</button>`
+    : `<button class="btn btn-outline btn-sm" onclick="htExcel()">📊 Excel NotyBat</button><button class="btn btn-outline btn-sm" onclick="htPdf()">📄 PDF NotyBat</button>`;
+}
+function _htCurWeeks(){ return (_ht && _ht.weeks) || []; }
+async function htCoExcel(){
+  if(!_ht || !_htSrc){ showToast('Ouvre d\'abord le tableau'); return; }
+  try{ await generateSalaryXlsx({ keys:_htSrc.keys, weeks:_htCurWeeks() }); }catch(e){ showToast('❌ Excel : ' + (e && e.message || e)); }
+}
+async function htCoPdf(){
+  _htCoMode = true;
+  try{ showToast('Création du PDF…'); const co = _htCoTable() || {}; const b = await _htPdfBlob();
+    await saveBlobToDevice(b, 'heures-' + _ht.slug + '-' + String(co.name || 'entreprise').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.pdf', 'application/pdf', ['.pdf']); }
+  catch(e){ showToast('❌ PDF : ' + (e && e.message || e)); }
+  finally{ _htCoMode = false; }
+}
+function _htCoBtnSync(){
+  const b = document.getElementById('pdfSalaryBtn'); if(!b) return;
+  const co = _htCoTable();
+  b.style.display = co ? '' : 'none';
+  const l = b.querySelector('span'); if(l && co) l.textContent = 'Excel: ' + co.name;
+}
 let _htTab = 'recap', _htSort = { recap:{ k:'name', d:1 }, days:{ k:'date', d:1 } }, _htQ = '', _htWho = '';
 
 function _htSel(){
@@ -38299,8 +38338,9 @@ function htRender(){
   let st = document.getElementById('htCss'); if(!st){ st = document.createElement('style'); st.id = 'htCss'; document.head.appendChild(st); }
   st.textContent = _htTableCss(false);
   // v5.52.1 — même présentation que le PDF : bandeau Notybat + tableau clair
-  const _cl = data.settings && data.settings.companyLogo, _br = _htBrand();
-  const head = `<div class="ht-hd"><img src="${_cl && /^data:image\/png/.test(_cl) ? _cl : 'icons/logo-header-v4.png'}" alt="" style="object-fit:contain;"><div class="br">${_br ? escapeHtml(_br) : 'Noty<b>bat</b>'}</div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
+  // v5.61.1 — tableau NotyBat : logo et nom NotyBat, jamais le logo de l'entreprise
+  const head = `<div class="ht-hd"><img src="icons/logo-header-v4.png" alt="" style="object-fit:contain;"><div class="br">Noty<b>bat</b></div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
+  const _xb = document.getElementById('htExpBtns'); if(_xb) _xb.innerHTML = _htExpBtnsHtml();
   document.getElementById('htWrap').innerHTML = '<div class="ht-doc">' + head + h + '<p class="ht-lg">Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.</p></div>';
   const miss = m.people.reduce((a, r) => a + (r.noZone || 0), 0);
   document.getElementById('htNote').innerHTML = '' +
@@ -38317,8 +38357,8 @@ async function _htEnsureExcel(){
 async function _htImg(url){
   try{ const r = await fetch(url); if(!r.ok) return null; const b = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }catch(e){ return null; }
 }
-async function _htLogo(){ const cl = data.settings && data.settings.companyLogo; if(cl && /^data:image\/png/.test(cl)) return cl; return _htImg('icons/logo-header-v4.png'); }   // v5.56.0 — logo de l'entreprise
-function _htBrand(){ return (data.settings && data.settings.companyLabel) || ''; }
+async function _htLogo(){ const cl = data.settings && data.settings.companyLogo; if(_htCoMode && cl && /^data:image\/png/.test(cl)) return cl; return _htImg('icons/logo-header-v4.png'); }   // v5.56.0 — logo de l'entreprise · v5.61.1 : seulement pour l'export « à l'entreprise », jamais sur le tableau NotyBat
+function _htBrand(){ if(!_htCoMode) return ''; const co = _htCoTable(); return (data.settings && data.settings.companyLabel) || (co && co.name) || (_ht && _ht.company) || ''; }
 /* Image posée DANS une cellule (ancrage début/fin : fiable dans Excel, LibreOffice, Google Sheets) */
 /* Icône centrée dans une cellule : positions données directement en EMU (nativeCol/RowOff),
    car ExcelJS calcule mal les fractions de colonne/ligne. Ancrage début/fin (twoCellAnchor), valide dans Excel. */
@@ -38577,8 +38617,13 @@ function _htTableCss(print){
 async function htShare(){
   try{
     showToast('Préparation des fichiers…');
-    const x = await _htExcelBlob(), p = await _htPdfBlob();
-    const fx = new File([x], 'heures-' + _ht.slug + '.xlsx', { type:x.type }), fp = new File([p], 'heures-' + _ht.slug + '.pdf', { type:'application/pdf' });
+    // v5.61.1 — mêmes fichiers que les boutons : NotyBat, ou ceux de l'entreprise si elle a son propre tableau
+    const co = _htCoTable();
+    let x = null, xName = 'heures-' + _ht.slug + '.xlsx';
+    if(co){ const r = await generateSalaryXlsx({ keys:_htSrc.keys, weeks:_htCurWeeks(), blobOnly:true }); if(r && r.blob){ x = r.blob; xName = r.name; } }
+    if(!x) x = await _htExcelBlob();
+    let p; _htCoMode = !!co; try{ p = await _htPdfBlob(); } finally{ _htCoMode = false; }
+    const fx = new File([x], xName, { type:x.type }), fp = new File([p], 'heures-' + _ht.slug + '.pdf', { type:'application/pdf' });
     if(navigator.canShare && navigator.canShare({ files:[fx, fp] })){
       await navigator.share({ files:[fx, fp], title:'Heures ' + _ht.month, text:'Tableau des heures ' + _ht.month + (_ht.company ? ' — ' + _ht.company : '') });
       return;
@@ -51027,9 +51072,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.61.0';
+const APP_VERSION = '5.61.1';
 
 const CHANGELOG = [
+  {
+    version: '5.61.1',
+    date: '27/10/2026',
+    entries: [
+      { icon: '📊', text: "Tableau des heures (patron, secrétaire) : « Générer le tableau » ouvre le tableau NotyBat, sans le logo de l'entreprise." },
+      { icon: '📥', text: "Exports : « Excel NotyBat » et « PDF NotyBat ». Pour une entreprise qui a son propre tableau (ex. Bois Concept) : « Excel: Bois Concept » (son modèle) et « PDF: Bois Concept » (à ses couleurs). « Envoyer au comptable » envoie les mêmes fichiers." }
+    ]
+  },
   {
     version: '5.61.0',
     date: '27/10/2026',
@@ -91302,8 +91355,8 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generatePDFFromSelection()">
         🖨 Fiches d'heures détaillées (PDF)
       </button>
-      <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="generateSalaryXlsx()">
-        <img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Générer le tableau salaire (Excel)
+      <button class="btn btn-outline btn-block" id="pdfSalaryBtn" style="margin-top:8px;" onclick="generateSalaryXlsx()">
+        <img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> <span>Générer le tableau salaire (Excel)</span>
       </button>
     </div>
   </div>
@@ -91321,8 +91374,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     <div class="ht-bar">
       <div class="ht-act">
         <button class="btn btn-outline btn-sm" onclick="htPrint()">🖨 Imprimer</button>
-        <button class="btn btn-outline btn-sm" onclick="htExcel()">📊 Excel</button>
-        <button class="btn btn-outline btn-sm" onclick="htPdf()">📄 PDF</button>
+        <span id="htExpBtns" style="display:contents;"></span>
         <button class="btn btn-primary btn-sm" onclick="htShare()">📤 Envoyer au comptable</button>
       </div>
     </div>
