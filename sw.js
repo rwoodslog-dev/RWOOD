@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v1211';
+const CACHE_NAME = 'rwood-cache-v1212';
 const ASSETS = [
   './index.html',
   './manifest.json',
@@ -199,7 +199,7 @@ self.addEventListener('fetch', (event) => {
     // Autres ressources (JS inline exclu car dans index.html) : réseau d'abord.
     event.respondWith(
       fetch(event.request, { cache: 'no-cache' })
-        .then((r) => { if(r && r.ok) caches.open(CACHE_NAME).then(c => c.put(event.request, r.clone())); return r; })
+        .then((r) => { if(r && r.ok){ const cp = r.clone(); caches.open(CACHE_NAME).then(c => c.put(event.request, cp)).catch(() => {}); } return r; })   // v5.56.3 — copie faite tout de suite
         .catch(() => caches.match(event.request))
     );
   }
