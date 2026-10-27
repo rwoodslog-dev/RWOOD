@@ -50956,9 +50956,25 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.56.4';
+const APP_VERSION = '5.58.0';
 
 const CHANGELOG = [
+  {
+    version: '5.58.0',
+    date: '27/10/2026',
+    entries: [
+      { icon: '✅', text: "E-mail de demande d'absence : deux boutons « Valider les congés » et « Refuser les congés ». Notybat s'ouvre sur la demande, la décision est enregistrée, puis l'e-mail de réponse au salarié s'ouvre déjà écrit dans la boîte mail de la secrétaire." },
+      { icon: '📝', text: "Modèles de réponse modifiables (validée / refusée) dans Paramètres › Mon entreprise, avec les mots {prenom}, {du}, {au}, {motif}, {raison}…" },
+      { icon: '📇', text: "E-mails des salariés : la secrétaire (ou le patron) renseigne l'adresse de chaque salarié ; chaque salarié peut aussi renseigner la sienne dans Mon entreprise, elle se remplit automatiquement chez la secrétaire." }
+    ]
+  },
+  {
+    version: '5.57.0',
+    date: '27/10/2026',
+    entries: [
+      { icon: '✉️', text: "Confirmation au salarié : après la validation d'une absence (dans l'appli ou depuis l'e-mail), la secrétaire appuie sur « Préparer l'e-mail de confirmation » : sa boîte mail s'ouvre avec le message déjà écrit (« Tes congés du … au … pour le motif … ont été validés »), il ne reste qu'à envoyer." }
+    ]
+  },
   {
     version: '5.56.4',
     date: '27/10/2026',
@@ -96948,6 +96964,11 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
           if(x && sg && sg.clauseAt && !x.clause) x.clause = { at:sg.clauseAt, sig:sg.sig || '' };
           if(x && sg){ if(!x.email && sg.email) x.email = sg.email; if(!x.phone && sg.phone) x.phone = sg.phone; }
           if(x && !x.clauseCs){ const prev = (OB._regPrev || []).find(u => u && u.authId === me); if(prev && prev.clauseCs) x.clauseCs = prev.clauseCs; }
+          /* v5.58.0 — e-mail pour le secrétariat : la saisie la plus récente gagne (salarié ou secrétaire) */
+          if(x){ const prev = (OB._regPrev || []).find(u => u && u.authId === me) || {}, st = data.settings;
+            const loc = st.workEmail || '', locAt = st.workEmailAt || '', pv = prev.workEmail || '', pvAt = prev.workEmailAt || '';
+            if(loc && (!pv || locAt >= pvAt)){ x.workEmail = loc; x.workEmailAt = locAt; x.workEmailBy = me; }
+            else if(pv){ x.workEmail = pv; x.workEmailAt = pvAt; x.workEmailBy = prev.workEmailBy || ''; if(pv !== loc){ st.workEmail = pv; st.workEmailAt = pvAt; } } }
         }
       }catch(e){}
       return orig.apply(this, arguments);
@@ -97196,7 +97217,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       const slug = OB.slug(r.name || 'salarie') || 'salarie';
       const me = _absMe();
       await OB.api({ op:'mail_doc', kind: kind === 'reply' ? 'absence_reply' : 'absence', company:{ code:coCode(), name:coName() }, ccSelf: kind === 'request' && !!m.copyWorker,
-        doc:{ id:r.id, rwoodId:r.authId, name:r.name, role:r.role, type:r.type, label:(ABS_TYPES[r.type] || {}).label || '', from:r.from, to:r.to, days:r.days, recupHours:r.recupHours || '',
+        doc:{ id:r.id, email: await OB.absWorkerEmail(r), first:r.first || '', rwoodId:r.authId, name:r.name, role:r.role, type:r.type, label:(ABS_TYPES[r.type] || {}).label || '', from:r.from, to:r.to, days:r.days, recupHours:r.recupHours || '',
           status:r.status, by: kind === 'reply' ? (me.name || me.authId) : '', reason: r.refusal && r.refusal.reason || '' },
         filename:'demande-absence-' + slug + '-' + r.from + '.pdf', pdf: await OB.blobToB64(blob) });
       if(kind === 'request') showToast('E-mail envoyé à ' + (m.label || 'la secrétaire'));
@@ -97300,15 +97321,50 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     catch(e){ console.warn('[abs] envoi', e); showToast('⚠️ Envoi impossible : ' + (e && e.message || e)); }
     finally{ _absBusy = false; if(btn && document.body.contains(btn)){ btn.disabled = false; btn.innerHTML = btn.dataset.t; } }
   };
+  /* v5.57.0 — e-mail du salarié (pour le modèle « congés validés » prérempli) */
+  OB.absWorkerEmail = async function(r){
+    try{
+      const me = _absMe();
+      if(r.authId === me.authId){
+        const sg = data.settings.signup || {}, mc = (data.contacts || []).find(c => c.role === 'Moi') || {};
+        const gs = (typeof rwGoogleSession === 'function' && rwGoogleSession()) || {};
+        return sg.email || mc.email || (gs.user && gs.user.email) || '';
+      }
+      const reg = await _absRegistry(); const u = (reg || []).find(x => x && x.authId === r.authId);
+      return (u && u.email) || '';
+    }catch(e){ return ''; }
+  };
+  OB.absConfirmMailto = function(r, email){
+    const f = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || '')); return m ? m[3] + '/' + m[2] + '/' + m[1] : String(d || ''); };
+    const t = (ABS_TYPES[r.type] || {}).label || 'absence';
+    const first = r.first || String(r.name || '').split(' ')[0] || '';
+    const subj = (r.type === 'cp' || r.type === 'css' ? 'Tes congés' : 'Ton absence') + ' du ' + f(r.from) + ' au ' + f(r.to) + ' sont validés';
+    const body = 'Bonjour ' + first + ',\n\n' + (r.type === 'cp' || r.type === 'css' ? 'Tes congés' : 'Ton absence') + ' du ' + f(r.from) + ' au ' + f(r.to) + ' inclus'
+      + (r.days ? ' (' + r.days + ' jour' + (r.days > 1 ? 's' : '') + ')' : '') + ' pour le motif « ' + t + ' » ' + (r.type === 'cp' || r.type === 'css' ? 'ont été validés' : 'a été validée') + '.'
+      + (r.back ? '\nRetour prévu le ' + f(r.back) + '.' : '') + '\n\nBonne journée,\n' + ((data.settings && (data.settings.companyLabel || data.settings.teamName)) || '');
+    return 'mailto:' + encodeURIComponent(email || '') + '?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(body);
+  };
+  /* Après la validation dans l'appli : proposer l'e-mail de confirmation prérempli (boîte mail de la secrétaire) */
+  const _adec = window.absDecide;
+  if(typeof _adec === 'function') window.absDecide = async function(){
+    const id = (typeof _absDec !== 'undefined' && _absDec) ? _absDec.id : null;
+    const res = await _adec.apply(this, arguments);
+    try{
+      const r = id && (_absList || []).find(x => x.id === id);
+      if(r && (r.status === 'approved' || r.status === 'refused') && r.authId !== _absMe().authId) OB.absReplyOpen(r);   // v5.58.0 — e-mail de réponse au salarié (modèle)
+    }catch(e){}
+    return res;
+  };
   /* Lien « Valider les congés » de l'e-mail : …/RWOOD/?abs=ID → ouvre la demande à valider */
   OB.absLink = async function(){
     let id = null;
-    try{ const q = new URLSearchParams(location.search); id = q.get('abs'); if(id){ sessionStorage.setItem('rwood-abs-link', id); history.replaceState(history.state, '', location.pathname + location.hash); } }catch(e){}
-    try{ id = id || sessionStorage.getItem('rwood-abs-link'); }catch(e){}
+    let act = 'ok';
+    try{ const q = new URLSearchParams(location.search); id = q.get('abs'); if(id){ sessionStorage.setItem('rwood-abs-link', id); sessionStorage.setItem('rwood-abs-act', q.get('a') === 'no' ? 'no' : 'ok'); history.replaceState(history.state, '', location.pathname + location.hash); } }catch(e){}
+    try{ id = id || sessionStorage.getItem('rwood-abs-link'); act = sessionStorage.getItem('rwood-abs-act') || 'ok'; }catch(e){}
     if(!id) return;
     const as = document.getElementById('authScreen');
     if(as && as.style.display && as.style.display !== 'none'){ setTimeout(OB.absLink, 4000); return; }   // pas encore connecté : on attend
-    try{ sessionStorage.removeItem('rwood-abs-link'); }catch(e){}
+    try{ sessionStorage.removeItem('rwood-abs-link'); sessionStorage.removeItem('rwood-abs-act'); }catch(e){}
     try{
       goTo('absences');
       await _absLoad(true);
@@ -97316,7 +97372,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       if(!r){ showToast('Demande introuvable (déjà supprimée ?)'); return; }
       if(r.status !== 'pending'){ showToast('Cette demande est déjà ' + (r.status === 'approved' ? 'validée' : r.status === 'refused' ? 'refusée' : 'annulée')); absRender(); return; }
       if(!_absIsValidator()){ showToast('Réservé au patron et à la secrétaire'); return; }
-      absOpenDecide(id, true);
+      absOpenDecide(id, act !== 'no');   // v5.58.0 — « Refuser les congés » depuis l'e-mail
     }catch(e){ console.warn('[abs] lien', e); }
   };
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(OB.absLink, 3500)); else setTimeout(OB.absLink, 3500);
@@ -97364,6 +97420,153 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   };
   const _rco = window.rwCoRender;
   if(typeof _rco === 'function') window.rwCoRender = async function(){ const r = await _rco.apply(this, arguments); try{ OB.mailCard(); OB.brandCard(); }catch(e){} return r; };
+})();
+</script>
+<script>
+/* ═══ MODULE — v5.58.0 — Réponse au salarié par e-mail (modèles) + e-mails des salariés pour le secrétariat ═══
+   - « Valider » ou « Refuser » (dans l'e-mail ou dans l'appli) → la demande est mise à jour dans Notybat,
+     puis un e-mail de réponse prérempli (modèle modifiable) s'ouvre dans la boîte mail de la secrétaire.
+   - Paramètres › Mon entreprise : la secrétaire / le patron renseignent l'e-mail de chaque salarié ;
+     chaque salarié peut aussi renseigner le sien. La saisie la plus récente gagne et remplit l'autre côté. */
+(function(){
+  const OB = window.OB, E = OB.E, IC = OB.IC;
+  const role = () => (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const isSec = () => role() === 'comptable';
+  const isPat = () => role() === 'patron' || !!(typeof _rwCo !== 'undefined' && _rwCo && _rwCo.me && _rwCo.me.isPatron);
+  const okMail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || ''));
+  const coLabel = () => (data.settings && (data.settings.companyLabel || data.settings.teamName)) || '';
+
+  /* ── Modèles (enregistrés sur l'appareil de la secrétaire) ── */
+  OB.TPL = {
+    okSubj: 'Ta demande d’absence du {du} au {au} est validée',
+    okBody: 'Bonjour {prenom},\n\nTa demande d’absence du {du} au {au} inclus ({jours}) pour le motif « {motif} » a été validée.\nRetour prévu le {retour}.\n\nBonne journée,\n{entreprise}',
+    noSubj: 'Ta demande d’absence du {du} au {au} n’est pas acceptée',
+    noBody: 'Bonjour {prenom},\n\nTa demande d’absence du {du} au {au} pour le motif « {motif} » n’a pas pu être acceptée.\nRaison : {raison}\n\nN’hésite pas à revenir vers nous pour en parler.\n{entreprise}'
+  };
+  const tpl = () => Object.assign({}, OB.TPL, (data.settings && data.settings.absMailTpl) || {});
+  const fr = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || '')); return m ? m[3] + '/' + m[2] + '/' + m[1] : String(d || ''); };
+  OB.absFill = function(t, r){
+    const first = r.first || String(r.name || '').split(' ')[0] || '';
+    const v = { prenom:first, nom:r.name || '', du:fr(r.from), au:fr(r.to), retour:fr(r.back) || '—', jours:(r.days || 0) + ' jour' + (r.days > 1 ? 's' : ''),
+      motif:(ABS_TYPES[r.type] || {}).label || 'absence', raison:(r.refusal && r.refusal.reason) || '—', entreprise:coLabel() };
+    return String(t || '').replace(/\{(\w+)\}/g, (m, k) => v[k] != null ? v[k] : m);
+  };
+
+  /* ── E-mail du salarié : celui du secrétariat d'abord, sinon celui du compte ── */
+  OB.absWorkerEmail = async function(r){
+    try{
+      const me = _absMe();
+      if(r.authId === me.authId && okMail(data.settings.workEmail)) return data.settings.workEmail;
+      const reg = await _fetchUsersRegistry(); const u = (reg || []).find(x => x && x.authId === r.authId);
+      if(u && okMail(u.workEmail)) return u.workEmail;
+      if(r.authId === me.authId){
+        const sg = data.settings.signup || {}, mc = (data.contacts || []).find(c => c.role === 'Moi') || {}, gs = (typeof rwGoogleSession === 'function' && rwGoogleSession()) || {};
+        return sg.email || mc.email || (gs.user && gs.user.email) || '';
+      }
+      return (u && u.email) || '';
+    }catch(e){ return ''; }
+  };
+
+  /* ── Après « Valider » / « Refuser » : e-mail de réponse prérempli ── */
+  OB.absReplyOpen = async function(r){
+    const ok = r.status === 'approved', T = tpl();
+    const email = await OB.absWorkerEmail(r);
+    const m = document.createElement('div'); m.className = 'ob-modal'; m.id = 'obAbsReply';
+    m.innerHTML = `<div><h2 style="margin:0 0 4px;font-size:18px;">${ok ? 'Absence validée' : 'Absence refusée'}</h2>
+      <p class="ob-sub">${E(r.name)} a reçu la notification dans l'appli. Envoie-lui aussi la réponse par e-mail : le message est prêt, tu peux le modifier.</p>
+      <div class="ob-f"><label>À</label><input type="email" id="obRepTo" value="${E(email)}" placeholder="e-mail du salarié" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
+      <div class="ob-f"><label>Objet</label><input type="text" id="obRepSubj" value="${E(OB.absFill(ok ? T.okSubj : T.noSubj, r))}" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);"></div>
+      <div class="ob-f"><label>Message</label><textarea id="obRepBody" rows="8" style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font:inherit;font-size:14px;">${E(OB.absFill(ok ? T.okBody : T.noBody, r))}</textarea></div>
+      ${email ? '' : '<div class="ob-hint" style="color:var(--wood);">E-mail du salarié inconnu : renseigne-le ici (et dans Paramètres › Mon entreprise › E-mails des salariés).</div>'}
+      <button type="button" class="ob-btn p" id="obRepGo">${IC('email', 's')} Préparer l'e-mail dans ma boîte mail</button>
+      <button type="button" class="ob-btn o" onclick="document.getElementById('obAbsReply').remove()">Pas maintenant</button></div>`;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    document.body.appendChild(m);
+    m.querySelector('#obRepGo').onclick = async () => {
+      const to = String(OB.$('obRepTo').value || '').trim().toLowerCase();
+      if(to && !okMail(to)){ showToast('Adresse e-mail invalide'); return; }
+      if(to && to !== email && (isSec() || isPat())) OB.setWorkEmail(r.authId, to).catch(() => {});   // on retient l'adresse
+      location.href = 'mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(OB.$('obRepSubj').value) + '&body=' + encodeURIComponent(OB.$('obRepBody').value);
+      setTimeout(() => m.remove(), 500);
+    };
+  };
+
+  /* ── Enregistrer l'e-mail d'un salarié dans le registre de l'entreprise ── */
+  OB.setWorkEmail = async function(authId, email){
+    const users = await _fetchUsersRegistry();
+    const u = (users || []).find(x => x && x.authId === authId); if(!u) throw new Error('Compte introuvable');
+    u.workEmail = email; u.workEmailAt = new Date().toISOString(); u.workEmailBy = (data.settings.auth || {}).authId || '';
+    await _saveUsersRegistry(users);
+    if(authId === (data.settings.auth || {}).authId){ data.settings.workEmail = email; data.settings.workEmailAt = u.workEmailAt; saveData(); }
+  };
+
+  /* ── Paramètres › Mon entreprise : cartes ── */
+  OB.workEmailsCard = async function(){
+    const host = OB.$('rwCoBody'); if(!host || !(isSec() || isPat() || OB.isDev())) return;
+    let el = OB.$('obWorkMails');
+    if(!el){ el = document.createElement('div'); el.id = 'obWorkMails'; host.appendChild(el); }
+    el.innerHTML = '<div class="prm-sec">E-mails des salariés (secrétariat)</div><div class="card"><div class="hint">Chargement…</div></div>';
+    let users = [];
+    try{ users = (await _fetchUsersRegistry() || []).filter(u => u && u.authId && u.role !== 'dev').sort((a, b) => String(a.name || a.authId).localeCompare(String(b.name || b.authId), 'fr')); }catch(e){}
+    el.innerHTML = `<div class="prm-sec">E-mails des salariés (secrétariat)</div><div class="card">
+      <div class="ob-hint" style="margin:0 0 8px;">${IC('email', 's')} L'adresse où chaque salarié reçoit les réponses du secrétariat (congés…). Si le salarié la renseigne lui-même, elle apparaît ici automatiquement.</div>
+      ${users.length ? users.map(u => `<div style="padding:8px 0;border-top:1px solid var(--line);"><div style="font-weight:700;font-size:13.5px;">${E(u.name || u.authId)}
+          <span class="hint" style="margin:0;font-weight:400;">${E((ABS_ROLE_LBL && u.role === 'comptable') ? 'secrétaire' : (u.role || ''))}</span></div>
+        <div style="display:flex;gap:6px;margin-top:4px;"><input type="email" data-aid="${E(u.authId)}" value="${E(u.workEmail || '')}" placeholder="${E(u.email || 'e-mail')}"
+          style="flex:1;min-width:0;padding:9px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font-size:13.5px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="OB.workEmailSave(this)">OK</button></div>
+        ${u.workEmail && u.workEmailBy === u.authId ? '<div class="hint" style="margin:2px 0 0;color:var(--green);">Renseigné par le salarié</div>' : ''}</div>`).join('') : '<div class="hint">Aucun compte dans l’entreprise.</div>'}</div>`;
+  };
+  OB.workEmailSave = async function(btn){
+    const inp = btn.previousElementSibling, email = String(inp.value || '').trim().toLowerCase();
+    if(email && !okMail(email)){ showToast('Adresse e-mail invalide'); return; }
+    btn.disabled = true;
+    try{ await OB.setWorkEmail(inp.dataset.aid, email); showToast('E-mail enregistré'); }catch(e){ showToast('⚠️ ' + e.message); }
+    btn.disabled = false;
+  };
+  OB.myWorkEmailCard = function(){
+    const host = OB.$('rwCoBody'); if(!host) return;
+    let el = OB.$('obMyWorkMail');
+    if(!el){ el = document.createElement('div'); el.id = 'obMyWorkMail'; host.appendChild(el); }
+    const st = data.settings;
+    el.innerHTML = `<div class="prm-sec">Mon e-mail pour le secrétariat</div><div class="card">
+      <div class="ob-hint" style="margin:0 0 8px;">${IC('email', 's')} L'adresse où tu veux recevoir les réponses du secrétariat (validation de tes congés…). Elle est transmise automatiquement à la secrétaire.</div>
+      <div style="display:flex;gap:6px;"><input type="email" id="obMyWork" value="${E(st.workEmail || '')}" placeholder="ton.adresse@exemple.fr"
+        style="flex:1;min-width:0;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);">
+        <button type="button" class="btn btn-primary" onclick="OB.myWorkEmailSave()">OK</button></div></div>`;
+  };
+  OB.myWorkEmailSave = async function(){
+    const email = String((OB.$('obMyWork') || {}).value || '').trim().toLowerCase();
+    if(email && !okMail(email)){ showToast('Adresse e-mail invalide'); return; }
+    const st = data.settings; st.workEmail = email; st.workEmailAt = new Date().toISOString(); saveData();
+    try{ await pushMyUserRegistration(); showToast('E-mail enregistré : la secrétaire le voit'); }catch(e){ showToast('E-mail enregistré'); }
+  };
+  OB.tplCard = function(){
+    const host = OB.$('rwCoBody'); if(!host || !(isSec() || isPat() || OB.isDev())) return;
+    let el = OB.$('obTplCard');
+    if(!el){ el = document.createElement('div'); el.id = 'obTplCard'; host.appendChild(el); }
+    const T = tpl(), ta = 'width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg-elev);color:var(--ink);font:inherit;font-size:13.5px;';
+    el.innerHTML = `<div class="prm-sec">Modèles de réponse (congés)</div><div class="card">
+      <div class="ob-hint" style="margin:0 0 8px;">Après « Valider » ou « Refuser », ce message s'ouvre dans ta boîte mail, prêt à envoyer. Mots remplacés automatiquement : {prenom} {nom} {du} {au} {retour} {jours} {motif} {raison} {entreprise}.</div>
+      <div class="ob-f"><label>Validée : objet</label><input type="text" id="obTplOkS" value="${E(T.okSubj)}" style="${ta}"></div>
+      <div class="ob-f"><label>Validée : message</label><textarea id="obTplOkB" rows="6" style="${ta}">${E(T.okBody)}</textarea></div>
+      <div class="ob-f"><label>Refusée : objet</label><input type="text" id="obTplNoS" value="${E(T.noSubj)}" style="${ta}"></div>
+      <div class="ob-f"><label>Refusée : message</label><textarea id="obTplNoB" rows="6" style="${ta}">${E(T.noBody)}</textarea></div>
+      <div style="display:flex;gap:8px;"><button type="button" class="btn btn-primary" style="flex:1;" onclick="OB.tplSave()">Enregistrer</button>
+        <button type="button" class="btn btn-outline" onclick="OB.tplReset()">Modèles d'origine</button></div></div>`;
+  };
+  OB.tplSave = function(){
+    data.settings.absMailTpl = { okSubj:OB.$('obTplOkS').value, okBody:OB.$('obTplOkB').value, noSubj:OB.$('obTplNoS').value, noBody:OB.$('obTplNoB').value };
+    saveData(); showToast('Modèles enregistrés');
+  };
+  OB.tplReset = function(){ delete data.settings.absMailTpl; saveData(); OB.tplCard(); showToast('Modèles d’origine remis'); };
+
+  const _rco = window.rwCoRender;
+  if(typeof _rco === 'function') window.rwCoRender = async function(){
+    const r = await _rco.apply(this, arguments);
+    try{ OB.myWorkEmailCard(); OB.workEmailsCard(); OB.tplCard(); }catch(e){}
+    return r;
+  };
 })();
 </script>
 </body>
