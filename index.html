@@ -37681,7 +37681,9 @@ function _getPDFMonthWeeks(){
   }
   mondaysSet.add(localKey(getMondayOfWeek(lastDay,0)));
 
-  return [...mondaysSet].sort().map(s => {
+  // v5.61.3 — paie : une semaine appartient au mois de son JEUDI (règle ISO, comme la compta : septembre 2026 = S36 → S39,
+  // octobre = S40 → S44). Avant, la semaine à cheval (ex. S40 du 28/09 au 04/10) était comptée dans les deux mois.
+  return [...mondaysSet].sort().filter(s => { const th = new Date(s+'T00:00:00'); th.setDate(th.getDate()+3); return th.getMonth() === month && th.getFullYear() === year; }).map(s => {
     const mon = new Date(s+'T00:00:00');
     const sun = new Date(mon); sun.setDate(sun.getDate()+6);
     const wn  = getISOWeekNumber(mon);
@@ -37815,7 +37817,7 @@ async function generateSalaryXlsx(opt){
     });
     const totalMois = perWeekHours.reduce((a,b)=>a+b,0);
     // Heures sup à payer = somme des écarts (heures-35) des semaines travaillées (cohérent avec les cases hebdo affichées)
-    const heuresSup = perWeekHours.reduce((a,h,i)=> a + (perWeekWorked[i] ? (h - 35) : 0), 0);
+    const heuresSup = perWeekHours.reduce((a,h,i)=> a + (perWeekWorked[i] ? Math.max(0, h - 35) : 0), 0);   // v5.61.2 — seulement au-delà de 35 h
     // regrouper CP et CSS en périodes (première/dernière date consécutive)
     const groupPeriods = arr => { if(!arr.length) return []; arr.sort(); const p=[]; let s=arr[0],prev=arr[0]; for(let i=1;i<arr.length;i++){ const d1=new Date(prev),d2=new Date(arr[i]); if((d2-d1)/86400000>1){ p.push([s,prev]); s=arr[i]; } prev=arr[i]; } p.push([s,prev]); return p; };
     return { perWeekHours, perWeekWorked, perWeekAbs, totalMois, heuresSup, paniers, zones, zonesPerso, cpP:groupPeriods(cp), cssP:groupPeriods(css), absAutre };
@@ -37837,7 +37839,7 @@ async function generateSalaryXlsx(opt){
   // pré-normaliser les clés du modèle une fois
   const normModel = Object.entries(colByName).map(([k,col])=>[norm(k),col]);
   // Colonnes du modèle → nom normalisé (secours par correspondance souple)
-  function resolveColCustom(name){
+  let resolveColCustom = function(name){
     const n = norm(name);
     for(const [mn,col] of normModel){ if(mn===n) return col; }
     // correspondance souple : tous les mots du nom Notybat présents dans un nom modèle
@@ -37850,6 +37852,19 @@ async function generateSalaryXlsx(opt){
 
   // Modèle sur mesure (option « modèle comptable ») seulement si au moins un salarié y figure déjà ;
   // sinon : tableau au format Notybat (v5.51.0)
+  // v5.61.3 — les colonnes viennent d'abord des NOMS ÉCRITS EN LIGNE 1 DU MODÈLE (un nouveau salarié ajouté par la compta,
+  // ex. « BERNARDO Vasco », est reconnu sans toucher au code) ; la liste fixe ci-dessus sert de secours.
+  let templateBuf0 = null, hdrMap = [];
+  try{ const resp0 = await fetch('modele_salaire.xlsx', { cache:'no-store' }); if(resp0.ok) templateBuf0 = await resp0.arrayBuffer(); }catch(e){}
+  if(templateBuf0){ try{ const wb0 = new ExcelJS.Workbook(); await wb0.xlsx.load(templateBuf0.slice(0)); const ws0 = wb0.getWorksheet('TABLEAUSALAIRE') || wb0.worksheets[0];
+    if(ws0){ const r1 = ws0.getRow(1); for(let c = 3; c <= Math.max(3, ws0.columnCount || 0); c++){ let v = r1.getCell(c).value; if(v && v.richText) v = v.richText.map(t => t.text).join(''); const n = norm(String(v || '').replace(/\n/g, ' ')); if(n) hdrMap.push([n, ws0.getColumn(c).letter]); } } }catch(e){} }
+  const _rc0 = resolveColCustom;
+  resolveColCustom = function(name){
+    const n = norm(name), words = n.split(' ').filter(Boolean);
+    for(const [mn, col] of hdrMap) if(mn === n || (words.length && mn.split(' ').sort().join(' ') === words.slice().sort().join(' '))) return col;
+    for(const [mn, col] of hdrMap){ const mw = mn.split(' '); if(words.length && words.every(w => mw.some(x => x === w || (w.length >= 5 && (x.startsWith(w.slice(0, 5)) || w.startsWith(x.slice(0, 5))))))) return col; }
+    return hdrMap.length ? null : _rc0(name);
+  };
   const useCustom = workers.some(w => resolveColCustom(w.name));
   if(!useCustom){
     if(opt){ if(opt.blobOnly) return null; await htExcel(); return; }   // v5.61.1 — personne dans le modèle : tableau NotyBat
@@ -37858,12 +37873,8 @@ async function generateSalaryXlsx(opt){
     await htExcel();
     return;
   }
-  let templateBuf;
-  try{
-    const resp = await fetch('modele_salaire.xlsx');
-    if(!resp.ok) throw new Error('modele introuvable');
-    templateBuf = await resp.arrayBuffer();
-  }catch(e){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
+  let templateBuf = templateBuf0;
+  if(!templateBuf){ showToast('Modèle de salaire introuvable (modele_salaire.xlsx)'); return; }
   const wb = new ExcelJS.Workbook();
   try{ await wb.xlsx.load(templateBuf); }
   catch(e){ showToast('Modèle illisible'); return; }
@@ -37899,7 +37910,7 @@ async function generateSalaryXlsx(opt){
     selectedWeeks.forEach((wk,wi)=>{
       if(wi>=weekRows.length) return;
       if(d.perWeekWorked[wi]){
-        setVal(col, weekRows[wi], (d.perWeekHours[wi]||0) - 35);
+        { const hw = Math.round(((d.perWeekHours[wi]||0) - 35) * 100) / 100; if(hw >= 0) ws.getCell(col + weekRows[wi]).value = hw; }   // v5.61.4 — > 35 h : les h sup · 35 h pile : 0 · en dessous : rien
       } else {
         const abs = d.perWeekAbs[wi] || {};
         const types = Object.keys(abs);
@@ -37948,15 +37959,18 @@ async function generateSalaryXlsx(opt){
   });
 
   // Titre du mois (A1) — forcer le format texte pour ne pas hériter d'un format date
-  const monthName = selectedWeeks[0].monday.toLocaleDateString('fr-FR',{month:'long'}).toUpperCase();
+  // v5.61.2 — mois = celui du jeudi de la 1re semaine (S40 du 28/09 au 04/10 → OCTOBRE, pas SEPTEMBRE)
+  const _m0 = new Date(selectedWeeks[0].monday); _m0.setDate(_m0.getDate() + 3);
+  const monthName = _m0.toLocaleDateString('fr-FR',{month:'long'}).toUpperCase();
   const a1 = ws.getCell('A1'); a1.value = monthName; a1.numFmt = '@';
   // Numéros de semaine (A8..A12)
   selectedWeeks.forEach((wk,wi)=>{ if(wi<weekRows.length) ws.getCell('A'+weekRows[wi]).value = wk.weekNum; });
 
-  const monthSlug = `${selectedWeeks[0].monday.getFullYear()}-${String(selectedWeeks[0].monday.getMonth()+1).padStart(2,'0')}`;
+  const monthSlug = `${_m0.getFullYear()}-${String(_m0.getMonth()+1).padStart(2,'0')}`;
   const out = await wb.xlsx.writeBuffer();
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   if(opt && opt.blobOnly) return { blob, name:`tableau-salaire-${monthSlug}.xlsx` };   // v5.61.1 — « Envoyer au comptable »
+  if(opt && opt.wantWs) return { wb, ws, name:`tableau-salaire-${monthSlug}` };   // v5.61.2 — « PDF: Bois Concept » = rendu du même Excel
   await saveBlobToDevice(blob, `tableau-salaire-${monthSlug}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ['.xlsx']);
   closeModal('pdfWorkerSelector');
   if(unmatched.length){
@@ -38031,12 +38045,126 @@ async function htCoExcel(){
   if(!_ht || !_htSrc){ showToast('Ouvre d\'abord le tableau'); return; }
   try{ await generateSalaryXlsx({ keys:_htSrc.keys, weeks:_htCurWeeks() }); }catch(e){ showToast('❌ Excel : ' + (e && e.message || e)); }
 }
+/* v5.61.2 — « PDF: <entreprise> » = le RENDU du tableau Excel de l'entreprise (son modèle rempli), pas le visuel NotyBat.
+   Si personne du tableau n'est dans le modèle : repli sur le PDF aux couleurs de l'entreprise. */
+async function _htCoPdfBlob(){
+  if(!_ht || !_htSrc) throw new Error('Ouvre d\'abord le tableau');
+  const r = await generateSalaryXlsx({ keys:_htSrc.keys, weeks:_htCurWeeks(), wantWs:true });
+  if(r && r.ws) return { blob: await _xlsxSheetToPdf(r.wb, r.ws), name: r.name + '.pdf' };
+  _htCoMode = true; try{ return { blob: await _htPdfBlob(), name:'heures-' + _ht.slug + '.pdf' }; } finally{ _htCoMode = false; }
+}
 async function htCoPdf(){
-  _htCoMode = true;
-  try{ showToast('Création du PDF…'); const co = _htCoTable() || {}; const b = await _htPdfBlob();
-    await saveBlobToDevice(b, 'heures-' + _ht.slug + '-' + String(co.name || 'entreprise').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.pdf', 'application/pdf', ['.pdf']); }
+  try{ showToast('Création du PDF…'); const r = await _htCoPdfBlob(); await saveBlobToDevice(r.blob, r.name, 'application/pdf', ['.pdf']); }
   catch(e){ showToast('❌ PDF : ' + (e && e.message || e)); }
-  finally{ _htCoMode = false; }
+}
+/* Dessine une feuille ExcelJS dans un PDF A4 (une page) : largeurs/hauteurs, fusions, couleurs de fond, polices, bordures, alignements, images.
+   Les formules du modèle sont recalculées (SUM, MIN, MAX, AVERAGE, + - * /) car ExcelJS ne les calcule pas. */
+async function _xlsxSheetToPdf(wb, ws){
+  if(typeof _qcEnsurePdfLib === 'function') await _qcEnsurePdfLib();
+  const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF; if(!J) throw new Error('PDF indisponible');
+  const A = s => { const m = /^\$?([A-Z]+)\$?(\d+)$/.exec(String(s).trim().toUpperCase()); if(!m) return null; let c = 0; for(const ch of m[1]) c = c * 26 + ch.charCodeAt(0) - 64; return { r:+m[2], c }; };
+  // Zone : zone d'impression du modèle, sinon toute la feuille utilisée
+  let r1 = 1, c1 = 1, r2 = ws.rowCount || 1, c2 = ws.columnCount || 1;
+  const pa = ws.pageSetup && ws.pageSetup.printArea;
+  if(pa && /:/.test(pa)){ const [a, b] = String(pa).split(',')[0].replace(/'[^']*'!|[^!]*!/, '').split(':').map(A); if(a && b){ r1 = a.r; c1 = a.c; r2 = b.r; c2 = b.c; } }
+  else { let mr = 0, mc = 0; ws.eachRow({ includeEmpty:false }, (row, rn) => row.eachCell({ includeEmpty:false }, (cell, cn) => { if(cell.value != null && cell.value !== '' || cell.fill){ mr = Math.max(mr, rn); mc = Math.max(mc, cn); } })); r2 = mr || r2; c2 = mc || c2; }
+  // Formules
+  const memo = {};
+  const num = v => typeof v === 'number' ? v : (v instanceof Date ? v : (typeof v === 'string' && v.trim() !== '' && !isNaN(+v.replace(',', '.')) ? +v.replace(',', '.') : 0));
+  const valOf = (r, c, depth) => {
+    const k = r + ':' + c; if(k in memo) return memo[k];
+    const cell = ws.getCell(r, c); let v = cell.value;
+    if(cell.isMerged && cell.master && cell.master.address !== cell.address){ memo[k] = null; return null; }
+    if(v && typeof v === 'object' && !(v instanceof Date)){
+      if(v.richText) v = v.richText.map(t => t.text).join('');
+      else if(v.formula || v.sharedFormula){ memo[k] = null; v = evalF(cell.formula || v.formula, v.result, depth || 0); }
+      else if('result' in v) v = v.result;
+      else if(v.text) v = v.text;
+      else if(v.error) v = '';
+    }
+    memo[k] = v; return v;
+  };
+  const rangeVals = (a, b, d) => { const x = A(a), y = A(b); const out = []; if(!x || !y) return out; for(let r = Math.min(x.r, y.r); r <= Math.max(x.r, y.r); r++) for(let c = Math.min(x.c, y.c); c <= Math.max(x.c, y.c); c++){ const v = valOf(r, c, d + 1); if(typeof v === 'number') out.push(v); } return out; };
+  const evalF = (f, cached, d) => {
+    if(!f || d > 40) return cached;
+    try{
+      let e = String(f).replace(/^=/, '').replace(/\$/g, '');
+      e = e.replace(/\b(SUM|SOMME|MIN|MAX|AVERAGE|MOYENNE)\(([^()]*)\)/gi, (_, fn, args) => {
+        const vals = []; args.split(/[;,]/).forEach(a => { a = a.trim(); if(/^[A-Z]+\d+:[A-Z]+\d+$/i.test(a)){ const [p, q] = a.split(':'); vals.push(...rangeVals(p, q, d)); } else if(/^[A-Z]+\d+$/i.test(a)){ const p = A(a); vals.push(num(valOf(p.r, p.c, d + 1))); } else if(a !== '' && !isNaN(+a)) vals.push(+a); });
+        const F = fn.toUpperCase(); const r = F === 'MIN' ? (vals.length ? Math.min(...vals) : 0) : F === 'MAX' ? (vals.length ? Math.max(...vals) : 0) : (F === 'AVERAGE' || F === 'MOYENNE') ? (vals.length ? vals.reduce((x, y) => x + y, 0) / vals.length : 0) : vals.reduce((x, y) => x + y, 0);
+        return '(' + r + ')';
+      });
+      e = e.replace(/\b([A-Z]{1,3})(\d+)\b/g, (m) => { const p = A(m); return p ? '(' + num(valOf(p.r, p.c, d + 1)) + ')' : m; });
+      if(!/^[\d\s+\-*/().eE]*$/.test(e)) return cached != null ? cached : '';
+      const r = Function('"use strict";return (' + (e || '0') + ')')();
+      return (typeof r === 'number' && isFinite(r)) ? Math.round(r * 1000) / 1000 : cached;
+    }catch(err){ return cached; }
+  };
+  const fmt = (v, cell) => {
+    if(v == null) return '';
+    if(v instanceof Date) return String(v.getDate()).padStart(2, '0') + '/' + String(v.getMonth() + 1).padStart(2, '0') + '/' + v.getFullYear();
+    if(typeof v === 'number'){ const nf = String(cell.numFmt || ''); if(/%/.test(nf)) return (Math.round(v * 1000) / 10).toLocaleString('fr-FR') + ' %'; if(/[dmy]{2}/i.test(nf) && v > 20000 && v < 80000){ const d = new Date(Math.round((v - 25569) * 864e5)); return fmt(d, cell); }
+      return (Math.round(v * 100) / 100).toLocaleString('fr-FR').replace(/[\u202f\u00a0]/g, ' '); }
+    return String(v);
+  };
+  // Géométrie (px Excel : colonne = largeur × 7 + 5 ; ligne = hauteur en pt × 96/72)
+  const colW = [], rowH = [];
+  for(let c = c1; c <= c2; c++){ const col = ws.getColumn(c); colW.push(col.hidden ? 0 : ((col.width || 8.43) * 7 + 5)); }
+  for(let r = r1; r <= r2; r++){ const row = ws.getRow(r); rowH.push(row.hidden ? 0 : ((row.height || 15) * 96 / 72)); }
+  const totW = colW.reduce((a, b) => a + b, 0) || 1, totH = rowH.reduce((a, b) => a + b, 0) || 1;
+  const land = totW > totH * 1.05 || (ws.pageSetup && ws.pageSetup.orientation === 'landscape');
+  const doc = new J({ orientation: land ? 'landscape' : 'portrait', unit:'mm', format:'a4' });
+  const PW = land ? 297 : 210, PH = land ? 210 : 297, M = 7;
+  const k = Math.min((PW - 2 * M) / totW, (PH - 2 * M) / totH);
+  const ox = M + ((PW - 2 * M) - totW * k) / 2, oy = M;
+  const X = []; let acc = 0; colW.forEach(w => { X.push(ox + acc * k); acc += w; }); X.push(ox + acc * k);
+  const Y = []; acc = 0; rowH.forEach(h => { Y.push(oy + acc * k); acc += h; }); Y.push(oy + acc * k);
+  // Fusions
+  const mergeOf = {}, skip = new Set();
+  ((ws.model && ws.model.merges) || []).forEach(m => { const [a, b] = m.split(':').map(A); if(!a || !b) return; mergeOf[a.r + ':' + a.c] = b; for(let r = a.r; r <= b.r; r++) for(let c = a.c; c <= b.c; c++) if(r !== a.r || c !== a.c) skip.add(r + ':' + c); });
+  const argb = (o, def) => { const s = o && (o.argb || ''); if(!s || s.length < 6) return def; const h = s.slice(-6); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; };
+  const clean = t => String(t).replace(/→/g, '->').replace(/[\u202f\u00a0]/g, ' ').replace(/[^\x00-\xFF€]/g, '');
+  const borders = [];
+  for(let r = r1; r <= r2; r++) for(let c = c1; c <= c2; c++){
+    if(skip.has(r + ':' + c)) continue;
+    const cell = ws.getCell(r, c), end = mergeOf[r + ':' + c] || { r, c };
+    const x = X[c - c1], y = Y[r - r1], w = X[Math.min(end.c, c2) - c1 + 1] - x, h = Y[Math.min(end.r, r2) - r1 + 1] - y;
+    if(w <= 0 || h <= 0) continue;
+    const fl = cell.fill; if(fl && fl.type === 'pattern' && fl.pattern === 'solid'){ const col = argb(fl.fgColor, null); if(col){ doc.setFillColor(...col); doc.rect(x, y, w, h, 'F'); } }
+    const b = cell.border || {}; borders.push({ x, y, w, h, b });
+    const txt = clean(fmt(valOf(r, c, 0), cell)); if(!txt) continue;
+    const f = cell.font || {}, al = cell.alignment || {};
+    doc.setFont('helvetica', f.bold && f.italic ? 'bolditalic' : f.bold ? 'bold' : f.italic ? 'italic' : 'normal');
+    doc.setFontSize(Math.max(3, (f.size || 11) * (96 / 72) * k / 0.3528));   // taille Excel (pt) → même échelle que la feuille
+    doc.setTextColor(...argb(f.color, [0, 0, 0]));
+    const pad = 3 * k, lines = al.wrapText ? doc.splitTextToSize(txt, Math.max(1, w - pad * 2)) : [txt];
+    const lh = doc.getFontSize() * 0.3528 * 1.15, bh = lines.length * lh;
+    const hz = al.horizontal || (typeof valOf(r, c, 0) === 'number' ? 'right' : 'left');
+    const tx = hz === 'center' || hz === 'centerContinuous' ? x + w / 2 : hz === 'right' ? x + w - pad : x + pad;
+    const vt = al.vertical || 'bottom';
+    let ty = vt === 'top' ? y + lh * 0.85 + pad * 0.3 : vt === 'middle' || vt === 'center' ? y + (h - bh) / 2 + lh * 0.82 : y + h - bh + lh * 0.8 - pad * 0.3;
+    lines.forEach(t => { doc.text(t, tx, ty, { align: hz === 'center' || hz === 'centerContinuous' ? 'center' : hz === 'right' ? 'right' : 'left' }); ty += lh; });
+  }
+  // Bordures par-dessus
+  const bw = s => s === 'thick' ? .55 : s === 'medium' ? .35 : s === 'double' ? .35 : s === 'hair' ? .05 : .15;
+  borders.forEach(({ x, y, w, h, b }) => [['top', x, y, x + w, y], ['bottom', x, y + h, x + w, y + h], ['left', x, y, x, y + h], ['right', x + w, y, x + w, y + h]].forEach(([sd, a1, b1, a2, b2]) => {
+    const e = b[sd]; if(!e || !e.style) return; doc.setDrawColor(...argb(e.color, [0, 0, 0])); doc.setLineWidth(bw(e.style)); doc.line(a1, b1, a2, b2);
+  }));
+  // Images du modèle (logo…)
+  try{ (ws.getImages ? ws.getImages() : []).forEach(im => {
+    const media = wb.getImage(+im.imageId); if(!media) return;
+    const tl = im.range && im.range.tl, br = im.range && im.range.br; if(!tl) return;
+    const px = (cc, off) => { const i = Math.floor(cc) - (c1 - 1); return (X[Math.max(0, Math.min(i, X.length - 1))] || ox) + (cc % 1) * ((colW[i] || 0) * k) + (off || 0) / 9525 * k; };
+    const py = (rr, off) => { const i = Math.floor(rr) - (r1 - 1); return (Y[Math.max(0, Math.min(i, Y.length - 1))] || oy) + (rr % 1) * ((rowH[i] || 0) * k) + (off || 0) / 9525 * k; };
+    const x0 = px(tl.nativeCol != null ? tl.nativeCol : tl.col, tl.nativeColOff), y0 = py(tl.nativeRow != null ? tl.nativeRow : tl.row, tl.nativeRowOff);
+    let x1, y1; if(br){ x1 = px(br.nativeCol != null ? br.nativeCol : br.col, br.nativeColOff); y1 = py(br.nativeRow != null ? br.nativeRow : br.row, br.nativeRowOff); }
+    else if(im.range.ext){ x1 = x0 + im.range.ext.width * k; y1 = y0 + im.range.ext.height * k; } else return;
+    let data = media.base64 ? media.base64 : null;
+    if(!data && media.buffer){ let bin = ''; const u = new Uint8Array(media.buffer); for(let i = 0; i < u.length; i++) bin += String.fromCharCode(u[i]); data = 'data:image/' + (media.extension || 'png') + ';base64,' + btoa(bin); }
+    if(data && !/^data:/.test(data)) data = 'data:image/' + (media.extension || 'png') + ';base64,' + data;
+    if(data && x1 > x0 && y1 > y0) doc.addImage(data, String(media.extension || 'png').toUpperCase().replace('JPG', 'JPEG'), x0, y0, x1 - x0, y1 - y0);
+  }); }catch(e){}
+  return doc.output('blob');
 }
 function _htCoBtnSync(){
   const b = document.getElementById('pdfSalaryBtn'); if(!b) return;
@@ -38126,7 +38254,7 @@ function _htBuild(keys, weeks){
         days.push(Object.assign(base, { site:siteLbl, main:main || 'Sans chantier', nSites, task, hours:h, panier:e.panier ? 'Oui' : '', zone:zone || '', perso:perso ? 'Oui' : '' }));
       }
     });
-    r.hs = r.wk.reduce((a, x) => a + (x.worked ? x.h - _rwWH() : 0), 0);
+    r.hs = r.wk.reduce((a, x) => a + (x.worked ? Math.max(0, x.h - _rwWH()) : 0), 0);   // v5.61.2 — h sup = seulement au-delà de 35 h ; une semaine en dessous ne retire rien
     recap.push(r);
   });
   const t0 = weeks[0].monday, t1 = weeks[weeks.length - 1].sunday || new Date(weeks[weeks.length - 1].monday.getTime() + 6 * 86400000);
@@ -38156,8 +38284,8 @@ function _htCols(tab){
   ];
   const cols = [ { k:'name', l:'Salarié', v:r => r.name, w:24 }, { k:'daysWorked', l:'Jours trav.', v:r => r.daysWorked, n:1, w:9 }, { k:'hours', l:'Heures', v:r => _htNum(r.hours), s:r => r.hours, n:1, w:9 } ];
   (_ht ? _ht.weeks : []).forEach((w, i) => cols.push({ k:'w' + i, l:'S' + w.weekNum, n:1, w:9,
-    v:r => { const x = r.wk[i]; if(x.worked) return _htSigned(x.h - _rwWH()); const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : ''; },
-    s:r => r.wk[i].worked ? r.wk[i].h - _rwWH() : -999 }));
+    v:r => { const x = r.wk[i]; if(x.worked){ const d = x.h - _rwWH(); return d > 0 ? _htSigned(d) : Math.abs(d) < 0.001 ? '0' : ''; } const t = Object.keys(x.abs); return t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].short) || t[0]) : t.length ? 'Mixte' : ''; },
+    s:r => r.wk[i].worked ? Math.max(0, r.wk[i].h - _rwWH()) : -999 }));
   cols.push({ k:'hs', l:'H. sup', v:r => _htSigned(r.hs), s:r => r.hs, n:1, w:9 },
     { k:'cp', l:'CP (j)', v:r => r.cp || '', s:r => r.cp, n:1, w:7 }, { k:'css', l:'CSS (j)', v:r => r.css || '', s:r => r.css, n:1, w:7 },
     { k:'other', l:'Autres abs.', v:r => r.other || '', s:r => r.other, n:1, w:9 }, { k:'paniers', l:'Paniers', v:r => r.paniers || '', s:r => r.paniers, n:1, w:8 });
@@ -38180,7 +38308,7 @@ function _htTotals(rows){
   const t = { name:'TOTAL', wk:(_ht ? _ht.weeks : []).map((_, i) => ({ h:rows.reduce((a, r) => a + r.wk[i].h, 0), worked:rows.some(r => r.wk[i].worked), abs:{} })),
     hours:0, daysWorked:0, hs:0, cp:0, css:0, other:0, paniers:0, z:_htZ0(true), perso:0 };
   rows.forEach(r => { ['hours','daysWorked','hs','cp','css','other','paniers','perso'].forEach(k => t[k] += r[k]); Object.keys(t.z).forEach(z => t.z[z] += r.z[z]); });
-  t.wk.forEach((x, i) => { x.h = rows.reduce((a, r) => a + (r.wk[i].worked ? r.wk[i].h - _rwWH() : 0), 0) + _rwWH(); });   // affiche la somme des H. sup de la semaine
+  t.wk.forEach((x, i) => { x.h = rows.reduce((a, r) => a + (r.wk[i].worked ? Math.max(0, r.wk[i].h - _rwWH()) : 0), 0) + _rwWH(); });   // affiche la somme des H. sup de la semaine
   return t;
 }
 
@@ -38228,7 +38356,7 @@ function _htMergePeople(recap){
     if(!q.roleL && p.roleL) q.roleL = p.roleL;
   });
   const out = [...by.values()].filter(p => (p.daysWorked > 0 || p.hours > 0 || (p.cp + p.css + p.other) > 0) && !_isRemovedUser(_rmUsersCache, '', p.name));
-  out.forEach(p => { p.hs = p.wk.reduce((a, x) => a + (x.worked ? x.h - _rwWH() : 0), 0); });
+  out.forEach(p => { p.hs = p.wk.reduce((a, x) => a + (x.worked ? Math.max(0, x.h - _rwWH()) : 0), 0); });   // v5.61.2
   return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 
@@ -38245,15 +38373,16 @@ function _htModel(){
     const sun = w.sunday || new Date(w.monday.getTime() + 6 * 86400000);
     line(null, 'Semaine ' + w.weekNum, f(w.monday) + ' → ' + f(sun), p => {
       const x = p.wk[i];
+      // v5.61.2 — mention « h sup » seulement au-delà de 35 h ; en dessous : les heures, sans « h sup » négatives
       if(x.worked){ const hs = x.h - _rwWH();
-        return { main:_htNum(x.h) + ' h', sub: hs === 0 ? _rwWH() + ' h pile' : sign(hs) + ' h sup', subColor: hs < 0 ? 'C0392B' : hs > 0 ? 'C46A12' : '5A6473', bg: hs > 0 ? 'FFF3E6' : hs < 0 ? 'FBE9E7' : null }; }
+        return hs > 0 ? { main:_htNum(x.h) + ' h', sub:sign(hs) + ' h sup', subColor:'C46A12', bg:'FFF3E6' } : Math.abs(hs) < 0.001 ? { main:_htNum(x.h) + ' h', sub:'0 h sup', subColor:'5A6473' } : { main:_htNum(x.h) + ' h' }; }   // v5.61.4 — 35 h pile : 0 · en dessous : rien
       const t = Object.keys(x.abs); if(!t.length) return {};
       const tc = t.length === 1 ? _htTJColor(t[0]) : '5A6473';
       return { main: t.length === 1 ? ((TYPE_JOURNEE[t[0]] && TYPE_JOURNEE[t[0]].label) || t[0]) : 'Absences', mainColor:tc, small:true, bg:_htLighten(tc, .85) };
     });
   });
   line('horloge', 'Total heures du mois', '', p => ({ main:_htNum(p.hours) + ' h' }), { big:true });
-  line('hsup', 'Heures sup à payer', 'au-delà de ' + _rwWH() + ' h par semaine', p => ({ main:sign(p.hs) + ' h', mainColor: p.hs < 0 ? 'C0392B' : '1B2333', bg: p.hs < 0 ? 'FBE3E0' : 'FFD3A8' }), { big:true, hl:true });
+  line('hsup', 'Heures sup à payer', 'au-delà de ' + _rwWH() + ' h par semaine', p => ({ main:sign(Math.max(0, p.hs)) + ' h', mainColor:'1B2333', bg: p.hs > 0 ? 'FFD3A8' : null }), { big:true, hl:true });
   sec('cal', 'Congés et absences');
   [['cp','cp','Congés payés'],['maladie','maladie','Arrêt maladie'],['css','css','Congé sans solde'],['abs','autres','Autres absences']].forEach(([icon, type, label]) => {
     line(icon, label, 'jours et dates', p => {
@@ -38341,7 +38470,7 @@ function htRender(){
   // v5.61.1 — tableau NotyBat : logo et nom NotyBat, jamais le logo de l'entreprise
   const head = `<div class="ht-hd"><img src="icons/logo-header-v4.png" alt="" style="object-fit:contain;"><div class="br">Noty<b>bat</b></div><div class="t"><div>Heures du mois — ${escapeHtml(_ht.month)}</div><small>${escapeHtml((_ht.company ? _ht.company + '  ·  ' : '') + 'Période ' + _ht.period + '  ·  édité le ' + _ht.edited)}</small></div></div>`;
   const _xb = document.getElementById('htExpBtns'); if(_xb) _xb.innerHTML = _htExpBtnsHtml();
-  document.getElementById('htWrap').innerHTML = '<div class="ht-doc">' + head + h + '<p class="ht-lg">Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.</p></div>';
+  document.getElementById('htWrap').innerHTML = '<div class="ht-doc">' + head + h + '<p class="ht-lg">Couleurs : orange = heures sup · rouge = absence · vert = congés payés · bleu = voiture perso.</p></div>';
   const miss = m.people.reduce((a, r) => a + (r.noZone || 0), 0);
   document.getElementById('htNote').innerHTML = '' +
     (miss ? `<br><span style="color:var(--red);">⚠️ ${miss} journée${miss > 1 ? 's' : ''} sans zone de trajet (adresse du chantier manquante).</span>` : '');
@@ -38439,7 +38568,7 @@ async function _htExcelBlob(){
   r++;
   ws.mergeCells(r, 1, r, last);
   const n = ws.getCell(r, 1);
-  n.value = 'Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso. Heures sup = heures au-delà de 35 h dans la semaine.';
+  n.value = 'Couleurs : orange = heures sup · rouge = absence · vert = congés payés · bleu = voiture perso. Heures sup = heures au-delà de 35 h dans la semaine.';
   n.font = { size:9.5, italic:true, color:{ argb:'FF5A6473' } }; n.alignment = { wrapText:true, vertical:'top', indent:1 }; ws.getRow(r).height = 28;
   ws.pageSetup.printArea = 'A1:' + ws.getColumn(last).letter + r;
   // Police Arial partout (comme le PDF)
@@ -38550,7 +38679,7 @@ async function _htPdfBlob(){
     y += h;
   });
   doc.setFont('helvetica', 'italic'); doc.setFontSize(6.5 * k); doc.setTextColor(90, 100, 115);
-  T('Couleurs : orange = heures sup · rouge = heures en moins ou absence · vert = congés payés · bleu = voiture perso.', M, y + 5 * k);
+  T('Couleurs : orange = heures sup · rouge = absence · vert = congés payés · bleu = voiture perso.', M, y + 5 * k);
   return doc.output('blob');
 }
 async function htPdf(){
@@ -38622,7 +38751,7 @@ async function htShare(){
     let x = null, xName = 'heures-' + _ht.slug + '.xlsx';
     if(co){ const r = await generateSalaryXlsx({ keys:_htSrc.keys, weeks:_htCurWeeks(), blobOnly:true }); if(r && r.blob){ x = r.blob; xName = r.name; } }
     if(!x) x = await _htExcelBlob();
-    let p; _htCoMode = !!co; try{ p = await _htPdfBlob(); } finally{ _htCoMode = false; }
+    let p; if(co){ p = (await _htCoPdfBlob()).blob; } else p = await _htPdfBlob();
     const fx = new File([x], xName, { type:x.type }), fp = new File([p], 'heures-' + _ht.slug + '.pdf', { type:'application/pdf' });
     if(navigator.canShare && navigator.canShare({ files:[fx, fp] })){
       await navigator.share({ files:[fx, fp], title:'Heures ' + _ht.month, text:'Tableau des heures ' + _ht.month + (_ht.company ? ' — ' + _ht.company : '') });
@@ -51072,9 +51201,32 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.61.1';
+const APP_VERSION = '5.61.4';
 
 const CHANGELOG = [
+  {
+    version: '5.61.4',
+    date: '27/10/2026',
+    entries: [
+      { icon: '⏱️', text: "Heures sup par semaine : au-dessus de 35 h = les heures sup (+3), 35 h pile = 0, en dessous = rien d'écrit. Le total est le cumul des semaines au-dessus de 35 h (0 s'il n'y en a pas), jamais négatif." }
+    ]
+  },
+  {
+    version: '5.61.3',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🗓️', text: "Tableau des heures et tableau salaire : une semaine compte dans le mois de son jeudi, comme la compta (septembre 2026 = S36 à S39, octobre = S40 à S44). La semaine à cheval n'est plus comptée deux fois." },
+      { icon: '📊', text: "Excel / PDF Bois Concept : les colonnes suivent les noms écrits en haut du modèle Excel. Un salarié ajouté au modèle (ex. BERNARDO Vasco) est rempli automatiquement." }
+    ]
+  },
+  {
+    version: '5.61.2',
+    date: '27/10/2026',
+    entries: [
+      { icon: '📄', text: "« PDF: Bois Concept » : le PDF reprend exactement le tableau Excel de l'entreprise (son modèle rempli, formules recalculées), au lieu du visuel NotyBat. Le mois du modèle est celui de la majorité des jours (S40 du 28/09 au 04/10 = octobre)." },
+      { icon: '⏱️', text: "Heures sup (tableau du mois, Excel, PDF, tableau Bois Concept) : comptées seulement au-delà de 35 h par semaine. Une semaine en dessous de 35 h n'affiche plus d'« h sup » négatives et ne retire rien au total d'heures sup (ex. +2, +3, +3,5, +3,5 et une semaine à 16 h = 12 h sup)." }
+    ]
+  },
   {
     version: '5.61.1',
     date: '27/10/2026',
