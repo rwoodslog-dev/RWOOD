@@ -12214,17 +12214,30 @@ async function rwSignupSubmit(){
   if(!navigator.onLine) return say('Pas de connexion internet.');
   const role = ((document.querySelector('#rwSuRoles .chip.selected') || {}).dataset || {}).role || 'ouvrier';
   btn.disabled = true; btn.textContent = 'Création…';
+  let j0 = null;
   try{
     const trade = ((document.getElementById('rwSuTrade') || {}).value) || 'charpente';
-    const r = await _rwGwCall({ op:'signup', firstName:first, lastName:last, mode:_rwSuM, code, companyName:coName, role, trade, force: !!window._rwSuForce });
-    let j = null; try{ j = await r.json(); }catch(e){}
-    // v5.41.364 — un compte « prenom.nom » existe déjà (pas encore relié à Google) : ne PAS en recréer un vide
-    if(j && j.error === 'exists'){
-      err.innerHTML = `<div style="color:var(--ink);background:rgba(238,138,46,.12);border:1.5px solid var(--wood);border-radius:12px;padding:12px;text-align:left;">
-        <b>👋 Un compte « ${escapeHtml(j.rwoodId)} » existe déjà${j.companyName ? ' chez ' + escapeHtml(j.companyName) : ''}.</b>
-        <div class="hint" style="margin:4px 0 10px;">Si c'est toi, relie-le : tu retrouves toutes tes heures et tes données.</div>
-        <button type="button" class="btn btn-primary btn-block" onclick="_rwSuLinkExisting('${escapeHtml(j.rwoodId)}')">✅ C'est moi : relier mon compte</button>
-        <button type="button" class="btn btn-outline btn-block" style="margin-top:8px;" onclick="window._rwSuForce=true; rwSignupSubmit()">Ce n'est pas moi : créer un nouveau compte</button></div>`;
+    // v5.61.0 — UNICITÉ : contrôle du nom (sans casse ni accents) avant la création, si la porte d'entrée le propose
+    if(_rwSuM === 'join'){
+      try{
+        const rc = await _rwGwCall({ op:'name_check', code, firstName:first, lastName:last, nameKey:_rwNameKey(first, last) });
+        const jc = await rc.json().catch(() => null);
+        if(rc.ok && jc && jc.ok && jc.taken){ j0 = { error:'name_taken', rwoodId:jc.rwoodId || '', name:jc.name || '', companyName:jc.companyName || '' }; }
+      }catch(e){ /* ancienne porte d'entrée sans « name_check » : le contrôle se fait à l'inscription */ }
+    }
+    let j = j0, r = null;
+    if(!j){
+      r = await _rwGwCall({ op:'signup', firstName:first, lastName:last, nameKey:_rwNameKey(first, last), mode:_rwSuM, code, companyName:coName, role, trade });
+      try{ j = await r.json(); }catch(e){}
+    }
+    // v5.41.364 — un compte « prenom.nom » existe déjà : ne PAS en recréer un · v5.61.0 : nom similaire = création bloquée, plus de « créer quand même »
+    if(j && (j.error === 'exists' || j.error === 'name_taken')){
+      const who = j.name || j.rwoodId || (first + ' ' + last);
+      try{ alert(_rwNameTakenMsg(first, last, { name:who })); }catch(e){}
+      err.innerHTML = `<div style="color:var(--ink);background:rgba(220,60,60,.10);border:1.5px solid var(--red);border-radius:12px;padding:12px;text-align:left;">
+        <b>⛔ Ce nom est déjà utilisé : un compte existe déjà au nom de « ${escapeHtml(who)} »${j.companyName ? ' chez ' + escapeHtml(j.companyName) : ''}.</b>
+        <div class="hint" style="margin:4px 0 10px;">Impossible de créer un deuxième compte au même nom (majuscules et accents ne comptent pas). Si c'est toi, relie ce compte : tu retrouves toutes tes heures. Sinon, demande à ton patron.</div>
+        ${j.rwoodId ? `<button type="button" class="btn btn-primary btn-block" onclick="_rwSuLinkExisting('${escapeHtml(j.rwoodId)}')">✅ C'est moi : relier mon compte</button>` : ''}</div>`;
       err.style.display = 'block';
       btn.disabled = false; btn.textContent = 'C\'est parti →';
       return;
@@ -36905,16 +36918,33 @@ function renderComptableFichesContent(rows){
   // Avant, une fiche « Equipe » plus récente passait devant le vrai compte et cachait tout son historique.
   const _isAcc = (device, w) => !!device.ownerAuthId && ((w.authId && w.authId === device.ownerAuthId) || (_nrm(w.name) && _nrm(w.name) === _nrm(device.ownerName)));
   const _pass = (device, w) => _isAcc(device, w) ? 0 : (_isOwn(device, w) ? 1 : 2);
+  const _more = new Map();   // v5.61.0 — autres téléphones de la MÊME personne (ses propres fiches uniquement, voir _rwOwnFiche)
   [0, 1, 2].forEach(ownPass => rows.forEach(device => {
     (device.workers||[]).forEach(w => {
       if(_pass(device, w) !== ownPass) return;
       const workerNorm = _nrm(w.name);
       if(!workerNorm) return;
-      if(workerSeenNames.has(workerNorm)) return; // doublon — déjà retenu (son téléphone d'abord, puis le plus récent)
+      if(workerSeenNames.has(workerNorm)){ if(!_more.has(workerNorm)) _more.set(workerNorm, []); _more.get(workerNorm).push({ device, w }); return; }
       workerSeenNames.set(workerNorm, true);
       allWorkers.push({ key: _workerKey(device.deviceId, w.id), workerId: w.id, name: w.name, device });
     });
   }));
+  // v5.61.0 — fiche fusionnée JOUR PAR JOUR (comme le tableau du mois 5.60.6) : un jour saisi sur son autre téléphone
+  // apparaît aussi dans la fiche. Le téléphone principal reste prioritaire ; les autres comblent seulement les jours vides.
+  allWorkers.forEach(aw => {
+    const extra = _more.get(_nrm(aw.name)); if(!extra || !extra.length) return;
+    const att = Object.assign({}, aw.device.attendance || {}), sites = (aw.device.sites || []).slice(), wc = Object.assign({}, aw.device.weekChecks || {});
+    extra.forEach(({ device, w }) => {
+      Object.keys(device.attendance || {}).forEach(k => {
+        const src = device.attendance[k], e = src && src.workers && src.workers[w.id];
+        if(!e || (att[k] && att[k].workers && att[k].workers[aw.workerId])) return;
+        att[k] = Object.assign({}, src, { workers:{ [aw.workerId]: e } });
+      });
+      (device.sites || []).forEach(s => { if(s && s.id && !sites.some(x => x.id === s.id)) sites.push(s); });
+      Object.keys(device.weekChecks || {}).forEach(k => { if(!wc[k]) wc[k] = device.weekChecks[k]; });
+    });
+    aw.device = Object.assign({}, aw.device, { attendance:att, sites, weekChecks:wc });
+  });
   allWorkers.sort((a,b)=> a.name.localeCompare(b.name, 'fr'));
 
   if(!allWorkers.length){
@@ -41344,6 +41374,22 @@ function slugifyAuthName(str){
 function buildAuthId(firstName, lastName){
   return `${slugifyAuthName(firstName)}.${slugifyAuthName(lastName)}`;
 }
+/* v5.61.0 — UNICITÉ DES NOMS : « William Noël », « william noel », « NOEL William », « william.noel »
+   donnent la même clé (sans casse, sans accents, sans ponctuation, ordre des mots ignoré). */
+function _rwNameKey(first, last){
+  return [first, last].join(' ').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).sort().join(' ');
+}
+/* Renvoie le compte existant au même nom (registre de l'entreprise : nom ou identifiant), sinon null. */
+function _rwNameTaken(first, last, users){
+  const k = _rwNameKey(first, last), id = buildAuthId(first, last);
+  if(!k) return null;
+  return (users || []).find(u => u && ((u.name && _rwNameKey(u.name, '') === k) || (u.authId && (_rwNameKey(String(u.authId).replace(/^recovered\./i, '').replace(/\./g, ' '), '') === k || String(u.authId).toLowerCase() === id)))) || null;
+}
+function _rwNameTakenMsg(first, last, u){
+  const who = (u && (u.name || u.authId)) || (first + ' ' + last);
+  return `⛔ Ce nom est déjà utilisé : un compte existe déjà au nom de « ${who} ».\n\nSi c'est toi, connecte-toi à ce compte (tu retrouves toutes tes heures). Sinon, demande à ton patron.`;
+}
 
 function buildAuthPwd(birthDateISO){
   // birthDateISO au format YYYY-MM-DD (natif <input type=date>) → JJMMAAAA
@@ -41526,19 +41572,15 @@ async function submitAuthCreate(){
   }
   const authId = buildAuthId(firstName, lastName);
 
-  const alreadyExists = await _authIdAlreadyExists(authId);
+  // v5.61.0 — un nom déjà utilisé (sans casse ni accents) bloque la création : plus de « créer quand même »
+  let _taken = null;
+  try{ if(navigator.onLine && typeof _fetchUsersRegistry === 'function'){ try{ await _fetchRemovedUsers(); }catch(_){} _taken = _rwNameTaken(firstName, lastName, await _fetchUsersRegistry()); } }catch(e){}
+  const alreadyExists = _taken || await _authIdAlreadyExists(authId);
   if(alreadyExists){
-    const wantsLogin = confirm(
-      `Un compte "${authId}" existe déjà !\n\n` +
-      `Si tu as déjà utilisé Notybat sur un autre appareil (ton PC, un autre téléphone…) avec ce même prénom et nom, crée un NOUVEAU profil ici va créer un compte séparé qui ne partagera jamais ses données avec l'autre — c'est ce qui cause "je n'ai pas les mêmes infos sur mon téléphone et mon PC".\n\n` +
-      `Clique OK pour te connecter à ce compte existant à la place (recommandé), ou Annuler pour créer quand même un profil séparé.`
-    );
-    if(wantsLogin){
-      showAuthLoginForm();
-      document.getElementById('authLoginId').value = authId;
-      return;
-    }
-    // L'utilisateur confirme vouloir un profil séparé malgré l'avertissement — on continue.
+    alert(_rwNameTakenMsg(firstName, lastName, _taken || { authId }));
+    showAuthLoginForm();
+    document.getElementById('authLoginId').value = (_taken && _taken.authId) || authId;
+    return;
   }
 
   const authPwd = newPwd;
@@ -50985,9 +51027,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.60.6';
+const APP_VERSION = '5.61.0';
 
 const CHANGELOG = [
+  {
+    version: '5.61.0',
+    date: '27/10/2026',
+    entries: [
+      { icon: '🔒', text: "Chacun est maître de ses heures : la compta (fiches, tableau du mois, PDF, Excel, récap, suivi) ne prend plus que les heures saisies par le salarié sur son propre téléphone. Les copies chez un collègue ou un chef ne comptent plus." },
+      { icon: '👷', text: "Le chef ne peut plus modifier les heures de quelqu'un d'autre. Quand il propose des heures à un collègue, celui-ci les voit et choisit « Ajouter à ma fiche » ou « Refuser » : rien n'est écrit sans son accord." },
+      { icon: '🧾', text: "Fiche d'un salarié côté compta : les jours saisis sur ses différents téléphones sont réunis jour par jour (même règle que le tableau du mois)." },
+      { icon: '🪪', text: "Création de compte : impossible de créer un compte avec un nom déjà utilisé, même écrit autrement (majuscules, accents : « William Noël » = « william noel »). Un message indique qu'un compte existe déjà à ce nom." }
+    ]
+  },
   {
     version: '5.60.6',
     date: '27/10/2026',
@@ -62644,7 +62696,7 @@ async function pushPointageToSupabase(extraWorkerIds){
   // d'équipe (voir commentaire au-dessus de la fonction).
   // On inclut la signature (pour injection auto sur le récap PDF comptable).
   const _mySig = (data.settings && data.settings.signature) || null;
-  const _extraIds = Array.isArray(extraWorkerIds) ? extraWorkerIds.filter(id => id && id !== myWorkerId) : [];
+  const _extraIds = [];   // v5.61.0 — plus aucune exception : un téléphone n'envoie QUE la fiche de son propriétaire (le chef ne pousse jamais les heures d'un autre)
   const _sendIds = myWorkerId ? [myWorkerId, ..._extraIds] : [];
   const myWorkers = _sendIds.length
     ? (data.workers||[]).filter(w => _sendIds.includes(w.id)).map(w => ({ id:w.id, name:w.name, signature: (w.id === myWorkerId ? (w.signature || _mySig) : w.signature) || '' }))
@@ -62696,6 +62748,24 @@ async function pushPointageToSupabase(extraWorkerIds){
   }
 }
 
+/* v5.61.0 — RÈGLE : chaque utilisateur est maître de ses heures. La compta (tableau, fiches, PDF, Excel, récap, suivi)
+   ne lit QUE la fiche saisie par le salarié sur SON téléphone : l'ouvrier unique de l'appareil, ou l'ouvrier qui est
+   le propriétaire (même compte, ou même nom sans accents ni casse). Les copies d'un collègue (ancien pointage d'équipe
+   par le chef, téléphone avec plusieurs ouvriers) ne comptent plus jamais. */
+function _rwOwnFiche(d){
+  const ws = (d.workers || []).filter(w => w && w.id);
+  const nk = s => _rmNameKeyNA(s);
+  let keep = ws.length <= 1 ? ws : ws.filter(w => (w.authId && d.ownerAuthId && _rmId(w.authId) === _rmId(d.ownerAuthId)) || (nk(w.name) && nk(w.name) === nk(d.ownerName)));
+  if(keep.length > 1) keep = [keep.find(w => w.authId && _rmId(w.authId) === _rmId(d.ownerAuthId)) || keep[0]];
+  const ids = new Set(keep.map(w => w.id)), att = {};
+  Object.keys(d.attendance || {}).forEach(k => {
+    const day = d.attendance[k]; if(!day || !day.workers) return;
+    const wk = {}; ids.forEach(id => { if(day.workers[id]) wk[id] = day.workers[id]; });
+    if(Object.keys(wk).length) att[k] = Object.assign({}, day, { workers:wk });
+  });
+  d.workers = keep; d.attendance = att;
+  return d;
+}
 /* Pull : recupere les pointages de TOUS les appareils ayant pousse sous la cle entreprise */
 async function pullAllPointagesForComptable(){
   if(!navigator.onLine) return null;
@@ -62737,6 +62807,7 @@ async function pullAllPointagesForComptable(){
         if(device._deleted) return false;
         return !EXCLUDED_SUFFIXES.some(suffix => comptableId.endsWith(suffix));
       })
+      .map(_rwOwnFiche)   // v5.61.0 — uniquement la fiche du salarié lui-même
       // Plus récent en premier — garantit que le dédoublon garde la version la plus à jour
       .sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 
@@ -62762,7 +62833,14 @@ async function pullAllPointagesForComptable(){
       } else {
         // Appareil supplémentaire du même utilisateur : on fusionne ses jours.
         const acc = byUser.get(userKey);
-        const older = device.attendance || {};
+        let older = device.attendance || {};
+        // v5.61.0 — même personne, autre téléphone (autre id de fiche) : ses jours rejoignent SA fiche principale
+        const pw = (acc.workers || [])[0], dw = (device.workers || [])[0]; let skipW = false;
+        if(pw && dw && pw.id !== dw.id && (device.workers || []).length === 1 && _rmNameKeyNA(pw.name) === _rmNameKeyNA(dw.name)){
+          const re = {};
+          Object.keys(older).forEach(k => { const d0 = older[k], e = d0 && d0.workers && d0.workers[dw.id]; if(e) re[k] = Object.assign({}, d0, { workers:{ [pw.id]: e } }); });
+          older = re; skipW = true;
+        }
         Object.keys(older).forEach(dateKey => {
           if(!acc.attendance[dateKey]){
             // Jour absent de la version récente → on l'ajoute (fiche récupérée)
@@ -62773,6 +62851,7 @@ async function pullAllPointagesForComptable(){
             const b = older[dateKey];
             if(a && b && a.workers && b.workers){
               acc.attendance[dateKey] = {
+                ...b, ...a,   // v5.61.0 — garde voiture perso, chantier libre, validation du jour le plus récent
                 siteId: a.siteId != null ? a.siteId : b.siteId,
                 workers: Object.assign({}, b.workers, a.workers) // récent prioritaire
               };
@@ -62781,7 +62860,7 @@ async function pullAllPointagesForComptable(){
         });
         // Compléter sites/workers connus pour la résolution des noms
         (device.sites||[]).forEach(s => { if(s && s.id && !acc.sites.some(x=>x.id===s.id)) acc.sites.push(s); });
-        (device.workers||[]).forEach(w => { if(w && w.id && !acc.workers.some(x=>x.id===w.id)) acc.workers.push(w); });
+        (skipW ? [] : (device.workers||[])).forEach(w => { if(w && w.id && !acc.workers.some(x=>x.id===w.id)) acc.workers.push(w); });
         acc.weekChecks = Object.assign({}, device.weekChecks || {}, acc.weekChecks || {});   // v5.41.491
       }
     }
@@ -77041,7 +77120,7 @@ let _comptaEditPulled = false;     // calque déjà tiré du cloud ?
 })();
 
 /* ── Flag & calque ───────────────────────────────────────────────── */
-function comptaEditEnabled(){ const r = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; return r === 'patron' || r === 'comptable' || !!(data.settings && data.settings.comptableCanEdit); }   // v5.41.490 — patron et comptable ont la main sur les heures
+function comptaEditEnabled(){ const r = (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; if(r === 'chef' || r === 'ouvrier') return false; return r === 'patron' || r === 'comptable' || !!(data.settings && data.settings.comptableCanEdit); }   // v5.41.490 — patron et comptable ont la main sur les heures · v5.61.0 : jamais le chef (ni l'ouvrier), même avec l'option dev
 function _comptaEditOverrides(){
   if(!data.settings) data.settings = {};
   if(!data.settings.comptableOverrides) data.settings.comptableOverrides = {};
@@ -77084,7 +77163,7 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
     });
     ov = best;
   }
-  if(!ov || ov.deleted) return null;
+  if(!ov || ov.deleted || ov.byRole === 'chef' || ov.byRole === 'ouvrier') return null;   // v5.61.0 — une correction venant d'un chef n'est jamais appliquée
   const newEntry = Object.assign({}, entry || {}, {
     hours:  (ov.hours  != null ? ov.hours  : (entry ? entry.hours  : '')),
     task:   (ov.task   != null ? ov.task   : (entry ? entry.task   : '')),
@@ -77287,6 +77366,7 @@ function _comptaEditFindWorker(deviceId, workerId){
 /* ── Enregistrement d'une correction → calque + push ─────────────── */
 async function comptaEditSave(){
   if(!_comptaEditCtx) return;
+  if(!comptaEditEnabled()){ closeModal('comptaEdit'); _comptaEditCtx = null; showToast('⛔ Tu ne peux pas modifier les heures d\'un autre'); return; }   // v5.61.0
   const { deviceId, workerId, dateKey } = _comptaEditCtx;
   const hoursRaw = document.getElementById('comptaEditHours').value.trim();
   const hours = hoursRaw === '' ? '' : String(roundHoursToHalf(hoursRaw));
@@ -77306,7 +77386,7 @@ async function comptaEditSave(){
   // (l'ancien nom libre "__free__" est disabled, donc jamais renvoyé ici)
   const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
-  const ovData = { hours, task, panier, typeJournee, voiturePerso, ts: Date.now() };
+  const ovData = { hours, task, panier, typeJournee, voiturePerso, ts: Date.now(), byRole: (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '' };   // v5.61.0 — qui a corrigé
   if(rawSel && rawSel !== '__free__' && rawSel !== '__libre__'){
     const chosen = _comptaEditAllSites().find(s => s.id === rawSel);
     ovData.siteId = rawSel;                              // ID synchronisé officiel
@@ -77434,7 +77514,7 @@ async function comptaEditApplyToMe(force){
   try{
     await comptaEditPull();
     const wid = prof.workerId, all = _comptaEditOverrides(), best = {};
-    Object.keys(all).forEach(k => { const m = k.split('::'); if(m.length !== 3 || m[1] !== wid) return; const o = all[k]; if(!o) return; const d = m[2]; if(!best[d] || (o.ts || 0) > (best[d].ts || 0)) best[d] = o; });
+    Object.keys(all).forEach(k => { const m = k.split('::'); if(m.length !== 3 || m[1] !== wid) return; const o = all[k]; if(!o || o.byRole === 'chef' || o.byRole === 'ouvrier') return; const d = m[2]; if(!best[d] || (o.ts || 0) > (best[d].ts || 0)) best[d] = o; });
     if(!data.attendance) data.attendance = {};
     Object.keys(best).forEach(dk => {
       const o = best[dk]; if(o.deleted) return;
@@ -77845,12 +77925,51 @@ async function _pointageSuggestAdd(authId, item){
    dans SA PROPRE fiche du jour (data.attendance local), puis vide sa boîte
    (les entrées consommées ne doivent pas réapparaître à la prochaine
    ouverture). */
+/* v5.61.0 — RÈGLE : chacun est maître de ses heures. Une proposition d'un collègue (chef) n'est PLUS écrite
+   toute seule dans la fiche : la personne voit la proposition et choisit « Ajouter à ma fiche » ou « Refuser ».
+   « Plus tard » : la proposition reste en attente, rien n'est touché. */
+let _psgBusy = false;
 async function _pointageSuggestApplyPending(){
   const myAuthId = _routeMyAuthId();
   const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
-  if(!myAuthId || !myWorkerId) return;
-  const d = await _pointageSuggestPull(myAuthId);
-  if(!d.items.length) return;
+  if(!myAuthId || !myWorkerId || _psgBusy || document.getElementById('modal-psg')) return;
+  _psgBusy = true;
+  let d = null; try{ d = await _pointageSuggestPull(myAuthId); }catch(e){}
+  _psgBusy = false;
+  if(!d || !d.items.length) return;
+  const items = d.items;
+  const fH = h => String(h || 0).replace('.', ',') + ' h';
+  const fD = k => { try{ return new Date(k + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }); }catch(e){ return k; } };
+  const nm = it => { const st = it.realSite && it.siteId && (data.sites || []).find(x => x.id === it.siteId); return (st && st.name) || it.siteName || it.customName || 'Chantier'; };
+  const div = document.createElement('div');
+  div.className = 'modal-overlay open'; div.id = 'modal-psg'; div.style.zIndex = 1250;
+  div.innerHTML = `<div class="modal" style="max-width:440px;">
+    <div class="modal-header"><h2>⏱️ Heures proposées</h2><button class="modal-close" onclick="_psgLater()">×</button></div>
+    <div class="hint" style="margin-bottom:10px;">Un collègue propose ces heures pour ta fiche. <b>Rien n'est ajouté sans ton accord</b> : coche ce qui est juste.</div>
+    ${items.map((it, i) => `<label style="display:flex;align-items:flex-start;gap:10px;padding:9px 10px;margin-bottom:6px;background:var(--card);border:1.5px solid var(--line);border-radius:10px;cursor:pointer;">
+      <input type="checkbox" id="psg_${i}" checked style="width:18px;height:18px;margin-top:2px;accent-color:var(--wood);flex-shrink:0;">
+      <span style="font-size:13px;"><b>${escapeHtml(fD(it.dateKey))}</b><br>📍 ${escapeHtml(nm(it))} · <b>${escapeHtml(fH(it.hours))}</b>${it.task ? ' · ' + escapeHtml(it.task) : ''}<br><small style="color:var(--ink-soft);">Proposé par ${escapeHtml(it.fromName || 'un collègue')}</small></span></label>`).join('')}
+    <button class="btn btn-primary btn-block" style="margin-top:6px;" onclick="_psgDecide(true)">✅ Ajouter à ma fiche</button>
+    <div class="row-actions" style="margin-top:8px;"><button type="button" class="btn btn-outline" style="flex:1;" onclick="_psgDecide(false)">Tout refuser</button><button type="button" class="btn btn-outline" style="flex:1;" onclick="_psgLater()">Plus tard</button></div>
+  </div>`;
+  div._items = items;
+  document.body.appendChild(div);
+}
+function _psgLater(){ const m = document.getElementById('modal-psg'); if(m) m.remove(); }
+async function _psgDecide(accept){
+  const m = document.getElementById('modal-psg'); if(!m) return;
+  const items = m._items || [];
+  const keep = accept ? items.filter((_, i) => { const c = document.getElementById('psg_' + i); return c && c.checked; }) : [];
+  m.remove();
+  const myAuthId = _routeMyAuthId(); if(!myAuthId) return;
+  await _pointageSuggestWrite(myAuthId, { items: [] });   // décision prise : la boîte est vidée (acceptées ou refusées)
+  if(keep.length) await _pointageSuggestApplyItems(keep);
+  else showToast(accept ? 'Rien n\'a été ajouté à ta fiche' : 'Propositions refusées : ta fiche n\'a pas changé');
+}
+async function _pointageSuggestApplyItems(items){
+  const myWorkerId = data.settings && data.settings.myProfile && data.settings.myProfile.workerId;
+  if(!myWorkerId) return;
+  const d = { items };
   let added = 0;
   const byChef = {};
   d.items.forEach(item => {
@@ -77879,9 +77998,8 @@ async function _pointageSuggestApplyPending(){
   });
   if(added){
     saveData();
-    await _pointageSuggestWrite(myAuthId, { items: [] }); // boîte vidée : ne réapparaît plus
-    const names = Object.keys(byChef).join(', ');
-    showToast(`⏱️ Ta fiche d'heures a été pré-remplie par ${names} (${added} chantier${added>1?'s':''}) — vérifie et valide.`);
+    if(typeof schedulePointageSync === 'function') schedulePointageSync();
+    showToast(`✅ ${added} chantier${added>1?'s':''} ajouté${added>1?'s':''} à ta fiche — vérifie puis valide et signe.`);
     if(typeof renderPointage === 'function') try{ renderPointage(); }catch(e){}
   }
 }
@@ -78178,7 +78296,7 @@ function _routeFinishDialog(stop, route, mode){
       <div class="rfd-q">${[0.5, 1, 1.5, 2, 3, 4, 6, 8].map(v => `<button data-h="${v}" onclick="_rfdSetH(${v})">${String(v).replace('.', ',')} h</button>`).join('')}</div>
       <div class="rfd-l">🔧 Tâche effectuée</div>
       <div class="rfd-chips" id="rfdTasks">${TRANCHES.map(t => `<button data-t="${escapeHtml(t.label)}" onclick="_rfdTask(this)">${escapeHtml(t.label)}</button>`).join('')}</div>
-      <div class="rfd-l">👥 Avec qui ? <small>(leurs heures seront pré-remplies)</small></div>
+      <div class="rfd-l">👥 Avec qui ? <small>(ils recevront une proposition à accepter)</small></div>
       <div class="rfd-team" id="rfdTeam"><div class="hint">Chargement…</div></div>` : ''}
       <button class="rfd-go" id="rfdGo" onclick="_rfdGo()"></button>
     </div>`;
@@ -78262,7 +78380,7 @@ async function _routeApplyPointage(stop, route, result){
     }
 
     if(notified.length){
-      showToast(`✅ ${h}h ajoutée${h>1?'s':''} pour toi — fiche pré-remplie envoyée à ${notified.join(', ')}`);
+      showToast(`✅ ${h}h ajoutée${h>1?'s':''} pour toi — proposition envoyée à ${notified.join(', ')} (à accepter)`);
     } else {
       showToast(`✅ ${h}h ajoutée${h>1?'s':''} au pointage du jour`);
     }
@@ -87293,7 +87411,7 @@ const RH_HELP = {
     { i:'⏱️', x:"<b>Pointage</b> : chaque soir, ton chantier, tes heures (8 h proposées, 6 h le vendredi : ajuste avec − / +), le panier, puis <b>Valider et signer</b>. Ta fiche part toute seule à la compta.", r:['ouvrier'] },
     { i:'⏱️', x:"<b>Pointage</b> : chaque soir, ton chantier, tes heures et le panier, puis <b>Valider et signer</b>. Ta fiche part toute seule à la compta.", r:['chef','conducteur','patron'] },
     { i:'🤒', x:"Congé ou maladie ? Le lien <b>Absent ?</b> sous la carte.", r:['ouvrier'] },
-    { i:'👥', x:"En Pointage, tu peux aussi pointer les gars de ton équipe.", r:['chef'] },
+    { i:'👥', x:"Chacun pointe ses propres heures : tu ne peux ni saisir ni modifier celles de ton équipe.", r:['chef'] },
     { i:'🗓️', x:"<b>Fiches d'heures</b> : ta semaine. Une journée fausse ? Touche-la pour la corriger.", r:['ouvrier','chef','conducteur','patron'] },
     { i:'📈', x:"<b>Récap</b> : le total de tes heures, mois par mois." },
     { i:'🧾', x:"<b>Compta</b> : les fiches validées et signées de tout le monde arrivent ici toutes seules. Touche une journée pour la corriger.", r:['comptable'] },
@@ -88069,7 +88187,7 @@ async function _carPtOffer(){
         <label style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1.5px solid var(--line);border-radius:9px;cursor:pointer;">
           <input type="checkbox" id="cpTeam_${i}" style="width:18px;height:18px;accent-color:var(--wood);flex-shrink:0;"><span style="font-weight:700;font-size:13px;">🔧 ${escapeHtml(w.name || 'Ouvrier')}</span></label>`).join('')}</div>`
         : '<div class="hint">Aucun collègue trouvé dans l\'équipe.</div>'}
-      <div class="hint" style="margin-top:6px;">Chaque collègue coché reçoit la même fiche pré-remplie, à vérifier et signer lui-même.</div></div>
+      <div class="hint" style="margin-top:6px;">Chaque collègue coché reçoit une proposition : rien n'est ajouté à sa fiche sans son accord.</div></div>
     <button class="btn btn-primary btn-block" id="cpSave">✓ Enregistrer</button>
     <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="document.getElementById('modal-carPt').remove()">Plus tard</button>
   </div>`;
@@ -88102,7 +88220,7 @@ async function _carPtOffer(){
       if(ok) notified.push(u.name || 'Ouvrier');
     }
     try{ if(typeof renderPointage === 'function') renderPointage(); }catch(_){}
-    showToast(notified.length ? '✅ Tâche enregistrée · fiche envoyée à ' + notified.join(', ') + '. Valide et signe ta fiche.' : '✅ Tâche enregistrée. Valide et signe ta fiche.');
+    showToast(notified.length ? '✅ Tâche enregistrée · proposition envoyée à ' + notified.join(', ') + ' (à accepter). Valide et signe ta fiche.' : '✅ Tâche enregistrée. Valide et signe ta fiche.');
   };
 }
 async function _rwApplyHoursOps(){
@@ -96295,7 +96413,20 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     }
     if(step === 'join'){
       if(!/^[A-Z0-9]{4,10}$/.test(S.code)) return say('Le code entreprise fait 6 lettres ou chiffres.');
-      return OB.show('engage');
+      if(S.sim) return OB.show('engage');
+      // v5.61.0 — nom déjà utilisé dans l'entreprise (sans casse ni accents) : on bloque dès maintenant
+      return (async () => {
+        try{
+          const rc = await _rwGwCall({ op:'name_check', code:S.code, firstName:S.first, lastName:S.last, nameKey:_rwNameKey(S.first, S.last) });
+          const jc = await rc.json().catch(() => null);
+          if(rc.ok && jc && jc.ok && jc.taken){
+            const who = jc.name || jc.rwoodId || (S.first + ' ' + S.last);
+            try{ alert(_rwNameTakenMsg(S.first, S.last, { name:who })); }catch(e){}
+            return say('⛔ Ce nom est déjà utilisé : un compte existe déjà au nom de « ' + E(who) + ' ». Si c\'est toi, reviens en arrière et choisis « Me connecter ».');
+          }
+        }catch(e){ /* porte d'entrée sans « name_check » : contrôle fait à l'inscription */ }
+        OB.show('engage');
+      })();
     }
     if(step === 'create'){
       if(S.coName.length < 2) return say('Indique le nom de ton entreprise.');
