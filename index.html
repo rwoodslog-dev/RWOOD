@@ -229,6 +229,8 @@
   .trk-links{ display:flex; gap:6px 14px; flex-wrap:wrap; margin-top:10px; }
   .trk-map{ height:300px; border-radius:14px; overflow:hidden; position:relative; z-index:0; isolation:isolate; }
   .trk-livemap{ height:200px; border-radius:14px; overflow:hidden; margin-top:8px; position:relative; z-index:0; isolation:isolate; }
+  .trk-chk{ font-size:13.5px; line-height:1.4; margin:4px 0; }
+  .trk-hrow.sel{ border-color:var(--wood); box-shadow:0 0 0 1px var(--wood) inset; }
   .trk-pin{ width:26px; height:26px; border-radius:50%; color:#fff; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.45); }
   .trk-sec{ font-weight:800; font-size:15px; margin:14px 0 6px; }
   .trk-leg{ display:flex; gap:8px; font-size:14px; line-height:1.4; margin-bottom:6px; }
@@ -7529,6 +7531,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
         <div class="chip" data-mode="recap" onclick="setHeuresMode('recap')">Récap</div>
         <div class="chip" data-mode="equipe" id="tabEquipe" style="display:none;" onclick="setHeuresMode('equipe')">👥 Mon équipe</div>
         <div class="chip" data-mode="suivi" onclick="setHeuresMode('suivi')">📊 Suivi</div>
+        <div class="chip" data-mode="traceur" id="tabTraceur" style="display:none;" onclick="setHeuresMode('traceur')">🧭 Traceur</div>   <!-- v5.65.0 — développeur uniquement -->
         <!-- chip Paie supprimé (v2.49.2) -->
         <div class="chip" data-mode="compta" id="tabComptaPaie" style="display:none;" onclick="setHeuresMode('compta')"><img src="icons/graphique.png" alt="" style="width:1em;height:1em;object-fit:contain;vertical-align:-2px;"> Compta</div>
       </div>
@@ -7604,7 +7607,8 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
       <div class="heures-mode" id="heuresMode-absences" style="display:none;"><div id="absRoot" class="abs-bureau"></div></div>
 
       <!-- SOUS-VUE : FICHES D'HEURES -->
-      <div class="heures-mode" id="heuresMode-suivi" style="display:none;"><div id="heuresSuivi"></div></div>   <!-- v5.41.572 — Suivi dans Heures -->
+      <div class="heures-mode" id="heuresMode-suivi" style="display:none;"><div id="heuresSuivi"></div></div>
+      <div class="heures-mode" id="heuresMode-traceur" style="display:none;"><div id="trkTab"></div></div>   <!-- v5.65.0 -->   <!-- v5.41.572 — Suivi dans Heures -->
       <div class="heures-mode" id="heuresMode-fiches" style="display:none;">
         <div class="card" id="fichesWeekHeader"></div>
         <div id="fichesContent"></div>
@@ -30594,6 +30598,9 @@ function renderHeures(){
   { const eqT = document.getElementById('tabEquipe'); if(eqT) eqT.style.display = 'none'; if(currentHeuresMode === 'equipe') currentHeuresMode = _bureau ? 'absences' : 'fiches'; }   // v5.41.500 — « Mon équipe » est maintenant dans Fiches d'heures
   // Le comptable atterrit directement sur le Récap (au lieu de Fiches).
   // (v5.41.398 : la comptable arrive sur Absences ; plus de redirection forcée vers Récap)
+  { const trT = document.getElementById('tabTraceur'); const _en = (typeof _trkEnabled === 'function') && _trkEnabled();
+    if(trT) trT.style.display = _en ? 'inline-block' : 'none';
+    if(!_en && currentHeuresMode === 'traceur') currentHeuresMode = _bureau ? 'absences' : 'fiches'; }   // v5.65.0
   setHeuresMode(currentHeuresMode);
 }
 
@@ -30629,7 +30636,8 @@ function setHeuresMode(mode){
   if(mode === 'fiches') renderFiches();
   if(mode === 'recap')  renderRecapPerso();
   if(mode === 'equipe') equipeRender();   // v5.41.482
-  if(mode === 'suivi') svpRender();   // v5.41.572 — planning automatique (ex-onglet Suivi)
+  if(mode === 'suivi') svpRender();
+  if(mode === 'traceur'){ try{ trkTabRender(); }catch(e){ console.warn('[trk] onglet', e); } }   // v5.65.0   // v5.41.572 — planning automatique (ex-onglet Suivi)
   try{ comptaEditApplyToMe(); }catch(e){}   // v5.41.490 — corrections de la compta
   if(mode === 'paie')   renderPaie();
   if(mode === 'compta') renderComptaPaie();
@@ -51350,9 +51358,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.64.0';
+const APP_VERSION = '5.65.0';
 
 const CHANGELOG = [
+  {
+    version: '5.65.0',
+    date: '29/10/2026',
+    entries: [
+      { icon: '🧭', text: "Heures › nouvel onglet « Traceur » (développeur uniquement) : pointer départ/arrivée, carte du jour, historique des trajets avec carte, temps de trajet, routes et contrôles." },
+      { icon: '🛡️', text: "Anti-triche : chaque pointage est horodaté par le serveur (ancrage), les journées sont chaînées entre elles, détection des positions simulées (avec le plugin Android), des sauts de position impossibles, des horloges décalées et des pointages hors zone chantier/dépôt. La suppression d'un jour reste visible côté serveur." }
+    ]
+  },
   {
     version: '5.64.0',
     date: '29/10/2026',
@@ -87801,6 +87817,8 @@ const TRK_STEPS = {
 };
 const TRK_MIN_M = 25, TRK_MIN_S = 5, TRK_BEAT_S = 120, TRK_GAP_S = 300, TRK_MAX_ACC = 150, TRK_ARRIVE_M = 150, TRK_SITE_M = 400, TRK_MAX_H = 16;
 const _trk = { cache:{}, db:null, active:null, watchId:null, native:null, lock:null, q:Promise.resolve(), saveT:null, beat:null, tick:null, suggest:null, lastPt:null, lastSeen:0, busy:false, fixAt:0, fix:null };
+const TRK_DEV_ONLY = true;   // ← mettre false pour ouvrir le traceur à tous les rôles
+function _trkEnabled(){ try{ return !TRK_DEV_ONLY || (typeof devAccessIsDevUser === 'function' && devAccessIsDevUser()); }catch(e){ return false; } }
 
 /* ── stockage local (IndexedDB) : store « d » = journée complète, « m » = résumé léger ── */
 function _trkDb(){
@@ -87823,7 +87841,9 @@ async function _trkGet(dk){
 }
 function _trkMeta(rec){
   const ev = rec.events || [];
+  const an = rec.anchored || {};
   return { day:rec.day, start:(ev[0] && ev[0].t) || rec.start || 0, end:rec.end || 0, km:_trkKm(rec), n:(rec.pts || []).length, ne:ev.length, active:!!rec.active,
+    head:rec.head || '', anch:ev.filter(e => an[e.h]).length, an:(rec.anom || []).length,
     site:(ev.find(e => e.k === 'arrivee_chantier') || {}).siteName || '' };
 }
 async function _trkPut(rec){
@@ -87851,7 +87871,7 @@ async function _trkSha(s){
   catch(e){ return ''; }
 }
 function _trkAppend(rec, list, obj){
-  const core = list === 'events' ? [obj.k, obj.t, obj.la, obj.lo, obj.a] : list === 'pts' ? [obj.t, obj.la, obj.lo, obj.a] : [obj.from, obj.to];
+  const core = list === 'events' ? [obj.k, obj.t, obj.la, obj.lo, obj.a] : list === 'pts' ? [obj.t, obj.la, obj.lo, obj.a] : list === 'anom' ? [obj.t, obj.ty] : [obj.from, obj.to];
   _trk.q = _trk.q.then(async () => {
     obj.h = await _trkSha((rec.head || '') + '|' + list + '|' + JSON.stringify(core));
     rec.head = obj.h || rec.head || '';
@@ -87862,11 +87882,11 @@ function _trkAppend(rec, list, obj){
 async function _trkVerify(rec){
   /* recalcule la chaîne dans l'ordre d'enregistrement (t) ; renvoie true si intacte */
   try{
-    const all = [].concat((rec.events || []).map(o => ['events', o]), (rec.pts || []).map(o => ['pts', o]), (rec.gaps || []).map(o => ['gaps', o]));
+    const all = [].concat((rec.events || []).map(o => ['events', o]), (rec.pts || []).map(o => ['pts', o]), (rec.gaps || []).map(o => ['gaps', o]), (rec.anom || []).map(o => ['anom', o]));
     all.sort((a, b) => (a[1].seq || 0) - (b[1].seq || 0));
-    let head = '';
+    let head = rec.base || '';
     for(const [list, o] of all){
-      const core = list === 'events' ? [o.k, o.t, o.la, o.lo, o.a] : list === 'pts' ? [o.t, o.la, o.lo, o.a] : [o.from, o.to];
+      const core = list === 'events' ? [o.k, o.t, o.la, o.lo, o.a] : list === 'pts' ? [o.t, o.la, o.lo, o.a] : list === 'anom' ? [o.t, o.ty] : [o.from, o.to];
       head = await _trkSha(head + '|' + list + '|' + JSON.stringify(core));
       if(head !== o.h) return false;
     }
@@ -87937,12 +87957,14 @@ async function _trkRevGeo(rec, ev){
 /* ── suivi continu ── */
 function _trkOnPos(p){
   const rec = _trk.active; if(!rec || !p || p.la == null) return;
+  if(p.sim && Date.now() - (_trk.simAt || 0) > 60000){ _trk.simAt = Date.now(); _trkAnom(rec, p.t || Date.now(), 'simulee'); }
   if(p.a != null && p.a > TRK_MAX_ACC) return;
-  _trk.lastSeen = Date.now(); _trk.fix = { la:+p.la.toFixed(6), lo:+p.lo.toFixed(6), a:Math.round(p.a || 0), t:p.t || Date.now() }; _trk.fixAt = Date.now();
+  _trk.lastSeen = Date.now(); _trk.fix = { la:+p.la.toFixed(6), lo:+p.lo.toFixed(6), a:Math.round(p.a || 0), t:p.t || Date.now(), sim:!!p.sim }; _trk.fixAt = Date.now();
   const t = _trk.fix.t, last = _trk.lastPt;
   if(last){
     const dt = (t - last.t) / 1000, d = haversineKm(last.la, last.lo, _trk.fix.la, _trk.fix.lo) * 1000;
     if(dt < 0) return;
+    if(dt > 0 && dt < 600 && d / dt > 70 && Date.now() - (_trk.jumpAt || 0) > 60000){ _trk.jumpAt = Date.now(); _trkAnom(rec, t, 'saut'); }   // > 250 km/h : téléportation
     if(!((d >= TRK_MIN_M && dt >= TRK_MIN_S) || dt >= TRK_BEAT_S)) return;
     if(dt > TRK_GAP_S){ _trkAppend(rec, 'gaps', { from:last.t, to:t, seq:++rec.seq }); }
   }
@@ -87951,6 +87973,7 @@ function _trkOnPos(p){
   _trkSaveSoon(rec);
   _trkCheckSuggest(rec);
 }
+function _trkAnom(rec, t, ty){ _trkAppend(rec, 'anom', { t, ty, seq:++rec.seq }); _trkSaveSoon(rec); }
 function _trkCheckSuggest(rec){
   try{
     if(_trk.suggest || _trkNext(rec)[0] !== 'arrivee_chantier' || !_trk.fix) return;
@@ -87966,8 +87989,8 @@ async function _trkStartWatch(){
   if(BG){
     try{
       const id = await BG.addWatcher({ backgroundTitle:'Notybat — trajet en cours', backgroundMessage:'Ton trajet est enregistré sur ton téléphone (pointage).', requestPermissions:true, stale:false, distanceFilter:15 },
-        (loc, err) => { if(loc) _trkOnPos({ la:loc.latitude, lo:loc.longitude, a:loc.accuracy, t:loc.time || Date.now() }); });
-      _trk.native = id;
+        (loc, err) => { if(loc) _trkOnPos({ la:loc.latitude, lo:loc.longitude, a:loc.accuracy, t:loc.time || Date.now(), sim:!!loc.simulated }); });
+      _trk.native = id; if(_trk.active) _trk.active.native = true;
     }catch(e){ _trk.native = null; }
   }
   if(_trk.native == null && navigator.geolocation){
@@ -87979,6 +88002,7 @@ async function _trkStartWatch(){
   }
   if(!_trk.beat) _trk.beat = setInterval(() => {   // battement : un point toutes les 2 min même à l'arrêt
     if(!_trk.active) return;
+    if(Date.now() - (_trk.cpAt || 0) > 600000){ _trk.cpAt = Date.now(); _trkCheckpoint(_trk.active, 'auto'); } else _trkFlushAnchors();
     if(Date.now() - (_trk.lastSeen || 0) > (TRK_BEAT_S - 10) * 1000 && navigator.geolocation){
       navigator.geolocation.getCurrentPosition(p => _trkOnPos({ la:p.coords.latitude, lo:p.coords.longitude, a:p.coords.accuracy, t:p.timestamp || Date.now() }), () => {}, { enableHighAccuracy:true, timeout:20000, maximumAge:0 });
     }
@@ -87997,14 +88021,21 @@ function _trkStopWatch(){
 }
 
 /* ── pointage d'une étape ── */
+async function _trkNewRec(dk, t){
+  let base = '', prevDay = '';
+  try{ const all = (await _trkAllMeta()).filter(x => x.day < dk && x.head).sort((a, b) => b.day.localeCompare(a.day)); if(all[0]){ base = all[0].head; prevDay = all[0].day; } }catch(e){}
+  return { day:dk, v:2, events:[], pts:[], gaps:[], anom:[], head:base, base, prevDay, anchored:{}, ackAt:{}, seq:0, active:false, start:t, end:0, native:false };
+}
 async function trkStep(type){
   if(_trk.busy || !TRK_STEPS[type]) return;
+  if(!_trkEnabled()) return;
   if(localStorage.getItem(TRK_CONSENT_KEY) !== 'yes'){ trkConsentAsk(() => trkStep(type)); return; }
   _trk.busy = true;
   try{
     const dk = _ptsTodayKey(), t = Date.now();
     let rec = (_trk.active && _trk.active.day === dk) ? _trk.active : await _trkGet(dk);
-    if(!rec){ rec = { day:dk, v:1, events:[], pts:[], gaps:[], head:'', seq:0, active:false, start:t, end:0 }; _trk.cache[dk] = rec; }
+    if(!rec){ rec = await _trkNewRec(dk, t); _trk.cache[dk] = rec; }
+    rec.anchored = rec.anchored || {}; rec.ackAt = rec.ackAt || {}; rec.anom = rec.anom || [];
     rec.seq = rec.seq || ((rec.events || []).length + (rec.pts || []).length + (rec.gaps || []).length);
     showToast('📡 Position en cours…');
     const fix = (type === 'stop') ? (_trk.fix || null) : await _trkFix();
@@ -88026,6 +88057,10 @@ async function trkStep(type){
       ev.siteName = 'Dépôt';
     }
     if(!fix){ ev.noFix = true; }
+    ev.fl = { sim:!!(fix && fix.sim), acc:fix ? fix.a : null, imprecise:!!(fix && fix.a > 100) };
+    if(type === 'arrivee_chantier' || type === 'depart_chantier') ev.zone = ev.siteId && !ev.far ? 'ok' : (ev.noGeo ? 'inconnue' : 'hors');
+    if(type === 'depart_depot' || type === 'arrivee_depot') ev.zone = ev.dist != null ? (ev.dist <= TRK_SITE_M ? 'ok' : 'hors') : 'inconnue';
+    if(ev.fl.imprecise && ev.zone === 'ok') ev.zone = 'inconnue';
     await _trkAppend(rec, 'events', ev);
     const stored = rec.events[rec.events.length - 1];
     if(fix){ _trk.lastPt = { t, la:fix.la, lo:fix.lo }; await _trkAppend(rec, 'pts', { t, la:fix.la, lo:fix.lo, a:fix.a, seq:++rec.seq }); }
@@ -88036,7 +88071,9 @@ async function trkStep(type){
       rec.active = true; _trk.active = rec; try{ localStorage.setItem(TRK_ACTIVE_KEY, dk); }catch(e){}
       await _trkStartWatch();
     }
+    if(type === 'stop' || type === 'arrivee_depot') await _trkCheckpoint(rec, 'fin');
     await _trkSaveNow(rec);
+    _trkAnchorPush(rec, 'ev:' + type, stored.h, stored.seq, stored.fl, { la:stored.la, lo:stored.lo, zone:stored.zone || null }, stored.t); _trkFlushAnchors();
     if(fix) _trkRevGeo(rec, stored);
     if(type === 'stop' || type === 'arrivee_depot') _trkMatch(rec).catch(() => {});
     const S = TRK_STEPS[type];
@@ -88050,6 +88087,83 @@ function trkConfirmSuggest(){
   trkStep('arrivee_chantier');
 }
 function trkStopAsk(){ if(confirm('Arrêter le suivi du trajet maintenant ? (sans pointer « arrivée dépôt »)')) trkStep('stop'); }
+
+/* ── ancrage serveur : chaque pointage (et un point de contrôle toutes les 10 min) est envoyé au serveur,
+   qui y ajoute SON heure. File d'attente locale tant qu'il n'y a pas de réseau. Voir SQL-ancrage-traceur.sql ── */
+const TRK_AQ = 'rwood-trk-anchorq';
+function _trkAq(){ try{ return JSON.parse(localStorage.getItem(TRK_AQ) || '[]'); }catch(e){ return []; } }
+function _trkAqSave(q){ try{ localStorage.setItem(TRK_AQ, JSON.stringify(q.slice(-400))); }catch(e){} }
+function _trkAnchorPush(rec, kind, h, seq, fl, extra, t){
+  if(!h) return; const q = _trkAq(); if(q.some(x => x.h === h && x.kind === kind)) return;
+  q.push({ day:rec.day, seq:seq || 0, kind, h, prev:rec.base || '', t:t || Date.now(), fl:fl || {}, ex:extra || null }); _trkAqSave(q);
+}
+async function _trkCheckpoint(rec, why){ await _trk.q; if(!rec.head) return; _trkAnchorPush(rec, 'cp', rec.head, rec.seq, { n:(rec.pts || []).length, why:why || '' }, null, Date.now()); _trkFlushAnchors(); }
+async function _trkFlushAnchors(){
+  if(_trk.flushing || !navigator.onLine) return;
+  const me = (typeof devAccessCurrentUser === 'function') ? devAccessCurrentUser() : ''; if(!me) return;
+  _trk.flushing = true;
+  try{
+    for(const it of _trkAq()){
+      let r; try{ r = await supaFetch('/rest/v1/rpc/rwood_trk_anchor', { method:'POST', headers:{ Prefer:'' }, body:JSON.stringify({ p_rwood_id:me, p_day:it.day, p_seq:it.seq, p_kind:it.kind, p_hash:it.h, p_prev:it.prev, p_client_t:it.t, p_flags:Object.assign({}, it.fl || {}, it.ex || {}) }) }); }catch(e){ _trk.srv = 'reseau'; break; }
+      if(r.status === 404){ _trk.srv = 'absent'; break; }
+      if(!r.ok){ _trk.srv = 'erreur'; break; }
+      let st = ''; try{ st = await r.json(); }catch(e){}
+      _trk.srv = 'ok';
+      const rec = _trk.cache[it.day] || await _trkGet(it.day);
+      if(rec){ (rec.anchored = rec.anchored || {})[it.h] = st || new Date().toISOString(); (rec.ackAt = rec.ackAt || {})[it.h] = Date.now(); _trkSaveSoon(rec); }
+      _trkAqSave(_trkAq().filter(x => !(x.h === it.h && x.kind === it.kind)));
+    }
+  }catch(e){} finally{ _trk.flushing = false; try{ _trkSrvStateTxt(); }catch(e){} }
+}
+window.addEventListener('online', () => { try{ _trkFlushAnchors(); }catch(e){} });
+function _trkSrvStateTxt(){
+  const el = document.getElementById('trkSrvState'); if(!el) return;
+  const n = _trkAq().length, s = _trk.srv;
+  el.innerHTML = '☁️ Ancrage serveur : <b>' + (s === 'ok' ? 'actif' : s === 'absent' ? 'non configuré — installe SQL-ancrage-traceur.sql' : s === 'erreur' ? 'erreur serveur' : s === 'reseau' ? 'hors connexion' : (n ? 'en attente' : 'prêt')) + '</b>' + (n ? ' · ' + n + ' en file d\'attente' : '');
+}
+async function trkServerCheck(dk){
+  const rec = await _trkGet(dk), el = document.getElementById('trkSrvRes'); if(!rec || !el) return;
+  const me = (typeof devAccessCurrentUser === 'function') ? devAccessCurrentUser() : '';
+  if(!navigator.onLine){ el.innerHTML = '📶 Il faut du réseau pour comparer avec le serveur.'; return; }
+  el.innerHTML = '⏳ Comparaison avec le serveur…';
+  try{
+    await _trkFlushAnchors();
+    const r = await supaFetch('/rest/v1/rpc/rwood_trk_anchors', { method:'POST', headers:{ Prefer:'' }, body:JSON.stringify({ p_rwood_id:me, p_day:dk }) });
+    if(r.status === 404){ el.innerHTML = '⚠️ Serveur non configuré : installe SQL-ancrage-traceur.sql.'; return; }
+    const rows = await r.json();
+    const all = new Set([].concat((rec.events || []), (rec.pts || []), (rec.gaps || []), (rec.anom || [])).map(o => o.h));
+    const evH = new Set((rec.events || []).map(o => o.h));
+    const bad = rows.filter(x => /^ev:/.test(x.kind) ? !evH.has(x.h) : !all.has(x.h));
+    const miss = (rec.events || []).filter(e => !rows.some(x => x.h === e.h));
+    const del = rows.filter(x => x.kind === 'del').length;
+    el.innerHTML = (bad.length ? `⚠️ <b>${bad.length} donnée(s) du serveur ne correspondent plus aux données du téléphone</b> (modifiées ou supprimées).` : `✅ Les ${rows.length} empreinte(s) du serveur correspondent aux données du téléphone.`)
+      + (miss.length ? `<br>⏳ ${miss.length} pointage(s) pas encore reçus par le serveur.` : '') + (del ? `<br>⚠️ Ce jour a déjà été supprimé une fois du téléphone.` : '');
+  }catch(e){ el.innerHTML = '❌ Comparaison impossible : ' + escapeHtml(String(e && e.message || e)); }
+}
+/* ── contrôles anti-triche affichés dans le détail, le résumé et le rapport ── */
+function _trkChecks(rec, ok){
+  const ev = rec.events || [], an = rec.anchored || {}, ack = rec.ackAt || {}, out = [];
+  out.push([!!ok, ok ? 'Chaîne d\'empreintes intacte : aucune donnée modifiée' : 'Chaîne d\'empreintes ROMPUE : des données ont été modifiées']);
+  if(rec.prevDay) out.push([null, 'Chaînée à la journée du ' + rec.prevDay + ' (une journée supprimée casse la suite)']);
+  const nA = ev.filter(e => an[e.h]).length;
+  out.push([ev.length > 0 && nA === ev.length, `Heure confirmée par le serveur : ${nA}/${ev.length} pointage(s)`]);
+  const sk = ev.filter(e => an[e.h] && ack[e.h] && Math.abs(Date.parse(an[e.h]) - ack[e.h]) > 120000);
+  if(nA) out.push([!sk.length, sk.length ? 'Horloge du téléphone décalée de ' + _trkDur(Math.abs(Date.parse(an[sk[0].h]) - ack[sk[0].h])) + ' par rapport au serveur' : 'Horloge du téléphone cohérente avec celle du serveur']);
+  const late = ev.filter(e => an[e.h] && ack[e.h] && ack[e.h] - e.t > 300000);
+  if(late.length) out.push([false, late.length + ' pointage(s) transmis au serveur avec plus de 5 min de retard (hors connexion)']);
+  const sim = (rec.anom || []).filter(a => a.ty === 'simulee').length, jmp = (rec.anom || []).filter(a => a.ty === 'saut').length;
+  out.push(sim ? [false, 'Fausse localisation (position simulée) détectée'] : rec.native ? [true, 'Aucune fausse localisation détectée'] : [null, 'Fausse localisation non détectable sans le plugin Android de suivi']);
+  out.push([!jmp, jmp ? jmp + ' saut(s) de position physiquement impossible(s)' : 'Trajet continu : aucun saut impossible']);
+  const hors = ev.filter(e => e.zone === 'hors'), inc = ev.filter(e => e.zone === 'inconnue');
+  out.push([!hors.length, hors.length ? hors.length + ' pointage(s) hors de la zone du chantier / dépôt (' + TRK_SITE_M + ' m)' : 'Pointages dans la zone attendue']);
+  if(inc.length) out.push([null, inc.length + ' pointage(s) dont la zone n\'a pas pu être vérifiée (position absente, imprécise ou adresse non localisée)']);
+  if((rec.gaps || []).length) out.push([false, (rec.gaps || []).length + ' trou(s) de signal GPS']);
+  return out;
+}
+function _trkChecksHtml(rec, ok){
+  return `<div class="trk-sec">🛡 Contrôles anti-triche</div>` + _trkChecks(rec, ok).map(c => `<div class="trk-chk">${c[0] === true ? '✅' : c[0] === false ? '⚠️' : 'ℹ️'} ${escapeHtml(c[1])}</div>`).join('')
+    + `<button class="pts-link" style="margin-top:6px;" onclick="trkServerCheck('${rec.day}')">☁️ Comparer avec le serveur</button><div class="trk-chk" id="trkSrvRes"></div>`;
+}
 
 /* ── reprise après fermeture de l'app / clôture d'un suivi oublié ── */
 async function _trkBoot(){
@@ -88076,7 +88190,7 @@ document.addEventListener('visibilitychange', () => {
   _trkRenderCard();
 });
 window.addEventListener('pagehide', () => { try{ if(_trk.active) _trkPut(_trk.active); }catch(e){} });
-setTimeout(() => { try{ _trkBoot(); }catch(e){} }, 2500);
+(function _trkBootRetry(n){ setTimeout(() => { try{ if(_trkEnabled()) _trkBoot(); else if(n < 6) _trkBootRetry(n + 1); }catch(e){} }, 3000); })(0);
 
 /* ── accord du salarié ── */
 function trkConsentAsk(then){
@@ -88106,26 +88220,29 @@ function trkConsentAnswer(v){
 
 /* ── carte dans l'écran de pointage ── */
 function _trkLiveTxt(){
-  const el = document.getElementById('trkLive'), rec = _trk.active; if(!el || !rec) return;
+  const el = _trkVisEl('trkLive'), rec = _trk.active; if(!el || !rec) return;
   const ev0 = (rec.events || [])[0];
   const ps = rec.pts || []; let sp = '';
   if(ps.length > 1){ const a = ps[ps.length - 2], b = ps[ps.length - 1], dt = (b.t - a.t) / 1000; if(dt > 0 && Date.now() - b.t < 45000){ const v = haversineKm(a.la, a.lo, b.la, b.lo) / dt * 3600; if(v >= 3 && v < 200) sp = ' · ' + Math.round(v) + ' km/h'; } }
   el.innerHTML = `<span class="trk-dot"></span><b>Suivi en cours</b>${ev0 ? ' depuis ' + _trkHM(ev0.t) : ''} · ${_trkFmtKm(_trkKm(rec))}${ev0 ? ' · ' + _trkDur(Date.now() - ev0.t) : ''}${sp} · ${ps.length} points${_trk.lastSeen ? ' · dernier à ' + _trkHM(_trk.lastSeen) : ''}`;
   _trkLiveMapUpdate();
 }
-async function _trkRenderCard(){
-  const el = document.getElementById('trkCard'); if(!el) return;
-  const dk = currentPointageDate, today = _ptsTodayKey();
+function _trkRenderCard(){ _trkRenderCardInto('trkCard', currentPointageDate, ''); _trkRenderCardInto('trkTabCard', _ptsTodayKey(), 'T'); }
+function _trkVisEl(base){ for(const s of ['T', '']){ const el = document.getElementById(base + s); if(el && el.offsetParent) return el; } return null; }
+async function _trkRenderCardInto(elId, dk, sfx){
+  const el = document.getElementById(elId); if(!el) return;
+  if(!_trkEnabled()){ el.innerHTML = ''; return; }
+  const today = _ptsTodayKey();
   const rec = (_trk.active && _trk.active.day === dk) ? _trk.active : (_trk.cache[dk] || await _trkGet(dk));
-  const el2 = document.getElementById('trkCard'); if(!el2) return;
+  const el2 = document.getElementById(elId); if(!el2) return;
   const ev = (rec && rec.events) || [];
   const isToday = dk === today, consent = localStorage.getItem(TRK_CONSENT_KEY) === 'yes';
   if(!isToday && !ev.length){ el2.innerHTML = ''; return; }
   const tl = ev.map(e => { const S = TRK_STEPS[e.k] || {}; return `<div><span>${S.ico || '•'}</span><span><b>${_trkHM(e.t)}</b> ${escapeHtml(S.short || e.k)}${e.siteName && e.k !== 'depart_depot' && e.k !== 'arrivee_depot' ? ' · ' + escapeHtml(e.siteName) : ''}${e.noFix ? ' <small>(sans position)</small>' : ''}</span></div>`; }).join('');
   let html = `<div class="pts-card trk-card"><div class="trk-t">🧭 Preuve de trajet</div>`;
   if(rec && rec.active && isToday){
-    html += `<div class="trk-live" id="trkLive"></div>`;
-    html += `<div class="trk-livemap" id="trkLiveMap" style="display:none;"></div>`;
+    html += `<div class="trk-live" id="trkLive${sfx}"></div>`;
+    html += `<div class="trk-livemap" id="trkLiveMap${sfx}" style="display:none;"></div>`;
     if(!_trkBG()) html += `<div class="trk-warn">⚠️ Garde Notybat ouvert et l'écran allumé : sur cette version, le suivi peut s'interrompre quand le téléphone se verrouille. Les trous de signal sont signalés dans le rapport.</div>`;
   } else if(isToday && !ev.length && !consent){
     html += `<div class="trk-live">Pointe ton trajet (dépôt → chantier → dépôt) et garde une preuve de ta position.</div>`;
@@ -88198,7 +88315,7 @@ async function _trkLeafletMap(rec){
 
 /* carte en direct dans l'écran de pointage pendant le suivi */
 async function _trkLiveMapUpdate(){
-  const el = document.getElementById('trkLiveMap'), rec = _trk.active; if(!el || !rec) return;
+  const el = _trkVisEl('trkLiveMap'), rec = _trk.active; if(!el || !rec) return;
   if(!(await _ensureLeaflet())){ el.style.display = 'none'; return; }
   const pts = rec.pts || []; if(!pts.length){ el.style.display = 'none'; return; } el.style.display = '';
   if(!_trk.liveMap || _trk.liveMap._container !== el){
@@ -88346,7 +88463,7 @@ function _trkEvLine(e, withCoords){
   const pos = e.la != null ? (e.addr ? ' · ' + e.addr : '') + (withCoords ? ' [' + e.la.toFixed(5) + ', ' + e.lo.toFixed(5) + ' ±' + (e.a || '?') + ' m]' : '') : ' · position indisponible';
   return S.ico + ' ' + _trkHM(e.t) + ' ' + S.short + place + pos;
 }
-function _trkSummary(rec, withCoords){
+function _trkSummary(rec, withCoords, ok){
   const who = _trkWho();
   const L = [`Trajet du ${_trkDayLabel(rec.day)}${who ? ' — ' + who : ''}`, ''];
   (rec.events || []).forEach(e => L.push(_trkEvLine(e, withCoords)));
@@ -88357,6 +88474,8 @@ function _trkSummary(rec, withCoords){
     const top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 5).map(e => e[0] + ' (' + _trkFmtKm(e[1] / 1000) + ')');
     if(top.length) L.push('Routes principales : ' + top.join(', '));
   }
+  L.push('');
+  L.push('Contrôles :'); _trkChecks(rec, ok).forEach(c => L.push((c[0] === true ? '✅' : c[0] === false ? '⚠️' : 'ℹ️') + ' ' + c[1]));
   L.push('');
   L.push(`Distance parcourue ≈ ${_trkFmtKm(_trkKm(rec))} · ${(rec.pts || []).length} points GPS enregistrés`);
   (rec.gaps || []).forEach(g => L.push(`⚠️ Signal GPS interrompu de ${_trkHM(g.from)} à ${_trkHM(g.to)}`));
@@ -88388,7 +88507,7 @@ async function _trkReportHtml(rec){
 ${_trkSvg(rec, 800, 480)}<div><small>Trait orange = trajet enregistré (recalé sur les routes quand disponible) · pointillé rouge = signal interrompu · numéros = pointages ci-dessous.</small></div>
 <table><tr><th>#</th><th>Heure</th><th>Étape</th><th>Lieu</th><th>Position GPS</th></tr>${rows}</table>
 ${_trkLegsHtml(rec, true)}${_trkRoadsHtml(rec, true)}${gaps ? `<p><b>⚠️ Trous de signal</b></p><ul>${gaps}</ul>` : ''}
-<p class="${ok ? 'ok' : 'ko'}">${ok ? '🔒 Chaîne d\'empreintes intacte : aucune donnée modifiée depuis l\'enregistrement.' : '⚠️ Chaîne d\'empreintes rompue : des données ont pu être modifiées.'}</p>
+<p><b>🛡 Contrôles anti-triche</b></p><ul>${_trkChecks(rec, ok).map(c => `<li>${c[0] === true ? '✅' : c[0] === false ? '⚠️' : 'ℹ️'} ${escapeHtml(c[1])}</li>`).join('')}</ul>
 <p><small>Empreinte finale (SHA-256) :</small><br><code>${rec.head || '—'}</code></p>
 <p><small>Les positions ont été enregistrées par le téléphone du salarié au moment des pointages et pendant le trajet. Le fichier GPX joint (si fourni) contient le détail point par point.</small></p></body></html>`;
 }
@@ -88402,35 +88521,65 @@ async function trkExport(dk, kind){
   if((kind === 'html' || kind === 'txt') && navigator.onLine && !(rec.road && rec.road.n === (rec.pts || []).length)){ showToast('🛣️ Calcul des routes…'); await _trkMatch(rec); }
   if(kind === 'html') _trkSaveFile(base + '.html', await _trkReportHtml(rec), 'text/html', '.html');
   else if(kind === 'gpx') _trkSaveFile(base + '.gpx', _trkGpx(rec), 'application/gpx+xml', '.gpx');
-  else if(kind === 'txt') _trkShareText(_trkSummary(rec, false), 'Trajet du ' + dk);
+  else if(kind === 'txt') _trkShareText(_trkSummary(rec, false, await _trkVerify(rec)), 'Trajet du ' + dk);
 }
 
 /* ── fenêtres : détail d'un jour / historique ── */
+function _trkDetailInner(rec, ok){
+  const dk = rec.day;
+  const evs = (rec.events || []).map((e, i) => `<div class="trk-ev"><span class="trk-n">${i + 1}</span><span>${escapeHtml(_trkEvLine(e, false))}${e.zone === 'hors' ? ' <b style="color:#c0392b;">· hors zone</b>' : e.zone === 'ok' ? ' <b style="color:#1e8a4c;">· sur place</b>' : ''}</span></div>`).join('');
+  const gaps = (rec.gaps || []).map(g => `<div class="trk-warn">⚠️ Signal GPS interrompu de ${_trkHM(g.from)} à ${_trkHM(g.to)}</div>`).join('');
+  return `<div class="trk-map" id="trkMap"></div>
+    <div class="trk-live" style="margin:8px 0;">📏 <b>${_trkFmtKm(_trkKm(rec))}</b> · 📍 ${(rec.pts || []).length} points GPS · ${ok ? '🔒 intégrité vérifiée' : '⚠️ chaîne rompue'}</div>
+    <div id="trkLegs">${_trkLegsHtml(rec, false)}</div>
+    <div id="trkRoads">${_trkRoadsHtml(rec, false)}</div>
+    <div class="trk-sec">📌 Pointages</div><div class="trk-evs">${evs}</div>${gaps}
+    ${_trkChecksHtml(rec, ok)}
+    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="trkExport('${dk}','txt')">📤 Envoyer le résumé (SMS / WhatsApp)</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="trkExport('${dk}','html')">📄 Rapport de preuve (imprimable en PDF)</button>
+    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="trkExport('${dk}','gpx')">🗺️ Fichier GPX (Google Maps, etc.)</button>
+    <button class="pts-link" style="margin-top:10px;" onclick="trkRematch('${dk}')">🔄 Recalculer les routes</button>
+    <button class="pts-link" onclick="trkDeleteAsk('${dk}')">🗑 Effacer ce jour</button>`;
+}
+function _trkAfterDetail(rec){
+  _trk.viewDay = rec.day;
+  _trkLeafletMap(rec);
+  _trkMatch(rec).then(() => {
+    if(_trk.viewDay !== rec.day) return;
+    const R = document.getElementById('trkRoads'); if(R) R.innerHTML = _trkRoadsHtml(rec, false);
+    if(rec.road) _trkLeafletMap(rec);
+  });
+}
 async function trkOpen(dk){
   const rec = await _trkGet(dk); if(!rec){ showToast('Aucun trajet ce jour-là'); return; }
   const ok = await _trkVerify(rec);
   trkCloseModal();
   const d = document.createElement('div'); d.className = 'modal-overlay open'; d.id = 'modal-trk'; d.dataset.day = dk;
-  const evs = (rec.events || []).map((e, i) => `<div class="trk-ev"><span class="trk-n">${i + 1}</span><span>${escapeHtml(_trkEvLine(e, false))}</span></div>`).join('');
-  const gaps = (rec.gaps || []).map(g => `<div class="trk-warn">⚠️ Signal GPS interrompu de ${_trkHM(g.from)} à ${_trkHM(g.to)}</div>`).join('');
-  d.innerHTML = `<div class="modal"><div class="modal-header"><h2>🧭 ${escapeHtml(new Date(dk + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }))}</h2><button class="modal-close" onclick="trkCloseModal()">×</button></div>
-    <div class="trk-map" id="trkMap"></div>
-    <div class="trk-live" style="margin:8px 0;">📏 <b>${_trkFmtKm(_trkKm(rec))}</b> · 📍 ${(rec.pts || []).length} points GPS · ${ok ? '🔒 intégrité vérifiée' : '⚠️ chaîne rompue'}</div>
-    <div id="trkLegs">${_trkLegsHtml(rec, false)}</div>
-    <div id="trkRoads">${_trkRoadsHtml(rec, false)}</div>
-    <div class="trk-sec">📌 Pointages</div><div class="trk-evs">${evs}</div>${gaps}
-    <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="trkExport('${dk}','txt')">📤 Envoyer le résumé (SMS / WhatsApp)</button>
-    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="trkExport('${dk}','html')">📄 Rapport de preuve (imprimable en PDF)</button>
-    <button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="trkExport('${dk}','gpx')">🗺️ Fichier GPX (Google Maps, etc.)</button>
-    <button class="pts-link" style="margin-top:10px;" onclick="trkRematch('${dk}')">🔄 Recalculer les routes</button>
-    <button class="pts-link" onclick="trkDeleteAsk('${dk}')">🗑 Effacer ce jour</button></div>`;
+  d.innerHTML = `<div class="modal"><div class="modal-header"><h2>🧭 ${escapeHtml(new Date(dk + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }))}</h2><button class="modal-close" onclick="trkCloseModal()">×</button></div>${_trkDetailInner(rec, ok)}</div>`;
   document.body.appendChild(d);
-  _trkLeafletMap(rec);
-  _trkMatch(rec).then(() => {
-    const m = document.getElementById('modal-trk'); if(!m || m.dataset.day !== dk) return;
-    const R = document.getElementById('trkRoads'); if(R) R.innerHTML = _trkRoadsHtml(rec, false);
-    if(rec.road) _trkLeafletMap(rec);
-  });
+  _trkAfterDetail(rec);
+}
+/* ── onglet « Traceur » (Heures › Traceur) : réservé au développeur ── */
+async function trkTabRender(){
+  const root = document.getElementById('trkTab'); if(!root) return;
+  if(!_trkEnabled()){ root.innerHTML = ''; return; }
+  root.innerHTML = `<div class="pts-card trk-card" style="margin-top:0;"><div class="trk-t">🛠 Traceur — mode développeur</div><div class="trk-live">Visible uniquement par le développeur pendant la mise au point.</div><div class="trk-live" id="trkSrvState" style="margin-top:6px;"></div></div>
+    <div id="trkTabCard"></div><div id="trkTabDetail"></div><div class="trk-sec">🗂 Historique</div><div id="trkTabHist"><div class="hint">Chargement…</div></div>`;
+  _trkSrvStateTxt(); _trkRenderCard(); _trkFlushAnchors();
+  const list = (await _trkAllMeta()).sort((a, b) => b.day.localeCompare(a.day)).slice(0, 120);
+  const h = document.getElementById('trkTabHist'); if(!h) return;
+  h.innerHTML = list.length ? list.map(x => `<button class="trk-hrow" data-day="${x.day}" onclick="trkTabSelect('${x.day}')"><b>${escapeHtml(new Date(x.day + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' }))}</b><span>${x.start ? _trkHM(x.start) : ''}${x.end ? ' → ' + _trkHM(x.end) : x.active ? ' · en cours' : ''}${x.end && x.start ? ' · ' + _trkDur(x.end - x.start) : ''}</span><span>${_trkFmtKm(x.km || 0)}${x.site ? ' · ' + escapeHtml(x.site) : ''}</span><span>${x.ne ? '☁️ ' + (x.anch || 0) + '/' + x.ne : ''}${x.an ? ' · ⚠️ ' + x.an + ' alerte(s)' : ''}</span></button>`).join('') : '<div class="hint" style="text-align:center;padding:14px;">Aucun trajet enregistré pour l\'instant.</div>';
+  const today = _ptsTodayKey();
+  const pick = (_trk.tabDay && list.some(x => x.day === _trk.tabDay)) ? _trk.tabDay : (list.some(x => x.day === today) ? today : (list[0] && list[0].day));
+  if(pick) trkTabSelect(pick);
+}
+async function trkTabSelect(dk){
+  _trk.tabDay = dk;
+  const rec = await _trkGet(dk), det = document.getElementById('trkTabDetail'); if(!rec || !det) return;
+  const ok = await _trkVerify(rec);
+  det.innerHTML = `<div class="pts-card trk-card"><div class="trk-t">🧭 ${escapeHtml(_trkDayLabel(dk))}</div>${_trkDetailInner(rec, ok)}</div>`;
+  document.querySelectorAll('#trkTabHist .trk-hrow').forEach(b => b.classList.toggle('sel', b.dataset.day === dk));
+  _trkAfterDetail(rec);
 }
 function trkCloseModal(){
   try{ if(_trk.modalMap){ _trk.modalMap.remove(); _trk.modalMap = null; } }catch(e){}
@@ -88457,13 +88606,15 @@ async function trkHistory(){
   document.body.appendChild(d);
 }
 async function trkDeleteAsk(dk){
-  if(!confirm('Effacer définitivement le trajet de ce jour sur ce téléphone ?')) return;
+  if(!confirm('Effacer le trajet de ce jour sur ce téléphone ?\n\n⚠️ La suppression sera visible sur le serveur (preuve que ce jour a existé).')) return;
   if(_trk.active && _trk.active.day === dk){ _trk.active = null; _trkStopWatch(); try{ localStorage.removeItem(TRK_ACTIVE_KEY); }catch(e){} }
-  await _trkDelete(dk); trkCloseModal(); showToast('🗑 Trajet effacé'); _trkRenderCard();
+  { const r0 = await _trkGet(dk); if(r0 && r0.head){ _trkAnchorPush(r0, 'del', r0.head, r0.seq, {}, null, Date.now()); _trkFlushAnchors(); } }
+  await _trkDelete(dk); trkCloseModal(); showToast('🗑 Trajet effacé'); _trkRenderCard(); try{ if(currentHeuresMode === 'traceur') trkTabRender(); }catch(e){}
 }
 async function trkDeleteAll(){
   if(!confirm('Effacer TOUS les trajets enregistrés sur ce téléphone ?')) return;
-  for(const m of await _trkAllMeta()) await _trkDelete(m.day);
+  for(const m of await _trkAllMeta()){ const r0 = await _trkGet(m.day); if(r0 && r0.head) _trkAnchorPush(r0, 'del', r0.head, r0.seq, {}, null, Date.now()); await _trkDelete(m.day); }
+  _trkFlushAnchors();
   _trk.active = null; _trkStopWatch(); try{ localStorage.removeItem(TRK_ACTIVE_KEY); }catch(e){}
   const h = document.getElementById('modal-trkHist'); if(h) h.remove(); showToast('🗑 Tous les trajets sont effacés'); _trkRenderCard();
 }
