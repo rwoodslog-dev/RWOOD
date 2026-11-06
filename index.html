@@ -19,6 +19,29 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://rwoodslog-dev.github.io/RWOOD/icons/partage.jpg">
 <link rel="manifest" href="manifest.json">
+<!-- v5.66.2 — icône d'onglet explicite (sans elle le navigateur cherche /favicon.ico, échoue, puis change d'icône = scintillement) -->
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192-v4.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512-v4.png">
+<link rel="shortcut icon" href="icons/icon-192-v4.png">
+<!-- v5.66.2 — l'appli reste invisible (fond sombre/crème, jamais de blanc) tant que les emojis ne sont pas remplacés par les icônes Notybat :
+     plus d'icônes « de base » affichées une fraction de seconde. Filet de sécurité : 2,5 s maximum. -->
+<style>
+  html.rw-boot body{ opacity:0 !important; }
+  html:not(.rw-boot) body{ transition:opacity .15s ease-out; }
+</style>
+<script>
+(function(){
+  var de = document.documentElement;
+  de.classList.add('rw-boot');
+  var done = false;
+  window.rwBootReady = function(){ if(done) return; done = true; de.classList.remove('rw-boot'); window._rwBootT0 = Date.now(); };
+  setTimeout(window.rwBootReady, 2500);
+  /* chargement anticipé des icônes principales pendant que le fichier se télécharge */
+  var L = ['logo-header-v4','chantier-v2','afaire-v2','note-v2','heures-v2','itineraire-v2','stock-v2','contacts-v2','agenda-v2','toiture-v2','galerie-v2','croquis-v2','calcul-v2','suivi-v2','magasin-v2','planning-v2','dev-v2','messagerie-v2','entretien-v2','depannage-v2','boussole','engrenage'];
+  window._rwWarm = [];
+  for(var i = 0; i < L.length; i++){ var im = new Image(); im.decoding = 'async'; im.src = 'icons/' + L[i] + '.png'; window._rwWarm.push(im); }
+})();
+</script>
 <link rel="preconnect" href="https://espiotysnvxgjxrzkfta.supabase.co">
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" as="script">
@@ -69308,7 +69331,7 @@ function magasinRender(){
     const am = a.borrow.borrowerId === me || a.borrow.chefId === me ? 0 : 1, bm = b.borrow.borrowerId === me || b.borrow.chefId === me ? 0 : 1;
     return (am - bm) || ((a.borrow.borrowedAt || 0) - (b.borrow.borrowedAt || 0));
   });
-  if(!machines.length){ list.innerHTML=''; if(empty) empty.style.display='block'; return; }
+  if(!machines.length){ list.innerHTML=''; if(empty) empty.style.display='block'; try{ magasinSeedDefault(); }catch(e){} return; }
   if(empty) empty.style.display='none';
   if(!items.length){ list.innerHTML = `<div class="hint" style="text-align:center;padding:24px 0;">${_magTab === 'dispo' ? 'Aucune machine dispo pour le moment.' : _magTab === 'sortis' ? 'Rien de sorti : tout est au magasin 👍' : 'Aucune machine en SAV 👍'}</div>`; return; }
   list.innerHTML = items.map(m => {
@@ -70164,6 +70187,39 @@ async function magasinPull(){
     _magasinLastRemoteTs = remoteTs;
     return true;
   } catch(e){ return false; }
+}
+
+/* ── v5.66.5 — Liste de machines par défaut pour les nouvelles entreprises ──
+   Le fichier « magasin-defaut.json » (même format que « Exporter fichier » du panneau dev,
+   exporté depuis l'entreprise BCM) est copié dans le magasin d'une entreprise SEULEMENT si
+   son magasin n'a jamais existé côté serveur (aucune ligne). Une entreprise qui a déjà un magasin,
+   même vide, n'est jamais touchée. Machines recopiées « disponibles », sans emprunt ni SAV. */
+let _magSeedTried = false;
+async function magasinSeedDefault(){
+  if(_magSeedTried || !navigator.onLine) return; _magSeedTried = true;
+  try{
+    _magasinEnsure();
+    if(data.magasinMachines.length) return;
+    const chk = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(MAGASIN_SYNC_KEY) + '&select=updated_at', { headers: { 'Prefer': '' } });
+    if(!chk.ok) return;
+    const rows = await chk.json();
+    if(!Array.isArray(rows) || rows.length) return;          // un magasin existe déjà : on ne touche à rien
+    const r = await fetch('magasin-defaut.json', { cache:'no-cache' });
+    if(!r.ok) return;
+    const j = await r.json();
+    const src = Array.isArray(j) ? j : (j && Array.isArray(j.machines) ? j.machines : []);
+    if(!src.length) return;
+    if(data.magasinMachines.length) return;                  // quelqu'un a ajouté une machine entre-temps
+    const now = Date.now();
+    data.magasinMachines = src.filter(m => m && m.name).map((m, i) => ({
+      id: uid(), name: String(m.name), ref: m.ref || '', photo: m.photo || null,
+      tools: (Array.isArray(m.tools) ? m.tools : []).map(t => ({ id: uid(), name: t.name || '', photo: t.photo || null })),
+      borrow: null, sav: null, addedAt: now + i
+    }));
+    saveData();
+    magasinRender();
+    magasinPush();
+  }catch(e){}
 }
 
 /* Polling rapide (4s) — actif seulement quand l'onglet Magasin est
@@ -71274,7 +71330,7 @@ function simpleModeRenderDash(){
   if(n === 1) grid.classList.add('cols-1');
   else if(n === 3) grid.classList.add('cols-3');
 
-  grid.innerHTML = tiles.map((viewId, idx) => {
+  const _rwDashHtml = tiles.map((viewId, idx) => {
     const def = SIMPLE_ALL_TILES.find(t => t.view === viewId);
     const icon = def ? def.icon : '📁';
     const label = def ? def.label : viewId;
@@ -71313,6 +71369,8 @@ function simpleModeRenderDash(){
       <span class="simple-tile-label">${escapeHtml(def.label)}</span>
       <span class="dash-show-btn" role="button" data-show="${def.view}">👁 Afficher</span>
     </div>`).join('') : '');
+  // v5.66.2 — au démarrage, on ne recrée pas les tuiles (et leurs images) si rien n'a changé : plus de scintillement
+  if(!(grid._rwLastHtml === _rwDashHtml && grid.firstChild && window._rwBootT0 && Date.now() - window._rwBootT0 < 4000)){ grid._rwLastHtml = _rwDashHtml; grid.innerHTML = _rwDashHtml; }
   grid.classList.toggle('has-tab-manage', !!(_dashReorderTileId || _dashManage));
 
   // Réorganisation par appui long + flèches directionnelles.
@@ -71595,7 +71653,10 @@ function renderPcSidebarNav(){
           return `<button type="button" class="nav-btn pc-nav-more" data-view="${def.view}" onclick="simpleModeOpen('${def.view}')"><span class="ico">${_tabIconHtml(def)}</span><span class="lbl">${escapeHtml(def.label)}</span>${b > 0 ? `<span class="pc-nav-badge">${b > 9 ? '9+' : b}</span>` : ''}<span class="pc-nav-pin" role="button" title="Épingler" onclick="event.stopPropagation();dashPin('${def.view}')">☆</span></button>`; }).join('') : '');
     }
   }
-  nav.innerHTML = tileBtns + plusHtml + (hiddenHtml ? '<div class="pc-nav-hidden-t">Onglets masqués</div>' + hiddenHtml : '');
+  { const _h = tileBtns + plusHtml + (hiddenHtml ? '<div class="pc-nav-hidden-t">Onglets masqués</div>' + hiddenHtml : '');
+    // v5.66.2 — au démarrage, plusieurs re-rendus identiques recréaient toutes les icônes (scintillement) : on les saute
+    if(!(nav._rwLastHtml === _h && nav.firstChild && window._rwBootT0 && Date.now() - window._rwBootT0 < 4000)){ nav._rwLastHtml = _h; nav.innerHTML = _h; }
+  }
   nav.classList.toggle('pc-nav-has-reorder', editIdx !== -1 || _pcNavManage);
   _pcNavLongPressInit(nav);
 
@@ -95644,15 +95705,16 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     const el = tn.parentElement; if(!el || el.closest(SKIP)) return;
     const inSel = !!el.closest(SEL);
     RE.lastIndex = 0;
-    const frag = document.createDocumentFragment(); let last = 0, m;
+    const frag = document.createDocumentFragment(); let last = 0, m, changed = false;
     while((m = RE.exec(t))){
       if(m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
       const png = P[m[1]], p = inSel ? G[E[m[1]]] : null;
-      if(png){ const im = document.createElement('img'); im.src = 'icons/' + png + '.png'; im.alt = m[1]; im.className = 'rw-emo-i'; im.draggable = false; frag.appendChild(im); }
-      else if(p){ const s = document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('class','rw-emo'); s.setAttribute('aria-hidden','true'); s.innerHTML = p; frag.appendChild(s); }
+      if(png){ changed = true; const im = document.createElement('img'); im.decoding = 'sync'; im.src = 'icons/' + png + '.png'; im.alt = m[1]; im.className = 'rw-emo-i'; im.draggable = false; frag.appendChild(im); }
+      else if(p){ changed = true; const s = document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('class','rw-emo'); s.setAttribute('aria-hidden','true'); s.innerHTML = p; frag.appendChild(s); }
       else frag.appendChild(document.createTextNode(m[0]));
       last = m.index + m[0].length;
     }
+    if(!changed) return;   // v5.66.3 — rien à remplacer : on ne touche pas au texte (sinon boucle infinie = gel de l'appli)
     if(last < t.length) frag.appendChild(document.createTextNode(t.slice(last)));
     tn.parentNode.replaceChild(frag, tn);
   }
@@ -95664,14 +95726,20 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     let n; while((n = w.nextNode())) list.push(n);
     list.forEach(conv);
   }
-  const q = new Set(); let sched = false;
+  const q = new Set(); let sched = false, _rwN = 0;
   function flush(){ sched = false; const a = [...q]; q.clear(); a.forEach(n => { if(n.isConnected) scan(n); }); }
   function start(){
     scan(document.body);
     new MutationObserver(ms => {
       ms.forEach(m => { if(m.type === 'characterData') q.add(m.target); else m.addedNodes.forEach(n => q.add(n)); });
-      if(!sched){ sched = true; requestAnimationFrame(flush); }
+      if(!sched){ sched = true; if(++_rwN > 400){ requestAnimationFrame(() => { _rwN = 0; flush(); }); } else { flush(); setTimeout(() => { _rwN = 0; }, 0); } }   // v5.66.2 — tout de suite (avant le prochain affichage), plus d'emoji visible une image
     }).observe(document.body, { childList:true, subtree:true, characterData:true });
+    /* v5.66.2 — on révèle l'appli dès que les images déjà posées sont prêtes (500 ms max) */
+    try{
+      const imgs = [...document.querySelectorAll('img')].filter(i => !i.complete).slice(0, 40);
+      const wait = imgs.length ? Promise.race([Promise.all(imgs.map(i => (i.decode ? i.decode() : Promise.resolve()).catch(() => {}))), new Promise(r => setTimeout(r, 500))]) : Promise.resolve();
+      wait.then(() => requestAnimationFrame(() => { if(window.rwBootReady) window.rwBootReady(); }));
+    }catch(e){ if(window.rwBootReady) window.rwBootReady(); }
   }
   window.rwEmojiScan = scan;
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
@@ -96386,6 +96454,13 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
 .ob-seg button em{ font-style:normal; font-size:11px; display:block; font-weight:700; opacity:.85; }
 .ob-car{ display:flex; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; padding:4px 2px 10px; margin:0 -16px; padding-left:16px; padding-right:16px; scrollbar-width:none; }
 .ob-car::-webkit-scrollbar{ display:none; }
+.ob-car{ -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; touch-action:pan-x pan-y; cursor:grab; scroll-behavior:smooth; }
+.ob-car.drag{ cursor:grabbing; scroll-snap-type:none; scroll-behavior:auto; user-select:none; }
+.ob-car.drag *{ pointer-events:none; }
+.ob-car-nav{ display:flex; align-items:center; justify-content:center; gap:14px; margin:0 0 8px; }
+.ob-car-nav button{ width:38px; height:38px; border-radius:50%; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font-size:20px; font-weight:900; line-height:1; cursor:pointer; }
+.ob-car-nav button:disabled{ opacity:.35; cursor:default; }
+.ob-car-nav .ob-dots{ margin:0; }
 .ob-plan{ scroll-snap-align:center; flex:0 0 82%; max-width:300px; background:var(--card); border:1.5px solid var(--line); border-radius:20px; padding:16px; position:relative; display:flex; flex-direction:column; gap:6px; }
 .ob-plan.on{ border-color:var(--wood); background:rgba(238,138,46,.08); }
 .ob-plan .tag{ position:absolute; top:-10px; left:14px; background:var(--wood); color:#1A0F04; font-size:11px; font-weight:900; text-transform:uppercase; padding:3px 9px; border-radius:99px; }
@@ -97185,7 +97260,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
         <button type="button" class="ob-btn o sm" onclick="OB.wDevis()">Demander un devis</button></div>`]);
     return `<h2>Choisis ta formule</h2><p class="ob-sub">Toutes les formules donnent accès à toute l'appli : seul le nombre de comptes change.${hp ? ' Les tarifs sont sur notre site.' : ''}</p>
       ${hp ? '' : `<div class="ob-seg"><button type="button" class="${y ? '' : 'on'}" onclick="OB.wCycle('month')">Mensuel<em>1er mois offert</em></button><button type="button" class="${y ? 'on' : ''}" onclick="OB.wCycle('year')">Annuel<em>${YEAR_FREE} mois offerts</em></button></div>`}
-      <div class="ob-car" id="obCar">${cards.join('')}</div><div class="ob-dots" id="obDots">${cards.map((_, i) => `<i class="${i === 0 ? 'on' : ''}"></i>`).join('')}</div>
+      <div class="ob-car" id="obCar">${cards.join('')}</div><div class="ob-car-nav"><button type="button" id="obPrev" aria-label="Formule précédente">‹</button><div class="ob-dots" id="obDots">${cards.map((_, i) => `<i class="${i === 0 ? 'on' : ''}"></i>`).join('')}</div><button type="button" id="obNext" aria-label="Formule suivante">›</button></div>
       <div class="ob-card"><div class="ob-hint" style="margin:0;">${IC('info', 's')} Sans formule à la fin de l'essai, l'appli passe en lecture seule pour toute l'entreprise pendant 15 jours, puis les données sont supprimées.</div></div>
       <button type="button" class="ob-btn p" onclick="OB.wShow('zones')">Continuer ${IC('fleche-droite', 's')}</button>`;
   }
@@ -97196,6 +97271,21 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       kids.forEach((k, i) => { const d = Math.abs(k.offsetLeft + k.offsetWidth / 2 - mid); if(d < bd){ bd = d; best = i; } });
       [...dots.children].forEach((d, i) => d.classList.toggle('on', i === best)); };
     car.addEventListener('scroll', () => requestAnimationFrame(upd), { passive:true }); upd();
+    /* v5.66.4 — défilement possible à la souris (glisser, molette, flèches) et aux boutons ‹ › */
+    const step = () => { const k = car.children[0]; return k ? k.offsetWidth + 12 : 280; };
+    const go = d => car.scrollBy({ left: d * step(), behavior:'smooth' });
+    const pv = OB.$('obPrev'), nx = OB.$('obNext');
+    const arrows = () => { const max = car.scrollWidth - car.clientWidth - 2; if(pv) pv.disabled = car.scrollLeft <= 2; if(nx) nx.disabled = car.scrollLeft >= max; };
+    if(pv) pv.onclick = () => go(-1); if(nx) nx.onclick = () => go(1);
+    car.addEventListener('scroll', arrows, { passive:true }); arrows(); setTimeout(arrows, 300);
+    [...dots.children].forEach((d, i) => { d.style.cursor = 'pointer'; d.onclick = () => { const k = car.children[i]; if(k) car.scrollTo({ left: k.offsetLeft - (car.clientWidth - k.offsetWidth) / 2, behavior:'smooth' }); }; });
+    car.addEventListener('wheel', e => { if(Math.abs(e.deltaY) > Math.abs(e.deltaX) && car.scrollWidth > car.clientWidth){ const atS = car.scrollLeft <= 0 && e.deltaY < 0, atE = car.scrollLeft >= car.scrollWidth - car.clientWidth - 2 && e.deltaY > 0; if(!atS && !atE){ e.preventDefault(); car.scrollLeft += e.deltaY; } } }, { passive:false });
+    let down = false, sx = 0, sl = 0, moved = false;
+    car.addEventListener('pointerdown', e => { if(e.pointerType !== 'mouse' || e.button !== 0) return; down = true; moved = false; sx = e.clientX; sl = car.scrollLeft; });
+    window.addEventListener('pointermove', e => { if(!down) return; const dx = e.clientX - sx; if(!moved && Math.abs(dx) > 6){ moved = true; car.classList.add('drag'); } if(moved) car.scrollLeft = sl - dx; });
+    const stop = () => { if(!down) return; down = false; car.classList.remove('drag'); if(moved){ const kids = [...car.children], mid = car.scrollLeft + car.clientWidth / 2; let b = 0, bd = 1e9; kids.forEach((k, i) => { const dd = Math.abs(k.offsetLeft + k.offsetWidth / 2 - mid); if(dd < bd){ bd = dd; b = i; } }); const k = kids[b]; if(k) car.scrollTo({ left: k.offsetLeft - (car.clientWidth - k.offsetWidth) / 2, behavior:'smooth' }); } };
+    window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+    car.addEventListener('click', e => { if(moved){ e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
   }
   OB.wPlan = function(k){ W.plan = k; const sl = (OB.$('obCar') || {}).scrollLeft || 0; OB.wShow('plan'); const c = OB.$('obCar'); if(c) c.scrollLeft = sl; };
   OB.wCycle = function(c){ W.cycle = c; const sl = (OB.$('obCar') || {}).scrollLeft || 0; OB.wShow('plan'); const car = OB.$('obCar'); if(car) car.scrollLeft = sl; };
