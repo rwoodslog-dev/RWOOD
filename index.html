@@ -14543,22 +14543,26 @@ const SS_KEY = 'company_site_statuses_v1';
 const SS_ROLES = [['patron','Patron'],['conducteur','Conducteur'],['comptable','Secrétaire'],['chef','Chef'],['ouvrier','Ouvrier']];
 const SS_ALL = SS_ROLES.map(r => r[0]);
 const SS_DEF = [
-  { id:'brouillon', icon:'📝', name:'Brouillon', color:'#8E8A84', phase:'avant', roles:['patron','conducteur'], base:true },
-  { id:'a-faire', icon:'📋', name:'À faire', color:'#9a9a9a', phase:'actif', roles:SS_ALL.slice(), base:true },
+  /* v5.63.0 — par défaut 3 statuts : En attente / En cours / Terminé ; les autres prédéfinis existent mais sont « supprimés » (deleted) */
+  { id:'brouillon', icon:'📝', name:'Brouillon', color:'#8E8A84', phase:'avant', roles:['patron','conducteur'], base:true, deleted:true },
+  { id:'a-faire', icon:'🕒', name:'En attente', color:'#9a9a9a', phase:'actif', roles:SS_ALL.slice(), base:true },
   { id:'en-cours', icon:'🔨', name:'En cours', color:'#4FAE6C', phase:'actif', roles:SS_ALL.slice(), base:true },
-  { id:'ephemere', icon:'⏳', name:'Éphémère', color:'#9AA0A6', phase:'actif', roles:SS_ALL.slice(), eph:true },   // v5.41.528 — chantier éphémère (dépannage de quelques jours), grisé, visible par tous
+  { id:'ephemere', icon:'⏳', name:'Éphémère', color:'#9AA0A6', phase:'actif', roles:SS_ALL.slice(), eph:true, deleted:true },   // v5.41.528 — chantier éphémère (dépannage de quelques jours), grisé, visible par tous
   { id:'termine', icon:'✅', name:'Terminé', color:'#5B8DEF', phase:'archive', roles:SS_ALL.slice(), base:true }
 ];
 const SS_COLORS = ['#8E8A84','#7A8590','#9a9a9a','#EE8A2E','#E8743B','#E5484D','#D9579A','#9B59D0','#5B8DEF','#2BB3C0','#4FAE6C','#8B5E34'];
 let _ssCfg = (() => { try{ return JSON.parse(localStorage.getItem('rwood-site-statuses') || 'null'); }catch(e){ return null; } })();
-function ssList(){
-  const l = (_ssCfg && Array.isArray(_ssCfg.list) && _ssCfg.list.length) ? _ssCfg.list : SS_DEF;
+/* v5.63.0 — tous les statuts sont supprimables : un statut prédéfini supprimé reste connu (deleted:true) pour afficher
+   les anciens chantiers, mais n'est plus proposé. ssList() = statuts proposés · ssListAll() = tous (pour lire un chantier) */
+function ssList(){ return ssListAll().filter(x => !x.deleted); }
+function ssListAll(){
+  const l = (_ssCfg && Array.isArray(_ssCfg.list) && _ssCfg.list.length) ? _ssCfg.list : SS_DEF.map(d => Object.assign({}, d));
   SS_DEF.forEach(d => { if(!l.some(x => x.id === d.id)){ const c = Object.assign({}, d); if(d.eph){ const k = l.findIndex(x => x.phase === 'archive'); if(k >= 0) l.splice(k, 0, c); else l.push(c); } else l.push(c); } });   // les statuts prédéfinis existent toujours (+ Éphémère, v5.41.528)
   return l;
 }
 function _ssBaseOf(phase, id){ if(['brouillon','a-faire','en-cours','termine'].includes(id)) return id; return phase === 'avant' ? 'brouillon' : phase === 'archive' ? 'termine' : 'en-cours'; }
 function siteStage(s){
-  const l = ssList();
+  const l = ssListAll();
   let st = s && s.stage ? l.find(x => x.id === s.stage) : null;
   if(st && _ssBaseOf(st.phase, st.id) !== (s.status || 'a-faire')) st = null;   // statut de base changé ailleurs (ancienne version) → on suit le statut de base
   return st || l.find(x => x.id === ((s && s.status) || 'a-faire')) || SS_DEF[1];
@@ -14599,12 +14603,12 @@ async function ssSave(list){
 let _ssDraft = null, _ssEdit = null, _ssDirty = false;
 function ssOpen(){
   if(!ssCanEdit()){ showToast('Réservé au patron et aux conducteurs'); return; }
-  _ssDraft = JSON.parse(JSON.stringify(ssList())); _ssEdit = null; _ssDirty = false;
+  _ssDraft = JSON.parse(JSON.stringify(ssListAll())); _ssEdit = null; _ssDirty = false;
   let d = document.getElementById('modal-ss'); if(d) d.remove();
   d = document.createElement('div'); d.id = 'modal-ss'; d.className = 'modal-overlay open'; d.style.zIndex = 1100;
   d.innerHTML = `<div class="modal" style="max-width:560px;"><div class="modal-header"><h2>🏷️ Statuts des chantiers</h2><button class="modal-close" onclick="ssClose()">×</button></div><div id="ssBody"></div></div>`;
   document.body.appendChild(d); _ssRender();
-  ssFetch().then(c => { if(c && !_ssDirty && document.getElementById('modal-ss')){ _ssDraft = JSON.parse(JSON.stringify(ssList())); _ssRender(); } });
+  ssFetch().then(c => { if(c && !_ssDirty && document.getElementById('modal-ss')){ _ssDraft = JSON.parse(JSON.stringify(ssListAll())); _ssRender(); } });
 }
 function ssClose(force){ if(_ssDirty && !force && !confirm('Quitter sans enregistrer ?')) return; const d = document.getElementById('modal-ss'); if(d) d.remove(); _ssDraft = null; }
 function _ssR(){ _ssDirty = true; _ssRender(); }
@@ -14621,11 +14625,14 @@ function ssAdd(){
   setTimeout(() => { const i = document.getElementById('ssName_' + id); if(i){ i.focus(); i.select(); } }, 50);
 }
 function ssDel(id){
-  const c = _ssDraft.find(x => x.id === id); if(!c || c.base) return;
-  const n = (data.sites || []).filter(s => s.stage === id).length;
-  if(!confirm(`Supprimer le statut « ${c.name} » ?${n ? `\n${n} chantier${n > 1 ? 's' : ''} repasse${n > 1 ? 'nt' : ''} au statut de base (${c.phase === 'avant' ? 'Brouillon' : c.phase === 'archive' ? 'Terminé' : 'En cours'}).` : ''}`)) return;
-  _ssDraft = _ssDraft.filter(x => x.id !== id); _ssEdit = null; _ssR();
+  const c = _ssDraft.find(x => x.id === id); if(!c) return;
+  const pre = !!(c.base || SS_DEF.some(d => d.id === id));
+  const n = (data.sites || []).filter(s => siteStage(s).id === id).length;
+  if(!confirm(`Supprimer le statut « ${c.name} » ?${n ? (pre ? `\n${n} chantier${n > 1 ? 's' : ''} le garde${n > 1 ? 'nt' : ''} pour l'instant, mais il ne sera plus proposé.` : `\n${n} chantier${n > 1 ? 's' : ''} repasse${n > 1 ? 'nt' : ''} au statut de base (${c.phase === 'avant' ? 'Brouillon' : c.phase === 'archive' ? 'Terminé' : 'En cours'}).`) : ''}`)) return;
+  if(pre) c.deleted = true; else _ssDraft = _ssDraft.filter(x => x.id !== id);
+  _ssEdit = null; _ssR();
 }
+function ssRestore(id){ const c = _ssDraft.find(x => x.id === id); if(!c) return; delete c.deleted; _ssEdit = null; _ssR(); }
 async function ssSaveAll(){
   const list = _ssDraft.map(c => Object.assign({}, c, { name:(c.name || '').trim() || 'Statut', roles:Array.from(new Set(['patron'].concat(c.roles || SS_ALL))) }));
   if(!(await ssSave(list))) return;
@@ -14638,7 +14645,7 @@ function _ssRender(){
   const b = document.getElementById('ssBody'); if(!b || !_ssDraft) return;
   const ph = { avant:'avant chantier', actif:'actif', archive:'archive' };
   b.innerHTML = `<div class="hint" style="margin:0 2px 10px;">Pour toute l'entreprise. L'<b>étape</b> dit comment l'appli traite le chantier ; <b>Qui voit</b> cache complètement les chantiers de ce statut aux autres rôles.</div>`
-    + _ssDraft.map((c, i) => { const ed = _ssEdit === c.id, roles = c.roles || SS_ALL;
+    + _ssDraft.map((c, i) => { if(c.deleted) return ''; const ed = _ssEdit === c.id, roles = c.roles || SS_ALL;
       const eye = roles.length >= SS_ALL.length ? 'tous' : roles.map(r => (SS_ROLES.find(x => x[0] === r) || [r, r])[1]).join(', ');
       return `<div class="nv-cr${ed ? ' ed' : ''}" style="--c:${escapeHtml(c.color)}"><div class="nv-crh"><span class="nv-ar"><button onclick="ssMove(${i},-1)" ${i ? '' : 'disabled'}>▲</button><button onclick="ssMove(${i},1)" ${i < _ssDraft.length - 1 ? '' : 'disabled'}>▼</button></span>
         <i class="dot"></i><b onclick="ssEditRow('${c.id}')">${escapeHtml((c.icon || '') + ' ' + c.name)}<small class="ss-eye">👁 ${escapeHtml(eye)}</small></b><span class="pl ${c.phase === 'avant' ? 'bu' : c.phase === 'archive' ? 'fn' : 'eq'}">${ph[c.phase] || c.phase}</span><button class="pen" onclick="ssEditRow('${c.id}')">${ed ? '▴' : '✏️'}</button></div>
@@ -14646,8 +14653,11 @@ function _ssRender(){
           <div class="f cl">${SS_COLORS.map(x => `<button class="${x === c.color ? 'on' : ''}" style="background:${x}" onclick="ssSet('${c.id}','color','${x}',true)"></button>`).join('')}</div>
           <div class="ss-lbl">Étape</div>${c.base ? `<div class="hint" style="margin:0;">${ph[c.phase]} (statut de base, l'étape ne change pas)</div>` : `<div class="ss-seg">${[['avant','Avant chantier'],['actif','Chantier actif'],['archive','Terminé / archive']].map(([k, l]) => `<button class="${c.phase === k ? 'on' : ''}" onclick="ssSet('${c.id}','phase','${k}',true)">${l}</button>`).join('')}</div>`}
           <div class="ss-lbl">Qui voit les chantiers dans ce statut ?</div><div class="ss-rol">${SS_ROLES.map(([k, l]) => `<button class="${roles.includes(k) ? 'on' : ''}" ${k === 'patron' ? 'disabled' : ''} onclick="ssRole('${c.id}','${k}')">${roles.includes(k) ? '✓ ' : ''}${l}</button>`).join('')}</div>
-          ${c.base ? '' : `<button class="del" onclick="ssDel('${c.id}')">🗑 Supprimer ce statut</button>`}</div>` : ''}</div>`; }).join('')
-    + `<button class="nv-cadd" onclick="ssAdd()">＋ Ajouter un statut</button>
+          <button class="del" onclick="ssDel('${c.id}')">🗑 Supprimer ce statut</button></div>` : ''}</div>`; }).join('')
+    + (_ssDraft.some(c => !c.deleted) ? '' : `<div class="hint" style="margin:6px 2px 10px;">Aucun statut proposé : ajoute-en un ou rétablis un statut ci-dessous.</div>`)
+    + `<button class="nv-cadd" onclick="ssAdd()">＋ Ajouter un statut</button>`
+    + (_ssDraft.some(c => c.deleted) ? `<div class="ss-lbl" style="margin:12px 2px 6px;">Statuts supprimés</div><div class="ss-rol">${_ssDraft.filter(c => c.deleted).map(c => `<button onclick="ssRestore('${c.id}')">♻️ ${escapeHtml((c.icon ? c.icon + ' ' : '') + c.name)}</button>`).join('')}</div>` : '')
+    + `
       <div class="hint" style="margin:8px 2px;">« Avant chantier » = comme un brouillon (pas de pointage). « Terminé / archive » = rangé dans l'archive.</div>
       <div class="nv-cfgf"><button onclick="ssClose()">Annuler</button><button class="p" onclick="ssSaveAll()">💾 Enregistrer</button></div>`;
 }
@@ -23219,7 +23229,8 @@ async function addSharedMediaToSite(siteId, file, opts){
         const alertText = (authorName || 'Quelqu\'un') + ' a ajouté ' + kindLabel + ' sur le chantier ' + site.name + ' : "' + file.name + '"';
         chefIds.forEach(chefAuthId => {
           sendConductorAlertToChef(chefAuthId, site.name, alertText, true);
-          notifyPush([chefAuthId], 'Notybat — Nouveau média', file.name + ' — ' + site.name, 'media-' + mediaId, 'site:' + site.id);
+          // v5.63.0 — conducteur / patron : notification groupée par le module v5.63.0 (ouvre l'emplacement du fichier) ; sinon lien direct vers le fichier
+          if(!['conducteur','patron'].includes(profile.role)) notifyPush([chefAuthId], 'Notybat — Nouveau média', file.name + ' — ' + site.name, 'media-' + mediaId, 'doc:' + site.id + ':' + mediaId);
         });
       }
     } catch(e){ /* silencieux */ }
@@ -51340,9 +51351,22 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.62.2';
+const APP_VERSION = '5.63.0';
 
 const CHANGELOG = [
+  {
+    version: '5.63.0',
+    date: '06/11/2026',
+    entries: [
+      { icon: '🏷️', text: "Statuts de chantier : tous les statuts peuvent être supprimés (et rétablis). Par défaut : En attente, En cours, Terminé." },
+      { icon: '🚚', text: "Livraisons : nouvel écran « Livraisons » dans la fiche chantier et bouton « Livraison » dans le bandeau Chantier actif. Le chef assigné, les conducteurs et le bureau ajoutent, modifient et réceptionnent." },
+      { icon: '📝', text: "Notes de chantier : un chef voit les Remontées de terrain et les colonnes Tâches dont il est membre, sur ses chantiers. Un seul bouton « + Ajouter une note » par colonne." },
+      { icon: '📆', text: "Planning : chefs et ouvriers voient seulement leurs chantiers, leurs congés et les engins de leurs chantiers. Une personne ajoutée dans le planning est aussi assignée au chantier." },
+      { icon: '📄', text: "Document ou photo ajouté par un conducteur : les chefs du chantier reçoivent une notification qui ouvre l'emplacement, avec le fichier signalé « Nouveau »." },
+      { icon: '🗓️', text: "Agenda : vue Mois par défaut, livraisons ajoutées automatiquement pour les personnes concernées (modifiées ou supprimées avec la livraison), compte rendu de réception en touchant le jour, événement « du … au … »." },
+      { icon: '🔴', text: "Pastille « En attente de livraison » rouge et plus grande, dès 00 h 01 le jour J, avec notification aux personnes concernées." }
+    ]
+  },
   {
     version: '5.62.2',
     date: '06/11/2026',
@@ -98331,5 +98355,468 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   if(typeof _gt === 'function') window.goTo = function(v){ const r = _gt.apply(this, arguments); if(v === 'dev') setTimeout(dvRefresh, 50); return r; };
 })();
 </script>
+
+<!-- ═══ MODULE — v5.63.0 — Livraisons dans la fiche chantier, droits Notes / Planning, notifications, Agenda ═══
+     - Fiche chantier › « 🚚 Livraisons » (+ bouton « Livraison » dans le bandeau Chantier actif) :
+       chef assigné, conducteurs et bureau voient / ajoutent / modifient / réceptionnent
+     - Notes de chantier : un chef ne voit que « Remontées de terrain » + les colonnes Tâches dont il est membre,
+       sur les chantiers où il est assigné ; plus de bouton « + » dans l'en-tête des colonnes
+     - Planning : chefs et ouvriers ne voient que leurs chantiers, leurs congés, les engins de leurs chantiers ;
+       les personnes ajoutées dans le planning sont aussi assignées au chantier
+     - Document / photo ajouté par un conducteur → notification aux chefs assignés (ouvre l'emplacement, fichier signalé)
+     - Agenda : vue Mois par défaut, livraisons automatiques (personnes concernées), compte rendu de réception, événement « du … au … »
+     - Pastille livraison : rouge, plus grande, dès 00 h 01 le jour J ; notification aux personnes concernées -->
+<style>
+  #nbLivChips{ gap:8px; }
+  #nbLivChips button{ border-color:#E5484D !important; background:#E5484D !important; color:#fff !important; font-size:14px !important; padding:9px 15px !important; max-width:min(86vw,320px) !important; box-shadow:0 4px 16px rgba(229,72,77,.45) !important; }
+  #nbLivChips button i{ width:11px !important; height:11px !important; background:#fff !important; }
+  #nbLivChips button.more{ opacity:1 !important; background:#B9363A !important; }
+  #nvRoot .nv-col .dep-colh .nv-cplus, #nvRoot .nv-cplus{ display:none !important; }
+  .rwl{ display:flex; flex-direction:column; gap:10px; }
+  .rwl-add{ width:100%; min-height:50px; border:0; border-radius:14px; background:#2BB3C0; color:#06262a; font:inherit; font-size:16px; font-weight:900; cursor:pointer; }
+  .rwl-it{ border:1.5px solid var(--line); border-left:5px solid #2BB3C0; border-radius:14px; background:var(--card); padding:12px; }
+  .rwl-it.today{ border-left-color:#E5484D; } .rwl-it.late{ border-left-color:#EE8A2E; } .rwl-it.recu{ border-left-color:#4FAE6C; opacity:.92; }
+  .rwl-h{ display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
+  .rwl-h b{ font-size:15.5px; } .rwl-d{ font-size:13px; font-weight:800; white-space:nowrap; color:var(--ink-soft); }
+  .rwl-it.today .rwl-d{ color:#E5484D; }
+  .rwl-st{ display:inline-block; margin-top:6px; padding:3px 9px; border-radius:99px; font-size:12px; font-weight:800; background:color-mix(in srgb, #2BB3C0 18%, transparent); }
+  .rwl-st.ok{ background:color-mix(in srgb, #4FAE6C 22%, transparent); } .rwl-st.red{ background:#E5484D; color:#fff; } .rwl-st.w{ background:color-mix(in srgb, #EE8A2E 22%, transparent); }
+  .rwl-tx{ font-size:13.5px; margin-top:6px; white-space:pre-wrap; color:var(--ink); }
+  .rwl-cr{ margin-top:8px; padding:8px 10px; border-radius:10px; background:color-mix(in srgb, #4FAE6C 10%, transparent); font-size:13px; }
+  .rwl-ph{ display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; } .rwl-ph img{ width:64px; height:64px; object-fit:cover; border-radius:8px; cursor:zoom-in; }
+  .rwl-dc a{ display:inline-block; margin:6px 8px 0 0; font-size:12.5px; font-weight:700; color:var(--wood); }
+  .rwl-ac{ display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; } .rwl-ac button{ flex:1 1 auto; min-height:40px; border-radius:10px; border:1.5px solid var(--line); background:transparent; color:var(--ink); font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
+  .rwl-ac button.p{ background:#4FAE6C; border-color:#4FAE6C; color:#fff; } .rwl-ac button.d{ color:#ff8a7a; }
+  .rwl-sec{ font-size:12px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin:8px 2px 0; }
+  #rwLivM{ position:fixed; inset:0; z-index:9250; background:rgba(0,0,0,.6); display:flex; align-items:flex-end; justify-content:center; }
+  #rwLivM > div{ width:100%; max-width:560px; max-height:88vh; overflow:auto; background:var(--bg-elev); color:var(--ink); border-radius:20px 20px 0 0; padding:16px 14px calc(16px + env(safe-area-inset-bottom,0px)); }
+  @media (min-width:860px){ #rwLivM{ align-items:center; } #rwLivM > div{ border-radius:20px; } }
+  #rwLivM .hd{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; } #rwLivM .hd b{ font-size:17px; }
+  .cab-actions .rw-cabliv .n{ display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; border-radius:99px; background:#E5484D; color:#fff; font-size:11px; font-weight:900; line-height:18px; text-align:center; }
+  .galerie-cell.rw-new, .gc-doc.rw-new{ outline:3px solid #E5484D; outline-offset:-3px; position:relative; }
+  .galerie-cell.rw-new::after, .gc-doc.rw-new::after{ content:'🆕 Nouveau'; position:absolute; top:6px; left:6px; z-index:3; background:#E5484D; color:#fff; font-size:11px; font-weight:900; padding:2px 7px; border-radius:99px; }
+  #rwNewDoc{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(90px + env(safe-area-inset-bottom,0px)); z-index:9600; display:flex; align-items:center; gap:10px; max-width:min(94vw,520px); padding:10px 12px; border-radius:16px; background:#E5484D; color:#fff; box-shadow:0 8px 26px rgba(0,0,0,.45); font-weight:800; font-size:14px; }
+  #rwNewDoc span{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #rwNewDoc button{ border:0; border-radius:10px; padding:8px 12px; font:inherit; font-weight:900; cursor:pointer; background:#fff; color:#B9363A; } #rwNewDoc button.x{ background:transparent; color:#fff; padding:6px; }
+  .rw-gcl{ display:flex; flex-direction:column; gap:10px; margin-top:6px; }
+  #taskEndRow{ display:flex; align-items:center; gap:8px; margin-top:8px; font-size:13px; font-weight:700; color:var(--ink-soft); } #taskEndRow input{ flex:1; min-width:0; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  const iso = d => { const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+  const fdl = (d, o) => { try{ return new Date(d + 'T12:00').toLocaleDateString('fr-FR', o || { weekday:'short', day:'numeric', month:'short' }); }catch(e){ return d; } };
+  const titleOf = n => String((n && n.text) || '').split('\n')[0] || 'Livraison';
+  const detOf = n => String((n && n.text) || '').split('\n').slice(1).join('\n').trim();
+  const low = s => String(s || '').trim().toLowerCase();
+  const me = () => { const a = _absMe(); return { authId:a.authId, role:a.role, name:a.name || (typeof _nvMe === 'function' ? _nvMe().name : '') }; };
+  const role = () => (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const isBur = () => ['patron', 'conducteur', 'comptable'].includes(role()) || (!role() && !!window._devRoleUnlocked);
+  const restricted = () => ['chef', 'ouvrier'].includes(role());
+  const photosOf = n => (Array.isArray(n.photos) && n.photos.length ? n.photos : (n.media && n.media.url ? [n.media] : [])).filter(p => p && p.url);
+  const docsOf = n => (Array.isArray(n.docs) ? n.docs : []).filter(d => d && d.url);
+
+  /* ── Assignation : je suis sur ce chantier (chef assigné, équipe, étape ou renfort du planning) ── */
+  function onSite(s, who){
+    if(!s) return false;
+    const m = who || me();
+    try{ if(m.authId && _absSiteMember(s, m.authId)) return true; }catch(e){}
+    const nm = low(m.name); if(!nm) return false;
+    const L = (typeof _siteChefsList === 'function' ? _siteChefsList(s) : (s.assignedChefs || [])).concat(s.assignedWorkers || []);
+    return L.some(p => p && low(p.name) === nm);
+  }
+  window.rwOnSite = onSite;
+
+  /* ═════ 1) LIVRAISONS ═════ */
+  const livCol = () => { try{ return _nvCols().find(c => c && c.type === 'livraisons') || null; }catch(e){ return null; } };
+  const livCanSee = s => isBur() || (role() === 'chef' && onSite(s));
+  const livCanEdit = livCanSee;
+  window.rwLivCanSee = livCanSee;
+  function livOf(s){
+    const out = [];
+    (s && s.noteCategories || []).forEach(c => { if(!c || c.archived) return; (c.notes || []).forEach(n => { if(n && n.liv && !n.archived && !n.deleted) out.push({ n, cat:c, site:s }); }); });
+    return out;
+  }
+  function allLiv(){ const out = []; (data.sites || []).forEach(s => { if(s && !s._deleted) livOf(s).forEach(x => out.push(x)); }); return out; }
+  window.rwLivOf = livOf;
+  /* personnes concernées : chefs assignés + conducteurs + patron (+ l'auteur) */
+  function concernedMe(x){
+    const m = me();
+    if(['patron', 'conducteur'].includes(m.role) || (!m.role && window._devRoleUnlocked)) return true;
+    if(x.n.authId && x.n.authId === m.authId) return true;
+    return m.role === 'chef' && onSite(x.site, m);
+  }
+  async function concernedIds(site, note){
+    const ids = new Set();
+    try{ (_getChefAuthIdsForSite(site) || []).forEach(i => i && ids.add(i)); }catch(e){}
+    try{ const reg = await _fetchUsersRegistry(); (reg || []).forEach(u => { if(u && u.authId && (u.role === 'conducteur' || u.role === 'patron') && !/\.(test|dupont)$/i.test(u.authId)) ids.add(u.authId); }); }catch(e){}
+    if(note && note.authId) ids.add(note.authId);
+    ids.delete(me().authId);
+    return [...ids].filter(Boolean);
+  }
+  const whenTxt = L => L && L.date ? fdl(L.date) + (L.time ? ' à ' + L.time.replace(':', ' h ') : '') : 'date à confirmer';
+  async function livNotify(kind, site, n){
+    try{
+      const ids = await concernedIds(site, n); if(!ids.length || typeof notifyPush !== 'function') return;
+      const T = { add:'🚚 Nouvelle livraison', mod:'🚚 Livraison modifiée', del:'🚚 Livraison annulée' }[kind] || '🚚 Livraison';
+      notifyPush(ids, T + ' — ' + (site.name || 'Chantier'), titleOf(n) + ' · ' + whenTxt(n.liv), (kind === 'add' ? 'note-' : 'liv-') + n.id, kind === 'del' ? 'site:' + site.id : 'liv:' + site.id + ':' + n.id);
+    }catch(e){ console.warn('[livraison notif]', e); }
+  }
+  const snap = () => { const m = {}; allLiv().forEach(x => { m[x.n.id] = { k:[x.n.liv.date, x.n.liv.time, titleOf(x.n)].join('|'), s:x.site }; }); return m; };
+  function diffNotify(before){
+    const after = snap();
+    Object.keys(after).forEach(id => { const x = allLiv().find(y => y.n.id === id); if(!x) return;
+      if(!before[id]) livNotify('add', x.site, x.n); else if(before[id].k !== after[id].k) livNotify('mod', x.site, x.n); });
+    Object.keys(before).forEach(id => { if(after[id]) return; const s = before[id].s; let n = null; (s.noteCategories || []).forEach(c => (c.notes || []).forEach(q => { if(q && q.id === id) n = q; })); if(n) livNotify('del', s, n); });
+    refresh();
+  }
+  /* la création « Nouvelle livraison » prévenait seulement selon le réglage de la colonne : on prévient toujours les concernés */
+  if(typeof window.nbLivSave === 'function'){ const _s = window.nbLivSave; window.nbLivSave = async function(){ const b = snap(); const r = await _s.apply(this, arguments); try{ diffNotify(b); }catch(e){} return r; }; }
+  if(typeof window.nbLivRepSave === 'function'){ const _s = window.nbLivRepSave; window.nbLivRepSave = async function(){ const b = snap(); const r = await _s.apply(this, arguments); try{ setTimeout(() => diffNotify(b), 300); }catch(e){} return r; }; }
+  { const _a = window.nvArchive; window.nvArchive = function(id, quiet){ const b = snap(); const r = _a.apply(this, arguments); setTimeout(() => { try{ diffNotify(b); }catch(e){} }, 400); return r; }; }
+
+  /* _nvFind : retrouve aussi une livraison d'un autre chantier que celui ouvert dans Notes */
+  { const _f = window._nvFind; window._nvFind = function(id){ const r = _f.apply(this, arguments); if(r) return r;
+      for(const s of (data.sites || [])){ if(!s || s._deleted || (typeof siteHiddenForMe === 'function' && siteHiddenForMe(s))) continue;
+        const it = _nvTeamNotes(s).find(x => x.n.id === id); if(it && it.n.liv){ it.site = s; return it; } }
+      return null; }; }
+  /* chef assigné : modifie / réceptionne toutes les livraisons de son chantier */
+  { const _m = window._nvCanManage; window._nvCanManage = function(it){ if(it && it.n && it.n.liv && it.site && livCanEdit(it.site)) return true; return _m.apply(this, arguments); }; }
+  { const _w = window._nvCanWrite; window._nvCanWrite = function(c){ if(c && c.type === 'livraisons' && window._rwLivSite){ const s = (data.sites || []).find(x => x.id === window._rwLivSite); if(s) return livCanEdit(s); } return _w.apply(this, arguments); }; }
+  { const _mu = window._nvMutate; window._nvMutate = async function(){ const r = await _mu.apply(this, arguments); setTimeout(refresh, 60); return r; }; }
+  ['nbLivClose', 'nbRecvClose'].forEach(k => { const f = window[k]; if(typeof f === 'function') window[k] = function(){ const r = f.apply(this, arguments); setTimeout(refresh, 80); return r; }; });
+
+  function itemHtml(x, can){
+    const n = x.n, L = n.liv || {}, today = iso(new Date());
+    const cls = L.recu ? 'recu' : L.date === today ? 'today' : (L.date && L.date < today ? 'late' : '');
+    let st = '';
+    if(L.recu){ let w = ''; try{ if(L.recuAt){ const d = new Date(L.recuAt); w = d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); } }catch(e){} st = `<span class="rwl-st ok">✅ Reçue${w ? ' le ' + E(w) : ''}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</span>`; }
+    else if(L.date === today) st = '<span class="rwl-st red">🔴 En attente de livraison · aujourd\'hui</span>';
+    else if(L.date && L.date < today) st = '<span class="rwl-st w">⏳ Pas encore réceptionnée</span>';
+    else st = '<span class="rwl-st">📅 Prévue</span>';
+    const ps = photosOf(n), ds = docsOf(n), det = detOf(n);
+    const cr = L.recu && (L.recuNote || ps.length) ? `<div class="rwl-cr"><b>Compte rendu de réception</b>${L.recuNote ? `<div class="rwl-tx">📝 ${E(L.recuNote)}</div>` : ''}</div>` : '';
+    return `<div class="rwl-it ${cls}" data-lid="${E(n.id)}"><div class="rwl-h"><b>🚚 ${E(titleOf(n))}</b><span class="rwl-d">${E(L.date ? (L.date === today ? "Aujourd'hui" : fdl(L.date)) : 'Date à confirmer')}${L.time ? ' · ' + E(L.time.replace(':', ' h ')) : ''}</span></div>
+      ${st}${det ? `<div class="rwl-tx">${E(det)}</div>` : ''}${cr}
+      ${ps.length ? `<div class="rwl-ph">${ps.map(p => `<img src="${E(p.thumbUrl || p.url)}" alt="" onclick="event.stopPropagation();rwLivPhoto('${E(n.id)}','${E(p.url)}')">`).join('')}</div>` : ''}
+      ${ds.length ? `<div class="rwl-dc">${ds.map(d => `<a href="${E(d.url)}" target="_blank" rel="noopener">📄 ${E(d.name || 'Document')}</a>`).join('')}</div>` : ''}
+      ${can ? `<div class="rwl-ac">${L.recu ? `<button onclick="nbLivRecu('${E(n.id)}')">↩️ Pas reçue</button>` : `<button class="p" onclick="nbRecvOpen('${E(n.id)}')">✅ Réceptionner</button><button onclick="nbLivReport('${E(n.id)}')">📅 Date</button>`}<button onclick="rwLivEdit('${E(n.id)}')">✏️ Modifier</button><button class="d" onclick="rwLivDel('${E(n.id)}')">🗑</button></div>` : ''}</div>`;
+  }
+  function listHtml(site){
+    const can = livCanEdit(site), L = livOf(site);
+    const key = x => (x.n.liv.date || '9999') + (x.n.liv.time || '');
+    const todo = L.filter(x => !x.n.liv.recu).sort((a, b) => key(a).localeCompare(key(b))), done = L.filter(x => x.n.liv.recu).sort((a, b) => key(b).localeCompare(key(a)));
+    return `<div class="rwl" data-testid="rw-livraisons">${can ? `<button class="rwl-add" onclick="rwLivNew('${E(site.id)}')">＋ Nouvelle livraison</button>` : ''}
+      ${todo.length ? todo.map(x => itemHtml(x, can)).join('') : '<div class="hint">Aucune livraison prévue sur ce chantier.</div>'}
+      ${done.length ? `<div class="rwl-sec">✅ Reçues · ${done.length}</div>` + done.map(x => itemHtml(x, can)).join('') : ''}</div>`;
+  }
+  window.rwLivPhoto = function(id, url){ try{ const f = _nvFind(id); openPhotoFullscreen(url, f ? titleOf(f.n) : 'Livraison'); openModal('photoFullscreen'); }catch(e){ window.open(url, '_blank'); } };
+  window.rwLivNew = function(siteId){
+    const site = (data.sites || []).find(s => s.id === siteId), col = livCol(); if(!site || !col) return;
+    if(!livCanEdit(site)){ showToast('Réservé au chef du chantier, aux conducteurs et au bureau'); return; }
+    const keep = _nvSite; window._rwLivSite = siteId; _nvSite = siteId;
+    try{ nbLivEditor(col, null); }finally{ _nvSite = keep; window._rwLivSite = null; }
+    const ov = document.getElementById('nbLiv'); if(ov){ const box = ov.querySelector('#nbLivSiteBox'); if(box) box.innerHTML = `<div class="nb-sfix">${E(site.name || 'Chantier')}</div>`; }
+  };
+  window.rwLivEdit = function(id){ const f = _nvFind(id), col = livCol(); if(!f || !col) return; nbLivEditor(col, null, id); };
+  window.rwLivDel = function(id){ if(!confirm('Supprimer cette livraison ? Elle disparaît aussi de l\'agenda des personnes concernées.')) return; nvArchive(id, true); };
+  /* fenêtre « Livraisons » (bandeau Chantier actif) */
+  window.rwLivOpen = function(siteId){
+    const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+    if(!livCanSee(site)){ showToast('Livraisons : réservé au chef du chantier, aux conducteurs et au bureau'); return; }
+    let o = document.getElementById('rwLivM'); if(o) o.remove();
+    o = document.createElement('div'); o.id = 'rwLivM'; o.dataset.sid = siteId; o.onclick = e => { if(e.target === o) o.remove(); };
+    o.innerHTML = `<div><div class="hd"><b>🚚 Livraisons · ${E(site.name || '')}</b><button type="button" class="modal-x" onclick="document.getElementById('rwLivM').remove()">✕</button></div><div id="rwLivMB">${listHtml(site)}</div></div>`;
+    document.body.appendChild(o);
+  };
+  function refresh(){
+    try{ const o = document.getElementById('rwLivM'); if(o){ const s = (data.sites || []).find(x => x.id === o.dataset.sid); const b = document.getElementById('rwLivMB'); if(s && b) b.innerHTML = listHtml(s); } }catch(e){}
+    try{ if(window._hubScreen === 'livraisons' && document.querySelector('#view-detail.active')){ const s = (data.sites || []).find(x => x.id === (window._rwHubLivSite || currentDetailSite)); if(s) hubRender(s); } }catch(e){}
+    try{ renderChantierActifBanner(); }catch(e){}
+    try{ nbLivChips(); }catch(e){}
+    try{ if(document.querySelector('#view-agenda.active')){ _gcLastRange = ''; renderAgenda(); } }catch(e){}
+  }
+  window.rwLivRefresh = refresh;
+
+  /* fiche chantier : ligne « 🚚 Livraisons » + écran dédié */
+  { const _h = window.hubRender; window.hubRender = function(site){
+      if(window._hubScreen === 'livraisons' && site){
+        window._rwHubLivSite = site.id;
+        const v = document.getElementById('view-detail'), h = document.getElementById('tsHub'); if(!v || !h) return;
+        [...v.children].forEach(c => { if(c !== h && c.dataset.hubD === undefined) c.dataset.hubD = c.style.display || ''; if(c !== h) c.style.display = 'none'; });
+        h.style.display = '';
+        h.innerHTML = `<div class="hub-back"><button class="btn btn-outline btn-sm" onclick="hubBack('${E(site.id)}')">← ${E(site.name || 'Chantier')}</button><span>🚚 Livraisons</span></div>` + (livCanSee(site) ? listHtml(site) : '<div class="hint">Réservé au chef du chantier, aux conducteurs et au bureau.</div>');
+        return;
+      }
+      const r = _h.apply(this, arguments);
+      try{
+        if(site && !window._hubScreen && livCanSee(site)){
+          const h = document.getElementById('tsHub'), box = h && h.querySelector('.nb-li-box');
+          if(box && !box.querySelector('.rw-hubliv')){
+            const L = livOf(site).filter(x => !x.n.liv.recu), nx = L.map(x => x.n.liv.date).filter(Boolean).sort()[0];
+            const b = document.createElement('button'); b.className = 'nb-li rw-hubliv'; b.setAttribute('onclick', `hubOpen('${site.id}','livraisons')`);
+            b.innerHTML = `<span style="font-size:24px;width:34px;text-align:center;">🚚</span><span class="nb-txt"><b>Livraisons</b><small>${L.length ? L.length + ' à venir' + (nx ? ' · prochaine ' + E(fdl(nx)) : '') : 'Aucune livraison prévue'}</small></span><span class="nb-chev">›</span>`;
+            const ref = box.children[1] || null; box.insertBefore(b, ref);
+          }
+        }
+      }catch(e){ console.warn('[hub livraisons]', e); }
+      return r;
+    }; }
+  /* bandeau Chantier actif : bouton « Livraison » */
+  { const _r = window.renderChantierActifBanner; window.renderChantierActifBanner = function(){
+      const r = _r.apply(this, arguments);
+      try{
+        const el = document.getElementById('chantierActifBanner'), ac = el && el.querySelector('.cab-actions'); if(!ac || ac.querySelector('.rw-cabliv')) return r;
+        const site = (data.sites || []).find(s => s.id === getActiveSiteId()); if(!site || !livCanSee(site)) return r;
+        const today = iso(new Date()), n = livOf(site).filter(x => !x.n.liv.recu && x.n.liv.date && x.n.liv.date <= today).length;
+        const b = document.createElement('button'); b.className = 'rw-cabliv'; b.setAttribute('onclick', `rwLivOpen('${site.id}')`);
+        b.innerHTML = `<span style="font-size:16px;">🚚</span> Livraison${n ? `<span class="n">${n}</span>` : ''}`;
+        ac.insertBefore(b, ac.querySelector('.cab-more-btn'));
+      }catch(e){}
+      return r;
+    }; }
+  /* lien d'une notification : liv:<chantier>:<livraison> */
+  { const _hn = window._handleNotifTarget; window._handleNotifTarget = function(t){
+      let s = ''; try{ s = decodeURIComponent(String(t || '')).replace(/^#/, ''); }catch(e){ s = String(t || ''); }
+      let m = s.match(/^liv:([^:]+):?(.*)$/);
+      if(m){ const sid = m[1]; if((data.sites || []).some(x => x.id === sid)){ try{ goTo('detail', sid); }catch(e){} setTimeout(() => { try{ hubOpen(sid, 'livraisons'); setTimeout(() => { const c = m[2] && document.querySelector(`.rwl-it[data-lid="${CSS.escape(m[2])}"]`); if(c){ c.scrollIntoView({ block:'center', behavior:'smooth' }); c.style.boxShadow = '0 0 0 3px #E5484D'; } }, 200); }catch(e){} }, 250); } return; }
+      m = s.match(/^doc:([^:]+):(.+)$/);
+      if(m){ openNewDoc(m[1], m[2].split(',').filter(Boolean)); return; }
+      return _hn.apply(this, arguments);
+    }; }
+
+  /* ═════ 2) NOTES DE CHANTIER : chefs = Remontées de terrain + leurs colonnes Tâches, sur leurs chantiers ═════ */
+  { const _see = window._nvCanSee; window._nvCanSee = function(c){
+      if(role() === 'chef' && c){ if(c.type === 'taches') return _see.apply(this, arguments); return c.w === 'chefs' || c.id === 'terr'; }
+      return _see.apply(this, arguments); }; }
+  { const _ns = window._nvSites; window._nvSites = function(){ const L = _ns.apply(this, arguments); return role() === 'chef' ? L.filter(s => onSite(s)) : L; }; }
+
+  /* ═════ 3) PLANNING ═════ */
+  const mySiteIds = () => new Set((data.sites || []).filter(s => s && onSite(s)).map(s => s.id));
+  { const _ps = window._plSites; window._plSites = function(){ const L = _ps.apply(this, arguments); return restricted() ? L.filter(s => onSite(s)) : L; }; }
+  { const _pp = window._plPeople; window._plPeople = function(){ const L = _pp.apply(this, arguments); if(!restricted()) return L; const m = me(); const mine = L.filter(p => (p.authId && p.authId === m.authId) || low(p.name) === low(m.name)); return mine.length ? mine : [{ name:m.name || 'Moi', authId:m.authId, role:m.role }]; }; }
+  { const _eb = window._egBookings; window._egBookings = function(){ const L = _eb.apply(this, arguments); if(!restricted()) return L; const ids = mySiteIds(); return L.filter(b => ids.has(b.siteId)); }; }
+  { const _ee = window._egEngins; window._egEngins = function(){ const L = _ee.apply(this, arguments); if(!restricted()) return L; const used = new Set(_egBookings().map(b => b.enginId)); return L.filter(e => used.has(e.id)); }; }
+  ['_plRenderGrid', '_plRenderPeople'].forEach(k => { const f = window[k]; if(typeof f !== 'function') return; window[k] = function(){
+      if(!restricted() || !Array.isArray(_absList)) return f.apply(this, arguments);
+      const keep = _absList, m = me(); _absList = keep.filter(r => r && ((r.authId && r.authId === m.authId) || low(r.name) === low(m.name)));
+      try{ return f.apply(this, arguments); }finally{ _absList = keep; } }; });
+  /* une personne ajoutée dans le planning (étape, renfort, « Affecter ») est aussi assignée au chantier */
+  function isChefP(p){ if(p.chef) return true; try{ const u = (_absReg || []).find(x => x && x.authId && x.authId === p.authId); return !!(u && u.role === 'chef'); }catch(e){ return false; } }
+  function ensureOn(s, people){
+    let ch = 0; const team = _plTeam(s);
+    people.forEach(p => { if(!p || !(p.authId || p.name) || team.some(q => _plSame(q, p))) return;
+      if(isChefP(p)){ s.assignedChefs = (s.assignedChefs || []).concat([{ name:p.name || '', authId:p.authId || '', phone:p.phone || '' }]); try{ _syncFlatChefFields(s); }catch(e){} }
+      else s.assignedWorkers = (s.assignedWorkers || []).concat([{ name:p.name || '', authId:p.authId || '', phone:p.phone || '', role:'ouvrier' }]);
+      team.push(p); ch++; });
+    return ch;
+  }
+  window.rwPlEnsureOn = ensureOn;
+  { const _sv = window.planningSave; window.planningSave = function(){
+      try{ const E2 = _plEdit; if(E2){ const all = E2.chefs.map(q => Object.assign({}, q, { chef:true })).concat(E2.workers);
+        const add = []; (E2.tasks || []).forEach(t => (t.team || []).forEach(p => add.push(p))); (E2.dayAdds || []).forEach(p => add.push(p));
+        add.forEach(p => { if(!p || !(p.authId || p.name) || all.some(q => _plSame(q, p))) return; const x = { name:p.name || '', authId:p.authId || '', phone:p.phone || '' };
+          if(isChefP(p)){ E2.chefs.push(Object.assign({ chef:true }, x)); } else E2.workers.push(x); all.push(x); }); } }catch(e){ console.warn('[planning équipe]', e); }
+      return _sv.apply(this, arguments); }; }
+  { const _as = window.planningAssign; window.planningAssign = async function(i){
+      const f = window._plFree, c = f && f.cand && f.cand[i];
+      const r = await _as.apply(this, arguments);
+      try{ if(c && f.p){ const s = (data.sites || []).find(x => x.id === c.s.id); if(s && ensureOn(s, [{ name:f.p.name, authId:f.p.authId || '', chef:f.p.role === 'chef' }])) await _plPersist(s); } }catch(e){}
+      return r; }; }
+
+  /* ═════ 4) DOCUMENT / PHOTO AJOUTÉ PAR UN CONDUCTEUR → chefs assignés prévenus ═════ */
+  const _docQ = {};
+  const isPh = m => m && (m.type === 'photo' || /^image\//.test(m.mimeType || '')) && !m.doc;
+  { const _add = window.addSharedMediaToSite; window.addSharedMediaToSite = async function(siteId){
+      const site = (data.sites || []).find(s => s.id === siteId), before = new Set(((site && site.sharedMedia) || []).map(m => m && m.id));
+      const r = await _add.apply(this, arguments);
+      try{
+        if(['conducteur', 'patron'].includes(role()) && site){
+          const fresh = (site.sharedMedia || []).filter(m => m && m.id && !before.has(m.id));
+          if(fresh.length){ const q = _docQ[siteId] = _docQ[siteId] || { ids:[], t:null }; fresh.forEach(m => q.ids.push(m.id)); clearTimeout(q.t); q.t = setTimeout(() => docNotify(siteId), 4000); }
+        }
+      }catch(e){}
+      return r; }; }
+  function docNotify(siteId){
+    const q = _docQ[siteId]; delete _docQ[siteId]; if(!q || !q.ids.length) return;
+    const site = (data.sites || []).find(s => s.id === siteId); if(!site) return;
+    const ms = (site.sharedMedia || []).filter(m => q.ids.includes(m.id)); if(!ms.length) return;
+    const ids = (_getChefAuthIdsForSite(site) || []).filter(x => x && x !== me().authId); if(!ids.length || typeof notifyPush !== 'function') return;
+    const np = ms.filter(isPh).length, nd = ms.length - np;
+    const first = ms[0], nm = first.title || first.name || (isPh(first) ? 'Photo' : 'Document');
+    const T = nd && np ? '📁 Nouveaux fichiers' : nd ? (nd > 1 ? '📄 ' + nd + ' nouveaux documents' : '📄 Nouveau document') : (np > 1 ? '📷 ' + np + ' nouvelles photos' : '📷 Nouvelle photo');
+    notifyPush(ids, T + ' — ' + (site.name || 'Chantier'), (me().name || 'Le conducteur') + ' a ajouté ' + (ms.length > 1 ? '« ' + nm + ' » et ' + (ms.length - 1) + ' autre' + (ms.length > 2 ? 's' : '') : '« ' + nm + ' »') + ' · touche pour l\'ouvrir', 'doc-' + site.id, 'doc:' + site.id + ':' + ms.map(m => m.id).slice(0, 40).join(','));
+  }
+  window.rwDocNotifyFlush = docNotify;
+  /* ouverture depuis la notification : bon chantier, bon tiroir (Photos / Documents), bon dossier, fichier signalé */
+  let _newIds = new Set(), _newSite = null;
+  function mark(){
+    if(!_newIds.size) return;
+    document.querySelectorAll('#galerieContent .galerie-cell[data-key]').forEach(c => { const id = String(c.dataset.key || '').split('|')[1]; c.classList.toggle('rw-new', _newIds.has(id)); });
+    const site = (data.sites || []).find(s => s.id === _newSite);
+    document.querySelectorAll('#galerieContent .gc-doc[data-k]').forEach(c => { const k = c.dataset.k; const hit = ((site && site.sharedMedia) || []).some(m => _newIds.has(m.id) && (k === m.id || k === 'f_' + m.id || (m.docGroup && k === m.docGroup))); c.classList.toggle('rw-new', hit); });
+  }
+  new MutationObserver(() => { if(_newIds.size) mark(); }).observe(document.documentElement, { childList:true, subtree:true });
+  function openNewDoc(siteId, ids){
+    const site = (data.sites || []).find(s => s.id === siteId); if(!site){ try{ goTo('chantiers'); }catch(e){} return; }
+    const ms = (site.sharedMedia || []).filter(m => m && ids.includes(m.id));
+    _newIds = new Set(ids); _newSite = siteId;
+    const m0 = ms[0], drawer = m0 && isPh(m0) ? 'ph' : 'doc';
+    try{ hubOpen(siteId, 'media'); }catch(e){}
+    setTimeout(() => { try{ _galerieOpenSiteId = siteId; galerieOpenFolder(siteId); }catch(e){} setTimeout(() => { try{ gcDrawer(drawer); if(m0 && m0.folder){ _galF(siteId).folder = m0.folder; galerieRender(); } }catch(e){} setTimeout(() => { mark(); const el = document.querySelector('#galerieContent .rw-new'); if(el) el.scrollIntoView({ block:'center', behavior:'smooth' }); }, 250); }, 200); }, 250);
+    let b = document.getElementById('rwNewDoc'); if(b) b.remove();
+    if(!m0){ showToast('Fichier introuvable (pas encore synchronisé ?)'); return; }
+    b = document.createElement('div'); b.id = 'rwNewDoc'; b.setAttribute('data-testid', 'rw-newdoc');
+    b.innerHTML = `<span>🆕 ${E(m0.title || m0.name || (isPh(m0) ? 'Photo' : 'Document'))}${ms.length > 1 ? ' + ' + (ms.length - 1) : ''}</span><button onclick="rwNewDocOpen()">Ouvrir</button><button class="x" onclick="this.parentNode.remove()">✕</button>`;
+    document.body.appendChild(b);
+    window.rwNewDocOpen = function(){ try{ if(isPh(m0)){ openPhotoFullscreen(m0.url, m0.title || ''); openModal('photoFullscreen'); } else window.open(m0.url, '_blank'); }catch(e){ window.open(m0.url, '_blank'); } };
+    setTimeout(() => { const x = document.getElementById('rwNewDoc'); if(x) x.remove(); }, 30000);
+  }
+  window.rwOpenNewDoc = openNewDoc;
+
+  /* ═════ 5) AGENDA ═════ */
+  try{ agendaMode = 'mois'; localStorage.setItem('rwood_ag_view', 'mois'); }catch(e){}
+  { const _ga = window.goTo; window.goTo = function(v){ if(v === 'agenda' && !window._rwAgOpened){ window._rwAgOpened = true; try{ agendaMode = 'mois'; }catch(e){} } return _ga.apply(this, arguments); }; }
+  const LIVC = '#E5484D', LIVOK = '#4FAE6C';
+  function livEvents(a, b){
+    const out = [];
+    allLiv().forEach(x => { const L = x.n.liv; if(!L.date || L.date < a || L.date > b || !concernedMe(x)) return;
+      out.push({ id:'liv_' + x.n.id, _liv:x.n.id, date:L.date, time:L.time || '', siteId:x.site.id, text:(L.recu ? '✅ ' : '🚚 ') + 'Livraison — ' + titleOf(x.n), createdAt:x.n.createdAt || '' }); });
+    return out;
+  }
+  function spanEvents(a, b){
+    const out = [], src = (data.tasks || []).concat((typeof _gcSharedIn === 'function' ? (_gcIsBureau() && _gcShared ? _gcShared.filter(e => e && !e.deleted).map(e => Object.assign({}, e, { _shared:true })) : []) : []));
+    src.forEach(t => { if(!t || !t.endDate || !t.date || t.endDate <= t.date || t.endDate < a || t.date > b) return;
+      let d = new Date(t.date + 'T12:00'); d.setDate(d.getDate() + 1);
+      const n = Math.round((new Date(t.endDate + 'T12:00') - new Date(t.date + 'T12:00')) / 864e5) + 1; let i = 2;
+      for(let k = iso(d); k <= t.endDate && i < 400; d.setDate(d.getDate() + 1), k = iso(d), i++){ if(k < a || k > b) continue; out.push(Object.assign({}, t, { date:k, _span:true, text:(t.text || '') + ' (' + i + '/' + n + ')' })); } });
+    return out;
+  }
+  { const _c = window._gcCollect; window._gcCollect = function(a, b){
+      let L = _c.apply(this, arguments);
+      const lv = livEvents(a, b), has = new Set(lv.map(e => e._liv));
+      L = L.filter(t => !(t && t.fromLiv && (has.has(t.fromLiv) || !_nvFind(t.fromLiv))));   // la livraison du chantier remplace la copie « Mon agenda »
+      return L.concat(lv, spanEvents(a, b)).sort(_agSortTasks);
+    }; }
+  { const _co = window._gcColor; window._gcColor = function(t){ if(t && t._liv){ const f = _nvFind(t._liv); return f && f.n.liv && f.n.liv.recu ? LIVOK : LIVC; } return _co.apply(this, arguments); }; }
+  function crHtml(f){
+    const n = f.n, L = n.liv || {}, ps = photosOf(n), ds = docsOf(n);
+    let w = ''; try{ if(L.recuAt){ const d = new Date(L.recuAt); w = d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); } }catch(e){}
+    return `<div class="rwl-it ${L.recu ? 'recu' : ''}"><div class="rwl-h"><b>🚚 ${E(titleOf(n))}</b><span class="rwl-d">${L.time ? E(L.time.replace(':', ' h ')) : ''}</span></div>
+      <div class="hint" style="margin:4px 0 0;">🏗️ ${E(f.site.name || 'Chantier')}</div>
+      ${L.recu ? `<span class="rwl-st ok">✅ Reçue${w ? ' le ' + E(w) : ''}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</span>` : `<span class="rwl-st red">🔴 En attente de livraison</span>`}
+      ${detOf(n) ? `<div class="rwl-tx">${E(detOf(n))}</div>` : ''}
+      ${L.recu ? `<div class="rwl-cr"><b>Compte rendu de réception</b>${L.recuNote ? `<div class="rwl-tx">📝 ${E(L.recuNote)}</div>` : '<div class="rwl-tx">Pas de message.</div>'}</div>` : ''}
+      ${ps.length ? `<div class="rwl-ph">${ps.map(p => `<img src="${E(p.thumbUrl || p.url)}" alt="" onclick="rwLivPhoto('${E(n.id)}','${E(p.url)}')">`).join('')}</div>` : ''}
+      ${ds.length ? `<div class="rwl-dc">${ds.map(d => `<a href="${E(d.url)}" target="_blank" rel="noopener">📄 ${E(d.name || 'Document')}</a>`).join('')}</div>` : ''}
+      <div class="rwl-ac">${!L.recu && livCanEdit(f.site) ? `<button class="p" onclick="_gcClose('rw-liv-sheet');nbRecvOpen('${E(n.id)}')">✅ Réceptionner</button>` : ''}<button onclick="_gcClose('rw-liv-sheet');rwLivGoto('${E(f.site.id)}','${E(n.id)}')">🚚 Voir la livraison</button></div></div>`;
+  }
+  window.rwLivGoto = function(sid, id){ _handleNotifTarget('liv:' + sid + ':' + id); };
+  { const _oe = window.gcOpenEvent; window.gcOpenEvent = function(id){
+      if(String(id || '').startsWith('liv_')){
+        const f = _nvFind(String(id).slice(4)); if(!f) return;
+        _gcSheet('rw-liv-sheet', `<div class="gc-sh-top"><button class="gc-ico" onclick="_gcClose('rw-liv-sheet')" aria-label="Fermer">${_GC_I.x}</button></div><div class="gc-sh-title"><div><h3>🚚 Livraison</h3><p>${E(fdl(f.n.liv.date, { weekday:'long', day:'numeric', month:'long' }))}</p></div></div><div class="rw-gcl">${crHtml(f)}</div>`);
+        return;
+      }
+      return _oe.apply(this, arguments); }; }
+  /* clic sur un jour : s'il y a une livraison reçue ce jour-là, le compte rendu de réception s'affiche */
+  { const _gd = window.gcGoDay; window.gcGoDay = function(k){
+      try{
+        const L = allLiv().filter(x => x.n.liv.date === k && x.n.liv.recu && concernedMe(x));
+        if(L.length){
+          window._rwGoDayK = k;
+          _gcSheet('rw-liv-sheet', `<div class="gc-sh-top"><button class="gc-ico" onclick="_gcClose('rw-liv-sheet')" aria-label="Fermer">${_GC_I.x}</button></div><div class="gc-sh-title"><div><h3>✅ Livraison${L.length > 1 ? 's' : ''} reçue${L.length > 1 ? 's' : ''}</h3><p>${E(fdl(k, { weekday:'long', day:'numeric', month:'long' }))}</p></div></div>
+            <div class="rw-gcl" data-testid="rw-agenda-cr">${L.map(x => crHtml({ n:x.n, site:x.site })).join('')}</div>
+            <button class="btn btn-outline btn-block" style="margin-top:12px;" onclick="_gcClose('rw-liv-sheet');rwGoDayRaw()">📅 Voir toute la journée</button>`);
+          return;
+        }
+      }catch(e){ console.warn('[agenda CR]', e); }
+      return _gd.apply(this, arguments); };
+    window.rwGoDayRaw = function(){ _gd(window._rwGoDayK); }; }
+  /* événement sur plusieurs jours : « du … au … » */
+  function endRow(){
+    const d = document.getElementById('taskDate'); if(!d || document.getElementById('taskEndRow')) return;
+    d.insertAdjacentHTML('afterend', `<div id="taskEndRow"><span>Jusqu'au</span><input type="date" id="taskEndDate" data-testid="task-end-date"><button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('taskEndDate').value=''">✕</button></div><div class="hint" id="taskEndHint" style="margin-top:4px;">Facultatif : pour un événement du … au … (congé, salon, chantier de plusieurs jours)</div>`);
+  }
+  { const _ot = window.openTaskModal; window.openTaskModal = function(taskId){
+      const r = _ot.apply(this, arguments);
+      try{ endRow(); const t = taskId ? _gcAnyGet(taskId) : null; const i = document.getElementById('taskEndDate'); if(i){ i.value = (t && t.endDate) || ''; i.min = (document.getElementById('taskDate') || {}).value || ''; } }catch(e){}
+      return r; }; }
+  let _endPend = null;
+  { const _st = window.saveTask; window.saveTask = function(){
+      const i = document.getElementById('taskEndDate'), d = (document.getElementById('taskDate') || {}).value || '';
+      let end = i ? i.value : ''; if(end && d && end <= d) end = '';
+      if(i && i.value && d && i.value < d){ showToast('La date de fin est avant le début'); return; }
+      const ed = editingTaskId, n0 = (data.tasks || []).length;
+      _endPend = { end };
+      try{ _st.apply(this, arguments); }finally{ setTimeout(() => { _endPend = null; }, 0); }
+      try{
+        const t = ed ? (data.tasks || []).find(x => x.id === ed) : ((data.tasks || []).length > n0 ? data.tasks[data.tasks.length - 1] : null);
+        if(t){ if(end) t.endDate = end; else delete t.endDate; t.updatedAt = new Date().toISOString(); saveData(); _gcLastRange = ''; renderAgenda(); }
+      }catch(e){}
+    }; }
+  if(typeof window._gcSharedUpsert === 'function'){ const _up = window._gcSharedUpsert; window._gcSharedUpsert = function(list){ try{ if(_endPend) (list || []).forEach(e => { if(_endPend.end) e.endDate = _endPend.end; else delete e.endDate; }); }catch(e){} return _up.apply(this, arguments); }; }
+
+  /* ═════ 6) PASTILLE + NOTIFICATION DU JOUR J (dès 00 h 01) ═════ */
+  const due = () => { const now = new Date(), today = iso(now); if(now.getHours() === 0 && now.getMinutes() < 1) return []; const old = iso(new Date(now.getTime() - 7 * 864e5));
+    return allLiv().filter(x => { const L = x.n.liv; return !L.recu && L.date && L.date <= today && L.date >= old && concernedMe(x); }); };
+  window.nbLivChips = function(){
+    let box = document.getElementById('nbLivChips');
+    const R = window.R_, open = document.getElementById('nbRecv');
+    let list = [];
+    try{
+      if(R){ const it = _nvFind(R.id); if(it) list.push({ id:R.id, title:titleOf(it.n), site:(it.site && it.site.name) || '', draft:!(it.n.liv && it.n.liv.attente) }); }
+      due().forEach(x => { if(!list.some(y => y.id === x.n.id)) list.push({ id:x.n.id, title:titleOf(x.n), site:x.site.name || '', draft:false }); });
+      const mn = me().name; allLiv().forEach(x => { const L = x.n.liv; if(!L.recu && L.attente && L.attente.by === mn && !list.some(y => y.id === x.n.id)) list.push({ id:x.n.id, title:titleOf(x.n), site:x.site.name || '', draft:false }); });
+    }catch(e){}
+    list = list.filter(x => !(R && R.id === x.id && open && !open.classList.contains('min')));
+    if(!list.length){ if(box) box.remove(); return; }
+    if(!box){ box = document.createElement('div'); box.id = 'nbLivChips'; box.setAttribute('data-testid', 'livraisons-attente-chips'); document.body.appendChild(box); }
+    const shown = list.slice(0, 3), more = list.length - shown.length;
+    box.innerHTML = shown.map(x => `<button type="button" data-testid="livraison-attente-chip" title="${E(x.title + ' — ' + x.site)}" onclick="nbRecvOpen('${E(x.id)}')"><i></i><span>🚚 ${x.draft ? 'Réception en cours' : 'En attente de livraison'} · ${E(x.title)}</span></button>`).join('')
+      + (more > 0 ? `<button type="button" class="more" onclick="nbRecvOpen('${E(list[3].id)}')"><span>+ ${more} livraison${more > 1 ? 's' : ''} en attente</span></button>` : '');
+  };
+  const LS = k => { try{ return JSON.parse(localStorage.getItem(k) || '{}') || {}; }catch(e){ return {}; } };
+  const LSs = (k, v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
+  const nid = s => { let h = 0; for(const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0; return 600000000 + (Math.abs(h) % 90000000); };
+  function dayTick(){
+    try{
+      const fired = LS('rw-livday'), today = iso(new Date());
+      due().filter(x => x.n.liv.date === today).forEach(x => {
+        const k = x.n.id + '|' + today; if(fired[k]) return; fired[k] = 1;
+        const site = x.site.name || 'Chantier', body = titleOf(x.n) + (x.n.liv.time ? ' · à ' + x.n.liv.time.replace(':', ' h ') : ' · aujourd’hui') + ' — touche pour la réceptionner';
+        let shown = false;
+        try{ if('Notification' in window && Notification.permission === 'granted'){ const nn = new Notification('🚚 Livraison aujourd’hui — ' + site, { body, tag:'livday-' + x.n.id, requireInteraction:true }); nn.onclick = () => { try{ window.focus(); }catch(e){} nbRecvOpen(x.n.id); }; shown = true; } }catch(e){}
+        try{ showToast('🚚 Livraison aujourd’hui : ' + titleOf(x.n) + ' — ' + site); }catch(e){}
+        void shown;
+      });
+      LSs('rw-livday', fired);
+      /* Android : notification programmée à 00 h 01 le jour J (part même appli fermée) */
+      const LN = (typeof _rnPlug === 'function') ? _rnPlug('LocalNotifications') : null;
+      if(LN){
+        const sch = LS('rw-livsch'), want = {};
+        allLiv().forEach(x => { const L = x.n.liv; if(L.recu || !L.date || L.date < today || !concernedMe(x)) return; want[x.n.id] = L.date + '|' + (L.time || '') + '|' + titleOf(x.n); });
+        const cancel = Object.keys(sch).filter(id => sch[id] !== want[id]);
+        if(cancel.length){ try{ LN.cancel({ notifications: cancel.map(id => ({ id:nid(id) })) }); }catch(e){} cancel.forEach(id => delete sch[id]); }
+        const add = Object.keys(want).filter(id => !sch[id]);
+        if(add.length){
+          const ns = add.map(id => { const x = allLiv().find(y => y.n.id === id); if(!x) return null; const L = x.n.liv, at = new Date(L.date + 'T00:01:00'); if(at.getTime() <= Date.now()) return null;
+            return { id:nid(id), title:'🚚 Livraison aujourd’hui — ' + (x.site.name || 'Chantier'), body:titleOf(x.n) + (L.time ? ' · à ' + L.time.replace(':', ' h ') : ''), schedule:{ at, allowWhileIdle:true }, channelId:'rwood_general', smallIcon:'ic_stat_rwood', iconColor:'#E5484D', extra:{ url:'liv:' + x.site.id + ':' + id } }; }).filter(Boolean);
+          if(ns.length){ try{ LN.schedule({ notifications:ns }); }catch(e){} }
+          add.forEach(id => { sch[id] = want[id]; });
+        }
+        LSs('rw-livsch', sch);
+      }
+    }catch(e){ console.warn('[livraison jour J]', e); }
+    try{ nbLivChips(); }catch(e){}
+  }
+  window.rwLivDayTick = dayTick;
+  setTimeout(dayTick, 8000); setInterval(dayTick, 30000);
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') setTimeout(dayTick, 500); });
+})();
+</script>
+<!-- ═══ fin MODULE v5.63.0 ═══ -->
+
 </body>
 </html>
