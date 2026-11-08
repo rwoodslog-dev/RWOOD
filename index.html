@@ -40260,7 +40260,14 @@ function _rwCoApplyLocalRole(role){
 function _rwCoSyncRole(j){
   const me = j && j.me; if(!me || !j.company || !me.role) return;
   // v5.52.9 — compte développeur : le rôle qu'il a choisi lui-même reste (le rôle de l'entreprise ne l'écrase plus)
-  try{ if(devAccessIsDevUser() && data.settings.devRoleOverride) return; }catch(e){}   // le dev garde le rôle qu'il regarde ; son rôle publié reste « chef » (_rwRealRole)
+  try{ if(devAccessIsDevUser()){
+    // v5.68.2 — compte développeur : le rôle de l'entreprise ne s'applique JAMAIS (avant : sans rôle de test mémorisé — nouvelle installation,
+    // widget Windows, ouverture par un widget Android — le serveur le repassait en « patron »). Rôle = celui choisi en test, sinon « chef » (_rwRealRole).
+    const want = data.settings.devRoleOverride || 'chef';
+    const loc = (data.settings.myProfile && data.settings.myProfile.role) || '';
+    if(loc !== want && want !== 'comptable'){ _rwCoApplyLocalRole(want); try{ simpleModeRenderDash(); renderPcSidebarNav(); }catch(_){} }
+    return;
+  } }catch(e){}
   const local = (data.settings.myProfile && data.settings.myProfile.role) || '';
   const pend = me.pendingRole || '';
   if((data.settings.rolePending || '') !== pend){ data.settings.rolePending = pend; saveData(); }
@@ -51390,9 +51397,40 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.66.2';
+const APP_VERSION = '5.69.0';
 
 const CHANGELOG = [
+  {
+    version: '5.69.0',
+    date: '08/11/2026',
+    entries: [
+      { icon: '🪟', text: "Widgets Windows : chaque widget montre la vraie vue de l'appli, propre et sans le reste. Chantier actif = le bandeau complet avec ses boutons, et un menu déroulant de tous les chantiers à la place des flèches." },
+      { icon: '📅', text: "Widget Planning : le tableau seul, ‹ › pour les semaines, ＋ pour ajouter un chantier, clic sur un chantier pour voir ou modifier ses infos." },
+      { icon: '🗂️', text: "Widget Notes : une colonne à la fois avec ‹ ›, seulement les colonnes prévues pour ton rôle par le patron." },
+      { icon: '⏱️', text: "Widget Pointage : l'outil de pointage pour le chef et l'ouvrier ; les fiches de toute l'équipe pour le patron, le conducteur et la comptable." },
+      { icon: '🛒', text: "Widget Magasin : Dispo / Sortis / SAV et la liste. Widget Calcul : calculatrice et cumul, sans défilement." },
+      { icon: '🌦️', text: "Nouveau widget Météo : météo du chantier actif, maintenant, les prochaines heures et 5 jours." }
+    ]
+  },
+  {
+    version: '5.68.2',
+    date: '08/11/2026',
+    entries: [
+      { icon: '✨', text: "Accueil et menu PC : les icônes ne sont plus recréées à chaque mise à jour de l'écran — fini les anciens émojis qui apparaissent une fraction de seconde et le logo CRM qui scintille." },
+      { icon: '🛠️', text: "Mode développeur : le rôle de test n'est plus remplacé par « Patron » à l'ouverture de l'appli depuis un widget (pointage)." }
+    ]
+  },
+  {
+    version: '5.68.1',
+    date: '08/11/2026',
+    entries: [
+      { icon: '🪟', text: "Widgets Windows (RWOOD Widgets) : même rendu que les widgets Android — Chantier actif, Agenda, À faire, Magasin, Pointage, Chantiers, Notes de chantier, Itinéraires, Planning et Calcul." },
+      { icon: '🔕', text: "Le widget « Feuille de route » est retiré (Windows), comme dans l'appli et sur Android." },
+      { icon: '🎨', text: "Widgets Android : couleurs des chantiers dans l'agenda et thème clair / sombre de l'appli." },
+      { icon: '👔', text: "Le patron gère les stocks camion comme le conducteur." },
+      { icon: '✨', text: "Démarrage sans scintillement des icônes et de l'onglet ; correctif d'un gel possible au remplacement des emojis." }
+    ]
+  },
   {
     version: '5.66.1',
     date: '06/11/2026',
@@ -71382,7 +71420,8 @@ function simpleModeRenderDash(){
       <span class="dash-show-btn" role="button" data-show="${def.view}">👁 Afficher</span>
     </div>`).join('') : '');
   // v5.66.2 — au démarrage, on ne recrée pas les tuiles (et leurs images) si rien n'a changé : plus de scintillement
-  if(!(grid._rwLastHtml === _rwDashHtml && grid.firstChild && window._rwBootT0 && Date.now() - window._rwBootT0 < 4000)){ grid._rwLastHtml = _rwDashHtml; grid.innerHTML = _rwDashHtml; }
+  // v5.68.2 — plus de limite de 4 s : tant que rien ne change, les tuiles (et leurs icônes) ne sont jamais recréées
+  if(!(grid._rwLastHtml === _rwDashHtml && grid.firstChild)){ grid._rwLastHtml = _rwDashHtml; grid._nbLast = null; grid.innerHTML = _rwDashHtml; }
   grid.classList.toggle('has-tab-manage', !!(_dashReorderTileId || _dashManage));
 
   // Réorganisation par appui long + flèches directionnelles.
@@ -71667,7 +71706,7 @@ function renderPcSidebarNav(){
   }
   { const _h = tileBtns + plusHtml + (hiddenHtml ? '<div class="pc-nav-hidden-t">Onglets masqués</div>' + hiddenHtml : '');
     // v5.66.2 — au démarrage, plusieurs re-rendus identiques recréaient toutes les icônes (scintillement) : on les saute
-    if(!(nav._rwLastHtml === _h && nav.firstChild && window._rwBootT0 && Date.now() - window._rwBootT0 < 4000)){ nav._rwLastHtml = _h; nav.innerHTML = _h; }
+    if(!(nav._rwLastHtml === _h && nav.firstChild)){ nav._rwLastHtml = _h; nav._nbLast = null; nav.innerHTML = _h; }   // v5.68.2 — sans limite de temps
   }
   nav.classList.toggle('pc-nav-has-reorder', editIdx !== -1 || _pcNavManage);
   _pcNavLongPressInit(nav);
@@ -92077,7 +92116,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     html += `<div class="nb-dash-foot">Tous les onglets sont ici, rangés par thème.</div>`;
     grid.classList.remove('cols-1', 'cols-3');
     grid.classList.add('nb-cat');
-    grid.innerHTML = html;
+    if(!(grid._nbLast === html && grid.firstChild)){ grid._nbLast = html; grid.innerHTML = html; }   // v5.68.2 — rien n'a changé : on ne recrée pas les icônes (scintillement)
     if(typeof _dashDragInit === 'function') _dashDragInit(grid);
     grid.scrollTop = scroll;
   }
@@ -92471,12 +92510,13 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
     const tiles = _simpleGetTiles();
     const grp = {};
     tiles.forEach(v => { const c = (window.NB_INFO && NB_INFO[v] && NB_INFO[v].c) || 'equipe'; (grp[c] = grp[c] || []).push(v); });
-    nav.innerHTML = CATS.filter(([k]) => grp[k]).map(([k, t]) => `<div class="pc-nav-hidden-t nb-pc-cat">${t}</div>` + grp[k].map(v => {
+    const _nbH = CATS.filter(([k]) => grp[k]).map(([k, t]) => `<div class="pc-nav-hidden-t nb-pc-cat">${t}</div>` + grp[k].map(v => {
       const def = SIMPLE_ALL_TILES.find(x => x.view === v) || { icon:'📁', label:v };
       const b = typeof _tileBadge === 'function' ? _tileBadge(v) : 0;
       const info = window.NB_INFO && NB_INFO[v];
       return `<button class="nav-btn" data-view="${v}" title="${_esc(info ? info.d : def.label)}" onclick="simpleModeOpen('${v}')"><span class="ico">${_tabIconHtml(def)}</span><span class="lbl">${_esc(def.label)}</span>${b > 0 ? `<span class="pc-nav-badge">${b > 9 ? '9+' : b}</span>` : ''}</button>`;
     }).join('')).join('');
+    if(!(nav._nbLast === _nbH && nav.firstChild)){ nav._nbLast = _nbH; nav.innerHTML = _nbH; }   // v5.68.2 — menu PC (logo CRM…) recréé seulement s'il change
     nav.classList.remove('pc-nav-has-reorder');
     const av = document.querySelector('.view.active'); let id = av ? av.id.replace('view-', '') : ''; if(id === 'zinc') id = 'couverture';
     nav.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === id));
@@ -99906,7 +99946,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   function register(){
     try{
       if(typeof SIMPLE_ALL_TILES !== 'undefined' && !SIMPLE_ALL_TILES.some(t => t.view === 'bureau'))
-        SIMPLE_ALL_TILES.push({ view:'bureau', img:'icons/bureau-v2.png', icon:'💼', label:'CRM' });
+        SIMPLE_ALL_TILES.push({ view:'bureau', img:'icons/valise.png', icon:'💼', label:'CRM' });   // v5.68.2 — bureau-v2.png n'existe pas (404 → emoji → icône = scintillement)
       if(window.NB_INFO && !NB_INFO.bureau) NB_INFO.bureau = { c:'chantier', d:"Clients, pipeline commercial et tableau de bord", l:"Ton espace patron : le tableau de bord (relances, visites, chantiers signés à planifier), le pipeline en Kanban (prospect → visite → devis envoyé → signé) et les fiches clients avec leurs affaires et leurs devis. Une affaire signée devient un chantier visible par les équipes." };
       if(window.RW_LUCIDE && !RW_LUCIDE.bureau) RW_LUCIDE.bureau = '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect x="2" y="6" width="20" height="14" rx="2"/>';
       if(typeof NAV_LABELS !== 'undefined') NAV_LABELS.bureau = 'CRM';
@@ -100533,6 +100573,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   function toggle(){ const p = panel(); const on = !p.classList.contains('open'); p.classList.toggle('open', on); if(on){ place(); if(st.tab === 'cumul') setTimeout(() => { const i = document.getElementById('rwCalcCuIn'); if(i && matchMedia('(pointer:fine)').matches) i.focus(); }, 30); } }
   function redraw(){ const p = document.getElementById('rwCalcP'); const open = p && p.classList.contains('open'); if(open){ panel(); p.classList.add('open'); place(); } bubble(); save(); }
   window.rwCalcClose = function(){ const p = document.getElementById('rwCalcP'); if(p) p.classList.remove('open'); };
+  window.rwCalcPanelOpen = function(){ st.on = true; bubble(); const p = panel(); p.classList.add('open'); return p; };   // v5.69.0 — widget Windows « Calcul »
   window.rwCalcTab = function(t){ st.tab = t; redraw(); };
   window.rwCalcKey = function(k){
     if(k === 'C'){ st.ex = ''; st.last = ''; }
@@ -100927,18 +100968,20 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 <script>
 /* ═══ MODULE v5.68.0 — Widgets Windows « look Android » ═══
    Même rendu que les widgets de l'écran d'accueil Android (mêmes couleurs, coins, boutons, tailles de texte),
-   alimentés par les mêmes données de l'appli. Actif seulement avec ?widget=bandeau|agenda|todo|magasin|tournee|chantier|notes|itineraire|pointage.
+   alimentés par les mêmes données de l'appli. Actif seulement avec ?widget=bandeau|agenda|todo|magasin|chantier|notes|itineraire|pointage.
+   v5.68.1 — widget « Feuille de route » (tournee) retiré : les feuilles de route n'existent plus dans l'appli (5.52.9).
    Les autres tuiles (planning, calcul, fiche) gardent l'affichage de l'appli (module v5.67.0). */
 (function(){
   var W = null;
   try{ W = new URLSearchParams(location.search).get('widget'); }catch(e){}
-  var KINDS = { bandeau:1, agenda:1, todo:1, magasin:1, tournee:1, chantier:1, notes:1, itineraire:1, pointage:1 };
+  // v5.69.0 — bandeau, notes, magasin et pointage passent au module v5.69.0 (vraies vues de l'appli) ; + météo (nouveau)
+  var KINDS = { agenda:1, todo:1, chantier:1, itineraire:1, meteo:1 };
   if(!W || !KINDS[W]) return;
   window.__rwAw = W;
 
   /* Largeur de référence (en dp Android) de chaque widget : l'ensemble est agrandi/réduit proportionnellement à la fenêtre */
-  var BASE = { bandeau:330, agenda:340, todo:300, magasin:300, tournee:320, chantier:300, notes:320, itineraire:300, pointage:300 };
-  var TITLES = { bandeau:'Chantier actif', agenda:'Agenda', todo:'À faire', magasin:'Magasin', tournee:'Feuille de route', chantier:'Chantiers', notes:'Notes de chantier', itineraire:'Itinéraires', pointage:'Pointage' };
+  var BASE = { bandeau:330, agenda:340, todo:300, magasin:300, chantier:300, notes:320, itineraire:300, pointage:300, meteo:320 };
+  var TITLES = { bandeau:'Chantier actif', agenda:'Agenda', todo:'À faire', magasin:'Magasin', chantier:'Chantiers', notes:'Notes de chantier', itineraire:'Itinéraires', pointage:'Pointage', meteo:'Météo' };
   document.documentElement.classList.add('rw-widget', 'rw-w-' + W, 'rw-aw');
   try{ document.title = 'RWOOD · ' + TITLES[W]; }catch(e){}
 
@@ -101012,6 +101055,19 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     '#rwAw .nt.done{ color:var(--i50); }',
     /* pointage */
     '#rwAw .big{ font-size:22px; font-weight:700; }',
+    /* météo (v5.69.0) */
+    '#rwAw .mt-site{ cursor:pointer; padding-right:6px; }',
+    '#rwAw .mt-now{ display:flex; align-items:center; margin-top:8px; }',
+    '#rwAw .mt-tmp{ font-size:40px; font-weight:700; margin-left:6px; line-height:1; }',
+    '#rwAw .mt-desc{ font-size:14px; font-weight:700; }',
+    '#rwAw .mt-hrs{ display:flex; margin-top:10px; padding:6px 0; border-radius:14px; background:var(--chip); }',
+    '#rwAw .mt-h, #rwAw .mt-d{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; }',
+    '#rwAw .mt-hh, #rwAw .mt-dn{ font-size:11.5px; color:var(--i70); margin-bottom:2px; white-space:nowrap; }',
+    '#rwAw .mt-ht{ font-size:13.5px; font-weight:700; margin-top:1px; }',
+    '#rwAw .mt-hp{ font-size:10.5px; color:#5B8DEF; line-height:1.2; white-space:nowrap; }',
+    '#rwAw .mt-days{ display:flex; margin-top:8px; flex:1 1 0; min-height:0; }',
+    '#rwAw .mt-dt{ font-size:12.5px; color:var(--i70); margin-top:1px; white-space:nowrap; } #rwAw .mt-dt b{ color:var(--ink); }',
+    '#rwAw .mt-foot{ font-size:10px; color:var(--i40); text-align:right; margin-top:4px; }',
     /* fenêtre « récap » (jour d'agenda, clés…) */
     '#rwAw .sheet{ position:absolute; inset:0; z-index:5; background:rgba(0,0,0,.45); display:flex; align-items:flex-end; }',
     '#rwAw .sheet .pan{ width:100%; max-height:85%; box-sizing:border-box; overflow-y:auto; background:var(--bg); box-shadow:inset 0 1px 0 var(--stroke); border-radius:22px 22px 0 0; padding:14px 14px 12px; }',
@@ -101027,7 +101083,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     'html.rw-aw-drill #rwAw{ display:none; }',
     'html.rw-aw-drill #rwAwBack{ display:block; }',
     ':root.rw-aw{ --sidebar-w:0px !important; }',
-    '.rw-aw header.top, .rw-aw nav.bottom, .rw-aw #pcSidebarNav, .rw-aw .pc-sidebar-nav, .rw-aw #sbGrip, .rw-aw #rwWidgetBar{ display:none !important; }',
+    '.rw-aw header.top, .rw-aw nav.bottom, .rw-aw #pcSidebarNav, .rw-aw .pc-sidebar-nav, .rw-aw #sbGrip, .rw-aw #rwWidgetBar, .rw-aw #syncIndicator{ display:none !important; }',   // v5.69.0 — + pastille Sync
     '.rw-aw.rw-aw-drill #app{ display:block !important; width:100% !important; max-width:none !important; margin:0 !important; background:transparent !important; }',
     '.rw-aw.rw-aw-drill main{ padding:44px 12px 12px !important; margin:0 !important; max-width:none !important; background:transparent !important; }',
     '.rw-aw.rw-aw-drill .view-heading, .rw-aw.rw-aw-drill #chantierActifBanner{ display:none !important; }'
@@ -101225,36 +101281,6 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       '<div class="rowbtns"><div class="chipbtn" style="flex:1" data-act="mag">🧰 Emprunter / Rendre</div><div class="chipbtn" style="flex:.6;color:var(--red)" data-act="mag">⚠️ SAV</div></div>');
   }
 
-  /* Feuille de route (widget_route) */
-  function currentRoute(){ try{ return (typeof _routeCache !== 'undefined' && _routeCache && _routeCache[0]) ? _routeCache : null; }catch(e){ return null; } }
-  function vTournee(){
-    var rc = currentRoute();
-    if(!rc) return cardWrap(
-      '<div class="gold" style="font-size:13px;font-weight:700">🚚 Feuille de route</div>' +
-      '<div style="margin-top:6px;font-size:15.5px;font-weight:700">Aucune feuille de route en cours</div>' +
-      '<div class="grow" style="margin-top:3px;font-size:12.5px;color:var(--i80)">Elle s\'affichera ici dès qu\'un conducteur t\'en envoie une.</div>');
-    var r = rc[0], stops = r.stops || [], total = stops.length, done = 0, cur = -1;
-    stops.forEach(function(s, i){ if(s.status === 'done') done++; else if(cur < 0) cur = i; });
-    var head = '🚚 Feuille de route · ' + Math.min(done + 1, total) + '/' + total + ((r.createdBy && r.createdBy.name) ? ' · de ' + r.createdBy.name : '') + (rc.length > 1 ? ' (+' + (rc.length - 1) + ')' : '');
-    if(cur < 0) return cardWrap(
-      '<div class="gold ell" style="font-size:13px;font-weight:700">' + esc(head) + '</div>' +
-      '<div style="margin-top:6px;font-size:15.5px;font-weight:700">✅ Tournée terminée</div>' +
-      '<div class="grow" style="margin-top:3px;font-size:12.5px;color:var(--i80)">Tous les dépannages sont faits.</div>');
-    var s = stops[cur], addr = s.address || '', info = [];
-    if(addr) info.push(addr);
-    var tt = (s.tasks || []).length; if(tt > 0) info.push('☑ ' + (s.tasks || []).filter(function(t){ return t.done; }).length + '/' + tt + ' tâche' + (tt > 1 ? 's' : ''));
-    if(s.notes) info.push('📝 ' + String(s.notes).slice(0, 160));
-    var nx = [];
-    for(var i = cur + 1; i < total && i < cur + 4; i++) nx.push((i + 1) + '. ' + (stops[i].name || ''));
-    return cardWrap(
-      '<div class="gold ell" style="font-size:13px;font-weight:700">' + esc(head) + '</div>' +
-      '<div class="ell" style="margin-top:6px;font-size:15.5px;font-weight:700">📍 ' + (cur + 1) + '. ' + esc(s.name || 'Chantier') + '</div>' +
-      '<div class="grow lines" style="margin-top:3px;font-size:12.5px;color:var(--i80);-webkit-line-clamp:5">' + esc(info.join('\n')) + '</div>' +
-      (nx.length ? '<div class="ell" style="margin-top:4px;font-size:11.5px;color:var(--i60)">Ensuite : ' + esc(nx.join(' · ')) + '</div>' : '') +
-      '<div class="rowbtns" style="margin-top:8px">' + (addr ? '<div class="chipbtn" data-act="rwaze" data-v="' + esc(addr) + '">🧭 Waze</div>' : '') +
-      '<div class="chipbtn" data-act="rdetail" data-v="' + esc(s.id) + '">📋 Détail</div><div class="chipbtn" style="color:var(--green)" data-act="rfin" data-v="' + esc(s.id) + '">✅ Fini</div></div>');
-  }
-
   /* Chantiers (liste) */
   function vChantier(){
     var l = sites(), a = activeSite();
@@ -101311,6 +101337,77 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       '<div class="rowbtns"><div class="chipbtn" data-act="pt">' + (ok ? '✏️ Modifier mes heures' : '➕ Saisir mes heures') + '</div></div>', 'pad ' + (ok ? 'ok' : 'red'));
   }
 
+  /* ── v5.69.0 — Météo (nouveau widget) : chantier actif, maintenant + heures à venir + 5 jours ── */
+  var MJ = ['dim.','lun.','mar.','mer.','jeu.','ven.','sam.'];
+  var MK = 'rwood-w-meteo', mBusy = {};
+  function mCache(){ try{ return JSON.parse(localStorage.getItem(MK) || '{}') || {}; }catch(e){ return {}; } }
+  function mInfo(code){ try{ var w = WMO_CODES[code]; if(w) return { img: w[0], txt: w[1], emo: w[2] }; }catch(e){} return { img:'', txt:'Météo', emo:'🌡️' }; }
+  function mIcon(code, px){ var i = mInfo(code); return i.img ? '<img src="' + i.img + '" alt="" style="width:' + px + 'px;height:' + px + 'px;object-fit:contain" onerror="this.replaceWith(document.createTextNode(\'' + i.emo + '\'))">' : i.emo; }
+  function mLoad(s, force){
+    if(!s || !s.address || mBusy[s.id]) return;
+    var c = mCache()[s.id];
+    if(!force && c && Date.now() - c.ts < 30 * 60 * 1000 && c.addr === s.address) return;
+    mBusy[s.id] = true;
+    (typeof geocodeAddress === 'function' ? geocodeAddress(s.address) : Promise.resolve(null)).then(function(g){
+      if(!g) throw new Error('adresse');
+      return fetch('https://api.open-meteo.com/v1/forecast?latitude=' + g.lat + '&longitude=' + g.lng +
+        '&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation' +
+        '&hourly=temperature_2m,weather_code,precipitation_probability' +
+        '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max' +
+        '&timezone=auto&forecast_days=6&wind_speed_unit=kmh').then(function(r){ return r.json(); });
+    }).then(function(j){
+      if(!j || !j.current) throw new Error('données');
+      var all = mCache(); all[s.id] = { ts: Date.now(), addr: s.address, cur: j.current, hourly: j.hourly, daily: j.daily };
+      try{ localStorage.setItem(MK, JSON.stringify(all)); }catch(e){}
+    }).catch(function(e){
+      var all = mCache(); all[s.id] = Object.assign({}, all[s.id] || {}, { err: e && e.message === 'adresse' ? 'Adresse introuvable' : 'Météo indisponible (réseau)', ts: Date.now(), addr: s.address });
+      try{ localStorage.setItem(MK, JSON.stringify(all)); }catch(x){}
+    }).then(function(){ mBusy[s.id] = false; last = ''; render(); });
+  }
+  function vMeteo(){
+    var s = activeSite();
+    var head = '<div class="row"><div class="grow mt-site" data-act="msite"><div class="t15 ell">' + esc(s ? s.name || 'Chantier' : 'Aucun chantier') + ' <span style="font-size:12px">▾</span></div>' +
+      '<div class="sub ell">' + esc(s ? (s.address || 'Pas d\'adresse') : 'Choisis un chantier') + '</div></div>' +
+      '<div class="sq" style="width:34px;height:34px;font-size:17px" data-act="mref" title="Actualiser">⟳</div></div>';
+    if(!s) return cardWrap(head + '<div class="empty">Ajoute un chantier dans Notybat pour voir sa météo.</div>');
+    if(!s.address) return cardWrap(head + '<div class="empty">Ce chantier n\'a pas d\'adresse : renseigne-la dans sa fiche pour voir la météo.</div>');
+    var c = mCache()[s.id];
+    if(!c || c.addr !== s.address || !c.cur){ mLoad(s); if(!c || !c.err || c.addr !== s.address) return cardWrap(head + '<div class="empty">Chargement de la météo…</div>'); }
+    else mLoad(s);
+    if(c.err && !c.cur) return cardWrap(head + '<div class="empty">⚠️ ' + esc(c.err) + '</div>');
+    var cur = c.cur, inf = mInfo(cur.weather_code), H = c.hourly || {}, D = c.daily || {};
+    var now = Date.now(), hrs = '';
+    var ht = H.time || [], k0 = 0;
+    for(var k = 0; k < ht.length; k++){ if(new Date(ht[k]).getTime() >= now - 30 * 60 * 1000){ k0 = k; break; } }
+    for(var k2 = k0; k2 < Math.min(ht.length, k0 + 6); k2++){
+      var pp = H.precipitation_probability ? H.precipitation_probability[k2] : null;
+      hrs += '<div class="mt-h"><div class="mt-hh">' + (k2 === k0 ? 'Maint.' : new Date(ht[k2]).getHours() + 'h') + '</div>' + mIcon(H.weather_code[k2], 26) +
+        '<div class="mt-ht">' + Math.round(H.temperature_2m[k2]) + '°</div><div class="mt-hp">' + (pp != null && pp >= 20 ? pp + '%' : '&nbsp;') + '</div></div>';
+    }
+    var days = '', dt = D.time || [];
+    for(var d = 1; d < Math.min(dt.length, 6); d++){
+      var dd = new Date(dt[d] + 'T12:00:00'), pr = D.precipitation_probability_max ? D.precipitation_probability_max[d] : null;
+      days += '<div class="mt-d"><div class="mt-dn">' + (d === 1 ? 'Demain' : MJ[dd.getDay()]) + '</div>' + mIcon(D.weather_code[d], 28) +
+        '<div class="mt-dt"><b>' + Math.round(D.temperature_2m_max[d]) + '°</b> ' + Math.round(D.temperature_2m_min[d]) + '°</div><div class="mt-hp">' + (pr != null && pr >= 20 ? '💧' + pr + '%' : '&nbsp;') + '</div></div>';
+    }
+    var tmax = D.temperature_2m_max ? Math.round(D.temperature_2m_max[0]) : null, tmin = D.temperature_2m_min ? Math.round(D.temperature_2m_min[0]) : null;
+    var age = Math.round((now - c.ts) / 60000);
+    return cardWrap(head +
+      '<div class="mt-now">' + mIcon(cur.weather_code, 64) + '<div class="mt-tmp">' + Math.round(cur.temperature_2m) + '°</div>' +
+      '<div class="grow" style="margin-left:10px"><div class="mt-desc ell">' + esc(inf.txt) + '</div>' +
+      '<div class="sub">Ressenti ' + Math.round(cur.apparent_temperature) + '° · ' + (tmax != null ? 'max ' + tmax + '° · min ' + tmin + '°' : '') + '</div>' +
+      '<div class="sub">💨 ' + Math.round(cur.wind_speed_10m || 0) + ' km/h' + (D.precipitation_probability_max ? ' · 💧 ' + (D.precipitation_probability_max[0] || 0) + '% de pluie' : '') + '</div></div></div>' +
+      '<div class="mt-hrs">' + hrs + '</div>' +
+      '<div class="mt-days">' + days + '</div>' +
+      '<div class="mt-foot">Open-Meteo · ' + (age < 1 ? 'à l\'instant' : 'il y a ' + age + ' min') + '</div>');
+  }
+  function siteSheet(){
+    var l = sites(), a = activeSite();
+    sheet('<div class="t15">Météo de quel chantier ?</div><div style="margin-top:6px">' + l.map(function(s){
+      return '<div class="item' + (a && a.id === s.id ? ' on' : '') + '" data-act="mpick" data-v="' + esc(s.id) + '"><div class="grow"><div class="nm ell">' + esc(s.name || 'Chantier') + '</div><div class="ad ell">' + esc(s.address || 'Pas d\'adresse') + '</div></div></div>';
+    }).join('') + '</div>');
+  }
+
   /* Fenêtres de détail (jour d'agenda, clés) */
   function sheet(inner){ sheetHtml = '<div class="sheet" data-act="closesheet"><div class="pan" data-act="stop">' + inner + '</div></div>'; render(); }
   function daySheet(key){
@@ -101355,15 +101452,16 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       case 'pt': drill('heures'); break;
       case 'pick': try{ setActiveSiteId(v); }catch(x){} render(); openFiche(v); break;
       case 'rwaze': openUrl(waze(v)); break;
-      case 'rdetail': try{ var r = currentRoute()[0]; openRouteStopDetail(r._key, r.id, v); }catch(x){} break;
-      case 'rfin': try{ var r2 = currentRoute()[0]; routeFinishStop(r2._key, r2.id, v).then(function(){ return routeLoadMine(); }).then(function(){ _rwAwRender(); }).catch(function(){}); }catch(x){} break;
+      case 'msite': siteSheet(); break;   // v5.69.0 — météo
+      case 'mpick': sheetHtml = ''; try{ setActiveSiteId(v); }catch(x){ try{ localStorage.setItem('rwood-active-site', v); }catch(y){} } last = ''; render(); break;
+      case 'mref': if(s) mLoad(s, true); break;
     }
   }
   function saveAg(){ try{ sessionStorage.setItem('rwAwAgOff', String(agOff)); }catch(e){} }
 
   /* ── rendu + mise à l'échelle (le widget garde les proportions d'Android quel que soit le redimensionnement) ── */
   var zoomNow = 1, last = '';
-  function views(){ return { bandeau:vBandeau, agenda:vAgenda, todo:vTodo, magasin:vMagasin, tournee:vTournee, chantier:vChantier, notes:vNotes, itineraire:vItin, pointage:vPointage }; }
+  function views(){ return { bandeau:vBandeau, agenda:vAgenda, todo:vTodo, magasin:vMagasin, chantier:vChantier, notes:vNotes, itineraire:vItin, pointage:vPointage, meteo:vMeteo }; }
   function scaleOf(){
     var w = window.innerWidth || BASE[W], h = window.innerHeight || 300;
     var z = w / BASE[W];
@@ -101404,11 +101502,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     setInterval(function(){
       if(!inited && ready()){
         inited = true;
-        if(W === 'tournee'){ try{ routeLoadMine().then(function(){ _rwAwRender(); }); }catch(e){} }
       }
       if(!busy()) render();
     }, 1500);
-    if(W === 'tournee') setInterval(function(){ try{ if(ready()) routeLoadMine().then(function(){ _rwAwRender(); }); }catch(e){} }, 60 * 1000);
     window.addEventListener('resize', function(){ last = ''; render(); });
     window.addEventListener('storage', function(){ last = ''; render(); });
     new MutationObserver(function(){ render(); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
@@ -101426,6 +101522,313 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 /* ═══ fin MODULE v5.68.0 ═══ */
 </script>
 
+<!-- ═══ MODULE v5.69.0 — Widgets Windows : vues de l'appli « propres » ═══
+     ?widget=bandeau | planning | notes | pointage | magasin | calcul
+     Chaque widget montre la VRAIE vue de l'appli (mêmes visuels, mêmes boutons, mêmes droits par rôle),
+     débarrassée de tout le reste :
+       • bandeau  : le bandeau Chantier actif (look PC teinté), flèches ‹ › remplacées par un menu déroulant des chantiers
+       • planning : le tableau seul + en-tête « ‹ › ＋ » (comme l'agenda) ; clic sur un chantier = sa fiche planning
+       • notes    : une colonne à la fois, flèches ‹ › pour passer d'une colonne à l'autre (colonnes visibles selon le rôle)
+       • pointage : chef / ouvrier = l'outil de pointage seul ; patron / conducteur / comptable = fiches de toute l'équipe
+       • magasin  : Dispo / Sortis / SAV + la liste
+       • calcul   : calculatrice + cumul (la bulle Calcul, en plein widget)
+     Sans ?widget= dans l'adresse, ce bloc ne fait strictement rien. ═══ -->
+<script>
+(function(){
+  var W = null;
+  try{ W = new URLSearchParams(location.search).get('widget'); }catch(e){}
+  var KINDS = { bandeau:1, planning:1, notes:1, pointage:1, magasin:1, calcul:1 };
+  if(!W || !KINDS[W]) return;
+  window.__rwW2 = W;
+  var de = document.documentElement;
+  de.classList.add('rw-widget', 'rw-w2', 'rw-w2-' + W);
+  var TITLES = { bandeau:'Chantier actif', planning:'Planning', notes:'Notes de chantier', pointage:'Pointage', magasin:'Magasin', calcul:'Calcul' };
+  try{ document.title = 'RWOOD · ' + TITLES[W]; }catch(e){}
+
+  var CSS = [
+    ':root.rw-w2{ --sidebar-w:0px !important; }',
+    '.rw-w2 body{ background:var(--bg) !important; background-image:none !important; }',
+    '.rw-w2 header.top, .rw-w2 nav.bottom, .rw-w2 #pcSidebarNav, .rw-w2 .pc-sidebar-nav, .rw-w2 #sbGrip, .rw-w2 .fab, .rw-w2 #fabBtn,',
+    '.rw-w2 #rwWidgetBar, .rw-w2 #syncIndicator, .rw-w2 .nb-intro, .rw-w2 .view-heading, .rw-w2 #rwCalcB, .rw-w2 #tsBanner,',
+    '.rw-w2 .view #chantierActifBanner, .rw-w2 #musicHeaderWidget, .rw-w2 .music-hdr, .rw-w2 #rwNetPill{ display:none !important; }',
+    '.rw-w2 #app{ display:block !important; width:100% !important; max-width:none !important; margin:0 !important; padding:0 !important; min-height:0 !important; background:transparent !important; }',
+    '.rw-w2 main{ padding:0 !important; margin:0 !important; max-width:none !important; background:transparent !important; }',
+    '.rw-w2 ::-webkit-scrollbar{ width:0 !important; height:0 !important; }',
+    /* en-tête commun (même esprit que l\'agenda : titre, ‹ ›, carré orange ＋) */
+    '#rwW2Bar{ position:fixed; left:0; right:0; top:0; z-index:60; height:52px; box-sizing:border-box; display:flex; align-items:center; gap:2px; padding:8px 10px 6px 14px; background:var(--bg); font-family:inherit; }',
+    '#rwW2Bar .t{ flex:1 1 0; min-width:0; cursor:pointer; line-height:1.15; }',
+    '#rwW2Bar .t b{ display:block; font-size:17px; font-weight:800; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }',
+    '#rwW2Bar .t small{ display:block; font-size:11.5px; font-weight:600; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }',
+    '#rwW2Bar .nv{ flex:none; width:36px; height:36px; border-radius:50%; border:0; background:transparent; color:var(--ink); font:400 24px/1 system-ui,sans-serif; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0 0 3px; }',
+    '#rwW2Bar .nv:hover{ background:rgba(238,138,46,.16); } #rwW2Bar .nv[disabled]{ opacity:.25; cursor:default; background:transparent; }',
+    '#rwW2Bar .add{ flex:none; width:40px; height:36px; margin-left:6px; border-radius:11px; border:0; background:var(--wood,#EE8A2E); color:#fff; font:600 26px/1 system-ui,sans-serif; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0 0 3px; }',
+    '#rwW2Bar .add:hover{ filter:brightness(1.08); }',
+    '#rwW2Bar .dots{ flex:1 1 0; display:flex; justify-content:center; align-items:center; gap:5px; }',
+    '#rwW2Bar .dots i{ width:7px; height:7px; border-radius:50%; background:var(--line); } #rwW2Bar .dots i.on{ background:var(--wood,#EE8A2E); width:18px; border-radius:4px; }',
+    '.rw-w2 .rw-w2-top{ padding-top:52px !important; }',
+
+    /* ── Chantier actif ── */
+    '.rw-w2-bandeau .view, .rw-w2-bandeau main{ display:none !important; }',
+    '.rw-w2-bandeau body{ overflow:hidden !important; }',
+    '.rw-w2-bandeau #chantierActifBanner{ display:block !important; position:absolute !important; left:0 !important; top:0 !important; width:760px !important; box-sizing:border-box !important;',
+    '  margin:0 !important; border-radius:0 !important; transform-origin:0 0; padding:14px 18px 16px !important; }',
+    '.rw-w2-bandeau #chantierActifBanner .cab-nav, .rw-w2-bandeau #chantierActifBanner .cab-dots{ display:none !important; }',
+    '.rw-w2-bandeau #chantierActifBanner.cab-has-nav{ padding-left:18px !important; padding-right:18px !important; }',
+    '.rw-w2-bandeau #chantierActifBanner .cab-pick{ cursor:pointer; }',
+    /* aperçu des notes à droite : comme sur PC (dans l\'appli, réservé aux écrans ≥ 860 px) */
+    '.rw-w2-bandeau .cab-notes-preview{ display:flex !important; flex-direction:column; gap:8px; flex:2; min-width:220px; background:rgba(0,0,0,0.15); border:1px solid var(--line); border-radius:10px; padding:12px 16px; cursor:pointer; align-self:stretch; }',
+    '.rw-w2-bandeau .cab-notes-preview:hover{ border-color:var(--wood); }',
+    '.rw-w2-bandeau .cab-notes-title{ font-size:11.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; color:var(--wood); margin-bottom:4px; }',
+    '.rw-w2-bandeau .cab-notes-row{ display:flex; align-items:baseline; gap:10px; font-size:14px; line-height:1.5; }',
+    '.rw-w2-bandeau .cab-notes-cat{ font-weight:700; color:var(--ink); flex-shrink:0; white-space:nowrap; }',
+    '.rw-w2-bandeau .cab-notes-text{ color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }',
+    '.rw-w2-bandeau .cab-notes-text-empty{ font-style:italic; opacity:.7; }',
+    '.rw-w2-bandeau .cab-notes-count{ font-size:11.5px; color:var(--wood); font-weight:700; flex-shrink:0; }',
+    '.rw-w2-bandeau .cab-notes-more{ font-size:12px; color:var(--ink-soft); opacity:.8; margin-top:4px; }',
+    '.rw-w2-bandeau .cab-notes-empty{ font-size:14px; color:var(--ink-soft); font-style:italic; display:flex; align-items:center; justify-content:center; height:100%; }',
+    '.rw-w2-bandeau .cab-main{ display:flex; align-items:stretch; gap:14px; }',
+    '#rwW2Pick{ position:fixed; z-index:9000; display:none; flex-direction:column; background:var(--bg-elev,#1b1511); color:var(--ink); border:1.5px solid var(--wood,#EE8A2E); border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.45); overflow:hidden; font-family:inherit; }',
+    '#rwW2Pick.open{ display:flex; }',
+    '#rwW2Pick .l{ overflow-y:auto; padding:4px; }',
+    '#rwW2Pick .g{ padding:8px 10px 3px; font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); }',
+    '#rwW2Pick .it{ display:flex; align-items:center; gap:9px; width:100%; box-sizing:border-box; padding:7px 9px; border:0; border-radius:10px; background:transparent; color:var(--ink); font:inherit; font-size:14px; font-weight:700; text-align:left; cursor:pointer; }',
+    '#rwW2Pick .it:hover{ background:rgba(238,138,46,.14); } #rwW2Pick .it.on{ background:rgba(238,138,46,.22); }',
+    '#rwW2Pick .it span.n{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }',
+    '#rwW2Pick .it small{ flex:none; font-size:11px; font-weight:700; color:var(--ink-soft); }',
+
+    /* ── Planning ── */
+    '.rw-w2-planning body{ overflow:hidden !important; }',
+    '.rw-w2-planning #view-planning{ padding:52px 8px 0 !important; margin:0 !important; }',
+    '.rw-w2-planning #planningRoot > .chip-row, .rw-w2-planning #planningRoot .pl13-top, .rw-w2-planning #planningRoot .pl-addbar, .rw-w2-planning #planningRoot .pl13-bar{ display:none !important; }',
+    '.rw-w2-planning #planningRoot .pl13w{ margin:0 !important; height:calc(100vh - 60px) !important; max-height:none !important; overflow:auto !important; }',
+
+    /* ── Notes de chantier ── */
+    '.rw-w2-notes body{ overflow:hidden !important; }',
+    '.rw-w2-notes #view-notesdashboard{ padding:52px 8px 0 !important; margin:0 !important; }',
+    '.rw-w2-notes #nvRoot > *:not(#nvKb){ display:none !important; }',
+    '.rw-w2-notes #nvKb{ display:block !important; overflow:visible !important; height:auto !important; padding:0 !important; margin:0 !important; }',
+    '.rw-w2-notes #nvKb > .nv-col{ display:none !important; }',
+    '.rw-w2-notes #nvKb > .nv-col.rw-cur{ display:flex !important; flex-direction:column; width:auto !important; min-width:0 !important; max-width:none !important; margin:0 !important; height:calc(100vh - 60px) !important; max-height:none !important; }',
+    '.rw-w2-notes #nvKb > .nv-col.rw-cur .dep-colb{ display:block !important; flex:1 1 0; min-height:0; overflow-y:auto !important; max-height:none !important; }',
+    '.rw-w2-notes #nvKb > .nv-col.rw-cur .nb-fsum, .rw-w2-notes #nvKb > .nv-col.rw-cur .nv-chev{ display:none !important; }',
+
+    /* ── Pointage ── */
+    '.rw-w2-pointage #view-heures{ padding:10px 10px 12px !important; margin:0 !important; }',
+    '.rw-w2-pointage #view-heures > *:not(.heures-mode), .rw-w2-pointage #heuresModeTabs{ display:none !important; }',
+    '.rw-w2-pointage.rw-w2-pt-solo #heuresMode-pointage > *:not(#pointageSimple){ display:none !important; }',
+    '.rw-w2-pointage.rw-w2-pt-solo #pointageSimple .hint{ display:none !important; }',
+    '.rw-w2-pointage.rw-w2-pt-team #fichesWeekHeader .ht-cta{ display:none !important; }',
+
+    /* ── Magasin ── */
+    '.rw-w2-magasin #view-magasin{ padding:0 10px 12px !important; margin:0 !important; }',
+    '.rw-w2-magasin #view-magasin > *:not(.magasin-wrap){ display:none !important; }',
+    '.rw-w2-magasin .magasin-wrap > *:not(#magTabs):not(#magasinList){ display:none !important; }',
+    '.rw-w2-magasin #magTabs{ position:sticky; top:0; z-index:5; margin:0 -10px 8px !important; padding:10px 10px 8px !important; background:var(--bg); }',
+    '.rw-w2-magasin #magTabs .chip[data-rw-hist], .rw-w2-magasin #magasinFab, .rw-w2-magasin .mag-fab{ display:none !important; }',
+
+    /* ── Calcul : la bulle Calcul en plein widget ── */
+    '.rw-w2-calcul #app, .rw-w2-calcul main{ display:none !important; }',
+    '.rw-w2-calcul body{ overflow:hidden !important; }',
+    '.rw-w2-calcul #rwCalcP{ display:block !important; position:absolute !important; left:0 !important; top:0 !important; width:300px !important; box-sizing:border-box; border:0 !important; border-radius:0 !important; box-shadow:none !important; background:var(--bg) !important; transform-origin:0 0; }',
+    '.rw-w2-calcul #rwCalcP .hd .x, .rw-w2-calcul #rwCalcP > .ft:last-child{ display:none !important; }'
+  ].join('\n');
+  var st = document.createElement('style'); st.id = 'rwW2Css'; st.textContent = CSS; document.head.appendChild(st);
+
+  function E(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function authVisible(){ var a = document.getElementById('authScreen'); return !!(a && a.style.display && a.style.display !== 'none'); }
+  function ready(){ try{ return typeof goTo === 'function' && typeof data !== 'undefined' && data && Array.isArray(data.sites) && !authVisible(); }catch(e){ return false; } }
+  function role(){ try{ return (data.settings && data.settings.myProfile && data.settings.myProfile.role) || ''; }catch(e){ return ''; } }
+
+  /* en-tête commun */
+  function bar(html){
+    var b = document.getElementById('rwW2Bar');
+    if(!b){ b = document.createElement('div'); b.id = 'rwW2Bar'; document.body.appendChild(b); b.addEventListener('click', onBar); }
+    if(b._h !== html){ b._h = html; b.innerHTML = html; }
+    return b;
+  }
+  var barActs = {};
+  function onBar(e){ var el = e.target.closest('[data-a]'); if(!el || el.disabled) return; var f = barActs[el.getAttribute('data-a')]; if(f) f(); }
+
+  /* ═════ CHANTIER ACTIF ═════ */
+  var CAB_W = 760;
+  function cabFit(){
+    var b = document.getElementById('chantierActifBanner'); if(!b) return;
+    b.classList.remove('nb-slim');   // toujours le bandeau complet dans le widget
+    var Wd = window.innerWidth, Hd = window.innerHeight, z = Wd / CAB_W;
+    b.style.minHeight = '0';
+    for(var k = 0; k < 4; k++){   // largeur d'abord ; si ça dépasse en hauteur, on réduit et on élargit la mise en page
+      b.style.zoom = '1'; b.style.setProperty('width', Math.round(Wd / z) + 'px', 'important');
+      var h = b.scrollHeight || 220;
+      if(h * z <= Hd + 1) break;
+      z = Math.max(0.35, Hd / h);
+    }
+    b.style.zoom = String(z);
+    b.style.minHeight = Math.ceil(window.innerHeight / z) + 'px';   // le fond teinté remplit tout le widget
+    var p = document.getElementById('rwW2Pick'); if(p && p.classList.contains('open')) pickPlace();
+  }
+  function cabTint(){
+    var b = document.getElementById('chantierActifBanner'); if(!b) return;
+    var s = null; try{ var id = getActiveSiteId(); s = (data.sites || []).find(function(x){ return x.id === id; }); }catch(e){}
+    if(s && typeof cardTintBackground === 'function'){ b.style.background = cardTintBackground(s.color || '#EE8A2E'); b.style.removeProperty('--cab-accent'); }
+  }
+  function setupBandeau(){
+    var b = document.getElementById('chantierActifBanner'); if(!b) return false;
+    if(b.parentNode !== document.body) document.body.appendChild(b);
+    window._pcSyncBannerToView = function(){ try{ renderChantierActifBanner(); }catch(e){} };
+    if(!window.__rwW2CabWrap){
+      window.__rwW2CabWrap = true;
+      var _r = window.renderChantierActifBanner;
+      window.renderChantierActifBanner = function(){ var r = _r.apply(this, arguments); try{ cabTint(); cabFit(); }catch(e){} return r; };
+      window.cabPick = function(){ var p = document.getElementById('rwW2Pick'); if(p && p.classList.contains('open')) pickClose(); else pickOpen(); };
+      window.addEventListener('resize', cabFit);
+    }
+    try{ renderChantierActifBanner(); }catch(e){}
+    return true;
+  }
+  function pickSites(){
+    var L = (data.sites || []).filter(function(s){ return s && !s._deleted && !(typeof siteHiddenForMe === 'function' && siteHiddenForMe(s)); });
+    var G = [['en-cours', 'En cours'], ['a-faire', 'En attente'], ['termine', 'Terminés']];
+    var by = { 'en-cours':[], 'a-faire':[], 'termine':[] };
+    L.forEach(function(s){ var k = s.status === 'en-cours' ? 'en-cours' : s.status === 'termine' ? 'termine' : 'a-faire'; by[k].push(s); });
+    Object.keys(by).forEach(function(k){ by[k].sort(function(a, b){ return String(a.name || '').localeCompare(String(b.name || ''), 'fr', { numeric:true }); }); });
+    return G.filter(function(g){ return by[g[0]].length; }).map(function(g){ return [g[1], by[g[0]]]; });
+  }
+  function pickOpen(){
+    var p = document.getElementById('rwW2Pick');
+    if(!p){ p = document.createElement('div'); p.id = 'rwW2Pick'; document.body.appendChild(p);
+      p.addEventListener('click', function(e){ var it = e.target.closest('[data-id]'); if(!it) return; try{ setActiveSiteId(it.getAttribute('data-id')); }catch(x){} pickClose(); try{ renderChantierActifBanner(); }catch(x){} });
+      document.addEventListener('pointerdown', function(e){ var q = document.getElementById('rwW2Pick'); if(q && q.classList.contains('open') && !q.contains(e.target) && !e.target.closest('.cab-pick')) pickClose(); }, true);
+      document.addEventListener('keydown', function(e){ if(e.key === 'Escape') pickClose(); });
+    }
+    var cur = null; try{ cur = getActiveSiteId(); }catch(e){}
+    p.innerHTML = '<div class="l">' + pickSites().map(function(g){
+      return '<div class="g">' + E(g[0]) + ' · ' + g[1].length + '</div>' + g[1].map(function(s){
+        return '<button type="button" class="it' + (s.id === cur ? ' on' : '') + '" data-id="' + E(s.id) + '">' + (typeof siteIni === 'function' ? siteIni(s, 24) : '') +
+          '<span class="n">' + E(s.name || 'Chantier') + '</span>' + (s.id === cur ? '<small>✓</small>' : '') + '</button>';
+      }).join('');
+    }).join('') + '</div>';
+    p.classList.add('open'); pickPlace();
+    var on = p.querySelector('.it.on'); if(on) on.scrollIntoView({ block:'center' });
+  }
+  function pickPlace(){
+    var p = document.getElementById('rwW2Pick'), a = document.querySelector('#chantierActifBanner .cab-pick'); if(!p || !a) return;
+    var r = a.getBoundingClientRect(), H = window.innerHeight, Wd = window.innerWidth;
+    var top = Math.min(r.bottom + 4, H - 120), w = Math.min(Math.max(240, r.width + 60), Wd - 12);
+    var left = Math.max(6, Math.min(r.left, Wd - w - 6));
+    p.style.left = left + 'px'; p.style.top = Math.max(6, top) + 'px'; p.style.width = w + 'px'; p.style.maxHeight = (H - Math.max(6, top) - 6) + 'px';
+  }
+  function pickClose(){ var p = document.getElementById('rwW2Pick'); if(p) p.classList.remove('open'); }
+
+  /* ═════ PLANNING ═════ */
+  function plScroller(){ return document.querySelector('#planningRoot .pl13w'); }
+  function plStep(d){
+    var sc = plScroller(); if(!sc) return;
+    var th = sc.querySelector('th.wk'); var w = th ? th.getBoundingClientRect().width : 140;
+    sc.scrollBy({ left: d * w, behavior:'smooth' });
+  }
+  function plBar(){
+    var lbl = document.getElementById('plRangeLbl');
+    barActs.today = function(){ try{ planningToday(true); }catch(e){} };
+    barActs.prev = function(){ plStep(-1); };
+    barActs.next = function(){ plStep(1); };
+    barActs.add = function(){ try{ planningPickSite(); }catch(e){} };
+    bar('<div class="t" data-a="today" title="Revenir à aujourd\'hui"><b>Planning</b><small>' + E(lbl ? lbl.textContent : '') + '</small></div>' +
+      '<button class="nv" data-a="prev" title="Semaine précédente">‹</button><button class="nv" data-a="next" title="Semaine suivante">›</button>' +
+      '<button class="add" data-a="add" title="Ajouter un chantier au planning">+</button>');
+  }
+
+  /* ═════ NOTES ═════ */
+  var nCur = null;
+  try{ nCur = sessionStorage.getItem('rwW2NoteCol'); }catch(e){}
+  function nCols(){ return Array.prototype.slice.call(document.querySelectorAll('#nvKb > .nv-col')); }
+  function nApply(){
+    var cols = nCols(); if(!cols.length) return;
+    var ids = cols.map(function(c){ return c.id; });
+    if(ids.indexOf(nCur) < 0) nCur = ids[0];
+    cols.forEach(function(c){ var on = c.id === nCur; if(c.classList.contains('rw-cur') !== on) c.classList.toggle('rw-cur', on); if(on && c.classList.contains('fold')) c.classList.remove('fold'); });
+    var i = ids.indexOf(nCur);
+    barActs.prev = function(){ nGo(-1); }; barActs.next = function(){ nGo(1); };
+    bar('<button class="nv" data-a="prev" title="Colonne précédente"' + (i <= 0 ? ' disabled' : '') + '>‹</button>' +
+      '<div class="dots">' + ids.map(function(x, k){ return '<i class="' + (k === i ? 'on' : '') + '"></i>'; }).join('') + '</div>' +
+      '<button class="nv" data-a="next" title="Colonne suivante"' + (i >= ids.length - 1 ? ' disabled' : '') + '>›</button>');
+  }
+  function nGo(d){
+    var ids = nCols().map(function(c){ return c.id; }), i = ids.indexOf(nCur);
+    var n = Math.max(0, Math.min(ids.length - 1, i + d)); if(n === i) return;
+    nCur = ids[n]; try{ sessionStorage.setItem('rwW2NoteCol', nCur); }catch(e){} nApply();
+  }
+
+  /* ═════ POINTAGE ═════ */
+  function ptTeam(){ var r = role(); return r === 'patron' || r === 'conducteur' || r === 'comptable'; }
+
+  /* ═════ CALCUL ═════ */
+  function calcFit(){
+    var p = document.getElementById('rwCalcP'); if(!p) return;
+    p.style.zoom = '1';
+    var h = p.scrollHeight || 460;
+    p.style.zoom = String(Math.max(0.5, Math.min(window.innerWidth / 300, window.innerHeight / h)));
+  }
+
+  /* ═════ démarrage ═════ */
+  var done = false, tries = 0;
+  function init(){
+    if(W === 'bandeau') return setupBandeau();
+    if(W === 'calcul'){
+      if(typeof window.rwCalcPanelOpen !== 'function') return false;
+      window.rwCalcPanelOpen();
+      new MutationObserver(calcFit).observe(document.getElementById('rwCalcP'), { childList:true, subtree:true });
+      window.addEventListener('resize', calcFit); calcFit();
+      return true;
+    }
+    if(W === 'planning'){
+      goTo('planning');
+      try{ if(typeof planningSetView === 'function') planningSetView('chantier'); }catch(e){}
+      var root = document.getElementById('planningRoot'); if(!root) return false;
+      new MutationObserver(plBar).observe(root, { childList:true, subtree:true, characterData:true });
+      plBar(); return true;
+    }
+    if(W === 'notes'){
+      goTo('notesdashboard');
+      var nr = document.getElementById('nvRoot'); if(!nr) return false;
+      var t = null; new MutationObserver(function(){ clearTimeout(t); t = setTimeout(nApply, 30); }).observe(nr, { childList:true, subtree:true });
+      nApply(); return true;
+    }
+    if(W === 'pointage'){
+      goTo('heures');
+      var team = ptTeam();
+      de.classList.toggle('rw-w2-pt-team', team); de.classList.toggle('rw-w2-pt-solo', !team);
+      try{ setHeuresMode(team ? 'fiches' : 'pointage'); }catch(e){}
+      return true;
+    }
+    if(W === 'magasin'){
+      goTo('magasin');
+      return true;
+    }
+    return false;
+  }
+  var timer = setInterval(function(){
+    tries++;
+    if(done || tries > 600){ clearInterval(timer); return; }
+    if(!ready()) return;
+    try{ done = !!init(); }catch(e){ console.warn('[widget]', e); }
+  }, 300);
+  /* le chantier actif change dans une autre tuile → on suit */
+  window.addEventListener('storage', function(e){ if(e.key === 'rwood-active-site'){ try{ renderChantierActifBanner(); }catch(x){} } });
+  /* le rôle (dev) change : on rouvre le bon pointage */
+  if(W === 'pointage') setInterval(function(){ if(!done) return; var team = ptTeam(); if(de.classList.contains('rw-w2-pt-team') !== team){ try{ init(); }catch(e){} } }, 3000);
+
+  /* Actualisation complète toutes les 15 min (pas pendant une saisie ni une fenêtre ouverte) */
+  setInterval(function(){
+    var el = document.activeElement, t = el && el.tagName;
+    if(t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || (el && el.isContentEditable)) return;
+    if(document.querySelector('.modal.open, .modal-overlay.open, .modal.show, #rwW2Pick.open')) return;
+    location.reload();
+  }, 15 * 60 * 1000);
+})();
+</script>
+<!-- ═══ fin MODULE v5.69.0 ═══ -->
+
+
 <!-- ═══ MODULE v5.67.0 — Mode « widget » Windows (?widget=agenda | planning | chantier | notes | pointage | itineraire | magasin | calcul | bandeau | fiche) ═══
      Chaque tuile = UNE vue de l'appli, plein cadre, sans barre, sans croix, sans menus.
      « bandeau » = uniquement le bandeau Chantier actif ; « fiche » = fiche d'un chantier (ouverte depuis le bandeau).
@@ -101437,7 +101840,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   var VIEWS = { agenda:'agenda', planning:'planning', chantier:'chantiers', notes:'notesdashboard', pointage:'heures',
                 itineraire:'itineraires', magasin:'magasin', calcul:'calcul', bandeau:null, fiche:'detail' };
   if(!W || !Object.prototype.hasOwnProperty.call(VIEWS, W)) return;
-  if(window.__rwAw) return;   // v5.68.0 : cette tuile est dessinée par le module « look Android » ci-dessus
+  if(window.__rwAw || window.__rwW2) return;   // v5.68.0 / v5.69.0 : cette tuile est dessinée par un module ci-dessus
 
   var TITLES = { agenda:'Agenda', planning:'Planning', chantier:'Chantiers', notes:'Notes de chantier', pointage:'Pointage',
                  itineraire:'Itinéraire', magasin:'Magasin', calcul:'Calcul', bandeau:'Chantier actif', fiche:'Fiche chantier' };
