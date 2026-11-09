@@ -8239,6 +8239,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
       <!-- DÉCOUPE (optimisation de plan de coupe) -->
       <div class="calc-mode" id="calcMode-echaf" style="display:none;"></div>
       <div class="calc-mode" id="calcMode-decoupe" style="display:none;">
+        <div class="card dl-card" id="dlLots"></div>   <!-- v5.77.0 — lots de découpe enregistrés / partagés -->
         <!-- v5.41.378 — unité des longueurs au choix (saisie + affichage) ; le trait de scie reste en mm, sous les listes -->
         <div class="dq-unit"><span>Longueurs en</span><div class="cb-seg" id="decoupeUnitSeg" style="margin:0;flex:1;">
           <button type="button" data-u="m" onclick="decoupeSetUnit('m')">m</button><button type="button" data-u="cm" onclick="decoupeSetUnit('cm')">cm</button><button type="button" data-u="mm" onclick="decoupeSetUnit('mm')">mm</button></div></div>
@@ -41629,8 +41630,9 @@ function decoupeCompute(){
   });
 
   // v5.76.0 — marques tracé / coupé, gardées tant que le plan ne change pas
-  _dcSig = JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
+  _dcSig = (typeof _dlSigOf === 'function') ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf * 1000) : JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
   _dcMarks = {}; try{ const m = JSON.parse(localStorage.getItem('rwood-dc-marks') || 'null'); if(m && m.sig === _dcSig) _dcMarks = m.m || {}; }catch(e){}
+  try{ const lm = (typeof _dlMarksFor === 'function') && _dlMarksFor(_dcSig); if(lm) _dcMarks = lm; }catch(e){}   // v5.77.0 — lot ouvert : marques partagées
   // Regrouper les coupes identiques par barre pour un affichage lisible
   const barsHtml = usedBars.map((b,idx)=>{
     if(b.overflow){
@@ -41688,6 +41690,7 @@ function _dcTap(el){
   try{ localStorage.setItem('rwood-dc-marks', JSON.stringify({ sig:_dcSig, m:_dcMarks })); }catch(e){}
   try{ if(navigator.vibrate) navigator.vibrate(st === 2 ? 25 : 10); }catch(e){}
   _dcProg();
+  try{ if(typeof _dlMarksChanged === 'function') _dlMarksChanged(_dcSig, _dcMarks, document.querySelectorAll('#decoupeResult .dc-seg').length); }catch(e){}
 }
 function _dcProg(){
   document.querySelectorAll('#decoupeResult .dc-prog').forEach(p => {
@@ -49615,9 +49618,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.76.0';
+const APP_VERSION = '5.77.0';
 
 const CHANGELOG = [
+  {
+    version: '5.77.0',
+    date: '09/11/2026',
+    entries: [
+      { icon: '📁', text: "Découpe : enregistre tes plans en « lots » (stock + longueurs à couper + trait de scie) avec un nom et, si tu veux, un chantier. Touche un lot pour le rouvrir ; « ✏️ Modifié » rappelle d'enregistrer ; ＋ Copie pour partir d'un lot existant." },
+      { icon: '👷', text: "Les lots se synchronisent comme le Pense-bête : l'ouvrier choisit son chef et voit / modifie les lots du chef, avec l'avancement tracé / coupé de chaque morceau." },
+      { icon: '🏗️', text: "Filtre par chantier pour retrouver vite les lots d'un chantier." }
+    ]
+  },
   {
     version: '5.76.0',
     date: '09/11/2026',
@@ -85104,6 +85116,7 @@ const RH_HELP = {
   ,
   ]},
   calcul: { t:'Calcul', l:[
+    { i:'📁', x:"<b>Découpe</b> : <b>💾 Enregistrer le lot</b> garde le stock et les pièces sous un nom, avec un chantier. Le chef et ses ouvriers voient et modifient les mêmes lots (l'ouvrier choisit son chef, comme pour le Pense-bête)." },
     { i:'🧮', x:"<b>Cumul de cotes</b>, <b>Pythagore</b> (entre 2 cotes, la 3e se calcule toute seule), <b>Répartition</b>, <b>Découpe</b>, <b>🏗️ Échafaudage</b> (matériel + vue 3D) et calculatrice." }
   ]},
   magasin: { t:'Magasin', l:[
@@ -99261,6 +99274,234 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.67.0 ═══ -->
+<!-- ═══ MODULE v5.77.0 — Lots de découpe enregistrés et partagés (chef ↔ ouvriers, comme le Pense-bête) ═══
+     Ligne Supabase decoupe_lots_{authId du chef / de l'utilisateur} : { lots:[…], deletedIds:[…] }
+     Ouvrier : liste du chef suivi (même choix que le Pense-bête), sinon sa propre liste.
+     Fusion par lot (updatedAt le plus récent), suppressions définitives (deletedIds). ═══ -->
+<style>
+  .dl-card{ padding:12px 14px !important; }
+  .dl-hd{ display:flex; align-items:center; gap:8px; }
+  .dl-hd b{ font-size:15px; font-weight:900; flex:1; }
+  .dl-sync{ font-size:11px; font-weight:800; color:var(--ink-soft); }
+  .dl-chef{ display:flex; align-items:center; gap:8px; margin-top:8px; font-size:13px; font-weight:800; color:var(--ink-soft); }
+  .dl-chef select{ flex:1; min-width:0; padding:7px 8px; border:1.5px solid var(--line); border-radius:10px; background:var(--bg); color:var(--wood,#C8862B); font-size:14px; font-weight:800; font-family:inherit; }
+  .dl-cur{ display:flex; align-items:center; gap:8px; margin-top:10px; padding:9px 10px; border-radius:12px; background:var(--bg-elev); border:1.5px solid var(--wood); }
+  .dl-cur .t{ flex:1; min-width:0; } .dl-cur .t b{ display:block; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dl-cur .t small{ display:block; font-size:11.5px; color:var(--ink-soft); font-weight:700; }
+  .dl-cur .t small.mod{ color:#E07B24; }
+  .dl-acts{ display:flex; gap:8px; margin-top:10px; }
+  .dl-acts .btn{ flex:1; min-height:42px; font-weight:800; }
+  .dl-flt{ display:flex; gap:6px; margin-top:12px; align-items:center; }
+  .dl-flt button{ flex:1; min-width:0; display:flex; align-items:center; gap:6px; justify-content:center; padding:7px 10px; border-radius:99px; border:1.5px solid var(--line); background:transparent; color:var(--ink); font-weight:800; font-size:12.5px; font-family:inherit; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dl-flt button .s-ini{ flex-shrink:0; }
+  .dl-list{ margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+  .dl-it{ display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:12px; background:var(--bg-elev); border:1px solid var(--line); cursor:pointer; }
+  .dl-it.on{ border-color:var(--wood); box-shadow:inset 3px 0 0 var(--wood); }
+  .dl-it .b{ flex:1; min-width:0; } .dl-it .b b{ display:block; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dl-it .b small{ display:block; font-size:11.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .dl-it .pg{ font-size:11.5px; font-weight:900; color:var(--ink-soft); flex-shrink:0; }
+  .dl-it .pg.ok{ color:var(--green,#2e9e5b); }
+  .dl-cur .x, .dl-it .x{ width:34px; height:34px; border-radius:10px; border:1px solid var(--line); background:transparent; color:var(--ink); font-size:15px; flex-shrink:0; cursor:pointer; }
+  .dl-noini{ display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:50%; background:var(--line); font-size:14px; flex-shrink:0; }
+  .dl-more{ display:block; width:100%; margin-top:6px; padding:8px; border:none; background:none; color:var(--wood); font-weight:800; font-family:inherit; cursor:pointer; }
+  #modal-dlSave .field{ margin-bottom:12px; }
+  #modal-dlSave .dl-sitebtn{ width:100%; display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font-weight:800; font-size:14px; font-family:inherit; cursor:pointer; text-align:left; }
+</style>
+<script>
+(function(){
+  const PFX = 'decoupe_lots_';
+  let st = { key:null, lots:[], del:[], cur:null, site:'', all:false, busy:false, last:0 };
+  const $ = id => document.getElementById(id);
+  const S = () => data.settings || (data.settings = {});
+  const role = () => (S().myProfile && S().myProfile.role) || '';
+  const myAuth = () => (S().auth && S().auth.authId) || null;
+  const myName = () => { const p = S().myProfile || {}; return ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || p.name || 'Moi'; };
+  const now = () => new Date().toISOString();
+  const clone = o => JSON.parse(JSON.stringify(o || null));
+  const norm = l => (l || []).map(x => [Math.round(x.len * 1000) / 1000, x.qty]);
+  window._dlSigOf = (stock, need, kerfMm) => JSON.stringify([norm(stock), norm(need), (parseFloat(kerfMm) || 0) / 1000]);
+  const kerfNow = () => { const k = $('decoupeKerf'); return k ? (parseFloat(k.value) || 0) : 3; };
+  const sigNow = () => _dlSigOf(_decoupeStock, _decoupeNeed, kerfNow());
+  const siteOf = id => (data.sites || []).find(s => s && s.id === id);
+
+  function activeKey(){
+    const me = myAuth(); if(!me) return null;
+    if(role() === 'ouvrier'){ const f = (typeof _getFollowedChefId === 'function') && _getFollowedChefId(); if(f) return PFX + f; }
+    return PFX + me;
+  }
+  const LK = k => 'rwood-dlots:' + (k || 'local');
+  function loadLocal(k){ try{ const o = JSON.parse(localStorage.getItem(LK(k)) || 'null'); if(o) return o; }catch(e){} return { lots:[], del:[] }; }
+  function saveLocal(){ try{ localStorage.setItem(LK(st.key), JSON.stringify({ lots:st.lots, del:st.del })); }catch(e){} }
+  const ts = l => l && l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+  function merge(a, b, del){
+    const D = new Set(del || []), m = new Map();
+    (b || []).forEach(l => { if(l && l.id && !D.has(l.id)) m.set(l.id, l); });
+    (a || []).forEach(l => { if(!l || !l.id || D.has(l.id)) return; const e = m.get(l.id); if(!e || ts(l) >= ts(e)) m.set(l.id, l); });
+    return [...m.values()];
+  }
+  async function pullRow(k){
+    try{
+      const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(k) + '&select=data', { headers:{ 'Prefer':'' } });
+      if(!r.ok) return null; const rows = await r.json(); if(!rows || !rows.length) return { lots:[], deletedIds:[] };
+      const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data; return d || { lots:[], deletedIds:[] };
+    }catch(e){ return null; }
+  }
+  function useKey(){
+    const k = activeKey();
+    if(k !== st.key){ st.key = k; const o = loadLocal(k); st.lots = o.lots || []; st.del = o.del || []; if(st.cur && !st.lots.some(l => l.id === st.cur)) st.cur = null; }
+  }
+  async function pull(silent){
+    useKey(); if(!st.key || st.busy) { render(); return; }
+    const d = await pullRow(st.key);
+    if(d){ st.del = [...new Set([...(st.del || []), ...(d.deletedIds || [])])]; st.lots = merge(st.lots, d.lots || [], st.del); saveLocal(); st.last = Date.now(); }
+    render();
+  }
+  async function push(){
+    saveLocal(); render(); if(!st.key) return;
+    st.busy = true; const k = st.key;
+    try{
+      const d = await pullRow(k);
+      if(d){ st.del = [...new Set([...(st.del || []), ...(d.deletedIds || [])])]; st.lots = merge(st.lots, d.lots || [], st.del); }
+      const w = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({ user_id:k, updated_at:now(), data: JSON.stringify({ lots:st.lots, deletedIds:st.del.slice(-500) }) }) });
+      if(w && w.ok !== false) st.last = Date.now();
+      saveLocal();
+    }catch(e){} finally{ st.busy = false; render(); }
+  }
+  let pushT = null; const pushSoon = () => { clearTimeout(pushT); pushT = setTimeout(push, 1200); };
+
+  const curLot = () => st.lots.find(l => l.id === st.cur) || null;
+  const lotProg = l => { if(!l || !l.marks || !l.nbPieces) return null; const c = Object.values(l.marks).filter(v => v === 2).length; return { c, n:l.nbPieces }; };
+  const fmtDate = iso => { try{ const d = new Date(iso); return d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); }catch(e){ return ''; } };
+  const piecesOf = l => (l.need || []).reduce((a, x) => a + x.qty, 0);
+  const barsOf = l => (l.stock || []).reduce((a, x) => a + x.qty, 0);
+
+  function render(){
+    const box = $('dlLots'); if(!box) return; useKey();
+    const isOuv = role() === 'ouvrier';
+    const cur = curLot(); const modified = cur && cur.sig !== sigNow();
+    const site = st.site ? siteOf(st.site) : null;
+    let list = st.lots.filter(l => !st.site || l.siteId === st.site).sort((a, b) => ts(b) - ts(a));
+    const total = list.length; if(!st.all) list = list.slice(0, 6);
+    const ini = s => s ? siteIni(s, 30) : '<span class="dl-noini">📁</span>';
+    const owner = isOuv && (typeof _getFollowedChefId === 'function') && _getFollowedChefId();
+    box.innerHTML = `
+      <div class="dl-hd"><b>📁 Lots de découpe</b><span class="dl-sync">${!myAuth() ? '📵 sur cet appareil' : st.busy ? '⏳' : st.last ? '☁️ synchronisé' : ''}</span></div>
+      ${isOuv ? `<div class="dl-chef">👷 Lots de :<select id="dlChefSel" onchange="_dlChef(this.value)"><option value="">Moi (pas de chef)</option>${owner ? `<option value="${escapeHtml(owner)}" selected>${escapeHtml(owner)}</option>` : ''}</select></div>` : ''}
+      ${cur ? `<div class="dl-cur">${ini(siteOf(cur.siteId))}<div class="t"><b>${escapeHtml(cur.name)}</b><small class="${modified ? 'mod' : ''}">${modified ? '✏️ Modifié — pense à enregistrer' : (siteOf(cur.siteId) ? escapeHtml(siteOf(cur.siteId).name) + ' · ' : '') + 'lot en cours'}</small></div><button class="x" onclick="_dlClose()" title="Fermer le lot">×</button></div>` : ''}
+      <div class="dl-acts">
+        <button class="btn btn-primary" onclick="_dlSaveOpen()">💾 ${cur ? 'Enregistrer' : 'Enregistrer le lot'}</button>
+        ${cur ? `<button class="btn btn-outline" onclick="_dlSaveOpen(true)">＋ Copie</button>` : ''}
+        <button class="btn btn-outline" onclick="_dlNew()">🆕 Nouveau</button>
+      </div>
+      ${st.lots.length ? `<div class="dl-flt"><button onclick="_dlFilter()">${site ? siteIni(site, 20) + escapeHtml(site.name) : '🏗️ Tous les chantiers'}</button></div>
+      <div class="dl-list">${list.map(l => { const s = siteOf(l.siteId); const p = lotProg(l);
+        return `<div class="dl-it${l.id === st.cur ? ' on' : ''}" onclick="_dlOpen('${l.id}')">${ini(s)}<div class="b"><b>${escapeHtml(l.name)}</b><small>${s ? escapeHtml(s.name) + ' · ' : ''}${barsOf(l)} barre${barsOf(l) > 1 ? 's' : ''} · ${piecesOf(l)} pièce${piecesOf(l) > 1 ? 's' : ''} · ${escapeHtml(l.byName || '')} ${fmtDate(l.updatedAt)}</small></div>${p ? `<span class="pg${p.c === p.n ? ' ok' : ''}">${p.c === p.n ? '✅' : '✂️ ' + p.c + '/' + p.n}</span>` : ''}<button class="x" onclick="event.stopPropagation();_dlDel('${l.id}')" title="Supprimer">🗑</button></div>`; }).join('') || '<div class="hint" style="text-align:center;padding:8px;">Aucun lot pour ce chantier</div>'}</div>
+      ${total > 6 ? `<button class="dl-more" onclick="_dlAll()">${st.all ? 'Voir moins' : 'Voir les ' + total + ' lots'}</button>` : ''}`
+      : `<div class="hint" style="margin-top:8px;">Saisis le stock et les pièces, puis <b>💾 Enregistrer le lot</b> : il sera gardé avec son nom${isOuv ? ' et partagé avec ton chef' : ' et partagé avec tes ouvriers'}.</div>`}`;
+    if(isOuv) fillChefs();
+  }
+  let chefsCache = null;
+  async function fillChefs(){
+    const sel = $('dlChefSel'); if(!sel) return;
+    try{
+      if(!chefsCache){ chefsCache = (await fetchChefsForMyCompany()).filter(c => c.authId !== myAuth()); }
+      const cur = (typeof _getFollowedChefId === 'function') && _getFollowedChefId();
+      const s2 = $('dlChefSel'); if(!s2) return;
+      s2.innerHTML = '<option value="">Moi (pas de chef)</option>' + chefsCache.map(c => `<option value="${escapeHtml(c.authId)}" ${c.authId === cur ? 'selected' : ''}>${escapeHtml(c.name || c.authId)}${c.teamName ? ' (' + escapeHtml(c.teamName) + ')' : ''}</option>`).join('');
+    }catch(e){}
+  }
+
+  window._dlChef = async function(v){
+    try{ if(typeof _notesChefChange === 'function') await _notesChefChange(v); else if(typeof onChefTodoSelectorChange === 'function') await onChefTodoSelectorChange(v); }catch(e){}
+    st.cur = null; await pull();
+  };
+  window._dlFilter = function(){
+    const ids = new Set(st.lots.map(l => l.siteId).filter(Boolean));
+    sitePicker({ title:'Lots de quel chantier ?', current:st.site, sites:(data.sites || []).filter(s => s && ids.has(s.id)), extras:[{ v:'', l:'Tous les chantiers', ic:'🏗️' }], onPick: v => { st.site = v || ''; st.all = false; render(); } });
+  };
+  window._dlAll = function(){ st.all = !st.all; render(); };
+  window._dlClose = function(){ st.cur = null; render(); };
+  window._dlNew = function(){
+    const go = () => { st.cur = null; decoupeReset(); render(); try{ const i = $('decoupeStockIn'); if(i) i.focus(); }catch(e){} };
+    const cur = curLot();
+    if((cur && cur.sig !== sigNow()) || (!cur && (_decoupeStock.length || _decoupeNeed.length))){ if(!confirm('Commencer un nouveau lot ? Ce qui n\'est pas enregistré sera effacé.')) return; }
+    go();
+  };
+  window._dlOpen = function(id){
+    const l = st.lots.find(x => x.id === id); if(!l) return;
+    const cur = curLot();
+    if(cur && cur.id !== id && cur.sig !== sigNow() && !confirm('Le lot « ' + cur.name + ' » a été modifié sans être enregistré. Ouvrir quand même ?')) return;
+    if(!cur && st.cur !== id && (_decoupeStock.length || _decoupeNeed.length) && !st.lots.some(x => x.sig === sigNow()) && !confirm('Ta saisie actuelle n\'est pas enregistrée. Ouvrir ce lot quand même ?')) return;
+    st.cur = id;
+    _decoupeStock.length = 0; clone(l.stock || []).forEach(x => _decoupeStock.push(x));
+    _decoupeNeed.length = 0; clone(l.need || []).forEach(x => _decoupeNeed.push(x));
+    const k = $('decoupeKerf'); if(k && l.kerf != null) k.value = l.kerf;
+    _decoupeRenderLists();
+    if(_decoupeStock.length && _decoupeNeed.length) decoupeCompute(); else { const r = $('decoupeResult'); if(r) r.innerHTML = ''; }
+    render();
+    try{ $('decoupeResult').scrollIntoView({ behavior:'smooth', block:'start' }); }catch(e){}
+  };
+  window._dlDel = function(id){
+    const l = st.lots.find(x => x.id === id); if(!l) return;
+    if(!confirm('Supprimer le lot « ' + l.name + ' » ?' + (role() === 'ouvrier' || role() === 'chef' ? ' Il disparaîtra aussi pour toute l\'équipe.' : ''))) return;
+    st.lots = st.lots.filter(x => x.id !== id); st.del.push(id); if(st.cur === id) st.cur = null;
+    push(); showToast('🗑 Lot supprimé');
+  };
+
+  let saveSite = '';
+  window._dlSaveOpen = function(asCopy){
+    if(!_decoupeStock.length && !_decoupeNeed.length){ showToast('Ajoute d\'abord du stock et des pièces'); return; }
+    const cur = asCopy ? null : curLot();
+    saveSite = cur ? (cur.siteId || '') : (st.site || ((typeof getActiveSiteId === 'function' && getActiveSiteId()) || ''));
+    let d = $('modal-dlSave'); if(d) d.remove();
+    d = document.createElement('div'); d.id = 'modal-dlSave'; d.className = 'modal-overlay open'; d.style.zIndex = 1250;
+    d.innerHTML = `<div class="modal"><div class="modal-header"><h2>💾 ${cur ? 'Enregistrer le lot' : 'Nouveau lot de découpe'}</h2><button class="modal-close" onclick="document.getElementById('modal-dlSave').remove()">×</button></div>
+      <div class="field"><label>Nom du lot</label><input type="text" id="dlName" maxlength="80" autocomplete="off" placeholder="Ex : Chevrons charpente garage" value="${escapeHtml(cur ? cur.name : (asCopy && curLot() ? curLot().name + ' (copie)' : ''))}"></div>
+      <div class="field"><label>Chantier (facultatif)</label><button type="button" class="dl-sitebtn" id="dlSiteBtn" onclick="_dlPickSite()"></button></div>
+      <button class="btn btn-primary btn-block" onclick="_dlSaveGo(${cur ? 'true' : 'false'})">💾 Enregistrer</button></div>`;
+    d.addEventListener('click', e => { if(e.target === d) d.remove(); });
+    document.body.appendChild(d); siteBtn();
+    setTimeout(() => { const i = $('dlName'); if(i){ i.focus(); i.select(); i.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); _dlSaveGo(!!cur); } }; } }, 60);
+  };
+  function siteBtn(){ const b = $('dlSiteBtn'); if(!b) return; const s = siteOf(saveSite); b.innerHTML = s ? siteIni(s, 26) + '<span>' + escapeHtml(s.name) + '</span>' : '<span class="dl-noini" style="width:26px;height:26px;">🏗️</span><span>Aucun chantier</span>'; }
+  window._dlPickSite = function(){ sitePicker({ title:'Lot pour quel chantier ?', current:saveSite, extras:[{ v:'', l:'Aucun chantier', ic:'—' }], onPick: v => { saveSite = v || ''; siteBtn(); } }); };
+  window._dlSaveGo = function(update){
+    const name = (($('dlName') || {}).value || '').trim();
+    if(!name){ showToast('Donne un nom au lot'); const i = $('dlName'); if(i) i.focus(); return; }
+    const sig = sigNow(); const t = now();
+    const rEl = $('decoupeResult'); const nbP = rEl ? rEl.querySelectorAll('.dc-seg').length : 0;
+    let l = update ? curLot() : null;
+    if(l){ Object.assign(l, { name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), updatedAt:t, by:myAuth(), byName:myName() });
+      if(l.sig !== sig){ l.marks = (typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}; } l.sig = sig; if(nbP) l.nbPieces = nbP; }
+    else { l = { id:'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), sig,
+      marks:(typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}, nbPieces:nbP || piecesOfNeed(), createdAt:t, updatedAt:t, by:myAuth(), byName:myName(), createdBy:myName() };
+      st.lots.push(l); }
+    st.cur = l.id; const m = $('modal-dlSave'); if(m) m.remove();
+    push(); showToast('✅ Lot « ' + name + ' » enregistré');
+  };
+  const piecesOfNeed = () => _decoupeNeed.reduce((a, x) => a + x.qty, 0);
+
+  /* Les marques tracé / coupé suivent le lot ouvert (vues par toute l'équipe) */
+  window._dlMarksFor = function(sig){ const l = curLot(); return (l && l.sig === sig && l.marks) ? clone(l.marks) : null; };
+  window._dlMarksChanged = function(sig, marks, nb){
+    const l = curLot(); if(!l || l.sig !== sig) return;
+    l.marks = clone(marks); if(nb) l.nbPieces = nb; l.updatedAt = now(); l.by = myAuth(); l.byName = myName();
+    saveLocal(); render(); pushSoon();
+  };
+
+  /* Accroches : rendu des listes (repère « modifié »), changement d'outil, ouverture de l'onglet */
+  const _rl = window._decoupeRenderLists;
+  if(typeof _rl === 'function'){ window._decoupeRenderLists = function(){ const r = _rl.apply(this, arguments); try{ render(); }catch(e){} return r; }; }
+  const _scm = window.setCalcMode;
+  if(typeof _scm === 'function'){ window.setCalcMode = function(mode){ const r = _scm.apply(this, arguments); if(mode === 'decoupe') setTimeout(() => pull(true), 50); return r; }; }
+  document.addEventListener('input', e => { if(e.target && e.target.id === 'decoupeKerf') render(); });
+  setInterval(() => { try{ const v = $('calcMode-decoupe'); if(v && v.offsetParent && !document.hidden && !st.busy && !document.querySelector('#modal-dlSave')) pull(true); }catch(e){} }, 30000);
+  document.addEventListener('DOMContentLoaded', () => setTimeout(() => { try{ useKey(); render(); const v = $('calcMode-decoupe'); if(v && v.style.display === 'block') pull(true); }catch(e){} }, 900));
+  window._dlState = st; window._dlPull = pull;
+})();
+</script>
+<!-- ═══ fin MODULE v5.77.0 ═══ -->
 
 </body>
 </html>
