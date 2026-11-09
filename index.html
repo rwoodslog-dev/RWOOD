@@ -8208,6 +8208,7 @@ window.RW_NEW = true;   // v5.41.510 — Photos & Docs dans le chantier, fiche e
         <div class="dq-unit"><span>Longueurs en</span><div class="cb-seg" id="decoupeUnitSeg" style="margin:0;flex:1;">
           <button type="button" data-u="m" onclick="decoupeSetUnit('m')">m</button><button type="button" data-u="cm" onclick="decoupeSetUnit('cm')">cm</button><button type="button" data-u="mm" onclick="decoupeSetUnit('mm')">mm</button></div></div>
 
+        <div class="card ds-card" id="dsSpecCard"></div>   <!-- v5.83.0 — coupes droites / coupes spécifiques -->
         <!-- v5.41.348 — saisie rapide : « 15 × 5,50 », plusieurs à la fois, longueurs récentes en 1 appui -->
         <div class="card">
           <div class="section-title" style="margin-top:0;">📦 Stock disponible</div>
@@ -41506,7 +41507,7 @@ function decoupeParse(txt){
     });
   return out;
 }
-function _dqPush(list, it){ const e = list.find(x => Math.abs(x.len - it.len) < 0.0005); if(e) e.qty += it.qty; else list.push(it); list.sort((a, b) => b.len - a.len); }
+function _dqPush(list, it){ const kk = x => (typeof _dsKey === 'function') ? _dsKey(x.a, x.b) : ''; const e = list.find(x => Math.abs(x.len - it.len) < 0.0005 && kk(x) === kk(it)); if(e) e.qty += it.qty; else list.push(it); list.sort((a, b) => b.len - a.len); }
 function _dqRecent(kind, len){
   let r = []; try{ r = JSON.parse(localStorage.getItem('rwood-decoupe-recent-' + kind) || '[]') || []; }catch(e){}
   if(len != null){ r = [len].concat(r.filter(x => Math.abs(x - len) > 0.0005)).slice(0, 8); try{ localStorage.setItem('rwood-decoupe-recent-' + kind, JSON.stringify(r)); }catch(e){} }
@@ -41531,7 +41532,7 @@ function decoupeReset(){ _decoupeStock=[]; _decoupeNeed=[]; _decoupeRenderLists(
 function _fmtM(m){ return _dqShow(m); }
 
 function _decoupeRenderLists(){
-  const row = (kind, it, i) => `<div class="dq-row"><span><b>${it.qty}</b> × ${_fmtM(it.len)}</span>
+  const row = (kind, it, i) => (kind === 'need' && typeof _dsOn === 'function' && _dsOn()) ? _dsRow(it, i) : `<div class="dq-row"><span><b>${it.qty}</b> × ${_fmtM(it.len)}</span>
     <span class="dq-step"><button onclick="decoupeStep('${kind}',${i},-1)">−</button><button onclick="decoupeStep('${kind}',${i},1)">＋</button></span></div>`;
   [['stock', _decoupeStock, 'decoupeStockList', 'Aucune barre en stock.'], ['need', _decoupeNeed, 'decoupeNeedList', 'Aucune pièce à couper.']].forEach(([k, list, id, empty]) => {
     const el = document.getElementById(id);
@@ -49585,9 +49586,18 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.82.0';
+const APP_VERSION = '5.83.0';
 
 const CHANGELOG = [
+  {
+    version: '5.83.0',
+    date: '09/11/2026',
+    entries: [
+      { icon: '📐', text: "Découpe : nouveau mode « Coupes spécifiques » (hauteur du bois + pente). Chaque pièce a sa coupe au départ et à la fin : équerre, aplomb (chevrons), sifflet ou sifflet désabouté (pannes), à recevoir / à prendre." },
+      { icon: '✎', text: "Éditeur de coupe par pièce : dessin avec poignées à faire glisser (longueur du sifflet, abouts, angle d'aplomb), « Mes coupes » pour les garder, application à une partie ou à toutes les pièces de même longueur." },
+      { icon: '🪚', text: "Optimisation : les bouts biais identiques s'emboîtent (aplombs tête-bêche, sifflets) avec un seul trait ; sifflets désaboutés décalés de l'épaisseur du trait mesurée le long du sifflet, avec les étapes scie circulaire / égoïne. Gain affiché par barre." }
+    ]
+  },
   {
     version: '5.82.0',
     date: '09/11/2026',
@@ -99396,8 +99406,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   const myName = () => { const p = S().myProfile || {}; return ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || p.name || 'Moi'; };
   const now = () => new Date().toISOString();
   const clone = o => JSON.parse(JSON.stringify(o || null));
-  const norm = l => (l || []).map(x => [Math.round(x.len * 1000) / 1000, x.qty]);
-  window._dlSigOf = (stock, need, kerfMm) => JSON.stringify([norm(stock), norm(need), (parseFloat(kerfMm) || 0) / 1000]);
+  const norm = l => (l || []).map(x => { const r = [Math.round(x.len * 1000) / 1000, x.qty]; if((x.a || x.b) && typeof _dsKey === 'function') r.push(_dsKey(x.a, x.b)); return r; });
+  const specSig = () => { try{ const p = _dsSpec(); return p.on ? [p.h, p.pente] : null; }catch(e){ return null; } };
+  window._dlSigOf = (stock, need, kerfMm) => { const a = [norm(stock), norm(need), (parseFloat(kerfMm) || 0) / 1000]; const sp = specSig(); if(sp) a.push(sp); return JSON.stringify(a); };
   const kerfNow = () => { const k = $('decoupeKerf'); return k ? (parseFloat(k.value) || 0) : 3; };
   const sigNow = () => _dlSigOf(_decoupeStock, _decoupeNeed, kerfNow());
   const siteOf = id => (data.sites || []).find(s => s && s.id === id);
@@ -99515,6 +99526,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     _decoupeStock.length = 0; clone(l.stock || []).forEach(x => _decoupeStock.push(x));
     _decoupeNeed.length = 0; clone(l.need || []).forEach(x => _decoupeNeed.push(x));
     const k = $('decoupeKerf'); if(k && l.kerf != null) k.value = l.kerf;
+    try{ if(typeof _dsSetSpec === 'function') _dsSetSpec(l.spec && l.spec.on ? l.spec : { on:false }); }catch(e){}   // v5.83.0 — coupes spécifiques du lot
     _decoupeRenderLists();
     if(_decoupeStock.length && _decoupeNeed.length) decoupeCompute(); else { const r = $('decoupeResult'); if(r) r.innerHTML = ''; }
     render();
@@ -99550,9 +99562,10 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const sig = sigNow(); const t = now();
     const rEl = $('decoupeResult'); const nbP = rEl ? rEl.querySelectorAll('.dc-seg').length : 0;
     let l = update ? curLot() : null;
-    if(l){ Object.assign(l, { name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), updatedAt:t, by:myAuth(), byName:myName() });
+    const spc = (typeof _dsSpec === 'function') ? clone(_dsSpec()) : null;
+    if(l){ Object.assign(l, { name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc, updatedAt:t, by:myAuth(), byName:myName() });
       if(l.sig !== sig){ l.marks = (typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}; } l.sig = sig; if(nbP) l.nbPieces = nbP; }
-    else { l = { id:'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), sig,
+    else { l = { id:'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc, sig,
       marks:(typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}, nbPieces:nbP || piecesOfNeed(), createdAt:t, updatedAt:t, by:myAuth(), byName:myName(), createdBy:myName() };
       st.lots.push(l); }
     st.cur = l.id; const m = $('modal-dlSave'); if(m) m.remove();
@@ -99580,6 +99593,422 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.77.0 ═══ -->
+<!-- ═══ MODULE v5.83.0 — Découpe : coupes spécifiques (aplomb, sifflet, sifflet désabouté, coupes perso) ═══
+     Chaque pièce à couper peut avoir une coupe au départ (a) et à la fin (b) :
+       { t:'eq' }                         équerre
+       { t:'ap', ang:35 }                 aplomb (angle de pente, en degrés)
+       { t:'sf', L:600 }                  sifflet (longueur du biseau, mm)
+       { t:'sfd', L:600, ab:40 }          sifflet désabouté (abouts droits de ab mm en haut et en bas)
+       + s:'r' | 'p' (à recevoir / à prendre) et n:'nom' (coupe de « Mes coupes »)
+     Longueur saisie = longueur HORS-TOUT (pointe à pointe).
+     Deux bouts biais identiques côte à côte s'emboîtent : décalage = trait de scie mesuré le long du biseau
+     (trait / sin(angle du biseau)). Sifflet simple / aplomb : un seul trait. Sifflet désabouté : 2 traits
+     décalés (scie circulaire jusqu'aux abouts, abouts finis à l'égoïne). ═══ -->
+<style>
+  .ds-card{ padding:12px 14px !important; }
+  .ds-card .ds-hd{ display:flex; align-items:center; gap:8px; font-weight:900; font-size:15px; }
+  .ds-seg{ display:flex; background:var(--bg-elev); border:1px solid var(--line); border-radius:12px; padding:3px; gap:3px; margin-top:9px; }
+  .ds-seg button{ flex:1; border:none; background:transparent; color:var(--ink-soft); font:inherit; font-size:13px; font-weight:800; padding:8px 4px; border-radius:9px; cursor:pointer; }
+  .ds-seg button.on{ background:var(--wood); color:#fff; }
+  .ds-flds{ display:flex; gap:8px; margin-top:10px; }
+  .ds-f{ flex:1; min-width:0; border:1.5px solid var(--line); border-radius:11px; padding:5px 9px; background:var(--bg); }
+  .ds-f small{ display:block; font-size:10.5px; font-weight:800; color:var(--ink-soft); }
+  .ds-f input, .ds-f select{ width:100%; border:none; background:transparent; color:var(--ink); font:inherit; font-size:16px; font-weight:900; padding:1px 0; outline:none; }
+  .ds-row{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; padding:8px 0; border-top:1px solid var(--line); }
+  .ds-row .q{ font-size:12px; font-weight:900; color:var(--wood); background:color-mix(in srgb, var(--wood) 14%, transparent); border-radius:8px; padding:3px 7px; flex-shrink:0; }
+  .ds-row .l{ font-size:15px; font-weight:900; min-width:58px; }
+  .ds-row svg{ flex-shrink:0; }
+  .ds-row .e{ order:9; flex:1 1 100%; min-width:0; font-size:12px; color:var(--ink-soft); font-weight:700; line-height:1.35; padding-left:2px; }
+  .ds-row .sp{ flex:1; }
+  .ds-row .ed{ width:36px; height:36px; border-radius:10px; border:1.5px solid var(--wood); background:transparent; color:var(--wood); font-size:16px; font-weight:900; cursor:pointer; flex-shrink:0; }
+  .ds-row .st{ display:flex; gap:4px; flex-shrink:0; }
+  .ds-row .st button{ width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--ink); font-size:16px; cursor:pointer; }
+  .ds-bar{ display:block; width:100%; height:46px; margin-top:8px; border-radius:6px; background:repeating-linear-gradient(45deg,#5a5046,#5a5046 5px,#4a4239 5px,#4a4239 10px); }
+  .ds-bar .dc-seg{ cursor:pointer; }
+  .ds-barw{ position:relative; }
+  .ds-lb{ position:absolute; top:50%; transform:translate(-50%,-30%); font-size:12.5px; font-weight:900; color:#2B2118; pointer-events:none; }
+  .ds-lb.c{ text-decoration:line-through; color:#ece8e2; }
+  .ds-bar .dc-seg.dc-t path.pc{ fill-opacity:.55; stroke:#2B2118; stroke-dasharray:6 4; }
+  .ds-bar .dc-seg.dc-c path.pc{ fill:#8a8580 !important; fill-opacity:.75; }
+  .ds-bar .dc-seg.dc-c text{ text-decoration:line-through; fill:#ece8e2; }
+  .ds-steps{ margin-top:8px; padding:8px 10px; border-radius:10px; background:var(--bg-elev); border:1px dashed var(--wood); font-size:12.5px; line-height:1.45; }
+  .ds-steps b.n{ display:inline-flex; width:18px; height:18px; border-radius:50%; background:var(--wood); color:#fff; font-size:11px; align-items:center; justify-content:center; margin-right:5px; }
+  .ds-gain{ color:var(--green,#2e9e5b); font-weight:800; }
+  /* éditeur */
+  #modal-dsEdit .modal{ max-width:520px; }
+  .ds-ends{ display:flex; gap:8px; }
+  .ds-end{ flex:1; min-width:0; border:1.5px solid var(--line); border-radius:13px; padding:8px 10px; background:var(--bg); cursor:pointer; text-align:left; font:inherit; color:var(--ink); }
+  .ds-end.on{ border-color:var(--wood); box-shadow:inset 0 0 0 1px var(--wood); }
+  .ds-end small{ display:block; font-size:10.5px; font-weight:900; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; }
+  .ds-end b{ display:block; font-size:13px; margin-top:2px; }
+  .ds-types{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:10px; }
+  .ds-ty{ border:1.5px solid var(--line); border-radius:11px; background:var(--bg); padding:6px 4px 5px; text-align:center; font:inherit; font-size:11px; font-weight:800; color:var(--ink); cursor:pointer; }
+  .ds-ty.on{ border-color:var(--wood); color:var(--wood); background:color-mix(in srgb, var(--wood) 10%, var(--bg)); }
+  .ds-ty svg{ display:block; margin:0 auto 3px; }
+  .ds-draw{ margin-top:10px; border:1.5px solid var(--line); border-radius:14px; background:var(--bg); padding:6px; touch-action:none; }
+  .ds-draw svg{ display:block; width:100%; height:auto; }
+  .ds-draw .hd{ cursor:grab; }
+  .ds-mine{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .ds-mine button{ border:1.5px solid var(--line); border-radius:99px; background:var(--bg); color:var(--ink); font:inherit; font-size:12px; font-weight:800; padding:5px 10px; cursor:pointer; }
+  .ds-mine button i{ font-style:normal; margin-left:6px; color:var(--ink-soft); }
+  .ds-sens{ display:flex; gap:6px; margin-top:8px; }
+  .ds-sens button{ flex:1; border:1.5px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); font:inherit; font-size:12.5px; font-weight:800; padding:7px; cursor:pointer; }
+  .ds-sens button.on{ border-color:var(--wood); color:var(--wood); }
+</style>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const LS = 'rwood-decoupe-spec', LSM = 'rwood-dc-mycuts';
+  let spec = { on:false, h:175, pente:35 };
+  try{ Object.assign(spec, JSON.parse(localStorage.getItem(LS) || '{}')); }catch(e){}
+  const saveSpec = () => { try{ localStorage.setItem(LS, JSON.stringify(spec)); }catch(e){} };
+  window._dsSpec = () => spec;
+  window._dsSetSpec = o => { if(o) Object.assign(spec, o); saveSpec(); ui(); };
+  window._dsOn = () => !!spec.on;
+
+  /* ── géométrie (mm) ── */
+  const EQ = { t:'eq' };
+  const endOf = e => (e && e.t) ? e : EQ;
+  const H = () => Math.max(20, +spec.h || 175);
+  const rad = d => d * Math.PI / 180;
+  function ext(e){   // longueur en biais le long de la pièce
+    e = endOf(e);
+    if(e.t === 'ap'){ const a = Math.max(0, Math.min(80, e.ang != null ? +e.ang : +spec.pente || 0)); return H() * Math.tan(rad(a)); }
+    if(e.t === 'sf' || e.t === 'sfd') return Math.max(0, +e.L || 0);
+    return 0;
+  }
+  function bevH(e){ e = endOf(e); return e.t === 'sfd' ? Math.max(5, H() - 2 * (+e.ab || 0)) : H(); }
+  function kerfAlong(e, kerf){ const x = ext(e), h = bevH(e); return x > 0 ? kerf * Math.sqrt(h * h + x * x) / h : kerf; }
+  function key(e){ e = endOf(e); if(e.t === 'eq') return 'eq'; if(e.t === 'ap') return 'ap' + Math.round((e.ang != null ? +e.ang : +spec.pente) * 10); if(e.t === 'sf') return 'sf' + Math.round(+e.L); return 'sfd' + Math.round(+e.L) + '-' + Math.round(+e.ab || 0); }
+  window._dsKey = (a, b) => key(a) + '|' + key(b);
+  const cm = mm => (Math.round(mm / 10 * 10) / 10).toString().replace('.', ',') + ' cm';
+  function label(e){
+    e = endOf(e);
+    const s = e.s === 'r' ? ' à recevoir' : e.s === 'p' ? ' à prendre' : '';
+    const nm = e.n ? ' « ' + e.n + ' »' : '';
+    if(e.t === 'ap') return 'aplomb ' + (e.ang != null ? +e.ang : +spec.pente) + '°' + nm;
+    if(e.t === 'sf') return 'sifflet ' + cm(+e.L) + s + nm;
+    if(e.t === 'sfd') return 'sifflet désabouté ' + cm(+e.L) + ' (abouts ' + cm(+e.ab || 0) + ')' + s + nm;
+    return 'équerre';
+  }
+  window._dsLabel = label;
+
+  /* ── petite forme de la pièce (liste) ── */
+  function mini(a, b, col){
+    const W = 74, Hh = 20, k = 11;
+    const ea = endOf(a), eb = endOf(b);
+    const lx = ea.t === 'eq' ? 0 : k, rx = eb.t === 'eq' ? 0 : k;
+    let d;
+    const ab = e => e.t === 'sfd' ? 5 : 0;
+    // départ : pointe en bas ; fin : pointe en haut (parallélogramme)
+    const L0 = ea.t === 'eq' ? `M2 2` : `M${2 + lx} 2`;
+    const R = eb.t === 'eq' ? `H${W - 2} V${Hh}` : (ab(eb) ? `H${W - 2} V${2 + ab(eb)} L${W - 2 - rx} ${Hh - ab(eb)} V${Hh}` : `H${W - 2} L${W - 2 - rx} ${Hh}`);
+    const Lb = ea.t === 'eq' ? `H2 Z` : (ab(ea) ? `H2 V${Hh - ab(ea)} L${2 + lx} ${2 + ab(ea)} V2 Z` : `H2 Z`);
+    d = `${L0} ${R} ${Lb}`;
+    return `<svg width="${W}" height="${Hh + 2}" viewBox="0 0 ${W} ${Hh + 2}"><path d="${d}" fill="${col}"/></svg>`;
+  }
+
+  /* ── ligne d'une pièce (mode coupes spécifiques) ── */
+  const PAL = ['#EE8A2E','#7FC6A4','#7DB3E8','#E89A7D','#C9A7E8','#E8D27D','#9FC2A0','#E8A7C5'];
+  window._dsRow = function(it, i){
+    const a = endOf(it.a), b = endOf(it.b);
+    const ends = (a.t === 'eq' && b.t === 'eq') ? 'Équerre des deux côtés' : `◀ ${label(a)} &nbsp;·&nbsp; ${label(b)} ▶`;
+    return `<div class="ds-row"><span class="q">×${it.qty}</span><span class="l">${_dqShow(it.len, false)}</span>${mini(a, b, PAL[i % PAL.length])}<span class="sp"></span><span class="e">${ends}</span>
+      <span class="st"><button onclick="decoupeStep('need',${i},-1)">−</button><button onclick="decoupeStep('need',${i},1)">＋</button></span>
+      <button class="ed" onclick="_dsEdit(${i})" title="Coupes de cette pièce">✎</button></div>`;
+  };
+
+  /* ── réglages du lot ── */
+  function ui(){
+    const box = $('dsSpecCard'); if(!box) return;
+    box.innerHTML = `<div class="ds-hd">📐 Type de coupe</div>
+      <div class="ds-seg"><button class="${spec.on ? '' : 'on'}" onclick="_dsSetSpec({on:false});_decoupeRenderLists();_dsRecalc()">Droites seulement</button><button class="${spec.on ? 'on' : ''}" onclick="_dsSetSpec({on:true});_decoupeRenderLists();_dsRecalc()">Coupes spécifiques</button></div>
+      ${spec.on ? `<div class="ds-flds">
+        <div class="ds-f"><small>Hauteur du bois</small><input type="number" inputmode="decimal" min="20" step="1" value="${spec.h}" onchange="_dsSetSpec({h:Math.max(20,parseFloat(this.value)||175)});_decoupeRenderLists();_dsRecalc()"></div>
+        <div class="ds-f"><small>Pente (aplomb)</small><input type="number" inputmode="decimal" min="0" max="80" step="0.5" value="${spec.pente}" onchange="_dsSetSpec({pente:Math.max(0,Math.min(80,parseFloat(this.value)||0))});_decoupeRenderLists();_dsRecalc()"></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">Hauteur en <b>mm</b>, pente en <b>degrés</b>. Longueurs = <b>hors-tout</b> (pointe à pointe). Touche <b>✎</b> sur une pièce pour choisir sa coupe au départ et à la fin. Aplomb ${spec.pente}° sur ${spec.h} mm = <b>${cm(H() * Math.tan(rad(+spec.pente || 0)))}</b> de biais.</div>`
+      : `<div class="hint" style="margin-top:6px;">Calcul classique : toutes les pièces coupées d'équerre. Passe en « Coupes spécifiques » pour les aplombs de chevrons et les sifflets de pannes.</div>`}`;
+  }
+  window._dsUi = ui;
+  window._dsRecalc = function(){ const r = $('decoupeResult'); if(r && r.innerHTML.trim() && _decoupeStock.length && _decoupeNeed.length) decoupeCompute(); };
+
+  /* ── optimisation avec emboîtement des bouts biais ── */
+  function pack(kerf){
+    let bars = []; _decoupeStock.forEach(s => { for(let i = 0; i < s.qty; i++) bars.push(Math.round(s.len * 1000)); });
+    bars.sort((x, y) => y - x);
+    let pcs = [];
+    _decoupeNeed.forEach((n, ri) => { for(let i = 0; i < n.qty; i++) pcs.push({ len:Math.round(n.len * 1000), a:endOf(n.a), b:endOf(n.b), ri }); });
+    // longues d'abord ; à longueur égale, mêmes coupes ensemble (elles s'emboîtent)
+    pcs.sort((x, y) => (y.len - x.len) || (window._dsKey(x.a, x.b) < window._dsKey(y.a, y.b) ? -1 : 1));
+    const maxBar = bars[0] || 0;
+    const tooLong = pcs.filter(p => p.len > maxBar + 0.5);
+    if(tooLong.length) return { tooLong, maxBar };
+    const used = [];
+    const other = d => d === 'top' ? 'bot' : 'top';
+    function tryPlace(bar, p, rev){
+      const L = rev ? p.b : p.a, R = rev ? p.a : p.b;
+      const last = bar.items[bar.items.length - 1];
+      let start = 0, nest = false, ldir = 'bot';
+      if(last){
+        const lr = last.R;
+        if(L.t !== 'eq' && key(L) === key(lr)){ nest = true; ldir = other(last.rdir); start = last.x + last.len - ext(L) + kerfAlong(L, kerf); }
+        else start = last.x + last.len + kerf;
+      }
+      if(start + p.len > bar.len + 0.5) return null;
+      const rdir = (R.t === 'eq') ? 'top' : other(ldir);
+      return { start, nest, ldir, rdir, L, R };
+    }
+    pcs.forEach(p => {
+      let best = null, bb = null;
+      for(const bar of used){
+        for(const rev of [false, true]){
+          const r = tryPlace(bar, p, rev); if(!r) continue;
+          if(!best || r.start < best.start - 0.01 || (r.nest && !best.nest)) { best = r; best.rev = rev; }
+        }
+        if(best){ bb = bar; break; }
+      }
+      if(!bb){
+        const k = bars.findIndex(l => l >= p.len - 0.5);
+        if(k < 0){ used.push({ len:0, items:[{ ...p, x:0 }], overflow:true }); return; }
+        bb = { len:bars[k], items:[] }; bars.splice(k, 1); used.push(bb);
+        best = tryPlace(bb, p, false);
+        // 1re pièce de la barre : bout biais à droite, pour que la suivante puisse s'y emboîter
+        if(p.a.t !== 'eq' && p.b.t === 'eq'){ const r2 = tryPlace(bb, p, true); if(r2){ best = r2; best.rev = true; } }
+      }
+      bb.items.push({ len:p.len, ri:p.ri, a:p.a, b:p.b, x:best.start, L:best.L, R:best.R, ldir:best.ldir, rdir:best.rdir, nest:best.nest, rev:!!best.rev });
+    });
+    used.forEach(b => { if(b.overflow) return; const l = b.items[b.items.length - 1]; b.usedLen = l ? l.x + l.len : 0; b.rest = b.len - b.usedLen;
+      b.saved = b.items.reduce((s, it) => s + (it.nest ? ext(it.L) + kerf - kerfAlong(it.L, kerf) : 0), 0); });
+    return { used };
+  }
+
+  /* ── dessin d'une barre ── */
+  function barSvg(b, idx, marks){
+    const VH = 46, bl = b.len;
+    const exag = e => e > 0 ? Math.max(e, bl * 0.03) : 0;
+    const abv = e => e.t === 'sfd' ? Math.max(4, Math.min(14, (+e.ab || 0) / H() * VH)) : 0;
+    let g = '', lab = '';
+    b.items.forEach((it, j) => {
+      const st = marks[idx + '-' + j] || 0;
+      const col = PAL[it.ri % PAL.length];
+      const x0 = it.x, x1 = it.x + it.len;
+      const eL = ext(it.L), eR = ext(it.R), vL = exag(eL), vR = exag(eR), aL = abv(it.L), aR = abv(it.R);
+      // haut du départ / de la fin (vrais x), bas = décalé (biais exagéré pour être visible)
+      const tl = it.L.t === 'eq' ? x0 : (it.ldir === 'bot' ? x0 + eL : x0);
+      const bl0 = it.L.t === 'eq' ? x0 : (it.ldir === 'bot' ? tl - vL : tl + vL);
+      const tr = it.R.t === 'eq' ? x1 : (it.rdir === 'top' ? x1 : x1 - eR);
+      const br = it.R.t === 'eq' ? x1 : (it.rdir === 'top' ? tr - vR : tr + vR);
+      const P = [];
+      P.push([tl, 0]); P.push([tr, 0]);
+      if(aR){ P.push([tr, aR]); P.push([br, VH - aR]); P.push([br, VH]); } else P.push([br, VH]);
+      if(aL){ P.push([bl0, VH]); P.push([bl0, VH - aL]); P.push([tl, aL]); } else P.push([bl0, VH]);
+      const d = 'M' + P.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L') + ' Z';
+      const cx = (Math.max(tl, bl0) + Math.min(tr, br)) / 2;
+      const lbl = _dqShow(it.len / 1000, false);
+      if((it.len / bl) > 0.08) lab += `<span class="ds-lb${st === 2 ? ' c' : ''}" data-lb="${idx}-${j}" style="left:${(cx / bl * 100).toFixed(2)}%">${lbl}</span>`;
+      g += `<g class="dc-seg${st === 1 ? ' dc-t' : st === 2 ? ' dc-c' : ''}" data-dc="${idx}-${j}" onclick="_dcTap(this)"><path class="pc" d="${d}" fill="${col}" stroke="rgba(0,0,0,.55)" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g>`;
+    });
+    return `<div class="ds-barw"><svg class="ds-bar" viewBox="0 0 ${bl} ${VH}" preserveAspectRatio="none">${g}</svg>${lab}</div>`;
+  }
+
+  /* ── calcul complet (remplace le calcul droit quand le mode est actif) ── */
+  const _orig = window.decoupeCompute;
+  window.decoupeCompute = function(){
+    if(!spec.on) return _orig.apply(this, arguments);
+    const resEl = $('decoupeResult');
+    if(!_decoupeStock.length){ showToast('Ajoute au moins une barre en stock'); return; }
+    if(!_decoupeNeed.length){ showToast('Ajoute au moins une pièce à débiter'); return; }
+    const kerf = parseFloat(($('decoupeKerf') || {}).value) || 0;   // mm
+    const R = pack(kerf);
+    if(R.tooLong){ resEl.innerHTML = `<div class="card" style="border:1px solid var(--danger);"><div style="color:var(--danger);font-weight:700;">⚠️ ${R.tooLong.length} pièce(s) plus longue(s) que la plus grande barre (${_fmtM(R.maxBar / 1000)}).</div></div>`; return; }
+    _dcSig = (typeof _dlSigOf === 'function') ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf) : JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
+    _dcMarks = {}; try{ const m = JSON.parse(localStorage.getItem('rwood-dc-marks') || 'null'); if(m && m.sig === _dcSig) _dcMarks = m.m || {}; }catch(e){}
+    try{ const lm = (typeof _dlMarksFor === 'function') && _dlMarksFor(_dcSig); if(lm) _dcMarks = lm; }catch(e){}
+    const real = R.used.filter(b => !b.overflow);
+    let html = '', totalChute = 0, totalLen = 0, totalSaved = 0;
+    R.used.forEach((b, idx) => {
+      if(b.overflow){ html += `<div class="card" style="border:1px solid var(--danger);margin-bottom:8px;"><strong style="color:var(--danger);">Pièce non plaçable :</strong> ${_fmtM(b.items[0].len / 1000)} — plus assez de barres en stock.</div>`; return; }
+      totalChute += b.rest; totalLen += b.len; totalSaved += b.saved;
+      const grp = {};
+      b.items.forEach(it => { const k = it.len + '|' + window._dsKey(it.a, it.b); (grp[k] = grp[k] || { n:0, it }).n++; });
+      const detail = Object.values(grp).map(({ n, it }) => { const a = endOf(it.a), c = endOf(it.b);
+        return `${n} × ${_fmtM(it.len / 1000)}${(a.t === 'eq' && c.t === 'eq') ? '' : ` <small style="color:var(--ink-soft);font-weight:700;">(${label(a)} / ${label(c)})</small>`}`; }).join(' + ');
+      const pct = b.len ? b.rest / b.len * 100 : 0;
+      const cc = pct < 8 ? 'var(--green)' : pct < 20 ? 'var(--wood)' : 'var(--danger)';
+      // étapes : emboîtements
+      const steps = [];
+      b.items.forEach((it, j) => { if(!it.nest) return; const e = it.L; const dec = kerfAlong(e, kerf);
+        if(e.t === 'sfd') steps.push(`<div><b>Pièces ${j} et ${j + 1}</b> — sifflet désabouté ${cm(+e.L)} · décalage <b>${cm(dec)}</b><br><b class="n">1</b>Pièce ${j} : scie circulaire sur le sifflet, arrêt aux abouts. <b class="n">2</b>Abouts finis à l'égoïne. <b class="n">3</b>Pièce ${j + 1} tracée ${cm(dec)} plus loin : même chose, sans toucher les abouts de la pièce ${j}.</div>`);
+        else steps.push(`<div><b>Pièces ${j} et ${j + 1}</b> — ${e.t === 'ap' ? 'aplombs tête-bêche' : 'sifflets emboîtés'} : <b>un seul trait</b> pour les deux bouts.</div>`); });
+      html += `<div class="card" style="margin-bottom:8px;">
+        <div style="font-weight:800;font-size:14px;margin-bottom:4px;display:flex;align-items:center;gap:8px;">Barre ${idx + 1} — ${_fmtM(b.len / 1000)}<span class="dc-prog" data-dcp="${idx}"></span></div>
+        <div style="font-size:13.5px;line-height:1.5;">✂️ Découper : <strong>${detail}</strong></div>
+        ${barSvg(b, idx, _dcMarks)}
+        ${steps.length ? `<div class="ds-steps">${steps.join('<div style="height:6px"></div>')}</div>` : ''}
+        <div class="meta" style="margin-top:6px;color:${cc};font-weight:700;">Chute : ${_fmtM(b.rest / 1000)} (${pct.toFixed(1).replace('.', ',')} %)${b.saved > 1 ? ` · <span class="ds-gain">−${cm(b.saved)} grâce aux coupes emboîtées</span>` : ''}</div>
+      </div>`;
+    });
+    const totalStock = _decoupeStock.reduce((a, s) => a + s.qty, 0);
+    const gp = totalLen ? totalChute / totalLen * 100 : 0;
+    resEl.innerHTML = `<div class="card calc-result-card" style="margin-bottom:10px;">
+        <div class="calc-result-label">Barres utilisées</div>
+        <div class="calc-result-value">${real.length} / ${totalStock}</div>
+        <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute / 1000)} (${gp.toFixed(1).replace('.', ',')} %)${totalSaved > 1 ? ` · <span class="ds-gain">−${cm(totalSaved)} grâce aux coupes emboîtées</span>` : ''}</div>
+      </div>
+      <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. Biais agrandis sur le dessin pour être lisibles.</div>
+      ${html}`;
+    _dcProg();
+  };
+  window._dsPack = pack;   // tests
+  // libellé barré quand le morceau est coupé
+  const _tap = window._dcTap;
+  if(typeof _tap === 'function') window._dcTap = function(el){ const r = _tap.apply(this, arguments); try{ const lb = document.querySelector('#decoupeResult [data-lb="' + el.dataset.dc + '"]'); if(lb) lb.classList.toggle('c', el.classList.contains('dc-c')); }catch(e){} return r; };
+
+  /* ── éditeur de coupe d'une pièce ── */
+  let ed = null;   // { i, a, b, side, qty }
+  const mine = () => { try{ return JSON.parse(localStorage.getItem(LSM) || '[]') || []; }catch(e){ return []; } };
+  const saveMine = l => { try{ localStorage.setItem(LSM, JSON.stringify(l.slice(0, 30))); }catch(e){} };
+  const TY = [
+    ['eq', 'Équerre', '<path d="M4 3h26v16H4z" fill="#C9B79C"/><path d="M30 3v16" stroke="#2B2118" stroke-width="2"/>'],
+    ['ap', 'Aplomb', '<path d="M4 3h30l-8 16H4z" fill="#EE8A2E"/>'],
+    ['sf', 'Sifflet', '<path d="M4 3h14l22 16H4z" fill="#7DB3E8"/>'],
+    ['sfd', 'Sifflet désabouté', '<path d="M4 3h12v5l18 6v5H4z" fill="#7DB3E8"/>'],
+    ['mine', 'Mes coupes', '<path d="M4 3h30l-4 8 4 8H4z" fill="#C9A7E8"/>']
+  ];
+  window._dsEdit = function(i){
+    const it = _decoupeNeed[i]; if(!it) return;
+    ed = { i, a:JSON.parse(JSON.stringify(endOf(it.a))), b:JSON.parse(JSON.stringify(endOf(it.b))), side:(endOf(it.b).t !== 'eq' || endOf(it.a).t === 'eq') ? 'b' : 'a', qty:it.qty, mineOpen:false };
+    let m = $('modal-dsEdit'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-dsEdit'; m.className = 'modal-overlay open'; m.style.zIndex = 1250;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    document.body.appendChild(m); draw();
+  };
+  const cur = () => ed[ed.side];
+  function setType(t){
+    if(t === 'mine'){ ed.mineOpen = !ed.mineOpen; draw(); return; }
+    const o = cur(); const keep = { s:o.s };
+    let n = { t };
+    if(t === 'ap') n.ang = o.ang != null ? o.ang : +spec.pente;
+    if(t === 'sf') n.L = o.L || 600;
+    if(t === 'sfd'){ n.L = o.L || 600; n.ab = o.ab || 40; }
+    if((t === 'sf' || t === 'sfd') && keep.s) n.s = keep.s;
+    if((t === 'sf' || t === 'sfd') && !n.s) n.s = ed.side === 'b' ? 'r' : 'p';
+    ed[ed.side] = n; ed.mineOpen = false; draw();
+  }
+  window._dsType = setType;
+  window._dsSide = s => { ed.side = s; ed.mineOpen = false; draw(); };
+  window._dsSet = (k, v) => { const o = cur(); if(k === 's') o.s = v; else { const x = parseFloat(String(v).replace(',', '.')); if(!isFinite(x)) return;
+    if(k === 'ang') o.ang = Math.max(0, Math.min(80, x)); if(k === 'L') o.L = Math.max(10, x * 10); if(k === 'ab') o.ab = Math.max(0, Math.min(H() / 2 - 5, x * 10)); }
+    delete o.n; draw(true); };
+  window._dsQty = d => { ed.qty = Math.max(1, Math.min(_decoupeNeed[ed.i].qty, ed.qty + d)); draw(true); };
+  window._dsUseMine = k => { const c = mine()[k]; if(!c) return; ed[ed.side] = JSON.parse(JSON.stringify(c.e)); ed.mineOpen = false; draw(); };
+  window._dsDelMine = k => { const l = mine(); const c = l[k]; if(!c || !confirm('Supprimer la coupe « ' + c.name + ' » ?')) return; l.splice(k, 1); saveMine(l); draw(); };
+  window._dsSaveMine = function(){
+    const e = cur(); if(e.t === 'eq'){ showToast('Choisis d\'abord une coupe biaise'); return; }
+    const name = (prompt('Nom de la coupe (ex : Sifflet panne 60)', e.n || label(e)) || '').trim(); if(!name) return;
+    const l = mine().filter(x => x.name !== name); const c = JSON.parse(JSON.stringify(e)); c.n = name; l.unshift({ name, e:c }); saveMine(l);
+    e.n = name; showToast('✅ Coupe « ' + name + ' » gardée dans Mes coupes'); draw();
+  };
+  window._dsApply = function(all){
+    const it = _decoupeNeed[ed.i]; if(!it) return;
+    const a = ed.a.t === 'eq' ? undefined : JSON.parse(JSON.stringify(ed.a)), b = ed.b.t === 'eq' ? undefined : JSON.parse(JSON.stringify(ed.b));
+    const targets = all ? _decoupeNeed.filter(x => Math.abs(x.len - it.len) < 0.0005) : [it];
+    if(!all && ed.qty < it.qty){
+      it.qty -= ed.qty;
+      const n = { len:it.len, qty:ed.qty }; if(a) n.a = a; if(b) n.b = b;
+      _decoupeNeed.splice(ed.i + 1, 0, n);
+    } else targets.forEach(x => { if(a) x.a = JSON.parse(JSON.stringify(a)); else delete x.a; if(b) x.b = JSON.parse(JSON.stringify(b)); else delete x.b; });
+    // regroupe les lignes identiques
+    const out = [];
+    _decoupeNeed.forEach(x => { const k = x.len.toFixed(3) + '|' + window._dsKey(x.a, x.b); const e = out.find(y => y._k === k); if(e) e.qty += x.qty; else { x._k = k; out.push(x); } });
+    out.forEach(x => delete x._k); _decoupeNeed.length = 0; out.forEach(x => _decoupeNeed.push(x));
+    const m = $('modal-dsEdit'); if(m) m.remove();
+    _decoupeRenderLists(); _dsRecalc();
+    showToast('✂️ Coupe appliquée');
+  };
+
+  function drawing(e){
+    // vue de côté du bout choisi, avec poignées : longueur du biais (et abouts)
+    const W = 360, VH = 150, top = 30, bot = 112, h = bot - top;
+    const x0 = 40, xEnd = 300;
+    const E = endOf(e);
+    if(E.t === 'eq') return `<svg viewBox="0 0 ${W} ${VH}"><rect x="${x0}" y="${top}" width="${xEnd - x0}" height="${h}" fill="#C9B79C" stroke="#2B2118" stroke-width="1.5"/><text x="${W / 2}" y="${bot + 26}" text-anchor="middle" font-size="12" font-weight="800" fill="#7A6E63">Coupe d'équerre — rien à régler</text></svg>`;
+    const len = ext(E); const sc = Math.min(1, 200 / Math.max(len, 1)) * (E.t === 'ap' ? 1 : 1);
+    const px = Math.max(16, Math.min(220, len * (h / H())));   // à l'échelle de la hauteur
+    const abp = E.t === 'sfd' ? Math.max(4, (+E.ab || 0) * h / H()) : 0;
+    const xs = xEnd - px;   // début du biais
+    let d, ghost;
+    if(E.t === 'sfd'){
+      d = `M${x0} ${top} H${xs} V${top + abp} L${xEnd} ${bot - abp} V${bot} H${x0} Z`;
+      ghost = `M${xs} ${top} H${W - 6} V${bot} H${xEnd} V${bot - abp} L${xs} ${top + abp} Z`;
+    } else {
+      d = `M${x0} ${top} H${xs} L${xEnd} ${bot} H${x0} Z`;
+      ghost = `M${xs} ${top} H${W - 6} V${bot} H${xEnd} Z`;
+    }
+    const sens = E.t === 'ap' ? '' : E.s === 'p' ? 'à prendre' : E.s === 'r' ? 'à recevoir' : '';
+    const ang = E.t === 'ap' ? (E.ang != null ? +E.ang : +spec.pente) : null;
+    return `<svg viewBox="0 0 ${W} ${VH}" id="dsSvg">
+      <path d="${ghost}" fill="none" stroke="#7A6E63" stroke-dasharray="5 4"/>
+      <text x="${W - 8}" y="${top - 8}" text-anchor="end" font-size="10.5" font-weight="700" fill="#7A6E63">pièce suivante${E.t === 'ap' ? ' (tête-bêche)' : ' (emboîtée)'}</text>
+      <path d="${d}" fill="${E.t === 'ap' ? '#EE8A2E' : '#7DB3E8'}" stroke="#2B2118" stroke-width="1.5"/>
+      <text x="${x0 + 8}" y="${(top + bot) / 2 + 4}" font-size="12" font-weight="900" fill="#2B2118">${ed.side === 'a' ? '◀ départ' : 'fin ▶'}${sens ? ' · ' + sens : ''}</text>
+      <path d="M${xs} ${bot + 14} H${xEnd}" stroke="#D9661A" stroke-width="1.5"/><path d="M${xs} ${bot + 9}v10M${xEnd} ${bot + 9}v10" stroke="#D9661A"/>
+      <text x="${(xs + xEnd) / 2}" y="${bot + 32}" text-anchor="middle" font-size="12" font-weight="900" fill="#D9661A">${E.t === 'ap' ? 'aplomb ' + ang + '° → ' + cm(len) : 'sifflet ' + cm(len)}</text>
+      ${E.t === 'sfd' ? `<text x="${xs + 6}" y="${top + abp / 2 + 4}" font-size="10.5" font-weight="800" fill="#2E8B57">about ${cm(+E.ab || 0)}</text>` : ''}
+      <circle class="hd" data-h="len" cx="${xs}" cy="${top + abp}" r="9" fill="#fff" stroke="#D9661A" stroke-width="3"/>
+      ${E.t === 'sfd' ? `<circle class="hd" data-h="ab" cx="${xEnd}" cy="${bot - abp}" r="9" fill="#fff" stroke="#2E8B57" stroke-width="3"/>` : ''}
+    </svg>`;
+  }
+  let dragH = null;
+  function onMove(ev){
+    if(!dragH) return; const svg = $('dsSvg'); if(!svg) return;
+    const r = svg.getBoundingClientRect(); const p = { x:(ev.clientX - r.left) / r.width * 360, y:(ev.clientY - r.top) / r.height * 150 };
+    const E = cur(); const h = 82;
+    if(dragH === 'len'){
+      const px = Math.max(8, Math.min(250, 300 - p.x)); const mm = px * H() / h;
+      if(E.t === 'ap') E.ang = Math.round(Math.atan(mm / H()) * 180 / Math.PI * 2) / 2;
+      else E.L = Math.round(mm / 10) * 10;
+    } else if(dragH === 'ab'){ const abp = Math.max(0, Math.min(h / 2 - 3, 112 - p.y)); E.ab = Math.round(abp * H() / h / 5) * 5; }
+    delete E.n; ev.preventDefault(); draw(true);
+  }
+  function onUp(){ dragH = null; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); window.removeEventListener('pointercancel', onUp); }
+  function bindDrag(){
+    const svg = $('dsSvg'); if(!svg) return;
+    svg.addEventListener('pointerdown', ev => { const c = ev.target.closest && ev.target.closest('.hd'); if(!c) return; dragH = c.dataset.h; ev.preventDefault();
+      window.addEventListener('pointermove', onMove, { passive:false }); window.addEventListener('pointerup', onUp); window.addEventListener('pointercancel', onUp); });
+  }
+  function draw(keepScroll){
+    const m = $('modal-dsEdit'); if(!m || !ed) return;
+    const it = _decoupeNeed[ed.i]; const E = cur();
+    const sv = m.querySelector('.modal') ? m.querySelector('.modal').scrollTop : 0;
+    const L = mine();
+    const fld = (k, lbl, v, u) => `<div class="ds-f"><small>${lbl}</small><input type="number" inputmode="decimal" step="0.5" value="${v}" onchange="_dsSet('${k}',this.value)"></div>`;
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>✂️ Pièce ${_dqShow(it.len)} <span style="font-size:13px;color:var(--wood);">×${it.qty}</span></h2><button class="modal-close" onclick="document.getElementById('modal-dsEdit').remove()">×</button></div>
+      <div class="ds-ends">
+        <button class="ds-end${ed.side === 'a' ? ' on' : ''}" onclick="_dsSide('a')"><small>◀ Départ</small><b>${label(ed.a)}</b></button>
+        <button class="ds-end${ed.side === 'b' ? ' on' : ''}" onclick="_dsSide('b')"><small>Fin ▶</small><b>${label(ed.b)}</b></button>
+      </div>
+      <div class="ds-types">${TY.map(([t, n, s]) => `<button class="ds-ty${(t === E.t && !E.n && !ed.mineOpen) || (t === 'mine' && (ed.mineOpen || E.n)) ? ' on' : ''}" onclick="_dsType('${t}')"><svg width="40" height="22">${s}</svg>${n}</button>`).join('')}</div>
+      ${ed.mineOpen ? `<div class="ds-mine">${L.length ? L.map((c, k) => `<button onclick="_dsUseMine(${k})">${escapeHtml(c.name)}<i onclick="event.stopPropagation();_dsDelMine(${k})">🗑</i></button>`).join('') : '<span class="hint">Aucune coupe gardée : règle une coupe puis « Garder dans Mes coupes ».</span>'}</div>` : ''}
+      <div class="ds-draw">${drawing(E)}<div class="hint" style="padding:0 6px 4px;">${E.t === 'eq' ? '' : 'Fais glisser le rond orange' + (E.t === 'sfd' ? ' (longueur) et le vert (abouts)' : E.t === 'ap' ? ' pour changer l\'angle' : ' pour la longueur') + '. En pointillés : la pièce qui s\'emboîte.'}</div></div>
+      ${E.t === 'ap' ? `<div class="ds-flds">${fld('ang', 'Angle (°)', E.ang != null ? E.ang : spec.pente)}<div class="ds-f"><small>Biais</small><input disabled value="${cm(ext(E))}"></div></div>` : ''}
+      ${E.t === 'sf' ? `<div class="ds-flds">${fld('L', 'Longueur sifflet (cm)', Math.round(+E.L) / 10)}</div>` : ''}
+      ${E.t === 'sfd' ? `<div class="ds-flds">${fld('L', 'Longueur sifflet (cm)', Math.round(+E.L) / 10)}${fld('ab', 'Abouts (cm)', Math.round(+E.ab || 0) / 10)}</div>` : ''}
+      ${(E.t === 'sf' || E.t === 'sfd') ? `<div class="ds-sens"><button class="${E.s === 'r' ? 'on' : ''}" onclick="_dsSet('s','r')">À recevoir</button><button class="${E.s === 'p' ? 'on' : ''}" onclick="_dsSet('s','p')">À prendre</button></div>` : ''}
+      ${E.t !== 'eq' ? `<button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="_dsSaveMine()">⭐ Garder dans « Mes coupes »</button>` : ''}
+      ${it.qty > 1 ? `<div class="ds-flds" style="align-items:center;"><span style="flex:1;font-weight:800;font-size:13.5px;">Appliquer à</span><span class="st" style="display:flex;gap:6px;align-items:center;"><button class="btn btn-outline" style="min-width:38px;padding:6px;" onclick="_dsQty(-1)">−</button><b style="min-width:44px;text-align:center;">${ed.qty} / ${it.qty}</b><button class="btn btn-outline" style="min-width:38px;padding:6px;" onclick="_dsQty(1)">＋</button></span></div>` : ''}
+      <button class="btn btn-primary btn-block" style="margin-top:10px;" onclick="_dsApply(false)">Appliquer à ${ed.qty > 1 ? 'ces ' + ed.qty + ' pièces' : 'cette pièce'}</button>
+      ${_decoupeNeed.filter(x => Math.abs(x.len - it.len) < 0.0005).length > 1 ? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="_dsApply(true)">Appliquer à toutes les pièces de ${_dqShow(it.len)}</button>` : ''}
+    </div>`;
+    bindDrag();
+    if(keepScroll){ const md = m.querySelector('.modal'); if(md) md.scrollTop = sv; }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => setTimeout(() => { try{ ui(); }catch(e){} }, 700));
+})();
+</script>
+<!-- ═══ fin MODULE v5.83.0 ═══ -->
 
 </body>
 </html>
