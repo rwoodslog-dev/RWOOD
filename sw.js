@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v1264';
+const CACHE_NAME = 'rwood-cache-v1265';
 const ASSETS = [
   './index.html',
   './manifest.json',
@@ -211,8 +211,10 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('push', (event) => {
   if(!event.data) return;
   let p; try { p = event.data.json(); } catch(e) { p = {title:'Notybat', body:event.data.text()}; }
-  event.waitUntil(self.registration.showNotification(p.title||'Notybat', {
-    body:p.body||'', icon:'./icons/icon-192-v4.png', badge:'./icons/icon-192-v4.png',
+  // v5.80.0 — pas d'émojis du téléphone : icône Notybat seulement
+  const noEmo = t => String(t == null ? '' : t).replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\uFE0F\uFE0E\u200D\u20E3]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/^[\s—·-]+/, '').trim();
+  event.waitUntil(self.registration.showNotification(noEmo(p.title) || 'Notybat', {
+    body:noEmo(p.body), icon:'./icons/icon-192-v4.png', badge:'./icons/icon-192-v4.png',
     tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
     renotify: String(p.tag||'').startsWith('conv-'), // v5.41.475 — 1 notif par conversation, qui sonne à chaque message
   }));
