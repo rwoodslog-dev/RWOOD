@@ -49585,9 +49585,24 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.80.0';
+const APP_VERSION = '5.82.0';
 
 const CHANGELOG = [
+  {
+    version: '5.82.0',
+    date: '09/11/2026',
+    entries: [
+      { icon: '🔘', text: "Onglet Calcul : « Afficher la bulle Calculatrice » devient un interrupteur, comme « Afficher la bulle Pense-bête »." }
+    ]
+  },
+  {
+    version: '5.81.0',
+    date: '09/11/2026',
+    entries: [
+      { icon: '🌤️', text: "Widget Android Météo : touche le nom du chantier pour choisir n'importe quel chantier (tous, rangés par catégorie, avec recherche) ou revenir au « Chantier en cours (automatique) »." },
+      { icon: '🏗️', text: "Widgets Android : les listes de chantiers montrent tous les chantiers, terminés compris, rangés par catégorie." }
+    ]
+  },
   {
     version: '5.80.0',
     date: '09/11/2026',
@@ -85675,17 +85690,31 @@ function _rwSitePics(site){
 }
 function _rwPushSites(){
   const R = _rwW(); if(!R || !data || !Array.isArray(data.sites)) return;
-  const order = {'en-cours':0, 'a-faire':1, 'brouillon':2};
-  const list = data.sites.filter(s => s.status !== 'termine')
-    .sort((a,b) => (order[a.status] ?? 1) - (order[b.status] ?? 1))
-    .slice(0, 150).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', keybox: String(s.keyboxCode || '').trim(),
+  // v5.81.0 — TOUS les chantiers (anciens compris), rangés par catégorie comme dans l'appli, avec leurs coordonnées (widget météo)
+  let L = []; try{ L = ssList().map(x => x.id); }catch(_){}
+  const rk = s => { let k = -1; try{ k = L.indexOf(siteStage(s).id); }catch(_){} return k < 0 ? 99 : k; };
+  const stName = s => { try{ return siteStage(s).name || ''; }catch(_){ return ''; } };
+  const gc = (data.settings && data.settings.meteoGeoCache) || {};
+  const geo = s => { const g = s._geo; if(g && isFinite(+g.lat) && (+g.lat || +g.lng)) return { lat:+g.lat, lng:+g.lng }; const c = gc[s.id]; return (c && c.addr === s.address && isFinite(+c.lat)) ? { lat:+c.lat, lng:+c.lng } : null; };
+  const list = data.sites.filter(s => s && s.id && !s._deleted && !(typeof siteHiddenForMe === 'function' && siteHiddenForMe(s)))
+    .sort((a,b) => (rk(a) - rk(b)) || String(a.name || '').localeCompare(String(b.name || ''), 'fr', { numeric:true }))
+    .slice(0, 250).map(s => ({ id: s.id, name: s.name || 'Chantier', addr: s.address || '', st: stName(s), lat: (geo(s) || {}).lat, lng: (geo(s) || {}).lng, keybox: String(s.keyboxCode || '').trim(),
       // v5.41.243 — notes et photo de la boîte à clés, affichées directement par le widget
-      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), pics: _rwSitePics(s), lat: (s._geo && s._geo.lat) || undefined, lng: (s._geo && s._geo.lng) || undefined, zone: String(s.trajetZone || ''), depot: /d[ée]p[ôo]t/i.test(String(s.name || '')) || (!!(data.settings && data.settings.depotAddress) && String(s.address || '').trim().toLowerCase() === String(data.settings.depotAddress).trim().toLowerCase()),
+      keyboxPhoto: /^https?:/.test(String(s.keyboxPhoto || '')) ? s.keyboxPhoto : '', photo: _rwSitePhoto(s), pics: s.status === 'termine' ? [] : _rwSitePics(s), zone: String(s.trajetZone || ''), depot: /d[ée]p[ôo]t/i.test(String(s.name || '')) || (!!(data.settings && data.settings.depotAddress) && String(s.address || '').trim().toLowerCase() === String(data.settings.depotAddress).trim().toLowerCase()),
       notes: (s.noteCategories || []).filter(c => c && !c.archived).map(c => ({ title: c.title || 'Notes',
         items: (c.notes || []).filter(n => n && !n.archived && n.text).slice(0, 30).map(n => ({ t: String(n.text).slice(0, 240), cb: !!n.hasCheckbox, done: !!n.done })) }))
         .filter(c => c.items.length).slice(0, 8) }));
   let activeId = null; try{ activeId = getActiveSiteId(); }catch(_){}
   R.setSites({ sites: list, activeId }).catch(()=>{});
+  // coordonnées manquantes : on les cherche en arrière-plan (1 par seconde), puis on renvoie la liste
+  if(!window._rwGeoRun && !window._rwGeoDone){
+    const miss = data.sites.filter(s => s && !s._deleted && s.address && !geo(s)).slice(0, 40);
+    if(miss.length && typeof _rnSiteCoords === 'function'){
+      window._rwGeoRun = true;
+      (async () => { for(const s of miss){ try{ await _rnSiteCoords(s); }catch(_){} await new Promise(r => setTimeout(r, 1000)); }
+        window._rwGeoRun = false; try{ if(typeof saveData === 'function') saveData(); }catch(_){} window._rwGeoDone = true; _rwPushSites(); })();
+    }
+  }
 }
 function _rwPushTiles(){
   const R = _rwW(); if(!R || typeof SIMPLE_ALL_TILES === 'undefined') return;
@@ -97637,8 +97666,10 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   #rwCalcP .ls span{ padding:3px 8px; border-radius:99px; background:var(--card,#221A14); border:1px solid var(--line,#46362A); font-size:13px; font-weight:700; }
   #rwCalcP .ls span.n{ color:#ff8a7a; }
   #rwCalcP .ft{ display:flex; gap:6px; margin-top:8px; } #rwCalcP .ft button{ flex:1; min-height:36px; border-radius:10px; border:1.5px solid var(--line,#46362A); background:transparent; color:var(--ink-soft,#C2B6A8); font:inherit; font-size:12px; font-weight:800; cursor:pointer; }
-  #rwCalcToggle{ display:flex; align-items:center; gap:10px; width:100%; margin:0 0 10px; padding:10px 14px; border-radius:14px; border:1.5px dashed #EE8A2E; background:transparent; color:var(--ink); font:inherit; font-size:14px; font-weight:800; cursor:pointer; text-align:left; }
-  #rwCalcToggle i{ font-style:normal; margin-left:auto; font-size:12px; padding:3px 9px; border-radius:99px; background:var(--line); } #rwCalcToggle.on i{ background:#4FAE6C; color:#fff; }
+  /* v5.82.0 — même interrupteur que « Afficher la bulle Pense-bête » */
+  #rwCalcToggle{ display:flex; align-items:center; gap:12px; margin:0 0 10px; padding:12px 14px !important; cursor:pointer; user-select:none; -webkit-tap-highlight-color:transparent; }
+  #rwCalcToggle .t{ flex:1; min-width:0; font-size:14px; font-weight:600; color:var(--ink); }
+  #rwCalcToggle .t small{ display:block; font-size:12px; font-weight:500; color:var(--ink-soft); margin-top:1px; }
   /* ── Pense-bête : fenêtre de modification ── */
   #rwTdEd{ position:fixed; inset:0; z-index:640; background:rgba(0,0,0,.6); display:flex; align-items:flex-end; justify-content:center; }
   @media (min-width:700px){ #rwTdEd{ align-items:center; } #rwTdEd > div{ border-radius:20px !important; } }
@@ -97771,9 +97802,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   function tgl(){
     const v = document.getElementById('view-calcul'); if(!v) return;
     let b = document.getElementById('rwCalcToggle');
-    if(!b){ b = document.createElement('button'); b.type = 'button'; b.id = 'rwCalcToggle'; b.setAttribute('data-testid', 'calc-bubble-toggle'); b.onclick = () => rwCalcBubble(); v.insertBefore(b, v.firstChild); }
-    b.classList.toggle('on', !!st.on);
-    b.innerHTML = `<img src="icons/calcul-v2.png" alt="" style="width:26px;height:26px;" onerror="this.remove()"><span>Bulle Calculatrice<br><small style="font-weight:600;color:var(--ink-soft);">Calculs et cumuls sur tous les écrans (plans, photos, fichiers)</small></span><i>${st.on ? 'Affichée' : 'Masquée'}</i>`;
+    if(!b){ b = document.createElement('div'); b.className = 'card'; b.id = 'rwCalcToggle'; b.setAttribute('role', 'switch'); b.setAttribute('data-testid', 'calc-bubble-toggle'); b.onclick = () => rwCalcBubble(); v.insertBefore(b, v.firstChild); }
+    b.setAttribute('aria-checked', st.on ? 'true' : 'false');
+    b.innerHTML = `<div class="rw-sw${st.on ? ' on' : ''}"><i></i></div><div class="t">Afficher la bulle Calculatrice<small>Calculs et cumuls sur tous les écrans (plans, photos, fichiers)</small></div>`;
   }
   window.addEventListener('resize', () => { bubble(); place(); });
   setTimeout(() => { tgl(); bubble(); }, 1500);
