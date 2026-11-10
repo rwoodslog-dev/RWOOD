@@ -3602,6 +3602,9 @@
   .dc-prog{ margin-left:auto; font-size:12px; font-weight:800; color:var(--ink-soft); }
   .card.dc-done{ opacity:.6; }
   .card.dc-done .dc-prog{ color:var(--green, #2e9e5b); }
+  .dc-bar > div small.dc-nm{ display:block; font-size:9px; font-weight:800; opacity:.85; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+  .dc-bar > div{ flex-direction:column; line-height:1.1; }
+  .dq-nm{ display:inline-block; font-size:12px; font-weight:800; color:var(--wood); background:color-mix(in srgb, var(--wood) 12%, transparent); border-radius:7px; padding:1px 7px; margin-left:4px; vertical-align:1px; }
   .dc-bar > div{ display:flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:800; color:#1a0d00; overflow:hidden; white-space:nowrap; border-right:2px solid #1a140d; }
 
   /* AGENDA CALENDAR */
@@ -41507,7 +41510,7 @@ function decoupeParse(txt){
     });
   return out;
 }
-function _dqPush(list, it){ const kk = x => (typeof _dsKey === 'function') ? _dsKey(x.a, x.b) : ''; const e = list.find(x => Math.abs(x.len - it.len) < 0.0005 && kk(x) === kk(it)); if(e) e.qty += it.qty; else list.push(it); list.sort((a, b) => b.len - a.len); }
+function _dqPush(list, it){ const kk = x => ((typeof _dsKey === 'function') ? _dsKey(x.a, x.b) : '') + '|' + (x.nm || ''); const e = list.find(x => Math.abs(x.len - it.len) < 0.0005 && kk(x) === kk(it)); if(e) e.qty += it.qty; else list.push(it); list.sort((a, b) => b.len - a.len); }
 function _dqRecent(kind, len){
   let r = []; try{ r = JSON.parse(localStorage.getItem('rwood-decoupe-recent-' + kind) || '[]') || []; }catch(e){}
   if(len != null){ r = [len].concat(r.filter(x => Math.abs(x - len) > 0.0005)).slice(0, 8); try{ localStorage.setItem('rwood-decoupe-recent-' + kind, JSON.stringify(r)); }catch(e){} }
@@ -41532,7 +41535,7 @@ function decoupeReset(){ _decoupeStock=[]; _decoupeNeed=[]; _decoupeRenderLists(
 function _fmtM(m){ return _dqShow(m); }
 
 function _decoupeRenderLists(){
-  const row = (kind, it, i) => (kind === 'need' && typeof _dsOn === 'function' && _dsOn()) ? _dsRow(it, i) : `<div class="dq-row"><span><b>${it.qty}</b> × ${_fmtM(it.len)}</span>
+  const row = (kind, it, i) => (kind === 'need' && typeof _dsOn === 'function' && _dsOn()) ? _dsRow(it, i) : `<div class="dq-row"${kind === 'need' ? ` data-lpn="${i}"` : ''}><span><b>${it.qty}</b> × ${_fmtM(it.len)}${it.nm ? `<span class="dq-nm">${escapeHtml(it.nm)}</span>` : ''}</span>
     <span class="dq-step"><button onclick="decoupeStep('${kind}',${i},-1)">−</button><button onclick="decoupeStep('${kind}',${i},1)">＋</button></span></div>`;
   [['stock', _decoupeStock, 'decoupeStockList', 'Aucune barre en stock.'], ['need', _decoupeNeed, 'decoupeNeedList', 'Aucune pièce à couper.']].forEach(([k, list, id, empty]) => {
     const el = document.getElementById(id);
@@ -41601,16 +41604,21 @@ function decoupeCompute(){
   _dcSig = (typeof _dlSigOf === 'function') ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf * 1000) : JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
   _dcMarks = {}; try{ const m = JSON.parse(localStorage.getItem('rwood-dc-marks') || 'null'); if(m && m.sig === _dcSig) _dcMarks = m.m || {}; }catch(e){}
   try{ const lm = (typeof _dlMarksFor === 'function') && _dlMarksFor(_dcSig); if(lm) _dcMarks = lm; }catch(e){}   // v5.77.0 — lot ouvert : marques partagées
+  // v5.84.0 — texte des pièces (appui long) : réparti sur les morceaux de même longueur
+  const _nmPool = {};
+  _decoupeNeed.forEach((n, ri) => { const k = n.len.toFixed(3); for(let q = 0; q < n.qty; q++) (_nmPool[k] = _nmPool[k] || []).push({ nm:n.nm || '', ri }); });
+  Object.values(_nmPool).forEach(a => a.sort((x, y) => (x.nm ? 0 : 1) - (y.nm ? 0 : 1)));
+  usedBars.forEach(b => { if(b.overflow) return; b.lab = b.cuts.slice().sort((x, y) => y - x).map(c => (_nmPool[c.toFixed(3)] || []).shift() || { nm:'', ri:-1 }); });
   // Regrouper les coupes identiques par barre pour un affichage lisible
   const barsHtml = usedBars.map((b,idx)=>{
     if(b.overflow){
       return `<div class="card" style="border:1px solid var(--danger);margin-bottom:8px;"><strong style="color:var(--danger);">Pièce non plaçable :</strong> ${_fmtM(b.cuts[0])} — plus assez de barres en stock.</div>`;
     }
     const counts = {};
-    b.cuts.forEach(c => { const k=c.toFixed(3); counts[k]=(counts[k]||0)+1; });
+    b.cuts.slice().sort((x,y)=>y-x).forEach((c, j) => { const nm = (b.lab[j] || {}).nm || ''; const k = c.toFixed(3) + '|' + nm; counts[k] = (counts[k] || 0) + 1; });
     const detail = Object.entries(counts)
       .sort((a,b)=>parseFloat(b[0])-parseFloat(a[0]))
-      .map(([k,n]) => `${n} × ${_fmtM(parseFloat(k))}`).join(' + ');
+      .map(([k,n]) => { const [l, nm] = k.split('|'); return `${n} × ${_fmtM(parseFloat(l))}${nm ? ` <span class="dq-nm">${escapeHtml(nm)}</span>` : ''}`; }).join(' + ');
     const usedLen = b.cuts.reduce((a,c)=>a+c,0) + Math.max(0,(b.cuts.length-1))*kerf;
     const chute = b.len - usedLen;
     const chutePct = b.len>0 ? (chute/b.len*100) : 0;
@@ -41619,7 +41627,7 @@ function decoupeCompute(){
     const _pal = ['#EE8A2E','#7FC6A4','#7DB3E8','#E89A7D','#C9A7E8','#E8D27D'];
     const _lens = [...new Set(b.cuts.map(c => c.toFixed(3)))];
     // v5.76.0 — chaque morceau se touche : 1× tracé, 2× coupé (grisé), 3× annuler
-    const barViz = '<div class="dc-bar">' + b.cuts.slice().sort((x,y)=>y-x).map((c, j) => { const st = _dcMarks[idx + '-' + j] || 0; return `<div class="dc-seg${st === 1 ? ' dc-t' : st === 2 ? ' dc-c' : ''}" data-dc="${idx}-${j}" onclick="_dcTap(this)" title="Toucher : tracé → coupé → annuler" style="width:${(c/b.len*100).toFixed(2)}%;background:${_pal[_lens.indexOf(c.toFixed(3)) % _pal.length]};">${c/b.len > 0.12 ? _dqShow(c, false) : ''}</div>`; }).join('') + '</div>';
+    const barViz = '<div class="dc-bar">' + b.cuts.slice().sort((x,y)=>y-x).map((c, j) => { const st = _dcMarks[idx + '-' + j] || 0; return `<div class="dc-seg${st === 1 ? ' dc-t' : st === 2 ? ' dc-c' : ''}" data-dc="${idx}-${j}" data-ri="${(b.lab[j] || {}).ri}" onclick="_dcTap(this)" title="${(b.lab[j] || {}).nm ? escapeHtml(b.lab[j].nm) + ' — ' : ''}Toucher : tracé → coupé → annuler · appui long : texte" style="width:${(c/b.len*100).toFixed(2)}%;background:${_pal[_lens.indexOf(c.toFixed(3)) % _pal.length]};">${c/b.len > 0.12 ? _dqShow(c, false) + ((b.lab[j] || {}).nm ? `<small class="dc-nm">${escapeHtml(b.lab[j].nm)}</small>` : '') : ''}</div>`; }).join('') + '</div>';
     return `
       <div class="card" style="margin-bottom:8px;">
         <div style="font-weight:800;font-size:14px;margin-bottom:4px;display:flex;align-items:center;gap:8px;">Barre ${idx+1} — ${_fmtM(b.len)}<span class="dc-prog" data-dcp="${idx}"></span></div>
@@ -41645,7 +41653,7 @@ function decoupeCompute(){
       <div class="calc-result-value">${realBars.length} / ${totalStock}</div>
       <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute)} (${chuteGlobalPct.toFixed(1).replace('.', ',')} %)</div>
     </div>
-    <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler.</div>
+    <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : ajouter un texte.</div>
     ${barsHtml}`;
   _dcProg();
 }
@@ -49586,9 +49594,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.83.0';
+const APP_VERSION = '5.84.0';
 
 const CHANGELOG = [
+  {
+    version: '5.84.0',
+    date: '10/11/2026',
+    entries: [
+      { icon: '🏷️', text: "Découpe : appui long sur une pièce (dans la liste ou sur le morceau du plan) pour ajouter un texte en plus de la cote (ex : « Chevron nord »), sur toutes les pièces de la ligne ou seulement quelques-unes. Le texte s'affiche dans la liste, le détail de la barre et sur le morceau ; il est gardé dans les lots." }
+    ]
+  },
   {
     version: '5.83.0',
     date: '09/11/2026',
@@ -99406,7 +99421,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   const myName = () => { const p = S().myProfile || {}; return ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || p.name || 'Moi'; };
   const now = () => new Date().toISOString();
   const clone = o => JSON.parse(JSON.stringify(o || null));
-  const norm = l => (l || []).map(x => { const r = [Math.round(x.len * 1000) / 1000, x.qty]; if((x.a || x.b) && typeof _dsKey === 'function') r.push(_dsKey(x.a, x.b)); return r; });
+  // v5.84.0 — le texte d'une pièce (nm) ne change pas le plan : lignes regroupées par longueur + coupes
+  const norm = l => { const m = new Map(); (l || []).forEach(x => { const r = [Math.round(x.len * 1000) / 1000]; if((x.a || x.b) && typeof _dsKey === 'function') r.push(_dsKey(x.a, x.b)); const k = JSON.stringify(r); m.set(k, (m.get(k) || 0) + x.qty); });
+    return [...m.entries()].map(([k, q]) => { const r = JSON.parse(k); r.splice(1, 0, q); return r; }); };
   const specSig = () => { try{ const p = _dsSpec(); return p.on ? [p.h, p.pente] : null; }catch(e){ return null; } };
   window._dlSigOf = (stock, need, kerfMm) => { const a = [norm(stock), norm(need), (parseFloat(kerfMm) || 0) / 1000]; const sp = specSig(); if(sp) a.push(sp); return JSON.stringify(a); };
   const kerfNow = () => { const k = $('decoupeKerf'); return k ? (parseFloat(k.value) || 0) : 3; };
@@ -99628,6 +99645,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   .ds-barw{ position:relative; }
   .ds-lb{ position:absolute; top:50%; transform:translate(-50%,-30%); font-size:12.5px; font-weight:900; color:#2B2118; pointer-events:none; }
   .ds-lb.c{ text-decoration:line-through; color:#ece8e2; }
+  .ds-lb{ text-align:center; line-height:1.05; white-space:nowrap; }
+  .ds-lb small{ display:block; font-size:9.5px; font-weight:800; opacity:.85; }
   .ds-bar .dc-seg.dc-t path.pc{ fill-opacity:.55; stroke:#2B2118; stroke-dasharray:6 4; }
   .ds-bar .dc-seg.dc-c path.pc{ fill:#8a8580 !important; fill-opacity:.75; }
   .ds-bar .dc-seg.dc-c text{ text-decoration:line-through; fill:#ece8e2; }
@@ -99713,7 +99732,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   window._dsRow = function(it, i){
     const a = endOf(it.a), b = endOf(it.b);
     const ends = (a.t === 'eq' && b.t === 'eq') ? 'Équerre des deux côtés' : `◀ ${label(a)} &nbsp;·&nbsp; ${label(b)} ▶`;
-    return `<div class="ds-row"><span class="q">×${it.qty}</span><span class="l">${_dqShow(it.len, false)}</span>${mini(a, b, PAL[i % PAL.length])}<span class="sp"></span><span class="e">${ends}</span>
+    return `<div class="ds-row" data-lpn="${i}"><span class="q">×${it.qty}</span><span class="l">${_dqShow(it.len, false)}</span>${it.nm ? `<span class="dq-nm">${escapeHtml(it.nm)}</span>` : ''}${mini(a, b, PAL[i % PAL.length])}<span class="sp"></span><span class="e">${ends}</span>
       <span class="st"><button onclick="decoupeStep('need',${i},-1)">−</button><button onclick="decoupeStep('need',${i},1)">＋</button></span>
       <button class="ed" onclick="_dsEdit(${i})" title="Coupes de cette pièce">✎</button></div>`;
   };
@@ -99740,7 +99759,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     let pcs = [];
     _decoupeNeed.forEach((n, ri) => { for(let i = 0; i < n.qty; i++) pcs.push({ len:Math.round(n.len * 1000), a:endOf(n.a), b:endOf(n.b), ri }); });
     // longues d'abord ; à longueur égale, mêmes coupes ensemble (elles s'emboîtent)
-    pcs.sort((x, y) => (y.len - x.len) || (window._dsKey(x.a, x.b) < window._dsKey(y.a, y.b) ? -1 : 1));
+    pcs.sort((x, y) => (y.len - x.len) || (window._dsKey(x.a, x.b) < window._dsKey(y.a, y.b) ? -1 : 1) || (x.ri - y.ri));
     const maxBar = bars[0] || 0;
     const tooLong = pcs.filter(p => p.len > maxBar + 0.5);
     if(tooLong.length) return { tooLong, maxBar };
@@ -99806,8 +99825,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       const d = 'M' + P.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L') + ' Z';
       const cx = (Math.max(tl, bl0) + Math.min(tr, br)) / 2;
       const lbl = _dqShow(it.len / 1000, false);
-      if((it.len / bl) > 0.08) lab += `<span class="ds-lb${st === 2 ? ' c' : ''}" data-lb="${idx}-${j}" style="left:${(cx / bl * 100).toFixed(2)}%">${lbl}</span>`;
-      g += `<g class="dc-seg${st === 1 ? ' dc-t' : st === 2 ? ' dc-c' : ''}" data-dc="${idx}-${j}" onclick="_dcTap(this)"><path class="pc" d="${d}" fill="${col}" stroke="rgba(0,0,0,.55)" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g>`;
+      const nm = (_decoupeNeed[it.ri] || {}).nm || '';
+      if((it.len / bl) > 0.08) lab += `<span class="ds-lb${st === 2 ? ' c' : ''}" data-lb="${idx}-${j}" style="left:${(cx / bl * 100).toFixed(2)}%">${lbl}${nm ? `<small>${escapeHtml(nm)}</small>` : ''}</span>`;
+      g += `<g class="dc-seg${st === 1 ? ' dc-t' : st === 2 ? ' dc-c' : ''}" data-dc="${idx}-${j}" data-ri="${it.ri}" onclick="_dcTap(this)"><path class="pc" d="${d}" fill="${col}" stroke="rgba(0,0,0,.55)" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g>`;
     });
     return `<div class="ds-barw"><svg class="ds-bar" viewBox="0 0 ${bl} ${VH}" preserveAspectRatio="none">${g}</svg>${lab}</div>`;
   }
@@ -99831,9 +99851,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       if(b.overflow){ html += `<div class="card" style="border:1px solid var(--danger);margin-bottom:8px;"><strong style="color:var(--danger);">Pièce non plaçable :</strong> ${_fmtM(b.items[0].len / 1000)} — plus assez de barres en stock.</div>`; return; }
       totalChute += b.rest; totalLen += b.len; totalSaved += b.saved;
       const grp = {};
-      b.items.forEach(it => { const k = it.len + '|' + window._dsKey(it.a, it.b); (grp[k] = grp[k] || { n:0, it }).n++; });
-      const detail = Object.values(grp).map(({ n, it }) => { const a = endOf(it.a), c = endOf(it.b);
-        return `${n} × ${_fmtM(it.len / 1000)}${(a.t === 'eq' && c.t === 'eq') ? '' : ` <small style="color:var(--ink-soft);font-weight:700;">(${label(a)} / ${label(c)})</small>`}`; }).join(' + ');
+      b.items.forEach(it => { const k = it.len + '|' + window._dsKey(it.a, it.b) + '|' + ((_decoupeNeed[it.ri] || {}).nm || ''); (grp[k] = grp[k] || { n:0, it }).n++; });
+      const detail = Object.values(grp).map(({ n, it }) => { const a = endOf(it.a), c = endOf(it.b); const nm = (_decoupeNeed[it.ri] || {}).nm;
+        return `${n} × ${_fmtM(it.len / 1000)}${nm ? ` <span class="dq-nm">${escapeHtml(nm)}</span>` : ''}${(a.t === 'eq' && c.t === 'eq') ? '' : ` <small style="color:var(--ink-soft);font-weight:700;">(${label(a)} / ${label(c)})</small>`}`; }).join(' + ');
       const pct = b.len ? b.rest / b.len * 100 : 0;
       const cc = pct < 8 ? 'var(--green)' : pct < 20 ? 'var(--wood)' : 'var(--danger)';
       // étapes : emboîtements
@@ -99856,7 +99876,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
         <div class="calc-result-value">${real.length} / ${totalStock}</div>
         <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute / 1000)} (${gp.toFixed(1).replace('.', ',')} %)${totalSaved > 1 ? ` · <span class="ds-gain">−${cm(totalSaved)} grâce aux coupes emboîtées</span>` : ''}</div>
       </div>
-      <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. Biais agrandis sur le dessin pour être lisibles.</div>
+      <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : ajouter un texte. Biais agrandis sur le dessin pour être lisibles.</div>
       ${html}`;
     _dcProg();
   };
@@ -99916,12 +99936,12 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const targets = all ? _decoupeNeed.filter(x => Math.abs(x.len - it.len) < 0.0005) : [it];
     if(!all && ed.qty < it.qty){
       it.qty -= ed.qty;
-      const n = { len:it.len, qty:ed.qty }; if(a) n.a = a; if(b) n.b = b;
+      const n = { len:it.len, qty:ed.qty }; if(a) n.a = a; if(b) n.b = b; if(it.nm) n.nm = it.nm;
       _decoupeNeed.splice(ed.i + 1, 0, n);
     } else targets.forEach(x => { if(a) x.a = JSON.parse(JSON.stringify(a)); else delete x.a; if(b) x.b = JSON.parse(JSON.stringify(b)); else delete x.b; });
     // regroupe les lignes identiques
     const out = [];
-    _decoupeNeed.forEach(x => { const k = x.len.toFixed(3) + '|' + window._dsKey(x.a, x.b); const e = out.find(y => y._k === k); if(e) e.qty += x.qty; else { x._k = k; out.push(x); } });
+    _decoupeNeed.forEach(x => { const k = x.len.toFixed(3) + '|' + window._dsKey(x.a, x.b) + '|' + (x.nm || ''); const e = out.find(y => y._k === k); if(e) e.qty += x.qty; else { x._k = k; out.push(x); } });
     out.forEach(x => delete x._k); _decoupeNeed.length = 0; out.forEach(x => _decoupeNeed.push(x));
     const m = $('modal-dsEdit'); if(m) m.remove();
     _decoupeRenderLists(); _dsRecalc();
@@ -100009,6 +100029,79 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.83.0 ═══ -->
+<!-- ═══ MODULE v5.84.0 — Découpe : texte sur une pièce (appui long sur la ligne ou sur le morceau du plan) ═══ -->
+<style>
+  #modal-dqNm .dq-nmrec{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  #modal-dqNm .dq-nmrec button{ border:1.5px solid var(--line); border-radius:99px; background:var(--bg); color:var(--ink); font:inherit; font-size:12.5px; font-weight:800; padding:5px 11px; cursor:pointer; }
+  #modal-dqNm .dq-nmq{ display:flex; align-items:center; gap:8px; margin-top:12px; font-weight:800; font-size:13.5px; }
+  #modal-dqNm .dq-nmq span{ flex:1; }
+  [data-lpn], #decoupeResult .dc-seg{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+</style>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const REC = 'rwood-dq-nm-recent';
+  const rec = () => { try{ return JSON.parse(localStorage.getItem(REC) || '[]') || []; }catch(e){ return []; } };
+  let cur = null;   // { i, n }
+  function regroup(){
+    const kk = x => x.len.toFixed(3) + '|' + ((typeof _dsKey === 'function') ? _dsKey(x.a, x.b) : '') + '|' + (x.nm || '');
+    const out = [];
+    _decoupeNeed.forEach(x => { const e = out.find(y => kk(y) === kk(x)); if(e) e.qty += x.qty; else out.push(x); });
+    _decoupeNeed.length = 0; out.forEach(x => _decoupeNeed.push(x));
+  }
+  window._dqNmOpen = function(i, one){
+    const it = _decoupeNeed[i]; if(!it) return;
+    cur = { i, n: one ? 1 : it.qty };
+    let m = $('modal-dqNm'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-dqNm'; m.className = 'modal-overlay open'; m.style.zIndex = 1260;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    const r = rec().filter(x => x !== it.nm).slice(0, 8);
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>🏷️ Pièce ${_dqShow(it.len)}</h2><button class="modal-close" onclick="document.getElementById('modal-dqNm').remove()">×</button></div>
+      <div class="field"><label>Texte (en plus de la cote)</label><input type="text" id="dqNmIn" maxlength="40" autocomplete="off" placeholder="Ex : Chevron nord, Panne faîtière, Linteau…" value="${escapeHtml(it.nm || '')}"></div>
+      ${r.length ? `<div class="dq-nmrec">${r.map(x => `<button onclick="document.getElementById('dqNmIn').value=this.textContent;_dqNmSave()">${escapeHtml(x)}</button>`).join('')}</div>` : ''}
+      ${it.qty > 1 ? `<div class="dq-nmq"><span>Sur combien de pièces ?</span><button class="btn btn-outline" style="min-width:38px;padding:6px;" onclick="_dqNmQty(-1)">−</button><b id="dqNmN" style="min-width:48px;text-align:center;">${cur.n} / ${it.qty}</b><button class="btn btn-outline" style="min-width:38px;padding:6px;" onclick="_dqNmQty(1)">＋</button></div>` : ''}
+      <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="_dqNmSave()">✅ Enregistrer</button>
+      ${it.nm ? `<button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="document.getElementById('dqNmIn').value='';_dqNmSave()">Retirer le texte</button>` : ''}
+    </div>`;
+    document.body.appendChild(m);
+    setTimeout(() => { const x = $('dqNmIn'); if(x){ x.focus(); x.select(); x.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); _dqNmSave(); } }; } }, 60);
+  };
+  window._dqNmQty = d => { const it = _decoupeNeed[cur.i]; cur.n = Math.max(1, Math.min(it.qty, cur.n + d)); const b = $('dqNmN'); if(b) b.textContent = cur.n + ' / ' + it.qty; };
+  window._dqNmSave = function(){
+    const it = _decoupeNeed[cur.i]; if(!it) return;
+    const nm = (($('dqNmIn') || {}).value || '').trim().slice(0, 40);
+    if(cur.n < it.qty){ const c = JSON.parse(JSON.stringify(it)); c.qty = cur.n; if(nm) c.nm = nm; else delete c.nm; it.qty -= cur.n; _decoupeNeed.splice(cur.i + 1, 0, c); }
+    else { if(nm) it.nm = nm; else delete it.nm; }
+    if(nm){ try{ localStorage.setItem(REC, JSON.stringify([nm].concat(rec().filter(x => x !== nm)).slice(0, 12))); }catch(e){} }
+    regroup();
+    const m = $('modal-dqNm'); if(m) m.remove();
+    _decoupeRenderLists();
+    const r = $('decoupeResult'); if(r && r.innerHTML.trim() && _decoupeStock.length && _decoupeNeed.length) decoupeCompute();
+    showToast(nm ? '🏷️ « ' + nm + ' »' : 'Texte retiré');
+  };
+
+  /* appui long : ligne de la liste (data-lpn) ou morceau du plan (data-ri) */
+  let t = null, sx = 0, sy = 0, swallow = false;
+  const cancel = () => { if(t){ clearTimeout(t); t = null; } };
+  document.addEventListener('pointerdown', e => {
+    const el = e.target.closest && e.target.closest('#calcMode-decoupe [data-lpn], #decoupeResult .dc-seg[data-ri]');
+    if(!el || e.target.closest('button')) return;
+    sx = e.clientX; sy = e.clientY; cancel();
+    t = setTimeout(() => {
+      t = null; swallow = true; setTimeout(() => { swallow = false; }, 700);
+      try{ if(navigator.vibrate) navigator.vibrate(18); }catch(_){}
+      if(el.dataset.lpn != null) _dqNmOpen(+el.dataset.lpn, false);
+      else { const ri = +el.dataset.ri; if(ri >= 0) _dqNmOpen(ri, true); }
+    }, 550);
+  }, true);
+  document.addEventListener('pointermove', e => { if(t && (Math.abs(e.clientX - sx) > 8 || Math.abs(e.clientY - sy) > 8)) cancel(); }, true);
+  ['pointerup', 'pointercancel', 'scroll'].forEach(ev => document.addEventListener(ev, cancel, true));
+  // l'appui long ne doit pas aussi marquer le morceau « tracé »
+  document.addEventListener('click', e => { if(swallow && e.target.closest && e.target.closest('#decoupeResult .dc-seg, #calcMode-decoupe [data-lpn]')){ e.stopPropagation(); e.preventDefault(); swallow = false; } }, true);
+  document.addEventListener('contextmenu', e => { if(e.target.closest && e.target.closest('#calcMode-decoupe [data-lpn], #decoupeResult .dc-seg')) e.preventDefault(); }, true);
+})();
+</script>
+<!-- ═══ fin MODULE v5.84.0 ═══ -->
 
 </body>
 </html>
