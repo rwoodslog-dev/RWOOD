@@ -41600,10 +41600,13 @@ function decoupeCompute(){
     }
   });
 
+  // v5.85.0 — plan modifié à la main (pièces déplacées d'une barre à l'autre)
+  try{ const pr = (typeof _dcPlanStraight === 'function') && _dcPlanStraight(usedBars, kerf * 1000); if(pr){ usedBars.length = 0; pr.forEach(x => usedBars.push(x)); } }catch(e){}
   // v5.76.0 — marques tracé / coupé, gardées tant que le plan ne change pas
   _dcSig = (typeof _dlSigOf === 'function') ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf * 1000) : JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
   _dcMarks = {}; try{ const m = JSON.parse(localStorage.getItem('rwood-dc-marks') || 'null'); if(m && m.sig === _dcSig) _dcMarks = m.m || {}; }catch(e){}
   try{ const lm = (typeof _dlMarksFor === 'function') && _dlMarksFor(_dcSig); if(lm) _dcMarks = lm; }catch(e){}   // v5.77.0 — lot ouvert : marques partagées
+  try{ if(typeof _dcPlanMarks === 'function') _dcMarks = _dcPlanMarks(usedBars.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:Math.round(b.len * 1000), pcs:b.cuts.slice().sort((x, y) => y - x).map(c => ({ len:Math.round(c * 1000), k:'' })) }), _dcMarks, 'droit', _dcSig, kerf * 1000); }catch(e){}
   // v5.84.0 — texte des pièces (appui long) : réparti sur les morceaux de même longueur
   const _nmPool = {};
   _decoupeNeed.forEach((n, ri) => { const k = n.len.toFixed(3); for(let q = 0; q < n.qty; q++) (_nmPool[k] = _nmPool[k] || []).push({ nm:n.nm || '', ri }); });
@@ -41653,7 +41656,8 @@ function decoupeCompute(){
       <div class="calc-result-value">${realBars.length} / ${totalStock}</div>
       <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute)} (${chuteGlobalPct.toFixed(1).replace('.', ',')} %)</div>
     </div>
-    <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : ajouter un texte.</div>
+    ${typeof _dcPlanBanner === 'function' ? _dcPlanBanner() : ''}
+    <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : texte ou déplacer vers une autre barre.</div>
     ${barsHtml}`;
   _dcProg();
 }
@@ -49594,9 +49598,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.84.0';
+const APP_VERSION = '5.85.0';
 
 const CHANGELOG = [
+  {
+    version: '5.85.0',
+    date: '10/11/2026',
+    entries: [
+      { icon: '↔️', text: "Plan de coupe : appui long sur un morceau → « Déplacer vers » une autre barre (place restante affichée, barres pleines grisées) ou une nouvelle barre du stock. Les barres concernées sont recalculées (ordre, emboîtements, chute) et les marques tracé / coupé suivent la pièce." },
+      { icon: '↺', text: "« Plan modifié à la main » : bouton pour revenir au calcul automatique. Le plan modifié est gardé dans le lot ; il repart en automatique si on change le stock ou les pièces." }
+    ]
+  },
   {
     version: '5.84.0',
     date: '10/11/2026',
@@ -99581,15 +99593,20 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     let l = update ? curLot() : null;
     const spc = (typeof _dsSpec === 'function') ? clone(_dsSpec()) : null;
     if(l){ Object.assign(l, { name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc, updatedAt:t, by:myAuth(), byName:myName() });
-      if(l.sig !== sig){ l.marks = (typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}; } l.sig = sig; if(nbP) l.nbPieces = nbP; }
+      if(l.sig !== sig){ l.marks = (typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}; } l.sig = sig; if(nbP) l.nbPieces = nbP;
+      try{ const pl = JSON.parse(localStorage.getItem('rwood-dc-plan') || 'null'); if(pl && pl.sig === sig) l.plan = pl; else if(l.plan && l.plan.sig !== sig) delete l.plan; }catch(e){} }
     else { l = { id:'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, siteId:saveSite || null, stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc, sig,
-      marks:(typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}, nbPieces:nbP || piecesOfNeed(), createdAt:t, updatedAt:t, by:myAuth(), byName:myName(), createdBy:myName() };
+      marks:(typeof _dcMarks === 'object' && _dcSig === sig) ? clone(_dcMarks) : {}, nbPieces:nbP || piecesOfNeed(), createdAt:t,
+      plan:(() => { try{ const pl = JSON.parse(localStorage.getItem('rwood-dc-plan') || 'null'); return pl && pl.sig === sig ? pl : undefined; }catch(e){ return undefined; } })(), updatedAt:t, by:myAuth(), byName:myName(), createdBy:myName() };
       st.lots.push(l); }
     st.cur = l.id; const m = $('modal-dlSave'); if(m) m.remove();
     push(); showToast('✅ Lot « ' + name + ' » enregistré');
   };
   const piecesOfNeed = () => _decoupeNeed.reduce((a, x) => a + x.qty, 0);
 
+  /* v5.85.0 — plan modifié à la main : gardé dans le lot ouvert */
+  window._dlPlanFor = function(sig){ const l = curLot(); return (l && l.plan && l.plan.sig === sig) ? clone(l.plan) : null; };
+  window._dlPlanChanged = function(sig, plan){ const l = curLot(); if(!l || l.sig !== sig) return; if(plan) l.plan = clone(plan); else delete l.plan; l.updatedAt = now(); l.by = myAuth(); l.byName = myName(); saveLocal(); render(); pushSoon(); };
   /* Les marques tracé / coupé suivent le lot ouvert (vues par toute l'équipe) */
   window._dlMarksFor = function(sig){ const l = curLot(); return (l && l.sig === sig && l.marks) ? clone(l.marks) : null; };
   window._dlMarksChanged = function(sig, marks, nb){
@@ -99764,8 +99781,13 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const tooLong = pcs.filter(p => p.len > maxBar + 0.5);
     if(tooLong.length) return { tooLong, maxBar };
     const used = [];
-    const other = d => d === 'top' ? 'bot' : 'top';
-    function tryPlace(bar, p, rev){
+    const tryPlace = (bar, p, rev) => tryPlaceK(bar, p, rev, kerf);
+    pcs.forEach(p => placeAuto(used, bars, p, tryPlace));
+    finish(used, kerf);
+    return { used };
+  }
+  const other = d => d === 'top' ? 'bot' : 'top';
+  function tryPlaceK(bar, p, rev, kerf){
       const L = rev ? p.b : p.a, R = rev ? p.a : p.b;
       const last = bar.items[bar.items.length - 1];
       let start = 0, nest = false, ldir = 'bot';
@@ -99777,8 +99799,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       if(start + p.len > bar.len + 0.5) return null;
       const rdir = (R.t === 'eq') ? 'top' : other(ldir);
       return { start, nest, ldir, rdir, L, R };
-    }
-    pcs.forEach(p => {
+  }
+  function placeAuto(used, bars, p, tryPlace){
       let best = null, bb = null;
       for(const bar of used){
         for(const rev of [false, true]){
@@ -99796,11 +99818,19 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
         if(p.a.t !== 'eq' && p.b.t === 'eq'){ const r2 = tryPlace(bb, p, true); if(r2){ best = r2; best.rev = true; } }
       }
       bb.items.push({ len:p.len, ri:p.ri, a:p.a, b:p.b, x:best.start, L:best.L, R:best.R, ldir:best.ldir, rdir:best.rdir, nest:best.nest, rev:!!best.rev });
-    });
+  }
+  function finish(used, kerf){
     used.forEach(b => { if(b.overflow) return; const l = b.items[b.items.length - 1]; b.usedLen = l ? l.x + l.len : 0; b.rest = b.len - b.usedLen;
       b.saved = b.items.reduce((s, it) => s + (it.nest ? ext(it.L) + kerf - kerfAlong(it.L, kerf) : 0), 0); });
-    return { used };
   }
+  /* v5.85.0 — une barre imposée (plan modifié à la main) : mêmes règles d'emboîtement ; null si ça ne rentre pas */
+  window._dsLayout = function(len, pcs, kerf){
+    const list = pcs.map(p => ({ len:p.len, a:endOf(p.a), b:endOf(p.b), ri:p.ri }))
+      .sort((x, y) => (y.len - x.len) || (window._dsKey(x.a, x.b) < window._dsKey(y.a, y.b) ? -1 : 1) || (x.ri - y.ri));
+    const used = [], bars = [len], tp = (bar, p, rev) => tryPlaceK(bar, p, rev, kerf);
+    for(const p of list){ placeAuto(used, bars, p, tp); if(used.length > 1 || (used[0] && used[0].overflow)) return null; }
+    finish(used, kerf); return used[0] || { len, items:[], usedLen:0, rest:len, saved:0 };
+  };
 
   /* ── dessin d'une barre ── */
   function barSvg(b, idx, marks){
@@ -99841,10 +99871,12 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(!_decoupeNeed.length){ showToast('Ajoute au moins une pièce à débiter'); return; }
     const kerf = parseFloat(($('decoupeKerf') || {}).value) || 0;   // mm
     const R = pack(kerf);
+    try{ if(!R.tooLong && typeof _dcPlanSpec === 'function'){ const u = _dcPlanSpec(R.used, kerf); if(u) R.used = u; } }catch(e){}   // v5.85.0 — plan modifié à la main
     if(R.tooLong){ resEl.innerHTML = `<div class="card" style="border:1px solid var(--danger);"><div style="color:var(--danger);font-weight:700;">⚠️ ${R.tooLong.length} pièce(s) plus longue(s) que la plus grande barre (${_fmtM(R.maxBar / 1000)}).</div></div>`; return; }
     _dcSig = (typeof _dlSigOf === 'function') ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf) : JSON.stringify([_decoupeStock, _decoupeNeed, kerf]);
     _dcMarks = {}; try{ const m = JSON.parse(localStorage.getItem('rwood-dc-marks') || 'null'); if(m && m.sig === _dcSig) _dcMarks = m.m || {}; }catch(e){}
     try{ const lm = (typeof _dlMarksFor === 'function') && _dlMarksFor(_dcSig); if(lm) _dcMarks = lm; }catch(e){}
+    try{ if(typeof _dcPlanMarks === 'function') _dcMarks = _dcPlanMarks(R.used.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:b.len, pcs:b.items.map(it => ({ len:it.len, k:_dsKey(it.a, it.b) })) }), _dcMarks, 'spec', _dcSig, kerf); }catch(e){}
     const real = R.used.filter(b => !b.overflow);
     let html = '', totalChute = 0, totalLen = 0, totalSaved = 0;
     R.used.forEach((b, idx) => {
@@ -99876,7 +99908,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
         <div class="calc-result-value">${real.length} / ${totalStock}</div>
         <div class="calc-result-sub">Chute totale : ${_fmtM(totalChute / 1000)} (${gp.toFixed(1).replace('.', ',')} %)${totalSaved > 1 ? ` · <span class="ds-gain">−${cm(totalSaved)} grâce aux coupes emboîtées</span>` : ''}</div>
       </div>
-      <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : ajouter un texte. Biais agrandis sur le dessin pour être lisibles.</div>
+      ${typeof _dcPlanBanner === 'function' ? _dcPlanBanner() : ''}
+      <div class="hint" style="margin:0 2px 8px;">👆 Touche un morceau : 1 fois = <b>tracé</b>, 2 fois = <b>coupé</b> (grisé), 3 fois = annuler. <b>Appui long</b> : texte ou déplacer vers une autre barre. Biais agrandis sur le dessin pour être lisibles.</div>
       ${html}`;
     _dcProg();
   };
@@ -100091,7 +100124,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       t = null; swallow = true; setTimeout(() => { swallow = false; }, 700);
       try{ if(navigator.vibrate) navigator.vibrate(18); }catch(_){}
       if(el.dataset.lpn != null) _dqNmOpen(+el.dataset.lpn, false);
-      else { const ri = +el.dataset.ri; if(ri >= 0) _dqNmOpen(ri, true); }
+      else { const ri = +el.dataset.ri; const dc = String(el.dataset.dc || '').split('-').map(Number);
+        if(typeof _dcAct === 'function' && dc.length === 2) _dcAct(dc[0], dc[1], ri); else if(ri >= 0) _dqNmOpen(ri, true); }
     }, 550);
   }, true);
   document.addEventListener('pointermove', e => { if(t && (Math.abs(e.clientX - sx) > 8 || Math.abs(e.clientY - sy) > 8)) cancel(); }, true);
@@ -100102,6 +100136,166 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.84.0 ═══ -->
+<!-- ═══ MODULE v5.85.0 — Découpe : déplacer une pièce d'une barre à l'autre (plan modifié à la main) ═══
+     Plan manuel = { sig, mode:'droit'|'spec', bars:[{ len(mm), pcs:[{ len(mm), k }] }] }, gardé tant que le calcul ne change pas
+     (même signature) : dans l'appareil (localStorage) et dans le lot ouvert (partagé). Chaque barre est recalculée
+     (ordre des pièces, emboîtements, chute). Les marques tracé / coupé suivent les pièces déplacées. ═══ -->
+<style>
+  .dcp-ban{ display:flex; align-items:center; gap:8px; margin:0 0 8px; padding:8px 10px; border-radius:12px; border:1.5px dashed var(--wood); font-size:12.5px; font-weight:800; }
+  .dcp-ban span{ flex:1; }
+  .dcp-ban button{ border:1.5px solid var(--line); background:var(--bg); color:var(--ink); border-radius:10px; padding:6px 10px; font:inherit; font-size:12px; font-weight:800; cursor:pointer; white-space:nowrap; }
+  #modal-dcAct .dcp-b{ display:flex; align-items:center; gap:10px; width:100%; margin-top:8px; padding:11px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-size:14px; font-weight:800; cursor:pointer; text-align:left; }
+  #modal-dcAct .dcp-b small{ display:block; font-size:11.5px; font-weight:700; color:var(--ink-soft); }
+  #modal-dcAct .dcp-b span{ flex:1; }
+  #modal-dcAct .dcp-b:disabled{ opacity:.45; cursor:default; }
+  #modal-dcAct .dcp-b.on{ border-color:var(--wood); }
+  #modal-dcAct h4{ margin:14px 2px 2px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); }
+</style>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const LS = 'rwood-dc-plan';
+  const spec = () => (typeof _dsOn === 'function' && _dsOn());
+  const keyOf = (a, b) => spec() && typeof _dsKey === 'function' ? _dsKey(a, b) : '';
+  let last = null;          // dernier plan affiché : { mode, sig, kerf, bars:[{len, overflow, pcs:[{len,k}]}] }
+  let pending = null;       // marques à reporter après un déplacement : [[{len,k,mk}]] par barre
+  let applied = false;
+
+  function getPlan(sig){
+    try{ const lp = typeof _dlPlanFor === 'function' && _dlPlanFor(sig); if(lp) return lp; }catch(e){}
+    try{ const p = JSON.parse(localStorage.getItem(LS) || 'null'); if(p && p.sig === sig) return p; }catch(e){}
+    return null;
+  }
+  function savePlan(p){
+    try{ if(p) localStorage.setItem(LS, JSON.stringify(p)); else localStorage.removeItem(LS); }catch(e){}
+    try{ if(typeof _dlPlanChanged === 'function') _dlPlanChanged(last && last.sig, p); }catch(e){}
+  }
+  const ms = arr => arr.map(x => x.len + '|' + x.k).sort().join(',');
+  function valid(plan, autoBars){
+    if(!plan || !plan.bars) return false;
+    const a = []; autoBars.forEach(b => { if(b.overflow) return; b.pcs.forEach(p => a.push(p)); });
+    if(autoBars.some(b => b.overflow)) return false;
+    const pl = []; plan.bars.forEach(b => b.pcs.forEach(p => pl.push(p)));
+    if(ms(a) !== ms(pl)) return false;
+    const stock = []; _decoupeStock.forEach(s => { for(let i = 0; i < s.qty; i++) stock.push(Math.round(s.len * 1000)); });
+    for(const b of plan.bars){ const i = stock.indexOf(b.len); if(i < 0) return false; stock.splice(i, 1); }
+    return true;
+  }
+
+  /* ── coupes droites : remplace la répartition automatique ── */
+  window._dcPlanStraight = function(usedBars, kerfMm){
+    applied = false;
+    const sig = typeof _dlSigOf === 'function' ? _dlSigOf(_decoupeStock, _decoupeNeed, kerfMm) : '';
+    const plan = getPlan(sig); if(!plan || plan.mode !== 'droit') return null;
+    const auto = usedBars.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:Math.round(b.len * 1000), pcs:b.cuts.map(c => ({ len:Math.round(c * 1000), k:'' })) });
+    if(!valid(plan, auto)) return null;
+    const k = kerfMm / 1000; const out = [];
+    for(const b of plan.bars){
+      const cuts = b.pcs.map(p => p.len / 1000); const L = b.len / 1000;
+      const used = cuts.reduce((x, c) => x + c, 0) + Math.max(0, cuts.length - 1) * k;
+      if(used > L + 1e-6) return null;
+      out.push({ len:L, cuts, rest:L - used });
+    }
+    applied = true; return out;
+  };
+  /* ── coupes spécifiques ── */
+  window._dcPlanSpec = function(used, kerf){
+    applied = false;
+    const sig = typeof _dlSigOf === 'function' ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf) : '';
+    const plan = getPlan(sig); if(!plan || plan.mode !== 'spec') return null;
+    const auto = used.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:b.len, pcs:b.items.map(it => ({ len:it.len, k:_dsKey(it.a, it.b) })) });
+    if(!valid(plan, auto)) return null;
+    // pièces réelles (coupes + n° de ligne pour le texte)
+    const pool = {};
+    _decoupeNeed.forEach((n, ri) => { const kk = Math.round(n.len * 1000) + '|' + _dsKey(n.a, n.b); for(let q = 0; q < n.qty; q++) (pool[kk] = pool[kk] || []).push({ a:n.a, b:n.b, ri }); });
+    const out = [];
+    for(const b of plan.bars){
+      const pcs = b.pcs.map(p => { const r = (pool[p.len + '|' + p.k] || []).shift(); return r ? { len:p.len, a:r.a, b:r.b, ri:r.ri } : null; });
+      if(pcs.some(x => !x)) return null;
+      const bar = _dsLayout(b.len, pcs, kerf); if(!bar) return null;
+      out.push(bar);
+    }
+    applied = true; return out;
+  };
+  /* ── après la mise en place : mémorise le plan affiché, reporte les marques ── */
+  window._dcPlanMarks = function(bars, marks, mode, sig, kerf){
+    last = { mode, sig, kerf, bars };
+    if(!pending) return marks;
+    const m = {};
+    bars.forEach((b, idx) => { const src = (pending[idx] || []).slice();
+      (b.pcs || []).forEach((p, j) => { const i = src.findIndex(x => x.len === p.len && x.k === p.k); if(i >= 0){ if(src[i].mk) m[idx + '-' + j] = src[i].mk; src.splice(i, 1); } }); });
+    pending = null;
+    try{ localStorage.setItem('rwood-dc-marks', JSON.stringify({ sig, m })); }catch(e){}
+    setTimeout(() => { try{ if(typeof _dlMarksChanged === 'function') _dlMarksChanged(sig, m, document.querySelectorAll('#decoupeResult .dc-seg').length); }catch(e){} }, 0);
+    return m;
+  };
+  window._dcPlanBanner = () => applied ? `<div class="dcp-ban"><span>✋ Plan modifié à la main</span><button onclick="_dcPlanReset()">↺ Calcul automatique</button></div>` : '';
+  window._dcPlanReset = function(){
+    if(!confirm('Revenir au plan calculé automatiquement ? Les pièces déplacées reprennent leur place.')) return;
+    savePlan(null); decoupeCompute(); showToast('↺ Plan automatique');
+  };
+
+  /* ── appui long sur un morceau : texte ou déplacement ── */
+  function barFits(bar, kerf){
+    if(last.mode === 'spec'){
+      const pool = {};
+      _decoupeNeed.forEach((n, ri) => { const kk = Math.round(n.len * 1000) + '|' + _dsKey(n.a, n.b); for(let q = 0; q < n.qty; q++) (pool[kk] = pool[kk] || []).push({ a:n.a, b:n.b, ri }); });
+      const pcs = bar.pcs.map(p => { const r = (pool[p.len + '|' + p.k] || [])[0]; return r ? { len:p.len, a:r.a, b:r.b, ri:r.ri } : null; });
+      if(pcs.some(x => !x)) return null;
+      const r = _dsLayout(bar.len, pcs, kerf); return r ? r.rest : null;
+    }
+    const used = bar.pcs.reduce((x, p) => x + p.len, 0) + Math.max(0, bar.pcs.length - 1) * kerf;
+    return used <= bar.len + 0.5 ? bar.len - used : null;
+  }
+  function freeStock(){
+    const stock = []; _decoupeStock.forEach(s => { for(let i = 0; i < s.qty; i++) stock.push(Math.round(s.len * 1000)); });
+    last.bars.forEach(b => { if(b.overflow) return; const i = stock.indexOf(b.len); if(i >= 0) stock.splice(i, 1); });
+    return stock.sort((x, y) => y - x);
+  }
+  let act = null;
+  window._dcAct = function(idx, j, ri){
+    if(!last || !last.bars[idx] || last.bars[idx].overflow){ if(ri >= 0) _dqNmOpen(ri, true); return; }
+    act = { idx, j, ri };
+    const p = last.bars[idx].pcs[j]; if(!p){ if(ri >= 0) _dqNmOpen(ri, true); return; }
+    const nm = ((_decoupeNeed[ri] || {}).nm) || '';
+    const kerf = last.mode === 'spec' ? last.kerf : last.kerf;
+    const others = last.bars.map((b, k) => { if(k === idx || b.overflow) return null;
+      const test = { len:b.len, pcs:b.pcs.concat([p]) }; const rest = barFits(test, kerf);
+      return `<button class="dcp-b" ${rest == null ? 'disabled' : ''} onclick="_dcMove(${k})"><span>Barre ${k + 1} — ${_fmtM(b.len / 1000)}<small>${rest == null ? 'Pas assez de place' : 'Reste après : ' + _fmtM(rest / 1000)}</small></span>➜</button>`; }).filter(Boolean).join('');
+    const fs = freeStock().filter(l => l >= p.len);
+    let m = $('modal-dcAct'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-dcAct'; m.className = 'modal-overlay open'; m.style.zIndex = 1255;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>✂️ ${_fmtM(p.len / 1000)}${nm ? ' · ' + escapeHtml(nm) : ''}</h2><button class="modal-close" onclick="document.getElementById('modal-dcAct').remove()">×</button></div>
+      <div class="hint" style="margin-top:-4px;">Barre ${idx + 1} — ${_fmtM(last.bars[idx].len / 1000)}</div>
+      <button class="dcp-b" onclick="document.getElementById('modal-dcAct').remove();_dqNmOpen(${ri},true)"><span>🏷️ ${nm ? 'Changer le texte' : 'Ajouter un texte'}</span></button>
+      <h4>↔ Déplacer vers</h4>
+      ${others || '<div class="hint">Aucune autre barre.</div>'}
+      ${fs.length ? `<button class="dcp-b" onclick="_dcMove(-1)"><span>➕ Nouvelle barre — ${_fmtM(fs[0] / 1000)}<small>Prise dans le stock non utilisé</small></span>➜</button>` : ''}
+    </div>`;
+    document.body.appendChild(m);
+  };
+  window._dcMove = function(to){
+    if(!act || !last) return;
+    const kerf = last.kerf;
+    const bars = last.bars.filter(b => !b.overflow).map(b => ({ len:b.len, pcs:b.pcs.map(p => ({ len:p.len, k:p.k })) }));
+    // marques actuelles, rattachées aux pièces
+    const mk = last.bars.map((b, idx) => (b.pcs || []).map((p, j) => ({ len:p.len, k:p.k, mk:(_dcMarks || {})[idx + '-' + j] || 0 })));
+    const piece = bars[act.idx].pcs.splice(act.j, 1)[0]; const pm = mk[act.idx].splice(act.j, 1)[0];
+    if(to === -1){ const fs = freeStock().filter(l => l >= piece.len); if(!fs.length) return; bars.push({ len:fs[0], pcs:[piece] }); mk.push([pm]); }
+    else { bars[to].pcs.push(piece); mk[to].push(pm); if(barFits(bars[to], kerf) == null){ showToast('Pas assez de place sur cette barre'); return; } }
+    // barre vidée : rendue au stock
+    const keep = bars.map((b, i) => b.pcs.length ? i : -1).filter(i => i >= 0);
+    const nb = keep.map(i => bars[i]), nm = keep.map(i => mk[i]);
+    savePlan({ sig:last.sig, mode:last.mode, bars:nb });
+    pending = nm;
+    const m = $('modal-dcAct'); if(m) m.remove();
+    decoupeCompute();
+    showToast(to === -1 ? '➕ Pièce mise sur une nouvelle barre' : '↔ Pièce déplacée, barres recalculées');
+  };
+})();
+</script>
+<!-- ═══ fin MODULE v5.85.0 ═══ -->
 
 </body>
 </html>
