@@ -49601,9 +49601,16 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.86.2';
+const APP_VERSION = '5.86.3';
 
 const CHANGELOG = [
+  {
+    version: '5.86.3',
+    date: '10/11/2026',
+    entries: [
+      { icon: '🐛', text: "Échanger / déplacer des pièces : marche aussi quand certaines pièces sont « non plaçables » (stock insuffisant) — avant, le plan modifié était ignoré sans le dire. Si un échange ne peut pas s'appliquer, un message l'explique au lieu de « recalculées »." }
+    ]
+  },
   {
     version: '5.86.2',
     date: '10/11/2026',
@@ -100213,15 +100220,17 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     try{ if(typeof _dlPlanChanged === 'function') _dlPlanChanged(last && last.sig, p); }catch(e){}
   }
   const ms = arr => arr.map(x => x.len + '|' + x.k).sort().join(',');
+  // v5.86.3 — le plan manuel doit contenir des pièces qui existent ; celles qui n'y sont pas restent « non plaçables »
+  let failWhy = '';
   function valid(plan, autoBars){
-    if(!plan || !plan.bars) return false;
-    const a = []; autoBars.forEach(b => { if(b.overflow) return; b.pcs.forEach(p => a.push(p)); });
-    if(autoBars.some(b => b.overflow)) return false;
-    const pl = []; plan.bars.forEach(b => b.pcs.forEach(p => pl.push(p)));
-    if(ms(a) !== ms(pl)) return false;
+    failWhy = '';
+    if(!plan || !plan.bars){ failWhy = 'plan vide'; return false; }
+    const all = []; autoBars.forEach(b => (b.pcs || []).forEach(p => all.push(p.len + '|' + p.k)));
+    const left = all.slice();
+    for(const b of plan.bars) for(const p of b.pcs){ const i = left.indexOf(p.len + '|' + p.k); if(i < 0){ failWhy = 'pièce ' + p.len + ' introuvable'; return false; } left.splice(i, 1); }
     const stock = []; _decoupeStock.forEach(s => { for(let i = 0; i < s.qty; i++) stock.push(Math.round(s.len * 1000)); });
-    for(const b of plan.bars){ const i = stock.indexOf(b.len); if(i < 0) return false; stock.splice(i, 1); }
-    return true;
+    for(const b of plan.bars){ const i = stock.indexOf(b.len); if(i < 0){ failWhy = 'barre de ' + b.len + ' absente du stock'; return false; } stock.splice(i, 1); }
+    return left.map(x => { const [l, k] = x.split('|'); return { len:+l, k:k || '' }; });
   }
 
   /* ── coupes droites : remplace la répartition automatique ── */
@@ -100229,8 +100238,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     applied = false;
     const sig = typeof _dlSigOf === 'function' ? _dlSigOf(_decoupeStock, _decoupeNeed, kerfMm) : '';
     const plan = getPlan(sig); if(!plan || plan.mode !== 'droit') return null;
-    const auto = usedBars.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:Math.round(b.len * 1000), pcs:b.cuts.map(c => ({ len:Math.round(c * 1000), k:'' })) });
-    if(!valid(plan, auto)) return null;
+    const auto = usedBars.map(b => ({ overflow:!!b.overflow, len:Math.round((b.len || 0) * 1000), pcs:b.cuts.map(c => ({ len:Math.round(c * 1000), k:'' })) }));
+    const left = valid(plan, auto); if(!left) return null;
     const k = kerfMm / 1000; const out = [];
     for(const b of plan.bars){
       const cuts = b.pcs.map(p => p.len / 1000); const L = b.len / 1000;
@@ -100238,6 +100247,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       if(used > L + 1e-6) return null;
       out.push({ len:L, cuts, rest:L - used, pnm:b.pcs.map(p => p.nm || '') });
     }
+    left.forEach(p => out.push({ overflow:true, cuts:[p.len / 1000] }));
     applied = true; return out;
   };
   /* ── coupes spécifiques ── */
@@ -100245,8 +100255,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     applied = false;
     const sig = typeof _dlSigOf === 'function' ? _dlSigOf(_decoupeStock, _decoupeNeed, kerf) : '';
     const plan = getPlan(sig); if(!plan || plan.mode !== 'spec') return null;
-    const auto = used.map(b => b.overflow ? { overflow:true, pcs:[] } : { len:b.len, pcs:b.items.map(it => ({ len:it.len, k:_dsKey(it.a, it.b) })) });
-    if(!valid(plan, auto)) return null;
+    const auto = used.map(b => ({ overflow:!!b.overflow, len:b.len, pcs:b.items.map(it => ({ len:it.len, k:_dsKey(it.a, it.b) })) }));
+    const left = valid(plan, auto); if(!left) return null;
     // pièces réelles (coupes + n° de ligne pour le texte)
     const pool = {};
     _decoupeNeed.forEach((n, ri) => { const kk = Math.round(n.len * 1000) + '|' + _dsKey(n.a, n.b); for(let q = 0; q < n.qty; q++) (pool[kk] = pool[kk] || []).push({ a:n.a, b:n.b, ri, nm:n.nm || '' }); });
@@ -100254,9 +100264,10 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     for(const b of plan.bars){
       const pcs = b.pcs.map(p => { const a = pool[p.len + '|' + p.k] || []; let i = a.findIndex(x => (x.nm || '') === (p.nm || '')); if(i < 0) i = 0; const r = a.splice(i, 1)[0]; return r ? { len:p.len, a:r.a, b:r.b, ri:r.ri } : null; });
       if(pcs.some(x => !x)) return null;
-      const bar = _dsLayout(b.len, pcs, kerf); if(!bar) return null;
+      const bar = _dsLayout(b.len, pcs, kerf); if(!bar){ failWhy = 'la barre de ' + b.len + ' déborde'; return null; }
       out.push(bar);
     }
+    left.forEach(p => out.push({ len:0, overflow:true, items:[{ len:p.len, x:0 }] }));
     applied = true; return out;
   };
   /* ── après la mise en place : mémorise le plan affiché, reporte les marques ── */
@@ -100354,6 +100365,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     savePlan({ sig:last.sig, mode:last.mode, bars });
     pending = mk; flash = [{ bar:s1.idx, p:b }, { bar:i2, p:a }]; swap = null; swapBar();
     decoupeCompute();
+    if(!applied){ pending = null; flash = null; showToast('⚠️ Échange impossible à appliquer' + (failWhy ? ' (' + failWhy + ')' : '')); return; }
     showToast('⇄ Pièces échangées, barres ' + (s1.idx + 1) + ' et ' + (i2 + 1) + ' recalculées');
   }
   document.addEventListener('click', e => {
@@ -100388,6 +100400,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     pending = nm;
     const m = $('modal-dcAct'); if(m) m.remove();
     decoupeCompute();
+    if(!applied){ pending = null; showToast('⚠️ Déplacement impossible à appliquer' + (failWhy ? ' (' + failWhy + ')' : '')); return; }
     showToast(to === -1 ? '➕ Pièce mise sur une nouvelle barre' : '↔ Pièce déplacée, barres recalculées');
   };
 })();
