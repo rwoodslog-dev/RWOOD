@@ -14264,6 +14264,7 @@ function sendDetailNote(){
         notifyPush([chefAuthId], 'Notybat — Nouvelle note', text + ' — ' + site.name, 'note-' + siteId + '-' + Date.now(), 'site:' + site.id);
       });
     }
+    if(site && typeof rwCondQ === 'function') rwCondQ(site, 'note', text);   // v5.90.0 — conducteur assigné
   } catch(e){ /* silencieux */ }
 }
 
@@ -20476,6 +20477,7 @@ async function addSiteDocument(input){
         notifyPush([chefAuthId], 'Notybat — Nouveau document', docName + ' — ' + site.name, 'doc-' + docId, 'site:' + site.id);
       });
     }
+    try{ if(typeof rwCondQ === 'function') rwCondQ(site, 'doc', docName); }catch(_){}   // v5.90.0 — conducteur assigné
 
     if(docTypeEl){ docTypeEl.value = ''; docTypeEl.style.display = 'none'; }
     if(docNameEl) docNameEl.value = '';
@@ -21472,6 +21474,7 @@ async function addSharedMediaToSite(siteId, file, opts){
       }
     } catch(e){ /* silencieux */ }
 
+    try{ if(typeof rwCondQ === 'function') rwCondQ(site, isImage ? 'photo' : 'doc', file.name); }catch(_){}   // v5.90.0 — conducteur assigné (regroupé)
     // [DÉSACTIVÉ] Alerte auto au conducteur/patron à l'ajout d'une photo dans
     // la galerie — retirée intégralement sur demande (plus aucun déclenchement,
     // quel que soit le rôle ou le mode). Le bloc est neutralisé plutôt que
@@ -26053,6 +26056,7 @@ async function syncZincToSite(profile){
             notifyPush([chefAuthId], 'Notybat — Nouveau pliage', (profile.name || 'Pliage') + ' — ' + site.name, 'zinc-' + profile.id, 'site:' + site.id);
           });
         }
+        if(typeof rwCondQ === 'function') rwCondQ(site, 'pliage', profile.name || 'Pliage');   // v5.90.0
       } catch(e){ /* silencieux */ }
     }
   } catch(e){ /* non bloquant */ }
@@ -49644,9 +49648,19 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.89.2';
+const APP_VERSION = '5.90.0';
 
 const CHANGELOG = [
+  {
+    version: '5.90.0',
+    date: '11/11/2026',
+    entries: [
+      { icon: '🚚', text: "Livraisons compactes : une ligne par livraison (nom, date, heure) avec 📷 (allumé s'il y a une photo, touche pour la voir) et 📅 (ajout direct à ton agenda, ✓ quand c'est fait). Touche la ligne pour le détail et les boutons." },
+      { icon: '📦', text: "Reçues bien visibles : onglets « 🚚 À venir | 📦 Reçues » dans Livraisons, et bouton vert « 📦 Livraisons reçues » dans les colonnes de Notes. Le compte rendu de réception tient sur une ligne d'icônes : 📷 photos · 📄 bon · 📝 remarque." },
+      { icon: '📋', text: "Infos chantier : chef(s) de chantier et conducteur de travaux assignables (le patron est dans la liste des conducteurs), avec 📞 pour appeler." },
+      { icon: '🔔', text: "Le conducteur assigné reçoit le compte rendu de réception des livraisons et les comptes rendus des feuilles de route de son chantier, plus les photos, documents, notes et pliages ajoutés par le terrain (regroupés). Les changements d'adresse, boîte à clés, infos utiles et dates préviennent les chefs et le conducteur." }
+    ]
+  },
   {
     version: '5.89.2',
     date: '10/11/2026',
@@ -72484,8 +72498,11 @@ function _nvNotifOf(c){ if(c && Array.isArray(c.notif)) return c.notif; return c
 function _nvNotifOk(c, k){ const see = _nvSeeOf(c); return k === 'chefs' ? see.includes('chef') : see.includes(k); }
 async function _nvColNotify(col, site, note){
   try{
-    const who = _nvNotifOf(col).filter(k => _nvNotifOk(col, k)); if(!who.length) return;
-    const me = _nvMe(), ids = new Set();
+    const who = _nvNotifOf(col).filter(k => _nvNotifOk(col, k));
+    /* v5.90.0 — le conducteur assigné au chantier est prévenu des notes qu'il peut voir */
+    const cond = (typeof rwSiteCondIds === 'function' ? rwSiteCondIds(site) : []).filter(() => { try{ const c = site.conducteur || {}; return _nvSeeOf(col).includes(c.role === 'patron' ? 'patron' : 'conducteur'); }catch(e){ return false; } });
+    if(!who.length && !cond.length) return;
+    const me = _nvMe(), ids = new Set(cond);
     if(who.includes('chefs')) (typeof _getChefAuthIdsForSite === 'function' ? _getChefAuthIdsForSite(site) : []).forEach(x => ids.add(x));
     const roles = who.filter(k => k !== 'chefs');
     if(roles.length){ let reg = []; try{ reg = await _fetchUsersRegistry(); }catch(e){} (reg || []).forEach(u => { if(u && u.authId && roles.includes(u.role) && !/\.(test|dupont)$/i.test(u.authId)) ids.add(u.authId); }); }
@@ -91865,6 +91882,16 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
   #nvRoot .nb-rcvgrp{ margin-top:8px; }
   #nvRoot .nb-rcvtg{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border:1.5px dashed var(--line); border-radius:12px; background:transparent; color:var(--ink-soft); font:inherit; font-size:14px; font-weight:800; cursor:pointer; }
   #nvRoot .nb-rcvgrp.open .nb-rcvtg{ border-style:solid; }
+  /* v5.90.0 — « Livraisons reçues » bien visible + compte-rendu en icônes */
+  #nvRoot .nb-rcvtg{ border:1.5px solid #4FAE6C; background:color-mix(in srgb, #4FAE6C 14%, transparent); color:var(--ink); font-size:14.5px; font-weight:900; }
+  #nvRoot .nb-rcvtg span{ display:flex; align-items:center; gap:8px; } #nvRoot .nb-rcvtg b{ min-width:22px; padding:1px 7px; border-radius:99px; background:#4FAE6C; color:#fff; font-size:12.5px; text-align:center; }
+  #nvRoot .nb-rcvtg i{ font-style:normal; font-size:16px; color:#4FAE6C; } #nvRoot .nb-rcvgrp.open .nb-rcvtg{ background:#4FAE6C; color:#fff; } #nvRoot .nb-rcvgrp.open .nb-rcvtg b{ background:rgba(255,255,255,.25); } #nvRoot .nb-rcvgrp.open .nb-rcvtg i{ color:#fff; }
+  #nvRoot .nb-rcr.c{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 8px; }
+  #nvRoot .nb-rcr.c .w{ flex:1; min-width:0; font-size:12px; font-weight:700; color:var(--ink-soft); }
+  #nvRoot .nb-rcr.c .ics{ display:flex; gap:5px; } #nvRoot .nb-rcr.c .ics button{ position:relative; width:34px; height:34px; border-radius:10px; border:1.5px solid var(--line); background:var(--card); font-size:16px; padding:0; cursor:pointer; }
+  #nvRoot .nb-rcr.c .ics button.off{ filter:grayscale(1); opacity:.3; cursor:default; }
+  #nvRoot .nb-rcr.c .ics i{ position:absolute; top:-5px; right:-5px; min-width:16px; height:16px; padding:0 3px; border-radius:99px; background:#2BB3C0; color:#fff; font-size:10px; font-style:normal; font-weight:900; line-height:16px; }
+  #nvRoot .nb-rcr.c .tx{ display:none; flex-basis:100%; margin-top:2px; } #nvRoot .nb-rcr.c.op .tx{ display:block; }
   #nvRoot .nb-rcvbox{ display:none; margin-top:8px; } #nvRoot .nb-rcvgrp.open .nb-rcvbox{ display:block; }
 </style>
 <script>
@@ -92078,7 +92105,7 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
         const key = cid + '|' + hi + '|' + (h.dataset.sid || '');
         const open = _rcvOpen.has(key);
         const g = document.createElement('div'); g.className = 'nb-rcvgrp' + (open ? ' open' : ''); g.setAttribute('data-testid', 'livraisons-recues-group');
-        g.innerHTML = `<button type="button" class="nb-rcvtg" data-testid="livraisons-recues-toggle" onclick="event.stopPropagation();nbRcvToggle(this,'${E(key)}')"><span>✅ Reçues · ${cards.length}</span><i>${open ? '▴' : '▾'}</i></button><div class="nb-rcvbox"></div>`;
+        g.innerHTML = `<button type="button" class="nb-rcvtg" data-testid="livraisons-recues-toggle" onclick="event.stopPropagation();nbRcvToggle(this,'${E(key)}')"><span>📦 Livraisons reçues<b>${cards.length}</b></span><i>${open ? '▴' : '▾'}</i></button><div class="nb-rcvbox"></div>`;
         const box = g.querySelector('.nb-rcvbox');
         cards.forEach(c => { const nx = c.nextElementSibling; box.appendChild(c); if(nx && nx.classList.contains('nv-acts')) box.appendChild(nx); });
         h.appendChild(g);
@@ -92095,10 +92122,13 @@ if(document.readyState === 'loading') document.addEventListener('DOMContentLoade
       let when = ''; if(L.recuAt){ try{ const d = new Date(L.recuAt); when = d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); }catch(e){} }
       const ps = (Array.isArray(n.photos) && n.photos.length ? n.photos : (n.media && n.media.url ? [n.media] : [])).filter(p => p && p.url);
       const ds = (Array.isArray(n.docs) ? n.docs : []).filter(d => d && d.url);
-      tx.insertAdjacentHTML('beforeend', `<div class="nb-rcr" data-testid="reception-compte-rendu"><div class="h">✅ Compte-rendu de réception<small>${when ? 'Reçue le ' + E(when) : 'Reçue'}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</small></div>`
+      /* v5.90.0 — compte-rendu de réception en une ligne d'icônes : 📷 photos · 📄 bon · 📝 remarque (touche pour ouvrir) */
+      const nid = E(n.id);
+      tx.insertAdjacentHTML('beforeend', `<div class="nb-rcr c" data-testid="reception-compte-rendu"><span class="w">✅ ${when ? E(when) : 'Reçue'}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</span><span class="ics">`
+        + `<button type="button" class="${ps.length ? '' : 'off'}" title="${ps.length ? 'Photos de la livraison' : 'Pas de photo'}" onclick="event.stopPropagation();${ps.length ? `nbLb('${nid}',0,event)` : ''}">📷${ps.length > 1 ? `<i>${ps.length}</i>` : ''}</button>`
+        + `<button type="button" class="${ds.length ? '' : 'off'}" title="${ds.length ? 'Bon de livraison' : 'Pas de bon'}" onclick="event.stopPropagation();${ds.length ? `rwLivDoc0('${nid}')` : ''}">📄${ds.length > 1 ? `<i>${ds.length}</i>` : ''}</button>`
+        + `<button type="button" class="${L.recuNote ? '' : 'off'}" title="${L.recuNote ? 'Remarque de réception' : 'Pas de remarque'}" onclick="event.stopPropagation();${L.recuNote ? `this.closest('.nb-rcr').classList.toggle('op')` : ''}">📝</button></span>`
         + (L.recuNote ? `<div class="tx">📝 ${E(L.recuNote)}</div>` : '')
-        + (ps.length ? `<div class="ph">${ps.map((p, i) => `<img src="${E(p.thumbUrl || p.url)}" alt="Photo de la livraison" onclick="nbLb('${E(n.id)}',${i},event)">`).join('')}</div>` : '')
-        + (ds.length ? `<div class="dc">${ds.map(d => `<a href="${E(d.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">📄 ${E(d.name || 'Document')}</a>`).join('')}</div>` : '')
         + '</div>');
     });
   }
@@ -97342,6 +97372,28 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   .rwl-dc a{ display:inline-block; margin:6px 8px 0 0; font-size:12.5px; font-weight:700; color:var(--wood); }
   .rwl-ac{ display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; } .rwl-ac button{ flex:1 1 auto; min-height:40px; border-radius:10px; border:1.5px solid var(--line); background:transparent; color:var(--ink); font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
   .rwl-ac button.p{ background:#4FAE6C; border-color:#4FAE6C; color:#fff; } .rwl-ac button.d{ color:#ff8a7a; }
+  /* v5.90.0 — livraisons compactes */
+  .rwl{ gap:8px; }
+  .rwl-it{ padding:0; overflow:hidden; }
+  .rwl-r{ display:flex; align-items:center; gap:10px; padding:9px 8px 9px 12px; min-height:50px; cursor:pointer; }
+  .rwl-n{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  .rwl-n b{ font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rwl-n small{ font-size:12.5px; font-weight:800; color:var(--ink-soft); margin-top:1px; }
+  .rwl-it.today .rwl-n small{ color:#E5484D; } .rwl-it.late .rwl-n small{ color:#EE8A2E; }
+  .rwl-it.recu{ opacity:1; } .rwl-ok{ font-size:18px; flex:none; }
+  .rwl-ics{ display:flex; gap:6px; flex:none; }
+  .rwl-ic{ position:relative; width:40px; height:40px; border-radius:12px; border:1.5px solid var(--line); background:transparent; font-size:19px; line-height:1; cursor:pointer; filter:grayscale(1); opacity:.35; padding:0; }
+  .rwl-ic.on{ filter:none; opacity:1; border-color:color-mix(in srgb, var(--wood) 55%, var(--line)); background:color-mix(in srgb, var(--wood) 12%, transparent); }
+  .rwl-ic.ag{ opacity:.85; filter:none; } .rwl-ic.ag.on{ border-color:#4FAE6C; background:color-mix(in srgb, #4FAE6C 16%, transparent); }
+  .rwl-ic i{ position:absolute; top:-5px; right:-5px; min-width:17px; height:17px; padding:0 4px; border-radius:99px; background:var(--wood); color:#1a1000; font-size:10.5px; font-style:normal; font-weight:900; line-height:17px; }
+  .rwl-ic.ag i{ background:#4FAE6C; color:#fff; }
+  .rwl-more{ display:none; padding:0 12px 12px; border-top:1px solid var(--line); }
+  .rwl-it.open .rwl-more{ display:block; } .rwl-it.open .rwl-n b{ white-space:normal; }
+  .rwl-tabs{ display:flex; gap:6px; padding:4px; border-radius:14px; background:var(--bg-elev); border:1.5px solid var(--line); }
+  .rwl-tabs button{ flex:1; min-height:44px; border:0; border-radius:10px; background:transparent; color:var(--ink-soft); font:inherit; font-size:15px; font-weight:900; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; }
+  .rwl-tabs button i{ font-style:normal; min-width:22px; padding:1px 7px; border-radius:99px; background:var(--line); color:var(--ink); font-size:12.5px; }
+  .rwl-tabs button.on{ background:var(--wood); color:#1a1000; } .rwl-tabs button.on i{ background:rgba(0,0,0,.18); color:#1a1000; }
+  .rwl-tabs button.rc.on{ background:#4FAE6C; color:#fff; } .rwl-tabs button.rc.on i{ background:rgba(255,255,255,.25); color:#fff; }
   .rwl-sec{ font-size:12px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin:8px 2px 0; }
   #rwLivM{ position:fixed; inset:0; z-index:9250; background:rgba(0,0,0,.6); display:flex; align-items:flex-end; justify-content:center; }
   #rwLivM > div{ width:100%; max-width:560px; max-height:88vh; overflow:auto; background:var(--bg-elev); color:var(--ink); border-radius:20px 20px 0 0; padding:16px 14px calc(16px + env(safe-area-inset-bottom,0px)); }
@@ -97440,11 +97492,31 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   { const _m = window._nvCanManage; window._nvCanManage = function(it){ if(it && it.n && it.n.liv && it.site && livCanEdit(it.site)) return true; return _m.apply(this, arguments); }; }
   { const _w = window._nvCanWrite; window._nvCanWrite = function(c){ if(c && c.type === 'livraisons' && window._rwLivSite){ const s = (data.sites || []).find(x => x.id === window._rwLivSite); if(s) return livCanEdit(s); } return _w.apply(this, arguments); }; }
   { const _mu = window._nvMutate; window._nvMutate = async function(){ const r = await _mu.apply(this, arguments); setTimeout(refresh, 60); return r; }; }
-  ['nbLivClose', 'nbRecvClose'].forEach(k => { const f = window[k]; if(typeof f === 'function') window[k] = function(){ const r = f.apply(this, arguments); setTimeout(refresh, 80); return r; }; });
+  ['nbLivClose', 'nbRecvClose', 'nbLivAgSave', 'nbLivAgOff'].forEach(k => { const f = window[k]; if(typeof f === 'function') window[k] = function(){ const r = f.apply(this, arguments); setTimeout(refresh, 80); return r; }; });
 
+  /* v5.90.0 — liste compacte : une ligne par livraison (nom · date · heure · 📷 · 📅), le détail s'ouvre en touchant la ligne */
+  const _rwlOpen = new Set(), _rwlTab = {};
+  window.rwLivTog = function(id){ if(_rwlOpen.has(id)) _rwlOpen.delete(id); else _rwlOpen.add(id); const c = document.querySelectorAll(`.rwl-it[data-lid="${CSS.escape(id)}"]`); c.forEach(el => el.classList.toggle('open', _rwlOpen.has(id))); };
+  window.rwLivTab = function(sid, t){ _rwlTab[sid] = t; refresh(); };
+  window.rwLivPh0 = function(id){ const f = _nvFind(id), ps = f ? photosOf(f.n) : []; if(ps.length) rwLivPhoto(id, ps[0].url); else rwLivTog(id); };
+  window.rwLivDoc0 = function(id){ const f = _nvFind(id), ds = f ? docsOf(f.n) : []; if(ds.length) window.open(ds[0].url, '_blank', 'noopener'); };
+  window.rwLivAg = function(id){ const f = _nvFind(id); if(!f || !(f.n.liv && f.n.liv.date)){ showToast('Ajoute d\'abord une date à cette livraison'); return; } if(typeof nbLivAgendaOpen === 'function') nbLivAgendaOpen(id); };
+  const recuWhen = L => { try{ if(L.recuAt){ const d = new Date(L.recuAt); return d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' · ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }).replace(':', ' h '); } }catch(e){} return ''; };
+  function rowHtml(x){
+    const n = x.n, L = n.liv || {}, today = iso(new Date()), id = E(n.id);
+    const ps = photosOf(n), ds = docsOf(n), inAg = (data.tasks || []).some(t => t && t.fromLiv === n.id);
+    const d = L.date ? (L.date === today ? "Aujourd'hui" : fdl(L.date, { weekday:'short', day:'numeric', month:'short' })) : 'À confirmer';
+    const ph = `<button type="button" class="rwl-ic${ps.length ? ' on' : ''}" title="${ps.length ? ps.length + ' photo' + (ps.length > 1 ? 's' : '') : 'Pas de photo'}" aria-label="Photo" onclick="event.stopPropagation();rwLivPh0('${id}')">📷${ps.length > 1 ? `<i>${ps.length}</i>` : ''}</button>`;
+    if(L.recu){
+      return `<div class="rwl-r" onclick="rwLivTog('${id}')"><span class="rwl-ok">✅</span><span class="rwl-n"><b>${E(titleOf(n))}</b><small>${E(recuWhen(L) || 'Reçue')}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</small></span>
+        <span class="rwl-ics">${ph}<button type="button" class="rwl-ic${ds.length ? ' on' : ''}" title="${ds.length ? 'Bon de livraison' : 'Pas de bon'}" aria-label="Bon de livraison" onclick="event.stopPropagation();${ds.length ? `rwLivDoc0('${id}')` : `rwLivTog('${id}')`}">📄</button><button type="button" class="rwl-ic${L.recuNote ? ' on' : ''}" title="${L.recuNote ? 'Remarque de réception' : 'Pas de remarque'}" aria-label="Remarque" onclick="event.stopPropagation();rwLivTog('${id}')">📝</button></span></div>`;
+    }
+    return `<div class="rwl-r" onclick="rwLivTog('${id}')"><span class="rwl-n"><b>${E(titleOf(n))}</b><small class="rwl-d">${E(d)}${L.time ? ' · ' + E(L.time.replace(':', ' h ')) : ''}</small></span>
+      <span class="rwl-ics">${ph}<button type="button" class="rwl-ic ag${inAg ? ' on' : ''}" title="${inAg ? 'Dans mon agenda' : 'Ajouter à mon agenda'}" aria-label="Agenda" onclick="event.stopPropagation();rwLivAg('${id}')">📅${inAg ? '<i>✓</i>' : ''}</button></span></div>`;
+  }
   function itemHtml(x, can){
     const n = x.n, L = n.liv || {}, today = iso(new Date());
-    const cls = L.recu ? 'recu' : L.date === today ? 'today' : (L.date && L.date < today ? 'late' : '');
+    const cls = (L.recu ? 'recu' : L.date === today ? 'today' : (L.date && L.date < today ? 'late' : '')) + (_rwlOpen.has(n.id) ? ' open' : '');
     let st = '';
     if(L.recu){ let w = ''; try{ if(L.recuAt){ const d = new Date(L.recuAt); w = d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); } }catch(e){} st = `<span class="rwl-st ok">✅ Reçue${w ? ' le ' + E(w) : ''}${L.recuBy ? ' · ' + E(L.recuBy) : ''}</span>`; }
     else if(L.date === today) st = '<span class="rwl-st red">🔴 En attente de livraison · aujourd\'hui</span>';
@@ -97452,19 +97524,25 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     else st = '<span class="rwl-st">📅 Prévue</span>';
     const ps = photosOf(n), ds = docsOf(n), det = detOf(n);
     const cr = L.recu && (L.recuNote || ps.length) ? `<div class="rwl-cr"><b>Compte rendu de réception</b>${L.recuNote ? `<div class="rwl-tx">📝 ${E(L.recuNote)}</div>` : ''}</div>` : '';
-    return `<div class="rwl-it ${cls}" data-lid="${E(n.id)}"><div class="rwl-h"><b>${E(titleOf(n))}</b><span class="rwl-d">${E(L.date ? (L.date === today ? "Aujourd'hui" : fdl(L.date)) : 'Date à confirmer')}${L.time ? ' · ' + E(L.time.replace(':', ' h ')) : ''}</span></div>
+    return `<div class="rwl-it ${cls}" data-lid="${E(n.id)}">${rowHtml(x)}<div class="rwl-more">
       ${st}${det ? `<div class="rwl-tx">${E(det)}</div>` : ''}${cr}
       ${ps.length ? `<div class="rwl-ph">${ps.map(p => `<img src="${E(p.thumbUrl || p.url)}" alt="" onclick="event.stopPropagation();rwLivPhoto('${E(n.id)}','${E(p.url)}')">`).join('')}</div>` : ''}
       ${ds.length ? `<div class="rwl-dc">${ds.map(d => `<a href="${E(d.url)}" target="_blank" rel="noopener">📄 ${E(d.name || 'Document')}</a>`).join('')}</div>` : ''}
-      ${can ? `<div class="rwl-ac">${L.recu ? `<button onclick="nbLivRecu('${E(n.id)}')">↩️ Pas reçue</button>` : `<button class="p" onclick="nbRecvOpen('${E(n.id)}')">✅ Réceptionner</button><button onclick="nbLivReport('${E(n.id)}')">📅 Date</button>`}<button onclick="rwLivEdit('${E(n.id)}')">✏️ Modifier</button><button class="d" onclick="rwLivDel('${E(n.id)}')">🗑</button></div>` : ''}</div>`;
+      ${can ? `<div class="rwl-ac">${L.recu ? `<button onclick="nbLivRecu('${E(n.id)}')">↩️ Pas reçue</button>` : `<button class="p" onclick="nbRecvOpen('${E(n.id)}')">✅ Réceptionner</button><button onclick="nbLivReport('${E(n.id)}')">📅 Date</button>`}<button onclick="rwLivEdit('${E(n.id)}')">✏️ Modifier</button><button class="d" onclick="rwLivDel('${E(n.id)}')">🗑</button></div>` : ''}</div></div>`;
   }
   function listHtml(site){
     const can = livCanEdit(site), L = livOf(site);
     const key = x => (x.n.liv.date || '9999') + (x.n.liv.time || '');
-    const todo = L.filter(x => !x.n.liv.recu).sort((a, b) => key(a).localeCompare(key(b))), done = L.filter(x => x.n.liv.recu).sort((a, b) => key(b).localeCompare(key(a)));
-    return `<div class="rwl" data-testid="rw-livraisons">${can ? `<button class="rwl-add" onclick="rwLivNew('${E(site.id)}')">＋ Nouvelle livraison</button>` : ''}
-      ${todo.length ? todo.map(x => itemHtml(x, can)).join('') : '<div class="hint">Aucune livraison prévue sur ce chantier.</div>'}
-      ${done.length ? `<div class="rwl-sec">✅ Reçues · ${done.length}</div>` + done.map(x => itemHtml(x, can)).join('') : ''}</div>`;
+    const rk = x => x.n.liv.recuAt || key(x);
+    const todo = L.filter(x => !x.n.liv.recu).sort((a, b) => key(a).localeCompare(key(b))), done = L.filter(x => x.n.liv.recu).sort((a, b) => rk(b).localeCompare(rk(a)));
+    const tab = _rwlTab[site.id] || 'todo', sid = E(site.id);
+    /* v5.90.0 — deux onglets bien visibles : 🚚 À venir | 📦 Reçues */
+    return `<div class="rwl" data-testid="rw-livraisons"><div class="rwl-tabs" role="tablist">
+        <button type="button" role="tab" class="${tab === 'todo' ? 'on' : ''}" data-testid="livraisons-tab-avenir" onclick="rwLivTab('${sid}','todo')">🚚 À venir<i>${todo.length}</i></button>
+        <button type="button" role="tab" class="rc${tab === 'done' ? ' on' : ''}" data-testid="livraisons-tab-recues" onclick="rwLivTab('${sid}','done')">📦 Reçues<i>${done.length}</i></button></div>
+      ${tab === 'done'
+        ? (done.length ? done.map(x => itemHtml(x, can)).join('') : '<div class="hint">Aucune livraison reçue sur ce chantier.</div>')
+        : (can ? `<button class="rwl-add" onclick="rwLivNew('${sid}')">＋ Nouvelle livraison</button>` : '') + (todo.length ? todo.map(x => itemHtml(x, can)).join('') : '<div class="hint">Aucune livraison prévue sur ce chantier.</div>')}</div>`;
   }
   window.rwLivPhoto = function(id, url){ try{ const f = _nvFind(id); openPhotoFullscreen(url, f ? titleOf(f.n) : 'Livraison'); openModal('photoFullscreen'); }catch(e){ window.open(url, '_blank'); } };
   window.rwLivNew = function(siteId){
@@ -97535,7 +97613,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   { const _hn = window._handleNotifTarget; window._handleNotifTarget = function(t){
       let s = ''; try{ s = decodeURIComponent(String(t || '')).replace(/^#/, ''); }catch(e){ s = String(t || ''); }
       let m = s.match(/^liv:([^:]+):?(.*)$/);
-      if(m){ const sid = m[1]; if((data.sites || []).some(x => x.id === sid)){ try{ goTo('detail', sid); }catch(e){} setTimeout(() => { try{ hubOpen(sid, 'livraisons'); setTimeout(() => { const c = m[2] && document.querySelector(`.rwl-it[data-lid="${CSS.escape(m[2])}"]`); if(c){ c.scrollIntoView({ block:'center', behavior:'smooth' }); c.style.boxShadow = '0 0 0 3px #E5484D'; } }, 200); }catch(e){} }, 250); } return; }
+      if(m){ const sid = m[1]; if((data.sites || []).some(x => x.id === sid)){ try{ goTo('detail', sid); }catch(e){} setTimeout(() => { try{ if(m[2]){ _rwlOpen.add(m[2]); const it = _nvFind(m[2]); _rwlTab[sid] = it && it.n.liv && it.n.liv.recu ? 'done' : 'todo'; } hubOpen(sid, 'livraisons'); setTimeout(() => { const c = m[2] && document.querySelector(`.rwl-it[data-lid="${CSS.escape(m[2])}"]`); if(c){ c.scrollIntoView({ block:'center', behavior:'smooth' }); c.style.boxShadow = '0 0 0 3px #E5484D'; } }, 200); }catch(e){} }, 250); } return; }
       m = s.match(/^doc:([^:]+):(.+)$/);
       if(m){ openNewDoc(m[1], m[2].split(',').filter(Boolean)); return; }
       return _hn.apply(this, arguments);
@@ -100690,6 +100768,157 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.85.0 ═══ -->
+<!-- ═══ MODULE v5.90.0 — Conducteur de travaux assigné au chantier + compte-rendu / infos terrain ↔ bureau ═══ -->
+<style>
+  .hub-inf .rw-asg{ align-items:flex-start; }
+  .hub-inf .rw-asg p small{ display:block; font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:3px; }
+  .rw-asg .ppl{ display:flex; flex-wrap:wrap; gap:6px; }
+  .rw-asg .ppl span{ display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:99px; background:var(--bg-elev); border:1px solid var(--line); font-weight:800; font-size:13.5px; }
+  .rw-asg .ppl span a{ text-decoration:none; } .rw-asg .ppl span button{ border:0; background:transparent; color:#ff8a7a; font-size:14px; font-weight:900; padding:0 0 0 2px; cursor:pointer; }
+</style>
+<script>
+(function(){
+  'use strict';
+  const E = s => escapeHtml(String(s == null ? '' : s));
+  const role = () => (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '';
+  const canAssign = () => ['patron', 'conducteur'].includes(role()) || (!role() && !!window._devRoleUnlocked);
+  const myId = () => { try{ return (typeof getSupaUserId === 'function' && getSupaUserId()) || (typeof _nvMe === 'function' ? _nvMe().authId : '') || ''; }catch(e){ return ''; } };
+  const myName = () => { try{ return _nvMe().name || 'Quelqu\'un'; }catch(e){ return 'Quelqu\'un'; } };
+  const siteById = id => (data.sites || []).find(s => s && s.id === id);
+  const hubRe = id => { try{ if(window._hubScreen === 'infos' && document.querySelector('#view-detail.active')){ const s = siteById(id); if(s) hubRender(s); } }catch(e){} };
+  const touch = s => { const now = new Date().toISOString(); s.updatedAt = now; s.lastSyncAt = now; s.ownerDeviceId = s.ownerDeviceId || (typeof getDeviceSyncId === 'function' ? getDeviceSyncId() : s.ownerDeviceId); saveData(); };
+
+  /* ── site.conducteur = { name, authId, phone, role } (le patron peut être choisi) ── */
+  function condOf(s){ const c = s && s.conducteur; return c && (c.authId || c.name) ? c : null; }
+  function condIds(s){ const c = condOf(s), id = c && c.authId; return id && id !== myId() ? [id] : []; }
+  window.rwSiteCond = condOf;
+  window.rwSiteCondIds = condIds;
+
+  /* notifications groupées vers le conducteur assigné (photos, documents, notes, pliages ajoutés au chantier) */
+  const _q = {};
+  window.rwCondQ = function(site, kind, label){
+    try{
+      if(!site || !condIds(site).length) return;
+      const q = _q[site.id] || (_q[site.id] = { n:{}, last:'', t:0 });
+      q.n[kind] = (q.n[kind] || 0) + 1; if(label) q.last = String(label).slice(0, 120);
+      clearTimeout(q.t); q.t = setTimeout(() => flush(site.id), 5000);
+    }catch(e){}
+  };
+  function flush(sid){
+    const q = _q[sid]; delete _q[sid]; const s = siteById(sid); if(!q || !s) return;
+    const ids = condIds(s); if(!ids.length || typeof notifyPush !== 'function') return;
+    const W = { photo:['photo', 'photos'], doc:['document', 'documents'], note:['note', 'notes'], pliage:['pliage', 'pliages'] };
+    const parts = Object.keys(q.n).map(k => q.n[k] + ' ' + (W[k] ? W[k][q.n[k] > 1 ? 1 : 0] : k));
+    const tot = Object.values(q.n).reduce((a, b) => a + b, 0);
+    notifyPush(ids, 'Chantier ' + (s.name || '') + ' — nouveautés', myName() + ' a ajouté ' + parts.join(' · ') + (tot === 1 && q.last ? ' : « ' + q.last + ' »' : ''), 'cond-' + sid + '-' + Date.now(), 'site:' + sid);
+  }
+
+  /* ── Choix du conducteur (conducteurs + patron du registre) ── */
+  let _cands = [];
+  window.rwCondPick = async function(siteId){
+    const site = siteById(siteId); if(!site) return;
+    if(!canAssign()){ showToast('Réservé au patron et aux conducteurs de travaux'); return; }
+    let reg = []; try{ reg = await _fetchUsersRegistry(); window._usersRegistryCache = reg; }catch(e){}
+    const seen = new Set();
+    _cands = (reg || []).filter(u => u && u.authId && u.name && ['conducteur', 'patron'].includes(u.role) && !/\.(test|dupont)$/i.test(u.authId))
+      .filter(u => { if(seen.has(u.authId)) return false; seen.add(u.authId); return true; })
+      .map(u => ({ name:u.name, authId:u.authId, phone:(typeof normalizePhone === 'function' ? normalizePhone(u.phone || '') : (u.phone || '')), role:u.role }));
+    const me = myId(); if(me && !seen.has(me) && ['conducteur', 'patron'].includes(role())) _cands.unshift({ name:myName(), authId:me, phone:'', role:role() });
+    _cands.sort((a, b) => (a.role === 'patron' ? 0 : 1) - (b.role === 'patron' ? 0 : 1) || a.name.localeCompare(b.name, 'fr'));
+    const cur = condOf(site);
+    if(!_cands.length){ showToast('Aucun conducteur ni patron enregistré'); return; }
+    document.getElementById('contactActionsTitle').textContent = 'Conducteur de travaux du chantier';
+    document.getElementById('contactActionsList').innerHTML = _cands.map((c, i) => `<button class="action-sheet-item" data-testid="cond-pick-${i}" onclick="closeModal('contactActions');rwCondSet('${E(site.id)}',${i})">${c.role === 'patron' ? '👑' : '📋'} ${E(c.name)}<span style="font-size:11px;color:var(--ink-soft);"> · ${c.role === 'patron' ? 'Patron' : 'Conducteur'}${cur && cur.authId === c.authId ? ' · actuel' : ''}</span></button>`).join('')
+      + (cur ? `<button class="action-sheet-item" style="color:var(--red);" onclick="closeModal('contactActions');rwCondSet('${E(site.id)}',-1)">✕ Retirer le conducteur</button>` : '');
+    openModal('contactActions');
+  };
+  window.rwCondSet = async function(siteId, i){
+    const site = siteById(siteId); if(!site) return;
+    const prev = condOf(site), c = i >= 0 ? _cands[i] : null;
+    if(c && prev && prev.authId === c.authId){ showToast('Déjà conducteur de ce chantier'); return; }
+    if(c) site.conducteur = { name:c.name, authId:c.authId, phone:c.phone || '', role:c.role, at:new Date().toISOString() }; else delete site.conducteur;
+    touch(site);
+    showToast(c ? c.name + ' : conducteur de travaux du chantier' : 'Conducteur retiré du chantier');
+    hubRe(siteId); try{ renderSites(); }catch(e){}
+    try{ await pushSharedSite(site); }catch(e){ try{ syncAllSitesCycle(); }catch(_){} }
+    try{
+      const me = myId();
+      if(c && c.authId && c.authId !== me) notifyPush([c.authId], 'Chantier assigné — ' + (site.name || ''), 'Tu es le conducteur de travaux du chantier ' + (site.name || '') + '. Tu recevras les comptes rendus et les infos du terrain.', 'cond-asg-' + site.id, 'site:' + site.id);
+      if(prev && prev.authId && prev.authId !== me && (!c || c.authId !== prev.authId)) notifyPush([prev.authId], 'Chantier ' + (site.name || ''), 'Tu n\'es plus le conducteur de travaux de ce chantier.', 'cond-asg-' + site.id, 'site:' + site.id);
+      const chefs = (_getChefAuthIdsForSite(site) || []).filter(x => x && x !== me);
+      if(c && chefs.length) notifyPush(chefs, 'Chantier ' + (site.name || ''), c.name + ' est le conducteur de travaux du chantier.', 'cond-asg-' + site.id, 'site:' + site.id);
+    }catch(e){}
+  };
+
+  /* ── Infos chantier : 👷 Chef(s) de chantier + 📋 Conducteur de travaux (assignables) ── */
+  { const _ih = window._hubInfosHtml; window._hubInfosHtml = function(site){
+      let h = _ih.apply(this, arguments);
+      try{
+        const id = E(site.id), ca = canAssign();
+        const chefs = (typeof _siteChefsList === 'function' ? _siteChefsList(site) : (site.assignedChefs || [])).filter(c => c && (c.name || c.authId));
+        const cd = condOf(site);
+        const tel = p => p ? ` <a href="tel:${E(p)}" title="Appeler" onclick="event.stopPropagation()">📞</a>` : '';
+        const rows = `<div class="rw-asg" data-testid="infos-chef-chantier"><span>👷</span><p><small>${chefs.length > 1 ? 'Chefs de chantier' : 'Chef de chantier'}</small><span class="ppl">${chefs.length ? chefs.map((c, i) => `<span>${E(c.name || 'Chef')}${tel(c.phone)}${ca ? `<button type="button" title="Retirer" onclick="unassignChefFromSite('${id}',${i})">✕</button>` : ''}</span>`).join('') : '<i>Aucun chef assigné</i>'}</span></p>${ca ? `<button class="hub-go" data-testid="infos-chef-add" onclick="assignChefToSite('${id}')">＋</button>` : ''}</div>`
+          + `<div class="rw-asg" data-testid="infos-conducteur"><span>📋</span><p><small>Conducteur de travaux</small><span class="ppl">${cd ? `<span>${cd.role === 'patron' ? '👑 ' : ''}${E(cd.name || 'Conducteur')}${tel(cd.phone)}</span>` : '<i>Aucun conducteur assigné</i>'}</span></p>${ca ? `<button class="hub-go" data-testid="infos-conducteur-edit" onclick="rwCondPick('${id}')">${cd ? '✏️' : '＋'}</button>` : ''}</div>`;
+        const re = /<div><span>👷<\/span><p>[\s\S]*?<\/p><\/div>/;
+        h = re.test(h) ? h.replace(re, rows) : h;
+      }catch(e){ console.warn('[infos assignation]', e); }
+      return h;
+    }; }
+  ['doAssignChef', 'unassignChefFromSite'].forEach(k => { const f = window[k]; if(typeof f !== 'function') return; window[k] = async function(siteId){ const r = await f.apply(this, arguments); hubRe(siteId); return r; }; });
+
+  /* ── Infos importantes modifiées (adresse, boîte à clés, infos utiles, dates) → chefs assignés + conducteur ── */
+  const LBL = { address:'l\'adresse', keyboxCode:'le code de la boîte à clés', infoNote:'les infos utiles', startDate:'la date de début', dueDate:'la date de fin' };
+  function infoNotify(site, field, val){
+    try{
+      const me = myId(), ids = new Set(condIds(site));
+      (_getChefAuthIdsForSite(site) || []).forEach(x => x && x !== me && ids.add(x));
+      if(!ids.size || typeof notifyPush !== 'function') return;
+      let v = String(val || '').slice(0, 120); if(/Date$/.test(field) && v){ try{ v = new Date(v + 'T12:00').toLocaleDateString('fr-FR', { day:'numeric', month:'long' }); }catch(e){} }
+      notifyPush([...ids], 'Infos chantier — ' + (site.name || ''), myName() + ' a mis à jour ' + (LBL[field] || field) + (v ? ' : ' + v : ''), 'info-' + site.id + '-' + field, 'site:' + site.id);
+    }catch(e){}
+  }
+  { const _e = window.hubEdit; if(typeof _e === 'function') window.hubEdit = function(id, field){ const s = siteById(id), old = s ? s[field] : undefined; const r = _e.apply(this, arguments); try{ const s2 = siteById(id); if(s2 && LBL[field] && (s2[field] || '') !== (old || '')) infoNotify(s2, field, s2[field]); }catch(e){} return r; }; }
+  { const _d = window.hubSetDate; if(typeof _d === 'function') window.hubSetDate = function(id, field, v){ const s = siteById(id), old = s ? s[field] : undefined; const r = _d.apply(this, arguments); try{ if(s && (v || '') !== (old || '')) infoNotify(s, field, v); }catch(e){} return r; }; }
+
+  /* ── Compte-rendu de réception d'une livraison → conducteur assigné (sinon patron + conducteurs) ── */
+  { const _o = window.nbRecvOpen; if(typeof _o === 'function') window.nbRecvOpen = function(id){ window._rwRecvId = id; return _o.apply(this, arguments); }; }
+  { const _s = window.nbRecvSave; if(typeof _s === 'function') window.nbRecvSave = async function(){
+      const id = window._rwRecvId, b = id && _nvFind(id), was = !!(b && b.n.liv && b.n.liv.recu && b.n.liv.recuAt);
+      const r = await _s.apply(this, arguments);
+      try{ const it = id && _nvFind(id); if(it && it.n.liv && it.n.liv.recu && !was) recvNotify(it.site, it.n); }catch(e){ console.warn('[CR réception]', e); }
+      return r;
+    }; }
+  async function recvNotify(site, n){
+    if(!site || typeof notifyPush !== 'function') return;
+    const me = myId(); let ids = condIds(site);
+    if(!ids.length && !condOf(site)){ try{ const reg = await _fetchUsersRegistry(); ids = (reg || []).filter(u => u && u.authId && ['conducteur', 'patron'].includes(u.role) && !/\.(test|dupont)$/i.test(u.authId)).map(u => u.authId); }catch(e){} }
+    ids = [...new Set(ids)].filter(x => x && x !== me); if(!ids.length) return;
+    const L = n.liv || {}, title = String(n.text || '').split('\n')[0] || 'Livraison';
+    const ps = (Array.isArray(n.photos) ? n.photos : (n.media && n.media.url ? [n.media] : [])).filter(p => p && p.url).length, ds = (Array.isArray(n.docs) ? n.docs : []).filter(d => d && d.url).length;
+    let when = ''; try{ const d = new Date(L.recuAt); when = d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); }catch(e){}
+    const body = title + ' reçue' + (L.recuBy ? ' par ' + L.recuBy : '') + (when ? ' le ' + when : '') + (ps ? ' · ' + ps + ' photo' + (ps > 1 ? 's' : '') : '') + (ds ? ' · bon de livraison' : '') + (L.recuNote ? ' — ' + String(L.recuNote).slice(0, 160) : '');
+    notifyPush(ids, 'Compte rendu de réception — ' + (site.name || 'Chantier'), body, 'liv-cr-' + n.id, 'liv:' + site.id + ':' + n.id);
+  }
+
+  /* ── Compte-rendu de feuille de route / dépannage → conducteur assigné de chaque chantier concerné ── */
+  if(typeof window._routeNotifyDone === 'function'){ const _rd = window._routeNotifyDone; window._routeNotifyDone = function(r){
+      const out = _rd.apply(this, arguments);
+      try{
+        const me = myId(), crea = r && r.createdBy && r.createdBy.authId;
+        (r && r.stops || []).forEach(st => {
+          const s = st && st.siteId && siteById(st.siteId); if(!s) return;
+          const ids = condIds(s).filter(x => x !== crea && x !== me); if(!ids.length) return;
+          const ts = st.tasks || [], ok = ts.filter(t => (t.report && t.report.result === 'done') || (!t.report && t.done)).length, ko = ts.filter(t => t.report && t.report.result === 'ko').length;
+          const com = ts.map(t => t.report && t.report.comment).filter(Boolean)[0] || '';
+          notifyPush(ids, 'Compte rendu — ' + (s.name || st.name || 'Chantier'), (r.doneBy || 'L\'équipe') + ' : ' + ok + '/' + ts.length + ' tâche' + (ts.length > 1 ? 's' : '') + ' faite' + (ok > 1 ? 's' : '') + (ko ? ' · ' + ko + ' impossible' + (ko > 1 ? 's' : '') : '') + (com ? ' — ' + String(com).slice(0, 160) : ''), 'route-cr-' + r.id + '-' + s.id, 'site:' + s.id);
+        });
+      }catch(e){ console.warn('[CR conducteur]', e); }
+      return out;
+    }; }
+})();
+</script>
+<!-- ═══ fin MODULE v5.90.0 ═══ -->
 
 </body>
 </html>
