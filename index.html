@@ -49648,9 +49648,17 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.90.0';
+const APP_VERSION = '5.91.0';
 
 const CHANGELOG = [
+  {
+    version: '5.91.0',
+    date: '11/11/2026',
+    entries: [
+      { icon: '🔔', text: "Livraisons : quand le conducteur ajoute une livraison ou change sa date, le chef du chantier reçoit « RDC charpente — prévue le 12/11/2026 à 14h00 » (avec l'ancienne date si elle a été décalée)." },
+      { icon: '📅', text: "Bouton « Ajouter à l'agenda » directement dans la notification : il ouvre l'appli sur le choix des rappels de la livraison." }
+    ]
+  },
   {
     version: '5.90.0',
     date: '11/11/2026',
@@ -83300,8 +83308,10 @@ async function _rnPushInit(interactive){
         if(!n.body && d.body) n.body = d.body;
         if(LN){
           try{
-            await LN.schedule({ notifications:[{ id: Math.floor(Math.random()*2e9), title: n.title || 'Notybat', body: n.body || '',
-              channelId: _rnChannelFor(d.tag, d.url), smallIcon:'ic_stat_rwood', iconColor:'#EE8A2E', extra:{ url: d.url || '' } }] });
+            const _ag = _rnLivAgUrl(d.tag, d.url);   // v5.91.0 — bouton « Ajouter à l'agenda » (livraison prévue)
+            if(_ag && !window._rnLivActReg){ window._rnLivActReg = true; try{ await LN.registerActionTypes({ types:[{ id:'rw_liv', actions:[{ id:'agenda', title:'Ajouter à l\'agenda' }] }] }); }catch(_){} }
+            await LN.schedule({ notifications:[Object.assign({ id: Math.floor(Math.random()*2e9), title: n.title || 'Notybat', body: n.body || '',
+              channelId: _rnChannelFor(d.tag, d.url), smallIcon:'ic_stat_rwood', iconColor:'#EE8A2E', extra:{ url: d.url || '', ag: _ag || '' } }, _ag ? { actionTypeId:'rw_liv' } : {})] });
             return;
           }catch(_){}
         }
@@ -83313,7 +83323,7 @@ async function _rnPushInit(interactive){
         _rnOpenTarget(url);
       });
       const LN = _rnPlug('LocalNotifications');
-      if(LN) LN.addListener('localNotificationActionPerformed', (a) => { _rnOpenTarget(a && a.notification && a.notification.extra && a.notification.extra.url); });
+      if(LN) LN.addListener('localNotificationActionPerformed', (a) => { const x = (a && a.notification && a.notification.extra) || {}; _rnOpenTarget(a && a.actionId === 'agenda' && x.ag ? x.ag : x.url); });
     }
     if(interactive) window._rnInteractivePending = true;
     await P.register();
@@ -83331,6 +83341,8 @@ function _rnChannelFor(tag, url){
   if(u.startsWith('conv:') || ['info','fichier','photo','croquis','signature','message','alert','urgent'].includes(t)) return 'rwood_messages';
   return 'rwood_general';
 }
+/* v5.91.0 — notification de livraison prévue (nouvelle / modifiée) → lien du bouton « Ajouter à l'agenda » */
+function _rnLivAgUrl(tag, url){ const u = String(url || ''), t = String(tag || ''); return /^liv:[^:]+:.+/.test(u) && !t.startsWith('liv-cr-') ? 'livag:' + u.slice(4) : ''; }
 function _rnOpenTarget(url){
   if(!url) return;
   let tries = 0;
@@ -97463,18 +97475,23 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     return [...ids].filter(Boolean);
   }
   const whenTxt = L => L && L.date ? fdl(L.date) + (L.time ? ' à ' + L.time.replace(':', ' h ') : '') : 'date à confirmer';
-  async function livNotify(kind, site, n){
+  /* v5.91.0 — « RDC charpente — prévue le 12/11/2026 à 14h00 » (+ bouton « Ajouter à l'agenda » dans la notification) */
+  const prevu = (date, time) => { if(!date) return 'date à confirmer'; const p = String(date).split('-'); return 'prévue le ' + (p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : date) + (time ? ' à ' + String(time).replace(':', 'h') : ''); };
+  window.rwLivPrevu = prevu;
+  async function livNotify(kind, site, n, old){
     try{
       const ids = await concernedIds(site, n); if(!ids.length || typeof notifyPush !== 'function') return;
-      const T = { add:'🚚 Nouvelle livraison', mod:'🚚 Livraison modifiée', del:'🚚 Livraison annulée' }[kind] || '🚚 Livraison';
-      notifyPush(ids, T + ' — ' + (site.name || 'Chantier'), titleOf(n) + ' · ' + whenTxt(n.liv), (kind === 'add' ? 'note-' : 'liv-') + n.id, kind === 'del' ? 'site:' + site.id : 'liv:' + site.id + ':' + n.id);
+      const L = n.liv || {}, dateChg = kind === 'mod' && old && (old.date !== (L.date || '') || old.time !== (L.time || ''));
+      const T = kind === 'add' ? '🚚 Nouvelle livraison' : kind === 'del' ? '🚚 Livraison annulée' : dateChg ? '🚚 Livraison : date modifiée' : '🚚 Livraison modifiée';
+      const body = titleOf(n) + ' — ' + prevu(L.date, L.time) + (dateChg && old.date ? ' (au lieu du ' + prevu(old.date, old.time).replace(/^prévue le /, '') + ')' : '');
+      notifyPush(ids, T + ' — ' + (site.name || 'Chantier'), body, (kind === 'add' ? 'note-' : 'liv-') + n.id, kind === 'del' ? 'site:' + site.id : 'liv:' + site.id + ':' + n.id);
     }catch(e){ console.warn('[livraison notif]', e); }
   }
   const snap = () => { const m = {}; allLiv().forEach(x => { m[x.n.id] = { k:[x.n.liv.date, x.n.liv.time, titleOf(x.n)].join('|'), s:x.site }; }); return m; };
   function diffNotify(before){
     const after = snap();
     Object.keys(after).forEach(id => { const x = allLiv().find(y => y.n.id === id); if(!x) return;
-      if(!before[id]) livNotify('add', x.site, x.n); else if(before[id].k !== after[id].k) livNotify('mod', x.site, x.n); });
+      if(!before[id]) livNotify('add', x.site, x.n); else if(before[id].k !== after[id].k){ const o = before[id].k.split('|'); livNotify('mod', x.site, x.n, { date:o[0] || '', time:o[1] || '' }); } });
     Object.keys(before).forEach(id => { if(after[id]) return; const s = before[id].s; let n = null; (s.noteCategories || []).forEach(c => (c.notes || []).forEach(q => { if(q && q.id === id) n = q; })); if(n) livNotify('del', s, n); });
     refresh();
   }
@@ -97612,7 +97629,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   /* lien d'une notification : liv:<chantier>:<livraison> */
   { const _hn = window._handleNotifTarget; window._handleNotifTarget = function(t){
       let s = ''; try{ s = decodeURIComponent(String(t || '')).replace(/^#/, ''); }catch(e){ s = String(t || ''); }
-      let m = s.match(/^liv:([^:]+):?(.*)$/);
+      let m = s.match(/^livag:([^:]+):(.+)$/);   // v5.91.0 — bouton « Ajouter à l'agenda » de la notification
+      if(m){ const lid = m[2]; let k = 0; const go = () => { const f = _nvFind(lid); if(!f && ++k < 12){ setTimeout(go, 700); return; } if(f){ try{ goTo('agenda'); }catch(e){} setTimeout(() => rwLivAg(lid), 350); } else { try{ _handleNotifTarget('liv:' + m[1] + ':' + lid); }catch(e){} } }; go(); return; }
+      m = s.match(/^liv:([^:]+):?(.*)$/);
       if(m){ const sid = m[1]; if((data.sites || []).some(x => x.id === sid)){ try{ goTo('detail', sid); }catch(e){} setTimeout(() => { try{ if(m[2]){ _rwlOpen.add(m[2]); const it = _nvFind(m[2]); _rwlTab[sid] = it && it.n.liv && it.n.liv.recu ? 'done' : 'todo'; } hubOpen(sid, 'livraisons'); setTimeout(() => { const c = m[2] && document.querySelector(`.rwl-it[data-lid="${CSS.escape(m[2])}"]`); if(c){ c.scrollIntoView({ block:'center', behavior:'smooth' }); c.style.boxShadow = '0 0 0 3px #E5484D'; } }, 200); }catch(e){} }, 250); } return; }
       m = s.match(/^doc:([^:]+):(.+)$/);
       if(m){ openNewDoc(m[1], m[2].split(',').filter(Boolean)); return; }

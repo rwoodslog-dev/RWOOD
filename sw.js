@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rwood-cache-v1280';
+const CACHE_NAME = 'rwood-cache-v1281';
 const ASSETS = [
   './index.html',
   './manifest.json',
@@ -213,16 +213,22 @@ self.addEventListener('push', (event) => {
   let p; try { p = event.data.json(); } catch(e) { p = {title:'Notybat', body:event.data.text()}; }
   // v5.80.0 — pas d'émojis du téléphone : icône Notybat seulement
   const noEmo = t => String(t == null ? '' : t).replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\uFE0F\uFE0E\u200D\u20E3]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/^[\s—·-]+/, '').trim();
+  // v5.91.0 — livraison prévue (nouvelle / date modifiée) : bouton « Ajouter à l'agenda »
+  const d = p.data || {}, u = String(d.url || p.url || ''), tg = String(p.tag || '');
+  if(!d.url && p.url) d.url = p.url;
+  const livAg = /^liv:[^:]+:.+/.test(u) && !tg.startsWith('liv-cr-');
   event.waitUntil(self.registration.showNotification(noEmo(p.title) || 'Notybat', {
     body:noEmo(p.body), icon:'./icons/icon-192-v4.png', badge:'./icons/icon-192-v4.png',
-    tag:p.tag||'rwood-notif', data:p.data||{}, vibrate:[200,100,200],
+    tag:p.tag||'rwood-notif', data:d, vibrate:[200,100,200],
+    actions: livAg ? [{ action:'agenda', title:"Ajouter à l'agenda" }] : [],
     renotify: String(p.tag||'').startsWith('conv-'), // v5.41.475 — 1 notif par conversation, qui sonne à chaque message
   }));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const view = event.notification.data && event.notification.data.url;
+  let view = event.notification.data && event.notification.data.url;
+  if(event.action === 'agenda' && view && /^liv:/.test(view)) view = 'livag:' + String(view).slice(4);   // v5.91.0
   event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
     for(const c of list){
       if('focus' in c){
