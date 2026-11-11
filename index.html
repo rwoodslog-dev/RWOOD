@@ -49648,9 +49648,23 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.94.3';
+const APP_VERSION = '5.94.5';
 
 const CHANGELOG = [
+  {
+    version: '5.94.5',
+    date: '11/11/2026',
+    entries: [
+      { icon: '🪚', text: "Widget Découpe : la forme des pièces (sifflets, désabouts) et les loupes sont calculées pour tous les lots à l'ouverture de l'appli, sans avoir à rouvrir chaque lot." }
+    ]
+  },
+  {
+    version: '5.94.4',
+    date: '11/11/2026',
+    entries: [
+      { icon: '🔍', text: "Widget Découpe : les barres montrent la vraie forme des pièces (sifflets, désabouts) comme dans l'appli, et les loupes 🔍 ouvrent directement le schéma de traçage de la jonction." }
+    ]
+  },
   {
     version: '5.94.3',
     date: '11/11/2026',
@@ -100010,10 +100024,39 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const c = curLot(); if(c && hit.has(c)) openLot(c.id, true);
     push(); return true;
   };
+  /* v5.94.5 — widget : relève la forme des pièces de chaque lot sans avoir à l'ouvrir (calcul en arrière-plan, écran Découpe fermé) */
+  window._dlFillShapes = function(){
+    useKey();
+    const v = $('calcMode-decoupe'); if((v && v.offsetParent) || st.free || st.dirty || st.busy) return 0;
+    const todo = st.lots.filter(l => l && l.sig && (l.stock || []).length && (l.need || []).length && !(l.wp && l.wp.sig === l.sig && (l.wp.bars || []).some(b => (b.pcs || []).some(p => p.pt))));
+    if(!todo.length) return 0;
+    const prev = st.cur, y = window.scrollY; let n = 0;
+    const res = $('decoupeResult'), spec0 = (typeof _dsSpec === 'function') ? clone(_dsSpec()) : null, kf = $('decoupeKerf'), kerf0 = kf ? kf.value : null;
+    try{ todo.slice(0, 12).forEach(l => { try{ openLot(l.id, true); if(typeof _dcSig !== 'undefined' && _dcSig === l.sig){ _dlSnapPlan(); n++; } }catch(e){} }); }
+    finally{
+      try{ if(prev) openLot(prev, true); else { st.cur = null; st.loading = true; try{ if(spec0 && typeof _dsSetSpec === 'function') _dsSetSpec(spec0); if(kf && kerf0 != null) kf.value = kerf0; _decoupeStock.length = 0; _decoupeNeed.length = 0; _decoupeRenderLists(); }finally{ st.loading = false; } if(res) res.innerHTML = ''; } }catch(e){}
+      render(); window.scrollTo(0, y);
+    }
+    return n;
+  };
   window._dlSnapPlan = function(){
     const l = curLot(); if(!l || typeof _dcPlanLast !== 'function' || typeof _dcSig === 'undefined' || _dcSig !== l.sig) return;
     const last = _dcPlanLast(); if(!last || last.sig !== l.sig || !Array.isArray(last.bars)) return;
     const wp = { sig:l.sig, bars:last.bars.map(b => b.overflow ? { ov:1 } : { len:b.len, pcs:(b.pcs || []).map(p => ({ len:p.len, nm:p.nm || '' })) }) };
+    /* v5.94.4 — forme réelle des pièces (sifflets, désabouts) et loupes, relevées sur le plan affiché, pour le widget */
+    try{
+      document.querySelectorAll('#decoupeResult g.dc-seg[data-dc]').forEach(g => {
+        const [bi, j] = g.dataset.dc.split('-').map(Number), b = wp.bars[bi], pc = b && b.pcs && b.pcs[j]; if(!pc) return;
+        const d = (g.querySelector('path.pc') || {}).getAttribute ? g.querySelector('path.pc').getAttribute('d') : '';
+        const pts = (String(d).match(/-?\d+(?:\.\d+)?/g) || []).map(x => Math.round(+x));
+        if(pts.length >= 6 && pts.length % 2 === 0) pc.pt = pts;
+      });
+      document.querySelectorAll('#decoupeResult .ds-loupe').forEach(bt => {
+        const m = String(bt.getAttribute('onclick') || '').match(/_dsZoom\((\d+),(\d+)\)/); if(!m) return;
+        const b = wp.bars[+m[1]]; if(!b || b.ov) return;
+        (b.lp = b.lp || []).push([Math.round((parseFloat(bt.style.left) || 0) / 100 * b.len), +m[2]]);
+      });
+    }catch(e){}
     if(JSON.stringify(wp) === JSON.stringify(l.wp || null)) return;
     l.wp = wp; saveLocal(); pushSoon();
   };
@@ -101598,7 +101641,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
           const grp = []; pcs.forEach(p => { const g = grp.find(x => x.len === p.len && x.nm === (p.nm || '')); if(g) g.n++; else grp.push({ len:p.len, nm:p.nm || '', n:1 }); });
           return { l:'Barre ' + (i + 1) + ' — ' + cmTxt(b.len), len:+b.len || 0, rest, ch:'Chute ' + num(rest) + ' cm (' + (b.len ? (rest / b.len * 100).toFixed(1).replace('.', ',') : '0') + ' %)', cp:b.len ? rest / b.len * 100 : 0,
             d:grp.map(g => g.n + ' × ' + num(g.len) + ' cm' + (g.nm ? ' ' + g.nm : '')).join(' + '),
-            pcs:pcs.map((p, j) => { k++; return { k:i + '-' + j, l:num(p.len), len:+p.len || 0, col:colOf(p), nm:String(p.nm || '').slice(0, 40), m:+((l.marks || {})[i + '-' + j]) || 0 }; }) }; }).filter(Boolean);
+            lp:(b.lp || []).map(x => [x[0], x[1], i]),
+            pcs:pcs.map((p, j) => { k++; return { k:i + '-' + j, l:num(p.len), len:+p.len || 0, col:colOf(p), nm:String(p.nm || '').slice(0, 40), m:+((l.marks || {})[i + '-' + j]) || 0, pt:p.pt || null }; }) }; }).filter(Boolean);
         if(k > 400) o.bars = [];
       } else o.bars = [];
       o.ini = s ? siteIniTxt(s.name) : ''; o.col = s ? (s.color || '#8B5E34') : '';
@@ -101612,6 +101656,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   window.rwDecoupeWidgetPush = pushWidget;
   { const _r = window._dlRender; if(typeof _r === 'function') window._dlRender = function(){ const x = _r.apply(this, arguments); pushWidget(); return x; }; }
 
+  function fillShapes(){ try{ if(typeof _dlFillShapes === 'function' && _dlFillShapes() > 0) pushWidget(); }catch(e){} }
+  window.rwDecoupeFillShapes = fillShapes;
   async function applyOps(){
     const r = R(); if(!r) return;
     try{ const o = await r.getDecoupeOps(); const ops = (o && o.ops) || [];
@@ -101624,11 +101670,12 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   /* « Ouvrir » du widget → Calcul › Découpe, sur le lot */
   { const _h = window._handleNotifTarget; window._handleNotifTarget = function(t){
       let s = ''; try{ s = decodeURIComponent(String(t || '')); }catch(e){ s = String(t || ''); }
-      const m = s.match(/^decoupe:(.*)$/);
+      const m = s.match(/^decoupe:([^:]*)(?::(\d+):(\d+))?$/);
       if(!m) return _h.apply(this, arguments);
       const id = m[1];
       try{ goTo('calcul'); }catch(e){}
-      setTimeout(async () => { try{ setCalcMode('decoupe'); }catch(e){} try{ await _dlPull(); }catch(e){} if(id){ try{ _dlOpen(id); }catch(e){} } }, 350);
+      setTimeout(async () => { try{ setCalcMode('decoupe'); }catch(e){} try{ await _dlPull(); }catch(e){} if(id){ try{ _dlOpen(id); }catch(e){} }
+        if(id && m[2] != null) setTimeout(() => { try{ _dsZoom(+m[2], +m[3]); }catch(e){} }, 700); }, 350);   // v5.94.4 — loupe du widget
     }; }
 
   if(typeof RWOOD_NATIVE !== 'undefined' && RWOOD_NATIVE){
@@ -101638,10 +101685,11 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       if(!(data && data.settings && data.settings.auth && data.settings.auth.authId)){ if(++tries < 120) setTimeout(boot, 1000); return; }
       await applyOps();
       try{ await _dlPull(); }catch(e){}
+      fillShapes();
       pushWidget();
     };
     setTimeout(boot, 4500);
-    try{ const APP = _rnPlug('App'); if(APP) APP.addListener('resume', async () => { await applyOps(); try{ await _dlPull(); }catch(e){} pushWidget(); }); }catch(e){}
+    try{ const APP = _rnPlug('App'); if(APP) APP.addListener('resume', async () => { await applyOps(); try{ await _dlPull(); }catch(e){} fillShapes(); pushWidget(); }); }catch(e){}
     try{ const r = R(); if(r) r.addListener('widgetAction', e => { const a = (e && e.action) || ''; if(a.startsWith('decoupe')) applyOps(); }); }catch(e){}
     setInterval(() => { try{ if(!document.hidden && R()) _dlPull(); }catch(e){} }, 120000);
   }
