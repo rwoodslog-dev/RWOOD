@@ -29540,6 +29540,7 @@ function _computeRecap(workerId, weekBuckets, ctx){
   const zonesMissing = [];   // v5.41.436 — journées sans zone (pour prévenir)
   const parMotif = {};
   let jours = 0, baseTot = 0; const bySite = {};   // v5.41.500 — récap visuel
+  let heuresFeriees = 0;   // v5.95.0 — jours fériés payés
 
   weekBuckets.forEach(bucket => {
     let heuresSemaine = 0;
@@ -29552,6 +29553,7 @@ function _computeRecap(workerId, weekBuckets, ctx){
       if(tj !== 'normal'){
         const label = (TYPE_JOURNEE[tj] && TYPE_JOURNEE[tj].label) || tj;
         parMotif[label] = (parMotif[label] || 0) + 1;
+        heuresFeriees += _ferieH(entry);   // v5.95.0
         return;
       }
       const h = _entryTotalHours(entry);
@@ -29603,7 +29605,7 @@ function _computeRecap(workerId, weekBuckets, ctx){
       return { z:o.z, n:o.n, rate:tj, sous };
     });
 
-  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing, jours, baseTot, bySite:Object.values(bySite).filter(x => x.h > 0).sort((a, b) => b.h - a.h) };
+  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing, heuresFeriees, jours, baseTot, bySite:Object.values(bySite).filter(x => x.h > 0).sort((a, b) => b.h - a.h) };
 }
 
 /* Rendu d'une fiche récap (carte) à partir du résultat de _computeRecap.
@@ -29619,8 +29621,9 @@ function _recapCardHtml(r, title, nameLabel){
     ? `<div class="recap-sub">Indemnité véhicule personnel (en plus du trajet)</div>`
       + r.zonesLignesPerso.map(o => `<div class="recap-line"><span>Zone ${o.z} <span style="opacity:.65;">(${o.rate.toFixed(2).replace('.',',')} €/j)</span></span><strong>${o.n}× = ${o.sous.toFixed(2).replace('.',',')} €</strong></div>`).join('')
     : '';
+  const _ferLbl = (TYPE_JOURNEE.ferie && TYPE_JOURNEE.ferie.label) || 'Jour Férié';
   const motifHtml = Object.keys(r.parMotif).length
-    ? Object.keys(r.parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${r.parMotif[m]} j</strong></div>`).join('')
+    ? Object.keys(r.parMotif).map(m => `<div class="recap-line"><span>${escapeHtml(m)}</span><strong>${r.parMotif[m]} j${m === _ferLbl && r.heuresFeriees ? ' · ' + _fmtHh(r.heuresFeriees) + ' payées' : ''}</strong></div>`).join('')
     : `<div class="recap-line" style="opacity:.5;"><span>Aucune absence</span><strong>—</strong></div>`;
   const nameHtml = nameLabel
     ? `<div class="recap-line" style="border-bottom:1px solid var(--line);margin-bottom:4px;padding-bottom:6px;"><span style="font-weight:800;">👤 ${escapeHtml(nameLabel)}</span></div>`
@@ -29643,6 +29646,8 @@ function _recapCardHtml(r, title, nameLabel){
       ${_base ? `<div class="recap-line"><span>Écart avec la base (${_f1(_base)} h)</span><strong>${r.totalHeures >= _base ? '+' : ''}${_f1(r.totalHeures - _base)} h</strong></div>` : ''}
       <div class="recap-line"><span>Heures totales</span><strong>${r.totalHeures.toFixed(1).replace('.',',')} h</strong></div>
       <div class="recap-line"><span>Heures supplémentaires</span><strong>${r.heuresSup.toFixed(1).replace('.',',')} h</strong></div>
+      ${r.heuresFeriees ? `<div class="recap-line" data-testid="recap-feries"><span>🗓️ Heures de jours fériés payées</span><strong>${_fmtHh(r.heuresFeriees)}</strong></div>
+      <div class="recap-line"><span><strong>Total heures payées</strong> <small style="opacity:.65;">(travaillées + fériés)</small></span><strong>${_fmtHh(r.totalHeures + r.heuresFeriees)}</strong></div>` : ''}
       <div class="recap-line"><span>Paniers repas</span><strong>${r.paniers}</strong></div>
       ${_sl.length ? `<div class="recap-sub">Heures par chantier</div>` + _sl.map(x => `<div class="recap-line"><span><i class="rc-dot" style="background:${x.col}"></i>${escapeHtml(x.n)}</span><strong>${_f1(x.h)} h</strong></div>`).join('') : ''}
       <div class="recap-sub">Zones de trajet (tarif/jour)</div>
@@ -30424,10 +30429,14 @@ function _renderPointageBase(){
               </div>
               <div class="field-mini" style="grid-column:1/-1;">
                 <label>Type de journée</label>
-                <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+                <select class="fiche-type-journee" onchange="setTypeJournee('${dateKey}','${w.id}', this.value); renderPointage();">
                   ${_typeJourneeOptions(tj)}
                 </select>
-              </div>`;
+              </div>
+              ${tj === 'ferie' ? `<div class="field-mini" style="grid-column:1/-1;">
+                <label>💶 Heures payées (jour férié)</label>
+                <input type="number" inputmode="decimal" step="0.5" min="0" max="14" value="${_ferieH(entry)}" onchange="this.value = setFerieHours('${dateKey}','${w.id}', this.value);">
+              </div>` : ''}`;
             }
             const isMulti = entry.mode === 'multi';
             return `
@@ -30446,7 +30455,7 @@ function _renderPointageBase(){
           </div>
           <div class="field-mini" style="grid-column:1/-1;">
             <label>Type de journée</label>
-            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+            <select class="fiche-type-journee" onchange="setTypeJournee('${dateKey}','${w.id}', this.value); renderPointage();">
               ${_typeJourneeOptions(tj)}
             </select>
           </div>
@@ -30468,7 +30477,7 @@ function _renderPointageBase(){
           </div>
           <div class="field-mini" style="grid-column:1/-1;">
             <label>Type de journée</label>
-            <select class="fiche-type-journee" onchange="updateAttendance('${dateKey}','${w.id}','typeJournee', this.value); renderPointage();">
+            <select class="fiche-type-journee" onchange="setTypeJournee('${dateKey}','${w.id}', this.value); renderPointage();">
               ${_typeJourneeOptions(tj)}
             </select>
           </div>
@@ -30728,6 +30737,21 @@ function typeJourneeBadge(type){
 /* Une journée non-normale ne compte pas dans les heures de production. */
 function typeJourneeIsAbsence(type){
   return !!type && type !== 'normal';
+}
+/* v5.95.0 — jour férié : heures payées (entry.feriesH), comptées dans la paie, pas dans la production */
+function _ferieH(entry){ if(!entry || entry.typeJournee !== 'ferie') return 0; const v = parseFloat(String(entry.feriesH == null ? '' : entry.feriesH).replace(',', '.')); return isFinite(v) ? Math.max(0, v) : 0; }
+function _ferieDefaultH(dk){ try{ if(typeof _ptsDefaultHours === 'function') return _ptsDefaultHours(dk); }catch(e){} const dow = new Date(dk + 'T12:00:00').getDay(); return dow === 5 ? 6 : 8; }
+function _fmtHh(n){ return (Math.round((+n || 0) * 10) / 10).toString().replace('.', ',') + ' h'; }
+/* Change le type de journée d'une personne ; férié → heures payées proposées (heures d'une journée normale) */
+function setTypeJournee(dk, wid, v){
+  updateAttendance(dk, wid, 'typeJournee', v || 'normal');
+  const e = data.attendance[dk] && data.attendance[dk].workers && data.attendance[dk].workers[wid];
+  if(e && v === 'ferie' && (e.feriesH === '' || e.feriesH == null)) updateAttendance(dk, wid, 'feriesH', _ferieDefaultH(dk));
+}
+function setFerieHours(dk, wid, v){
+  let n = parseFloat(String(v == null ? '' : v).replace(',', '.')); if(!isFinite(n)) n = 0;
+  n = Math.max(0, Math.min(14, Math.round(n * 2) / 2));
+  updateAttendance(dk, wid, 'feriesH', n); return n;
 }
 /* ═══ MODULE — TypeJournee  ·  fin ═══ */
 
@@ -35184,6 +35208,7 @@ function _computeWorkerWeekData(aw, offset){
       panier: entry ? !!entry.panier : false,
       typeJournee: tj,
       isAbsence,
+      feriesH: tj === 'ferie' ? _ferieH(entry) : 0,   // v5.95.0
       hasContent,
       isMulti,
       siteId: ed ? (ed.siteId||'') : '',
@@ -35529,7 +35554,7 @@ function _bfMonthGrid(aw, tabs, offs){
       const ed = edit ? ` onclick="comptaEditOpen('${r.deviceId}','${r.workerId}','${r.dateKey}')"` : '';
       if(!r.hasContent) return `<td class="bfm-c e${out ? ' out' : ''}"${ed} title="${escapeHtml(tip)}"><i>${r.date ? r.date.getDate() : ''}</i></td>`;
       if(r.isAbsence){ const info = (typeof TYPE_JOURNEE !== 'undefined' && TYPE_JOURNEE[r.typeJournee]) || { color:'#888', emoji:'', short:'Abs' };
-        return `<td class="bfm-c a${out ? ' out' : ''}"${ed} title="${escapeHtml(tip)}" style="--sc:${info.color}"><i>${r.date.getDate()}</i><span class="bfm-s">${info.emoji || ''} ${escapeHtml(info.short || info.label || 'Absence')}</span></td>`; }
+        return `<td class="bfm-c a${out ? ' out' : ''}"${ed} title="${escapeHtml(tip)}" style="--sc:${info.color}"><i>${r.date.getDate()}</i><span class="bfm-s">${info.emoji || ''} ${escapeHtml(info.short || info.label || 'Absence')}${r.feriesH ? ' · ' + _fmtHh(r.feriesH) : ''}</span></td>`; }
       const nm = r.isMulti && r.multiLines && r.multiLines.length > 1 ? r.multiLines.length + ' chantiers' : (r.siteName || '—');
       const z = r.trajetRates ? 'Z' + r.trajetRates.zone : '';
       const tk = r.isMulti && r.multiLines ? [...new Set(r.multiLines.map(l => l.task).filter(Boolean))].join(' · ') : (r.task || '');
@@ -35546,7 +35571,7 @@ function _bfWeekTable(aw, offset){
   const E = '<td class="empty-cell">—</td>';
   const absCell = r => { const info = (typeof TYPE_JOURNEE !== 'undefined' && TYPE_JOURNEE[r.typeJournee]) || { color:'#888', emoji:'', short:'Abs' }; return `<td style="text-align:center;font-size:11px;font-weight:700;color:${info.color};background:${info.color}18;">${info.emoji} ${info.short}</td>`; };
   const rS = dayRows.map(r => !r.hasContent ? E : r.isAbsence ? absCell(r) : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="site-cell" style="border-left:3px solid var(--wood);">${r.multiLines.map(l => escapeHtml(l.name)).join('<br>')}</td>` : `<td class="site-cell" style="${r.siteColor ? `background:${colorWithAlpha(r.siteColor, 0.2)};border-left:3px solid ${r.siteColor};` : ''}">${r.siteName ? escapeHtml(r.siteName) : '—'}</td>`).join('');
-  const rH = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="hours-cell">${r.multiLines.map(l => String(l.hours).replace('.', ',') + 'h').join('<br>')}<br><strong>Total ${String(r.h).replace('.', ',')}h</strong></td>` : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
+  const rH = dayRows.map(r => (!r.hasContent || r.isAbsence) ? (r.feriesH ? `<td class="hours-cell" style="color:#5B8DEF;">${_fmtHh(r.feriesH)}<br><small>payées</small></td>` : E) : (r.isMulti && r.multiLines && r.multiLines.length) ? `<td class="hours-cell">${r.multiLines.map(l => String(l.hours).replace('.', ',') + 'h').join('<br>')}<br><strong>Total ${String(r.h).replace('.', ',')}h</strong></td>` : `<td class="hours-cell">${escapeHtml(String(r.h))}h</td>`).join('');
   const rP = dayRows.map(r => (!r.hasContent || r.isAbsence) ? E : `<td>${r.panier ? '✓' : '—'}</td>`).join('');
   const hasTr = dayRows.some(r => r.trajetRates); let trTot = 0;
   const rTr = dayRows.map(r => { if(!r.hasContent || r.isAbsence || !r.trajetRates) return E; const amt = _rwTrAmt(r.trajetRates, r.voiturePerso ? 2 : 1); trTot += amt; return `<td class="hours-cell">Z${escapeHtml(r.trajetRates.zone)}/${amt.toFixed(2).replace('.', ',')}${r.voiturePerso ? ' ×2' : ''}</td>`; }).join('');
@@ -35565,7 +35590,7 @@ function _wkSigDay(day, e){
   if(!e) return '';
   const tj = e.typeJournee || 'normal';
   const st = _entryHasMultiSites(e) ? e.sites.map(r => (r.siteId || '') + '=' + (r.hours || '')).join(',') : ((e.customSite && e.customSite.name) || (e._siteId != null ? e._siteId : (day && day.siteId)) || '');
-  return [_entryTotalHours(e), tj, st, e.panier ? 1 : 0].join(':');
+  return [_entryTotalHours(e), tj, st, e.panier ? 1 : 0].join(':') + (tj === 'ferie' ? ':f' + _ferieH(e) : '');
 }
 function _wkSig(att, wid, monday){
   return Array.from({ length:7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); const k = dateKeyOf(d); const day = att && att[k]; return _wkSigDay(day, day && day.workers && day.workers[wid]); }).join('|');
@@ -35604,7 +35629,7 @@ function wkCheckOpen(mondayKey){
     const dl = lbl[i] + ' ' + d.getDate();
     if(!e) return (i < 5) ? `<div class="wk-r miss"><b>${dl}</b><span>Rien de saisi</span><em>—</em></div>` : '';
     const tj = e.typeJournee || 'normal';
-    if(tj !== 'normal'){ const T = TYPE_JOURNEE[tj] || {}; return `<div class="wk-r"><b>${dl}</b><span>${T.emoji || ''} ${escapeHtml(T.label || tj)}</span><em>—</em></div>`; }
+    if(tj !== 'normal'){ const T = TYPE_JOURNEE[tj] || {}, fh = _ferieH(e); return `<div class="wk-r"><b>${dl}</b><span>${T.emoji || ''} ${escapeHtml(T.label || tj)}</span><em>${fh ? _fmtHh(fh) + ' payées' : '—'}</em></div>`; }
     const h = _entryTotalHours(e); tot += h; nj++; if(e.panier) pan++;
     let nm;
     if(_entryHasMultiSites(e)) nm = _entrySiteLines(e).map(l => escapeHtml(l.name) + ' (' + String(l.hours).replace('.', ',') + 'h)').join(' + ');
@@ -35666,12 +35691,12 @@ function _wkBadgeFor(aw, offset){
 function _bfRecapFromWeeks(tabs){
   const base = (window._rwWH ? _rwWH() : parseFloat((data.settings && data.settings.weeklyHours) || 35) || 35);
   let totalHeures = 0, heuresSup = 0, paniers = 0;
-  const zc = {}, zcP = {}, parMotif = {}, zonesMissing = [], rateOf = {}, rateP = {};
+  const zc = {}, zcP = {}, parMotif = {}, zonesMissing = [], rateOf = {}, rateP = {}; let heuresFeriees = 0;
   tabs.forEach(t => {
     let wk = 0;
     (t.dayRows || []).forEach(r => {
       if(!r.hasContent) return;
-      if(r.isAbsence){ const lbl = (TYPE_JOURNEE[r.typeJournee] && TYPE_JOURNEE[r.typeJournee].label) || r.typeJournee; parMotif[lbl] = (parMotif[lbl] || 0) + 1; return; }
+      if(r.isAbsence){ const lbl = (TYPE_JOURNEE[r.typeJournee] && TYPE_JOURNEE[r.typeJournee].label) || r.typeJournee; parMotif[lbl] = (parMotif[lbl] || 0) + 1; heuresFeriees += r.feriesH || 0; return; }
       const h = parseFloat(r.h) || 0; wk += h; totalHeures += h;
       if(r.panier) paniers++;
       if(r.trajetRates){ const z = String(r.trajetRates.zone); rateOf[z] = _rwTrAmt(r.trajetRates, 1); rateP[z] = _rwTrAmt(r.trajetRates, 2) - _rwTrAmt(r.trajetRates, 1); zc[z] = (zc[z] || 0) + 1; if(r.voiturePerso) zcP[z] = (zcP[z] || 0) + 1; }
@@ -35682,7 +35707,7 @@ function _bfRecapFromWeeks(tabs){
   let cumulTrajet = 0;
   const lines = (m, ro) => Object.keys(m).sort((a, b) => a.localeCompare(b, 'fr', { numeric:true })).map(z => { const rate = ro[z] || 0, sous = rate * m[z]; cumulTrajet += sous; return { z, n:m[z], rate, sous }; });
   const zonesLignes = (window._rwCfg && _rwCfg().zonesOn === false) ? (lines(zc, rateOf), []) : lines(zc, rateOf), zonesLignesPerso = lines(zcP, rateP);
-  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing };
+  return { totalHeures, heuresSup, paniers, zonesLignes, zonesLignesPerso, cumulTrajet, parMotif, zonesMissing, heuresFeriees };
 }
 function _bfRender(rows, allWorkers){
   const container = document.getElementById('fichesContent');
@@ -49648,9 +49673,22 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.94.6';
+const APP_VERSION = '5.96.0';
 
 const CHANGELOG = [
+  { version:'5.96.0', date:'15/11/2026', entries:[
+    { icon:'✂️', text:'Découpe — plusieurs sur le même lot : une pièce marquée tracée/coupée ne revient plus à son état d\'avant (écritures simultanées refusionnées et vérifiées)' },
+    { icon:'⚡', text:'Découpe — les marques des collègues s\'affichent en direct (diffusion instantanée + vérification toutes les 2,5 s), sans recharger tout le plan' },
+    { icon:'🕒', text:'Découpe — un appui récent gagne toujours, même si l\'heure des téléphones est décalée' }
+  ]},
+  {
+    version: '5.95.0',
+    date: '13/11/2026',
+    entries: [
+      { icon: '🗓️', text: "Pointage : boutons directs Férié · Maladie · CP · CSS (et « Autre » pour le reste). Un jour férié tombé dans la semaine est signalé." },
+      { icon: '💶', text: "Jour férié : on indique les heures payées (une journée normale proposée, réglable par ½ h). Elles apparaissent dans la fiche d'heures, la vérification de la semaine et le récap (« Heures de jours fériés payées » et « Total heures payées »), sans compter dans les heures des chantiers ni dans les heures sup." }
+    ]
+  },
   {
     version: '5.94.6',
     date: '11/11/2026',
@@ -75471,6 +75509,7 @@ function comptaEditApplyOverride(deviceId, workerId, dateKey, entry, ed){
     panier: (ov.panier != null ? ov.panier : (entry ? entry.panier : false)),
     typeJournee: (ov.typeJournee != null ? ov.typeJournee : (entry ? entry.typeJournee : 'normal'))
   });
+  if(newEntry.typeJournee === 'ferie' && ov.feriesH != null) newEntry.feriesH = ov.feriesH;   // v5.95.0
   // v5.41.486 — correction d'une journée multi-chantiers : chaque chantier (nom, heures, tâche)
   if(ov.mode === 'multi' && Array.isArray(ov.sites) && ov.sites.length){ newEntry.mode = 'multi'; newEntry.sites = ov.sites.map(r => Object.assign({}, r)); }
   else if(ov.mode === 'simple'){ delete newEntry.mode; delete newEntry.sites; }
@@ -75504,7 +75543,7 @@ function comptaEditOpen(deviceId, workerId, dateKey){
 
   document.getElementById('comptaEditSub').textContent =
     (aw ? aw.name : 'Ouvrier') + ' · ' + dateKey;
-  document.getElementById('comptaEditHours').value = entry && entry.hours != null ? entry.hours : '';
+  document.getElementById('comptaEditHours').value = entry && entry.typeJournee === 'ferie' ? _ferieH(entry) : (entry && entry.hours != null ? entry.hours : '');   // v5.95.0 — férié : heures payées
   // [typejournee] sélecteur type de journée (défaut normal)
   const tjSel = document.getElementById('comptaEditTypeJournee');
   if(tjSel && typeof _typeJourneeOptions === 'function'){
@@ -75687,7 +75726,7 @@ async function comptaEditSave(){
   // (l'ancien nom libre "__free__" est disabled, donc jamais renvoyé ici)
   const rawSel = document.getElementById('comptaEditSite').value;
   const ov = _comptaEditOverrides();
-  const ovData = { hours, task, panier, typeJournee, voiturePerso, ts: Date.now(), byRole: (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '' };   // v5.61.0 — qui a corrigé
+  const ovData = { hours, task, panier, typeJournee, voiturePerso, feriesH:(typeJournee === 'ferie' ? (parseFloat(String(hoursRaw).replace(',', '.')) || 0) : null), ts: Date.now(), byRole: (data.settings && data.settings.myProfile && data.settings.myProfile.role) || '' };   // v5.61.0 — qui a corrigé
   if(rawSel && rawSel !== '__free__' && rawSel !== '__libre__'){
     const chosen = _comptaEditAllSites().find(s => s.id === rawSel);
     ovData.siteId = rawSel;                              // ID synchronisé officiel
@@ -85173,7 +85212,13 @@ function ptsGeoParamToggle(){
 }
 function _ptsAbsence(v){
   const dk = currentPointageDate, wid = _ptsMe().workerId;
-  updateAttendance(dk, wid, 'typeJournee', v || 'normal'); _ptsAbsOpen = false; _ptsApply();
+  setTypeJournee(dk, wid, v || 'normal'); _ptsAbsOpen = false; _ptsApply();
+}
+function _ptsFerieH(delta){
+  const dk = currentPointageDate, wid = _ptsMe().workerId; if(!wid) return;
+  const e = (data.attendance[dk].workers || {})[wid] || {};
+  const n = setFerieHours(dk, wid, _ferieH(e) + delta);
+  const el = document.getElementById('ptsFerieVal'); if(el) el.textContent = _ptsFmtH(n);
 }
 function _ptsTaskToggle(){ _ptsTaskOpen = !_ptsTaskOpen; _ptsApply(); }
 function _ptsTaskPicked(){
@@ -85317,6 +85362,12 @@ function _ptsApply(){
       <div id="ptsCustomSlot"></div>
       ${abs ? `
         <div class="pts-abs" style="border-color:${tji.color || 'var(--line)'};"><span>${tji.emoji}</span><b>${escapeHtml(tji.label)}</b></div>
+        ${tj === 'ferie' ? `<div class="pts-lbl" style="margin-top:10px;">💶 Heures payées pour ce jour férié</div>
+        <div class="pts-row" data-testid="pointage-ferie-heures">
+          <button class="pts-pm" onclick="_ptsFerieH(-0.5)" aria-label="Moins">−</button>
+          <div class="pts-h" id="ptsFerieVal">${_ptsFmtH(_ferieH(e))}</div>
+          <button class="pts-pm" onclick="_ptsFerieH(0.5)" aria-label="Plus">+</button>
+        </div>` : ''}
         <button class="pts-link" onclick="_ptsAbsence('normal')">↩ Revenir à une journée de travail</button>`
       : multi ? `${_ptsMultiHtml(dk, wid, e)}
         <div class="pts-row">
@@ -85335,8 +85386,10 @@ function _ptsApply(){
         ${_ptsTaskOpen ? `<div class="pts-taskp" onclick="_ptsTaskPicked()">${renderTacheSelector(dk, wid, e)}</div>` : ''}`}
       ${_ptsAbsOpen && !abs ? `<select class="pts-site pts-abs-sel" onchange="_ptsAbsence(this.value)">${_typeJourneeOptions(tj)}</select>` : ''}
       ${sig ? `<div class="pts-sig"><div class="pts-lbl">✍️ Ta signature enregistrée</div><img src="${sig}" alt="Signature"><button class="pts-link" onclick="_ptsValidate(true)">Signer autrement</button></div>` : ''}
-      ${abs ? '' : `<div class="pts-links">
-        <button class="pts-link" onclick="_ptsAbsOpen=!_ptsAbsOpen;_ptsApply()">Absent ? (congé, maladie…)</button>
+      ${abs ? '' : `<div class="pts-lbl" style="margin-top:12px;">Pas travaillé ce jour ?${(typeof _absIsFerie === 'function' && _absIsFerie(dk)) ? ' <b style="color:#5B8DEF;">· jour férié</b>' : ''}</div>
+      <div class="pts-absq" data-testid="pointage-absence-rapide">
+        ${['ferie', 'maladie', 'cp', 'css'].map(k => { const T = TYPE_JOURNEE[k]; return `<button type="button" style="--c:${T.color}" class="${k === 'ferie' && typeof _absIsFerie === 'function' && _absIsFerie(dk) ? 'hint' : ''}" onclick="_ptsAbsence('${k}')"><span>${T.emoji}</span>${escapeHtml(T.short)}</button>`; }).join('')}
+        <button type="button" style="--c:#8A8580" onclick="_ptsAbsOpen=!_ptsAbsOpen;_ptsApply()"><span>⋯</span>Autre</button>
       </div>`}
     </div>
     <div class="pts-bar"><button class="btn btn-primary" style="flex:1;" onclick="_ptsValidate(false)">✓ ${day.validated ? 'Revalider' : 'Valider'} et signer</button></div>
@@ -85351,6 +85404,11 @@ function renderPointage(){
   try{ if(document.querySelector('#view-heures.active')) _ptsAutoLocate(); }catch(e){} // v5.41.327
 }
 /* ═════════════════════ fin MODULE — Pointage simplifié ═════════════════════ */
+(function(){ const s = document.createElement('style'); s.textContent = `
+  .pts-absq{ display:grid; grid-template-columns:repeat(5, 1fr); gap:6px; margin-top:6px; }
+  .pts-absq button{ display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 2px; border-radius:12px; border:1.5px solid color-mix(in srgb, var(--c) 55%, var(--line)); background:color-mix(in srgb, var(--c) 12%, transparent); color:var(--ink); font:inherit; font-size:12.5px; font-weight:800; cursor:pointer; }
+  .pts-absq button span{ font-size:20px; line-height:1; }
+  .pts-absq button.hint{ box-shadow:0 0 0 2px var(--c); }`; document.head.appendChild(s); })();
 
 /* ═════════════════════════════════════════════════════════════════════════
    MODULE — Aide des onglets « ? » (v5.41.297)
@@ -99739,7 +99797,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 <script>
 (function(){
   const PFX = 'decoupe_lots_';
-  let st = { key:null, lots:[], del:[], cur:null, free:false, site:'', busy:false, last:0, loadedTs:0, loading:false, dirty:false };
+  let st = { key:null, lots:[], del:[], cur:null, free:false, site:'', busy:false, last:0, loadedTs:0, loading:false, dirty:false, rev:0, again:false, rowTs:null, struct:'' };
   const $ = id => document.getElementById(id);
   const S = () => data.settings || (data.settings = {});
   const role = () => (S().myProfile && S().myProfile.role) || '';
@@ -99800,8 +99858,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   }
   async function pullRow(k){
     try{
-      const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(k) + '&select=data', { headers:{ 'Prefer':'' } });
-      if(!r.ok) return null; const rows = await r.json(); if(!rows || !rows.length) return { lots:[], deletedIds:[] };
+      const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(k) + '&select=data,updated_at', { headers:{ 'Prefer':'' } });
+      if(!r.ok) return null; const rows = await r.json(); if(!rows || !rows.length){ if(k === st.key) st.rowTs = ''; return { lots:[], deletedIds:[] }; }
+      if(k === st.key) st.rowTs = rows[0].updated_at || '';
       const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data; return d || { lots:[], deletedIds:[] };
     }catch(e){ return null; }
   }
@@ -99814,25 +99873,60 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const d = await pullRow(st.key);
     if(d){ st.del = [...new Set([...(st.del || []), ...(d.deletedIds || [])])]; st.lots = merge(st.lots, d.lots || [], st.del); saveLocal(); st.last = Date.now(); }
     if(st.cur && !st.lots.some(l => l.id === st.cur)){ st.cur = null; showToast('Ce lot a été supprimé'); }
-    // lot ouvert modifié par quelqu'un d'autre : on recharge (avancement en direct)
-    const l = curLot();
-    if(l && !st.dirty && ts(l) > st.loadedTs + 1) openLot(l.id, true);
+    // v5.96.0 — lot ouvert : marques des autres appliquées pièce par pièce ; rechargement complet seulement si le plan a changé
+    showRemote();
     render();
   }
-  async function push(){
-    saveLocal(); render(); if(!st.key){ st.dirty = false; return; }
-    st.busy = true; const k = st.key; render();
-    try{
-      const d = await pullRow(k);
-      if(d){ st.del = [...new Set([...(st.del || []), ...(d.deletedIds || [])])]; st.lots = merge(st.lots, d.lots || [], st.del); }
-      const w = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify({ user_id:k, updated_at:now(), data: JSON.stringify({ lots:st.lots, deletedIds:st.del.slice(-500) }) }) });
-      if(w && w.ok !== false) st.last = Date.now();
-      st.dirty = false; const l = curLot(); if(l) st.loadedTs = ts(l);
-      saveLocal();
-    }catch(e){} finally{ st.busy = false; render(); }
+  const structOf = l => JSON.stringify([l.sig || '', l.stock || [], l.need || [], l.kerf, l.spec || null, l.plan || null]);
+  function patchMarks(l){
+    if(typeof _dcSig === 'undefined' || l.sig !== _dcSig) return false;
+    const m = {}; Object.entries(l.marks || {}).forEach(([k, v]) => { if(v) m[k] = v; });
+    let ch = false;
+    document.querySelectorAll('#decoupeResult .dc-seg[data-dc]').forEach(el => { const v = m[el.dataset.dc] || 0;
+      const t = v === 1, c = v === 2; if(el.classList.contains('dc-t') !== t || el.classList.contains('dc-c') !== c){ el.classList.toggle('dc-t', t); el.classList.toggle('dc-c', c); ch = true; } });
+    _dcMarks = m; try{ localStorage.setItem('rwood-dc-marks', JSON.stringify({ sig:l.sig, m })); }catch(e){}
+    if(ch){ try{ _dcProg(); }catch(e){} }
+    return true;
   }
-  let pushT = null; const pushSoon = () => { st.dirty = true; clearTimeout(pushT); pushT = setTimeout(push, 900); render(); };
+  function showRemote(){
+    const l = curLot(); if(!l || st.loading) return;
+    if(structOf(l) !== st.struct){ if(!st.dirty) openLot(l.id, true); else patchMarks(l); }
+    else patchMarks(l);
+  }
+  // une écriture est « prise » si la ligne relue contient toutes nos marques (même horodatage ou plus récent)
+  function covers(d){
+    const R = new Map(((d && d.lots) || []).map(l => [l && l.id, l])), D = new Set((d && d.deletedIds) || []);
+    return st.lots.every(l => { if(!l || !l.id || D.has(l.id)) return true; const r = R.get(l.id); if(!r || ts(r) < ts(l)) return false;
+      if(r.sig !== l.sig) return true; const ra = r.marksAt || {};
+      return Object.entries(l.marksAt || {}).every(([k, t]) => (ra[k] || 0) >= t); });
+  }
+  const mergeIn = d => { st.del = [...new Set([...(st.del || []), ...(d.deletedIds || [])])]; st.lots = merge(st.lots, d.lots || [], st.del); };
+  let retryT = null;
+  async function push(){
+    clearTimeout(pushT); saveLocal(); render(); if(!st.key){ st.dirty = false; return; }
+    if(st.busy){ st.again = true; return; }
+    st.busy = true; st.again = false; const k = st.key, rev0 = st.rev; let ok = false; render();
+    try{
+      // lire → fusionner → écrire → relire : si un collègue a écrit en même temps, on refusionne et on réécrit
+      for(let i = 0; i < 4 && k === st.key; i++){
+        const d = await pullRow(k); if(!d) break;
+        mergeIn(d);
+        const w = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify({ user_id:k, updated_at:now(), data: JSON.stringify({ lots:st.lots, deletedIds:st.del.slice(-500) }) }) });
+        if(!w || w.ok === false) break;
+        const v = await pullRow(k); if(!v){ ok = true; break; }
+        if(covers(v)){ mergeIn(v); ok = true; break; }
+        mergeIn(v);
+      }
+    }catch(e){} finally{
+      st.busy = false;
+      if(ok){ st.last = Date.now(); if(st.rev === rev0) st.dirty = false; const l = curLot(); if(l) st.loadedTs = ts(l); }
+      saveLocal(); showRemote(); render();
+      if(st.again || st.rev !== rev0){ pushT = setTimeout(push, 120); }
+      else if(!ok && st.dirty){ clearTimeout(retryT); retryT = setTimeout(push, 4000); }
+    }
+  }
+  let pushT = null; const pushSoon = (ms) => { st.dirty = true; st.rev++; clearTimeout(pushT); pushT = setTimeout(push, ms || 600); render(); };
   const curLot = () => st.lots.find(l => l.id === st.cur) || null;
   const fmtDate = iso => { try{ const d = new Date(iso); return d.toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); }catch(e){ return ''; } };
   const touch = l => { l.updatedAt = now(); l.by = myAuth(); l.byName = myName(); };
@@ -99899,7 +99993,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       const r = $('decoupeResult');
       if(_decoupeStock.length && _decoupeNeed.length) decoupeCompute(); else if(r) r.innerHTML = '';
     } finally { st.loading = false; }
-    st.loadedTs = ts(l);
+    st.loadedTs = ts(l); st.struct = structOf(l);
     render();
     if(silent) window.scrollTo(0, y);
   }
@@ -99930,7 +100024,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       l.sig = sig;
     }
     Object.assign(l, { stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc });
-    touch(l); st.loadedTs = ts(l); saveLocal(); pushSoon();
+    touch(l); st.loadedTs = ts(l); st.struct = structOf(l); saveLocal(); pushSoon();
     const r = $('decoupeResult');
     if(r && r.innerHTML.trim() && _decoupeStock.length && _decoupeNeed.length) setTimeout(() => { try{ decoupeCompute(); }catch(e){} }, 0);
   }
@@ -99994,13 +100088,15 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 
   /* ── plan modifié à la main et marques : suivent le lot ouvert (vus par toute l'équipe) ── */
   window._dlPlanFor = function(sig){ const l = curLot(); return (l && l.plan && l.plan.sig === sig) ? clone(l.plan) : null; };
-  window._dlPlanChanged = function(sig, plan){ const l = curLot(); if(!l || l.sig !== sig) return; if(plan) l.plan = clone(plan); else delete l.plan; touch(l); st.loadedTs = ts(l); saveLocal(); pushSoon(); };
+  window._dlPlanChanged = function(sig, plan){ const l = curLot(); if(!l || l.sig !== sig) return; if(plan) l.plan = clone(plan); else delete l.plan; touch(l); st.loadedTs = ts(l); st.struct = structOf(l); saveLocal(); pushSoon(); };
   window._dlMarksFor = function(sig){ const l = curLot(); if(!l || l.sig !== sig || !l.marks) return null; const m = {}; Object.entries(l.marks).forEach(([k, v]) => { if(v) m[k] = v; }); return m; };
   window._dlMarksChanged = function(sig, marks){
     const l = curLot(); if(!l || l.sig !== sig) return;
-    const t = Date.now(), old = l.marks || {}, nm = {}; l.marksAt = l.marksAt || {};
-    new Set([...Object.keys(old), ...Object.keys(marks || {})]).forEach(k => { const v = (marks || {})[k] || 0; nm[k] = v; if((old[k] || 0) !== v) l.marksAt[k] = t; });
-    l.marks = nm; touch(l); st.loadedTs = ts(l); saveLocal(); pushSoon();
+    const t = Date.now(), old = l.marks || {}, nm = {}, ch = []; l.marksAt = l.marksAt || {};
+    new Set([...Object.keys(old), ...Object.keys(marks || {})]).forEach(k => { const v = (marks || {})[k] || 0; nm[k] = v; if((old[k] || 0) !== v){ l.marksAt[k] = Math.max(t, (l.marksAt[k] || 0) + 1); ch.push(k); } });
+    if(!ch.length) return;   // v5.96.0 — rechargement sans changement : pas de réécriture (évitait d'écraser les marques des autres)
+    l.marks = nm; touch(l); st.loadedTs = ts(l); saveLocal(); pushSoon(300);
+    try{ ch.forEach(k => rt.send({ lot:l.id, sig:l.sig, k, v:nm[k], at:l.marksAt[k] })); }catch(e){}
   };
 
   /* ── accroches ── */
@@ -100011,13 +100107,59 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   document.addEventListener('change', e => { if(e.target && e.target.id === 'decoupeKerf') autosave(); });
   const _dss = window._dsSetSpec;
   if(typeof _dss === 'function'){ window._dsSetSpec = function(){ const r = _dss.apply(this, arguments); try{ autosave(); }catch(e){} return r; }; }
-  // lot ouvert : avancement des autres toutes les 8 s ; sinon toutes les 30 s
+  // v5.96.0 — lot ouvert : on regarde toutes les 2,5 s si la ligne a changé (requête légère), et on ne relit tout que dans ce cas
+  async function peek(){
+    try{ const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(st.key) + '&select=updated_at', { headers:{ 'Prefer':'' } });
+      if(!r.ok) return null; const rows = await r.json(); return rows && rows[0] ? (rows[0].updated_at || '') : ''; }catch(e){ return null; }
+  }
   let tick = 0;
-  setInterval(() => { try{ tick++; const v = $('calcMode-decoupe'); if(!v || !v.offsetParent || document.hidden || st.busy || document.querySelector('#modal-dlNew,#modal-dlMenu')) return;
-    if(curLot() ? true : tick % 4 === 0) pull(); }catch(e){} }, 8000);
+  async function poll(){
+    try{ tick++; const v = $('calcMode-decoupe');
+      if(v && v.offsetParent && !document.hidden && !st.busy && !document.querySelector('#modal-dlNew,#modal-dlMenu') && (curLot() || tick % 4 === 0)){
+        useKey(); if(st.key){ rt.join(); const t = await peek(); if(t === null || t !== st.rowTs) await pull(); }
+      }
+    }catch(e){}
+    setTimeout(poll, 2500);
+  }
+  setTimeout(poll, 3000);
   document.addEventListener('visibilitychange', () => { if(!document.hidden && curLot()) pull(); });
+
+  /* v5.96.0 — direct : chaque marque est diffusée aux collègues sur le même lot (Supabase Realtime) ; la relève reste le filet de sécurité */
+  const rt = (function(){
+    let ws = null, topic = '', ref = 0, hb = null, joined = false, wait = 0;
+    const url = () => SUPA_URL.replace(/^http/, 'ws') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(SUPA_KEY) + '&vsn=1.0.0';
+    const tx = o => { try{ if(ws && ws.readyState === 1) ws.send(JSON.stringify(Object.assign({ ref:String(++ref) }, o))); }catch(e){} };
+    function close(){ joined = false; clearInterval(hb); hb = null; try{ if(ws) ws.close(); }catch(e){} ws = null; }
+    function join(){
+      if(typeof WebSocket === 'undefined' || !st.key || !curLot()) return;
+      const tp = 'realtime:rwdl-' + String(st.key).replace(/[^A-Za-z0-9_-]/g, '');
+      if(ws && topic === tp && ws.readyState <= 1) return;
+      if(Date.now() < wait) return;
+      close(); topic = tp; wait = Date.now() + 15000;
+      try{ ws = new WebSocket(url()); }catch(e){ ws = null; return; }
+      ws.onopen = () => { tx({ topic, event:'phx_join', payload:{ config:{ broadcast:{ self:false, ack:false }, presence:{ key:'' } }, access_token:SUPA_KEY } });
+        hb = setInterval(() => tx({ topic:'phoenix', event:'heartbeat', payload:{} }), 25000); };
+      ws.onmessage = e => { try{ const m = JSON.parse(e.data);
+        if(m.event === 'phx_reply' && m.topic === topic && m.payload && m.payload.status === 'ok'){ joined = true; wait = 0; }
+        if(m.event === 'broadcast' && m.topic === topic && m.payload && m.payload.event === 'mk') recv(m.payload.payload); }catch(x){} };
+      ws.onclose = () => { joined = false; clearInterval(hb); hb = null; };
+      ws.onerror = () => {};
+    }
+    function recv(op){
+      if(!op || !op.lot || !op.k) return;
+      const l = st.lots.find(x => x && x.id === op.lot); if(!l || (op.sig && l.sig !== op.sig)) return;
+      l.marks = l.marks || {}; l.marksAt = l.marksAt || {};
+      if((l.marksAt[op.k] || 0) >= (+op.at || 0)) return;
+      l.marks[op.k] = +op.v || 0; l.marksAt[op.k] = +op.at || 0; saveLocal();
+      if(l.id === st.cur) patchMarks(l);
+      render();
+    }
+    function send(op){ if(!joined) return; tx({ topic, event:'broadcast', payload:{ type:'broadcast', event:'mk', payload:op } }); }
+    document.addEventListener('visibilitychange', () => { if(document.hidden) close(); });
+    return { join, send, close };
+  })();
   document.addEventListener('DOMContentLoaded', () => setTimeout(() => { try{ useKey(); render(); const v = $('calcMode-decoupe'); if(v && v.style.display === 'block') pull(); }catch(e){} }, 900));
-  window._dlState = st; window._dlPull = pull; window._dlRender = render;
+  window._dlState = st; window._dlPull = pull; window._dlRender = render; window._dlPush = push;
   /* v5.94.0 — widget Android « Découpe » : marques faites sur le widget + pièces du plan pour le widget */
   window._dlUseKey = useKey;
   window._dlApplyOps = function(ops){
@@ -100028,8 +100170,8 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       l.marks[op.k] = +op.v || 0; l.marksAt[op.k] = op.at || Date.now(); hit.add(l); ch = true; });
     if(!ch) return false;
     hit.forEach(l => touch(l)); saveLocal();
-    const c = curLot(); if(c && hit.has(c)) openLot(c.id, true);
-    push(); return true;
+    const c = curLot(); if(c && hit.has(c)) patchMarks(c);
+    st.dirty = true; st.rev++; push(); return true;
   };
   /* v5.94.5 — widget : relève la forme des pièces de chaque lot sans avoir à l'ouvrir (calcul en arrière-plan, écran Découpe fermé) */
   window._dlFillShapes = function(){
