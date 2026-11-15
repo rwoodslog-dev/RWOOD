@@ -49673,9 +49673,12 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.98.0';
+const APP_VERSION = '5.98.1';
 
 const CHANGELOG = [
+  { version:'5.98.1', date:'15/11/2026', entries:[
+    { icon:'📄', text:'Bons de livraison : lecture des quantités « 3,000 UN », des longueurs « 13,00M » et « 5.00M », du nom du produit (ex. KVH traité CL2) ; les lignes « reste à livrer » ne sont plus ajoutées au stock' }
+  ]},
   { version:'5.98.0', date:'15/11/2026', entries:[
     { icon:'🚚', text:'Réception d\'une livraison : le bon scanné est lu et ses lignes vont dans le stock matériaux du chantier (case cochée par défaut)' },
     { icon:'📁', text:'Matériaux : « Depuis les documents » pour lire un bon déjà rangé dans les documents du chantier' },
@@ -101940,7 +101943,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     couv: /tuile|ardoise|fa[iî]ti[eè]re|fa[iî]tage|closoir|rive|zinc|goutti[eè]re|descente|naissance|noue|abergement|chati[eè]re|bac acier|[eé]cran.?(?:sous|hpv)|sous.?toiture|pare.?pluie|crochet/i,
     isol: /isol|laine|polystyr|polyur[eé]|pare.?vapeur|membrane|frein.?vapeur|adh[eé]sif|bande|fibre de bois|ouate|placo|plaque de pl[aâ]tre|rail|fourrure/i,
     bois: /chevron|bastaing|madrier|planche|liteau|latte|volige|lambourde|poutre|panne|solive|chev[eê]tre|sabli[eè]re|ossature|osb|contrepla|lamell|blc|bmr|kvh|douglas|sapin|[eé]pic[eé]a|m[eé]l[eè]ze|\bpin\b|ch[eê]ne|bois|bardage|tasseau|lambris|plinthe|aggl|panneau|parquet|clin|\bcp\b/i };
-  function guessCat(nm, sec){ const t = String(nm || ''); if(RX.quinc.test(t)) return 'quinc'; if(RX.couv.test(t) && !/liteau|latte|volige|contre.?latte/i.test(t)) return 'couv'; if(RX.isol.test(t)) return 'isol'; if(sec || RX.bois.test(t)) return 'bois'; return 'autre'; }
+  function guessCat(nm, sec){ const t = String(nm || ''); if(RX.quinc.test(t)) return 'quinc'; if(sec && RX.bois.test(t)) return 'bois'; if(RX.couv.test(t) && !/liteau|latte|volige|contre.?latte/i.test(t)) return 'couv'; if(RX.isol.test(t)) return 'isol'; if(sec || RX.bois.test(t)) return 'bois'; return 'autre'; }
   const catOf = it => it.cat || guessCat(it.nm, it.sec);
 
   /* ═══ Stockage : une ligne partagée par chantier « rwood_mat_<chantier> » ═══
@@ -102223,26 +102226,42 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   }
   const WOOD = /chevron|bastaing|madrier|planche|liteau|latte|volige|lambourde|poutre|panne|solive|chevêtre|sabli[eè]re|ossature|osb|contrepla|lamell|blc|bmr|kvh|douglas|sapin|[eé]pic[eé]a|m[eé]l[eè]ze|pin\b|ch[eê]ne|bois|bardage|tasseau|lambris|plinthe|aggl|panneau|isolant|laine|pare.?pluie|tuile|ardoise|zinc|goutti[eè]re/i;
   const SKIP = /total|tva|t\.v\.a|montant|prix|net\s*[àa]\s*payer|remise|iban|siret|rcs|capital|t[eé]l[eé]?phone|fax|page\s*\d|code\s*client|adresse|livr[eé]\s*(?:par|le)|signature|r[eè]glement/i;
+  /* v5.98.1 — lecture des bons type négoce bois : « 80X220 KVH EN 13,00M TRAITE CL2   3,000 UN   0,686 M3 »
+     quantité « 3,000 UN » (virgule = décimales), longueur « 13,00M » / « X5.00M », « ETAT DES RESTES A LIVRER » ignoré */
+  const UNIT = '(?:UN|U|PCS?|PI[EÈ]CES?|BARRES?|EX|UNIT[EÉ]S?|BOTTES?|PAQUETS?|COLIS|ROULEAUX?|PLAQUES?|SACS?)';
+  function niceName(t){
+    return String(t || '').split(' ').filter(Boolean).map((w, i) => {
+      if(/\d/.test(w) || /^(KVH|BLC|OSB|CLT|LVL|BMR|HPV|PVC|MDF|CTBX|CTBH|CP|DRY)$/i.test(w)) return w.toUpperCase();   // KVH, CL2, OSB, BLC
+      const lw = w.toLowerCase(); return i === 0 ? lw.charAt(0).toUpperCase() + lw.slice(1) : lw; }).join(' ');
+  }
   function parseBL(txt){
-    const out = [];
+    const out = []; let restes = false;
     String(txt || '').split(/\r?\n/).forEach(raw => {
-      let l = raw.replace(/[|]/g, ' ').replace(/\s+/g, ' ').trim(); if(l.length < 4 || SKIP.test(l)) return;
-      let sec = '', len = 0, qty = 0;
-      let m = l.match(/(\d{2,3}(?:[.,]\d)?)\s*[xX×*]\s*(\d{2,3}(?:[.,]\d)?)(?:\s*[xX×*]\s*(\d{3,5}|\d{1,2}[.,]\d{1,3}))?/);
-      if(m){ sec = m[1].replace(',', '.') + '×' + m[2].replace(',', '.'); if(m[3]){ const v = parseFloat(m[3].replace(',', '.')); len = v > 100 ? v / 1000 : v; } l = l.replace(m[0], ' '); }
-      if(!len){ const a = l.match(/(?:\bL\s*[=:]?\s*|long(?:ueur)?\.?\s*:?\s*)(\d{1,2}(?:[.,]\d{1,3})?)\s*m?\b/i) || l.match(/\b(\d{1,2}[.,]\d{1,3})\s*(?:m|ml|mL|M)\b/) || l.match(/\b(\d{4,5})\s*mm\b/i);
-        if(a){ const v = parseFloat(a[1].replace(',', '.')); len = v > 100 ? v / 1000 : v; l = l.replace(a[0], ' '); } }
+      let l = raw.replace(/[|“”"«»_—–]/g, ' ').replace(/\s+/g, ' ').trim().replace(/KVH\s*EN\b/gi, 'KVH EN')
+        .replace(/\b(\d{2})(\d{3})\b(?=\s*(?:KVH|BLC|LAMELL|OSSATURE|CHEVRON|BASTAING|MADRIER|PANNE|SOLIVE|POUTRE))/i, '$1X$2');   // « 80100 KVH » mal lu → 80X100
+      if(/restes?\s*[àa]\s*livrer|reliquat/i.test(l)){ restes = true; return; }
+      if(restes){ if(/\blivraison\b/i.test(l) || /^bon de/i.test(l)) restes = false; return; }   // reste à livrer : pas encore sur le chantier
+      if(l.length < 4 || SKIP.test(l) || /commande\s*n/i.test(l)) return;
+      let sec = '', len = 0, qty = 0, desc = l;
+      // quantité : « 3,000 UN » / « 12 pcs » / « Qté 10 »
+      let q = l.match(new RegExp('(\\d{1,5})(?:[.,](\\d{1,3}))?\\s*' + UNIT + '\\b', 'i')) || l.match(/(?:qt[eé]|quantit[eé]|qte)\s*[:.]?\s*(\d{1,4})(?:[.,](\d{1,3}))?/i);
+      if(q){ qty = parseFloat(q[1] + (q[2] ? '.' + q[2] : '')); desc = q.index < 3 ? l.slice(q.index + q[0].length) : l.slice(0, q.index); }
+      else { const q0 = l.match(/^\s*(\d{1,4})\s+(?=[A-Za-zÀ-ÿ])/); if(q0){ qty = +q0[1]; desc = l.slice(q0[0].length); } }
+      let m = desc.match(/(\d{2,3}(?:[.,]\d)?)\s*[xX×*]\s*(\d{2,4}(?:[.,]\d)?)(?:\s*[xX×*]\s*(\d{3,5}|\d{1,2}[.,]\d{1,3})\s*m?\b)?/i);
+      if(m){ sec = m[1].replace(',', '.') + '×' + m[2].replace(',', '.'); if(m[3]){ const v = parseFloat(m[3].replace(',', '.')); len = v > 100 ? v / 1000 : v; } desc = desc.replace(m[0], ' '); }
+      if(!len){ const a = desc.match(/(?:\bL\s*[=:]?\s*|long(?:ueur)?\.?\s*:?\s*)(\d{1,2}(?:[.,]\d{1,3})?)\s*m?\b/i) || desc.match(/(\d{1,2}[.,]\d{1,3})\s*(?:m|ml)\b/i) || desc.match(/\b(\d{4,5})\s*mm\b/i);
+        if(a){ const v = parseFloat(a[1].replace(',', '.')); len = v > 100 ? v / 1000 : v; desc = desc.replace(a[0], ' '); } }
       if(len && (len < 0.2 || len > 18)) len = 0;
-      const q = l.match(/(?:qt[eé]|quantit[eé]|qte)\s*[:.]?\s*(\d{1,4})/i) || l.match(/\b(\d{1,4})\s*(?:pcs?|pi[eè]ces?|u|ex|barres?|unit[eé]s?)\b/i) || l.match(/^\s*(\d{1,4})\b(?![.,]\d)/);
-      if(q){ qty = parseInt(q[1], 10); l = l.replace(q[0], ' '); }
-      const nm = l.replace(/\b[A-Z]{0,3}\d{4,}\b/g, ' ').replace(/[^A-Za-zÀ-ÿ0-9' -]/g, ' ').replace(/\b\d+([.,]\d+)?\b/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
-      const wood = WOOD.test(raw);
-      if(!qty || qty > 2000) return;
+      // pas de « UN » lu mais des mètres linéaires : quantité = ML ÷ longueur (ex. 21 ML de 4,20 m = 5)
+      if(!qty && len){ const ml = l.match(/(\d{1,5}(?:[.,]\d{1,3})?)\s*ML\b/i); if(ml){ const v = parseFloat(ml[1].replace(',', '.')); if(v > 0) qty = Math.round(v / len); desc = desc.slice(0, desc.search(/\d{1,5}(?:[.,]\d{1,3})?\s*ML\b/i) >= 0 ? desc.search(/\d{1,5}(?:[.,]\d{1,3})?\s*ML\b/i) : desc.length).split(/unit[eé]|\(/i)[0]; } }
+      const wood = WOOD.test(raw) || /\bkvh\b|fermette|liteaux?/i.test(raw);
+      if(!qty || qty > 5000) return;
       if(!(sec || len || wood || RX.quinc.test(raw) || RX.couv.test(raw) || RX.isol.test(raw))) return;
-      const nmF = nm ? nm.charAt(0).toUpperCase() + nm.slice(1).toLowerCase() : '';
-      out.push({ qty, nm: nmF, sec, len: len ? Math.round(len * 1000) / 1000 : 0, cat: guessCat(raw, sec) });
+      qty = Math.round(qty * 100) / 100;
+      const nm = niceName(desc.replace(/\b\d{5,}\b/g, ' ').replace(/\b(?:EN|DE)\b\s*$/i, ' ').replace(/\s\bEN\b\s/gi, ' ').replace(/[^A-Za-zÀ-ÿ0-9'./ -]/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 48);
+      out.push({ qty, nm, sec, len: len ? Math.round(len * 1000) / 1000 : 0, cat: guessCat(raw, sec) });
     });
-    return out.slice(0, 60);
+    return out.slice(0, 80);
   }
   function guessSupplier(t){
     const l = String(t || '').split(/\r?\n/).map(x => x.trim()).filter(x => /[A-Za-z]{3}/.test(x) && x.length < 40);
