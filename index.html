@@ -49673,9 +49673,22 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.96.0';
+const APP_VERSION = '5.98.0';
 
 const CHANGELOG = [
+  { version:'5.98.0', date:'15/11/2026', entries:[
+    { icon:'🚚', text:'Réception d\'une livraison : le bon scanné est lu et ses lignes vont dans le stock matériaux du chantier (case cochée par défaut)' },
+    { icon:'📁', text:'Matériaux : « Depuis les documents » pour lire un bon déjà rangé dans les documents du chantier' },
+    { icon:'🗂️', text:'Matériaux : nom du produit enregistré, tout le bois regroupé (par section), le reste rangé par catégorie (couverture, isolation, quincaillerie, autres) ; tuile 🪵 Matériaux sur la fiche du chantier' },
+    { icon:'✂️', text:'Nouveau lot de découpe : le stock de bois du chantier s\'affiche, choisis les sections avec les quantités restantes' },
+    { icon:'♻️', text:'La page Chutes est retirée des outils de calcul : les chutes de plus de 1 m restent dans les Matériaux du chantier' }
+  ]},
+  { version:'5.97.0', date:'15/11/2026', entries:[
+    { icon:'🪵', text:'Infos chantier › Matériaux : le stock du chantier (bois et matériaux), avec ce qui reste en un coup d\'œil ; « ✓ 1 posé / utilisé » pour décompter à la main' },
+    { icon:'📄', text:'Bon de livraison : prends-le en photo, l\'appli lit le texte (quantité, désignation, section, longueur) et remplit la liste ; la photo va dans Photos & Docs' },
+    { icon:'✂️', text:'Calcul découpe : une barre du chantier est décomptée du stock dès que sa première pièce est marquée « coupée » ; boutons Bon de livraison et Stock du chantier' },
+    { icon:'♻️', text:'Nouvelle page Chutes (Calcul) : toutes les chutes de plus de 1 m, ajoutées toutes seules quand une barre est finie ; « En découpe » pour la réutiliser' }
+  ]},
   { version:'5.96.0', date:'15/11/2026', entries:[
     { icon:'✂️', text:'Découpe — plusieurs sur le même lot : une pièce marquée tracée/coupée ne revient plus à son état d\'avant (écritures simultanées refusionnées et vérifiées)' },
     { icon:'⚡', text:'Découpe — les marques des collègues s\'affichent en direct (diffusion instantanée + vérification toutes les 2,5 s), sans recharger tout le plan' },
@@ -100044,12 +100057,14 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     document.body.appendChild(d); siteBtn();
     setTimeout(() => { const i = $('dlName'); if(i){ i.focus(); i.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); _dlCreate(); } }; } }, 60);
   };
-  function siteBtn(){ const b = $('dlSiteBtn'); if(!b) return; const s = siteOf(newSite); b.innerHTML = s ? siteIni(s, 26) + '<span>' + escapeHtml(s.name) + '</span>' : '<span class="dl-noini" style="width:26px;height:26px;">🏗️</span><span>Aucun chantier</span>'; }
+  function siteBtn(){ const b = $('dlSiteBtn'); if(!b) return; const s = siteOf(newSite); b.innerHTML = s ? siteIni(s, 26) + '<span>' + escapeHtml(s.name) + '</span>' : '<span class="dl-noini" style="width:26px;height:26px;">🏗️</span><span>Aucun chantier</span>';
+    try{ if(typeof window._dlMatPickRender === 'function') window._dlMatPickRender(newSite); }catch(e){} }   // v5.98.0 — stock du chantier dans « Nouveau lot »
   window._dlPickSite = function(){ sitePicker({ title:'Lot pour quel chantier ?', current:newSite, extras:[{ v:'', l:'Aucun chantier', ic:'—' }], onPick: v => { newSite = v || ''; siteBtn(); if(window._dlSiteCb){ const cb = window._dlSiteCb; window._dlSiteCb = null; cb(newSite); } } }); };
   window._dlCreate = function(){
     const name = (($('dlName') || {}).value || '').trim();
     if(!name){ showToast('Donne un nom au lot'); const i = $('dlName'); if(i) i.focus(); return; }
     if(!fromFree) decoupeReset();
+    try{ if(typeof window._dlMatPickApply === 'function') window._dlMatPickApply(); }catch(e){}   // v5.98.0 — sections choisies dans le stock du chantier
     const t = now(), spc = (typeof _dsSpec === 'function') ? clone(_dsSpec()) : null;
     const l = { id:'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, siteId:newSite || null,
       stock:clone(_decoupeStock), need:clone(_decoupeNeed), kerf:kerfNow(), spec:spc, sig:sigNow(), marks:{}, marksAt:{}, createdAt:t, createdBy:myName() };
@@ -101849,6 +101864,558 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 })();
 </script>
 <!-- ═══ fin MODULE v5.94.0 ═══ -->
+<!-- ═══ MODULE v5.97.0 / v5.98.0 — Matériaux du chantier · bons de livraison (photo, documents, réception) · catégories · stock suivi par la découpe · chutes ═══ -->
+<style>
+  .mt-bar{ display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 10px; }
+  .mt-bar .btn{ flex:1 1 140px; }
+  .mt-seg{ display:flex; gap:6px; margin:4px 0 10px; }
+  .mt-seg button{ flex:1; padding:8px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-weight:800; font-size:13px; cursor:pointer; }
+  .mt-seg button.on{ background:var(--wood,#EE8A2E); border-color:var(--wood,#EE8A2E); color:#1a0f00; }
+  .mt-h{ font-size:12px; font-weight:900; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:12px 2px 6px; }
+  .mt-it{ background:var(--card); border:1.5px solid var(--line); border-radius:12px; padding:9px 10px; margin-bottom:6px; }
+  .mt-it.done{ opacity:.55; }
+  .mt-r{ display:flex; align-items:center; gap:8px; }
+  .mt-r b{ flex:1; min-width:0; font-size:14.5px; }
+  .mt-r b small{ display:block; font-size:12px; color:var(--ink-soft); font-weight:700; }
+  .mt-left{ font-size:20px; font-weight:900; text-align:right; line-height:1; white-space:nowrap; }
+  .mt-left small{ display:block; font-size:11px; font-weight:800; color:var(--ink-soft); }
+  .mt-pb{ height:6px; border-radius:4px; background:var(--line); margin-top:7px; overflow:hidden; }
+  .mt-pb i{ display:block; height:100%; background:#2e9e5b; }
+  .mt-act{ display:flex; gap:6px; margin-top:7px; align-items:center; }
+  .mt-act button{ padding:6px 10px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-weight:800; font-size:12.5px; cursor:pointer; }
+  .mt-act .ok{ background:#2e9e5b; border-color:#2e9e5b; color:#fff; flex:1; }
+  .mt-act small{ flex:1; color:var(--ink-soft); font-size:11.5px; font-weight:700; }
+  .mt-sum{ display:flex; gap:8px; margin:6px 0; }
+  .mt-sum div{ flex:1; background:var(--card); border:1.5px solid var(--line); border-radius:12px; padding:8px; text-align:center; }
+  .mt-sum b{ display:block; font-size:20px; font-weight:900; }
+  .mt-sum small{ font-size:11.5px; color:var(--ink-soft); font-weight:800; }
+  .mt-card{ display:flex; align-items:center; gap:10px; width:100%; padding:11px 12px; border-radius:12px; border:1.5px solid var(--line); background:var(--card); color:var(--ink); font:inherit; text-align:left; cursor:pointer; margin-top:6px; }
+  .mt-card b{ flex:1; } .mt-card small{ display:block; color:var(--ink-soft); font-weight:700; font-size:12px; }
+  .mt-ch{ display:flex; align-items:center; gap:10px; background:var(--card); border:1.5px solid var(--line); border-radius:12px; padding:9px 10px; margin-bottom:6px; }
+  .mt-ch .ln{ font-size:19px; font-weight:900; min-width:70px; }
+  .mt-ch .in{ flex:1; min-width:0; font-size:12.5px; color:var(--ink-soft); font-weight:700; }
+  .mt-ch .in b{ color:var(--ink); font-size:14px; display:block; }
+  .mt-ch .bt{ display:flex; flex-direction:column; gap:4px; }
+  .mt-ch .bt button{ padding:6px 9px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-weight:800; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .mt-ch .bt .pr{ background:var(--wood,#EE8A2E); border-color:var(--wood,#EE8A2E); color:#1a0f00; }
+  .mt-tools{ display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .mt-tools button{ flex:1 1 30%; padding:8px 6px; border-radius:10px; border:1.5px dashed var(--line); background:var(--bg); color:var(--ink); font:inherit; font-weight:800; font-size:12.5px; cursor:pointer; }
+  #modal-mtBL .modal{ max-width:640px; }
+  .bl-img{ width:100%; max-height:240px; object-fit:contain; border-radius:10px; background:#0002; }
+  .bl-st{ font-size:13px; font-weight:800; color:var(--ink-soft); margin:8px 0; }
+  .bl-rows{ display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+  .bl-row{ display:grid; grid-template-columns:52px 1fr 84px 70px 30px; gap:4px; align-items:center; }
+  .bl-row select{ grid-column:2 / span 3; padding:6px; border-radius:8px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-size:12.5px; }
+  .bl-one{ display:flex; flex-direction:column; gap:4px; padding-bottom:6px; border-bottom:1px dashed var(--line); }
+  .bl-row input{ width:100%; min-width:0; padding:8px 6px; border-radius:8px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-size:13.5px; box-sizing:border-box; }
+  .bl-row button{ border:none; background:none; font-size:16px; cursor:pointer; color:var(--danger,#C75C46); }
+  .bl-hd{ display:grid; grid-template-columns:52px 1fr 84px 70px 30px; gap:4px; font-size:11px; font-weight:900; color:var(--ink-soft); }
+  .bl-txt{ width:100%; min-height:70px; font-size:12px; border-radius:8px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); box-sizing:border-box; padding:6px; }
+  .bl-f{ display:flex; gap:8px; margin-top:8px; } .bl-f input, .bl-f select{ flex:1; min-width:0; padding:9px; border-radius:10px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
+  .bl-chk{ display:flex; align-items:center; gap:8px; margin-top:10px; font-weight:800; font-size:13.5px; }
+  .ch-filt{ display:flex; gap:6px; flex-wrap:wrap; margin:6px 0 10px; }
+  .ch-filt button{ padding:6px 10px; border-radius:20px; border:1.5px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; font-weight:800; font-size:12.5px; cursor:pointer; }
+  .ch-filt button.on{ background:var(--wood,#EE8A2E); border-color:var(--wood,#EE8A2E); color:#1a0f00; }
+</style>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const esc = s => (typeof escapeHtml === 'function' ? escapeHtml(String(s == null ? '' : s)) : String(s == null ? '' : s));
+  const S = () => (data && data.settings) || {};
+  const role = () => (S().myProfile && S().myProfile.role) || '';
+  const me = () => (S().auth && S().auth.authId) || 'local';
+  const myName = () => { const p = S().myProfile || {}; return ((p.firstName || '') + ' ' + (p.lastName || '')).trim() || p.name || 'Moi'; };
+  const canAdmin = () => ['chef', 'conducteur', 'patron', 'comptable'].includes(role()) || window._devRoleUnlocked === true;
+  const rid = p => (p || 'm') + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const clone = o => JSON.parse(JSON.stringify(o == null ? null : o));
+  const siteOf = id => (data.sites || []).find(s => s && s.id === id);
+  const fm = m => (Math.round((+m || 0) * 100) / 100).toFixed(2).replace('.', ',') + ' m';
+  const secN = s => String(s || '').replace(/\s+/g, '').replace(/[xX*]/g, '×');
+  const CHUTE_MIN = 1.0;   // m
+  /* v5.98.0 — catégories : tout le bois ensemble (rangé par section), le reste à part */
+  const CATS = [['bois', '🪵 Bois'], ['couv', '🏠 Couverture · zinguerie'], ['isol', '🧱 Isolation · étanchéité'], ['quinc', '🔩 Quincaillerie · fixations'], ['autre', '📦 Autres matériaux']];
+  const CATL = k => (CATS.find(c => c[0] === k) || CATS[CATS.length - 1])[1];
+  const RX = {
+    quinc: /\bvis\b|clou|pointe|boulon|tige filet|[eé]querre|sabot|connecteur|cheville|agrafe|tire.?fond|rondelle|[eé]crou|feuillard|ferrure|plaque perfor|colle|mastic|cartouche|mousse/i,
+    couv: /tuile|ardoise|fa[iî]ti[eè]re|fa[iî]tage|closoir|rive|zinc|goutti[eè]re|descente|naissance|noue|abergement|chati[eè]re|bac acier|[eé]cran.?(?:sous|hpv)|sous.?toiture|pare.?pluie|crochet/i,
+    isol: /isol|laine|polystyr|polyur[eé]|pare.?vapeur|membrane|frein.?vapeur|adh[eé]sif|bande|fibre de bois|ouate|placo|plaque de pl[aâ]tre|rail|fourrure/i,
+    bois: /chevron|bastaing|madrier|planche|liteau|latte|volige|lambourde|poutre|panne|solive|chev[eê]tre|sabli[eè]re|ossature|osb|contrepla|lamell|blc|bmr|kvh|douglas|sapin|[eé]pic[eé]a|m[eé]l[eè]ze|\bpin\b|ch[eê]ne|bois|bardage|tasseau|lambris|plinthe|aggl|panneau|parquet|clin|\bcp\b/i };
+  function guessCat(nm, sec){ const t = String(nm || ''); if(RX.quinc.test(t)) return 'quinc'; if(RX.couv.test(t) && !/liteau|latte|volige|contre.?latte/i.test(t)) return 'couv'; if(RX.isol.test(t)) return 'isol'; if(sec || RX.bois.test(t)) return 'bois'; return 'autre'; }
+  const catOf = it => it.cat || guessCat(it.nm, it.sec);
+
+  /* ═══ Stockage : une ligne partagée par chantier « rwood_mat_<chantier> » ═══
+     { items:{id:{nm,sec,len,qty,unit,src,bl,at,del,uses:{jeton:{n,at}}}}, bls:{id:{…,at}}, chutes:{id:{len,sec,lot,lotNm,at,gone,taken,takenBy}} }
+     Fusion élément par élément (le plus récent gagne) ; « uses » jeton par jeton → deux personnes qui cochent en même temps ne s'écrasent pas. */
+  const KEY = id => 'rwood_mat_' + id;
+  const LK = id => 'rwood-mat:' + id;
+  const st = {};   // siteId -> { d, busy, again, dirty, last }
+  const empty = () => ({ items:{}, bls:{}, chutes:{} });
+  function S0(id){
+    if(!st[id]){ let d = null; try{ d = JSON.parse(localStorage.getItem(LK(id)) || 'null'); }catch(e){} st[id] = { d: norm(d), busy:false, again:false, dirty:false, last:0 }; }
+    return st[id];
+  }
+  function norm(d){ d = d && typeof d === 'object' ? d : {}; ['items', 'bls', 'chutes'].forEach(k => { if(!d[k] || typeof d[k] !== 'object') d[k] = {}; }); return d; }
+  const tick = prev => Math.max(Date.now(), (+prev || 0) + 1);
+  function mergeRec(a, b){
+    if(!a) return clone(b); if(!b) return clone(a);
+    const r = clone((+a.at || 0) >= (+b.at || 0) ? a : b);
+    if(a.uses || b.uses){ const u = {}; [a.uses || {}, b.uses || {}].forEach(m => Object.entries(m).forEach(([k, v]) => { if(!u[k] || (+v.at || 0) > (+u[k].at || 0)) u[k] = clone(v); })); r.uses = u; }
+    return r;
+  }
+  function merge(a, b){
+    a = norm(a); b = norm(b); const r = empty();
+    ['items', 'bls', 'chutes'].forEach(k => { new Set([...Object.keys(a[k]), ...Object.keys(b[k])]).forEach(id => { r[k][id] = mergeRec(a[k][id], b[k][id]); }); });
+    return r;
+  }
+  function covers(remote, local){
+    remote = norm(remote);
+    return ['items', 'bls', 'chutes'].every(k => Object.entries(local[k]).every(([id, v]) => { const x = remote[k][id]; if(!x || (+x.at || 0) < (+v.at || 0)) return false;
+      return Object.entries(v.uses || {}).every(([t, u]) => x.uses && x.uses[t] && (+x.uses[t].at || 0) >= (+u.at || 0)); }));
+  }
+  async function readRow(id){
+    try{
+      const r = await supaFetch('/rest/v1/rwood_sync?user_id=eq.' + encodeURIComponent(KEY(id)) + '&select=data', { headers:{ 'Prefer':'' } });
+      if(!r.ok) return null; const rows = await r.json(); if(!rows || !rows.length) return empty();
+      let d = rows[0].data; if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(e){ d = null; } } return norm(d);
+    }catch(e){ return null; }
+  }
+  const saveLocal = id => { try{ localStorage.setItem(LK(id), JSON.stringify(st[id].d)); }catch(e){} };
+  async function pull(id){
+    const s = S0(id); if(s.busy) return s.d;
+    const d = await readRow(id); if(d){ s.d = merge(s.d, d); s.last = Date.now(); saveLocal(id); }
+    return s.d;
+  }
+  async function push(id){
+    const s = S0(id); if(s.busy){ s.again = true; return; }
+    s.busy = true; s.again = false; let ok = false;
+    try{
+      for(let i = 0; i < 4; i++){
+        const d = await readRow(id); if(!d) break;
+        s.d = merge(s.d, d);
+        const w = await supaFetch('/rest/v1/rwood_sync', { method:'POST', headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify({ user_id: KEY(id), updated_at: new Date().toISOString(), data: JSON.stringify(s.d) }) });
+        if(!w || w.ok === false) break;
+        const v = await readRow(id); if(!v){ ok = true; break; }
+        const c = covers(v, s.d); s.d = merge(s.d, v); if(c){ ok = true; break; }
+      }
+    }catch(e){} finally{
+      s.busy = false; saveLocal(id); if(ok){ s.dirty = false; s.last = Date.now(); }
+      if(s.again) setTimeout(() => push(id), 150); else if(!ok) setTimeout(() => push(id), 5000);
+      refreshViews(id);
+    }
+  }
+  const pushT = {};
+  function change(id, fn){
+    const s = S0(id); fn(s.d); s.dirty = true; saveLocal(id);
+    clearTimeout(pushT[id]); pushT[id] = setTimeout(() => push(id), 400);
+    refreshViews(id);
+  }
+
+  /* ── calculs ── */
+  const usedOf = it => Object.values(it.uses || {}).reduce((a, u) => a + Math.max(0, +u.n || 0), 0);
+  const leftOf = it => (+it.qty || 0) - usedOf(it);
+  const liveItems = d => Object.entries(norm(d).items).filter(([, v]) => v && !v.del).map(([id, v]) => Object.assign({ id }, v));
+  const liveChutes = d => Object.entries(norm(d).chutes).filter(([, v]) => v && !v.gone && !v.taken && (+v.len || 0) >= CHUTE_MIN - 1e-9).map(([id, v]) => Object.assign({ id }, v));
+  const secSort = (a, b) => { const p = x => String(x || '').split('×').map(Number); const A = p(a), B = p(b); if(!a !== !b) return a ? -1 : 1; return (A[0] || 0) - (B[0] || 0) || (A[1] || 0) - (B[1] || 0); };
+  const itemLabel = it => it.nm || (it.sec ? 'Bois ' + it.sec + ' mm' : 'Matériau');
+  const itemSub = it => [it.sec ? it.sec + ' mm' : '', it.len ? 'pièces de ' + fm(it.len) : '', it.unit && !it.len ? it.unit : ''].filter(Boolean).join(' · ');
+
+  /* ═══ Découpe → stock du chantier : une barre entamée est « utilisée », une barre finie laisse une chute ═══ */
+  function syncFromLot(){
+    const ls = window._dlState; if(!ls || !ls.cur) return;
+    const lot = (ls.lots || []).find(l => l && l.id === ls.cur); if(!lot || !lot.siteId) return;
+    const last = typeof _dcPlanLast === 'function' ? _dcPlanLast() : null; if(!last || !last.bars || last.sig !== lot.sig) return;
+    const marks = lot.marks || {}, kerf = +last.kerf || 0, pfx = 'dl:' + lot.id + ':';
+    const want = {}, chutes = {};
+    last.bars.forEach((b, idx) => { if(!b || b.overflow || !b.len) return;
+      const n = (b.pcs || []).length; if(!n) return;
+      let cut = 0; for(let j = 0; j < n; j++) if(marks[idx + '-' + j] === 2) cut++;
+      if(!cut) return;
+      const L = +b.len;   // mm
+      const ent = (lot.stock || []).find(x => Math.abs(x.len * 1000 - L) < 1.5) || {};
+      want[pfx + idx] = { L, sec: secN(ent.sec || '') };
+      if(cut === n){ const rest = L - (b.pcs || []).reduce((a, p) => a + (+p.len || 0), 0) - kerf * Math.max(0, n - 1);
+        if(rest >= CHUTE_MIN * 1000 - 0.5) chutes[pfx + idx] = { len: Math.floor(rest) / 1000, sec: secN(ent.sec || '') }; }
+    });
+    const id = lot.siteId, s = S0(id);
+    // rien à changer ? (évite une écriture à chaque appui)
+    const cur = {}; Object.entries(s.d.items).forEach(([iid, it]) => Object.entries(it.uses || {}).forEach(([t, u]) => { if(t.startsWith(pfx) && +u.n > 0) cur[t] = iid; }));
+    const curCh = {}; Object.entries(s.d.chutes).forEach(([cid, c]) => { if(cid.startsWith(pfx) && !c.gone) curCh[cid] = c; });
+    const sameUse = Object.keys(want).length === Object.keys(cur).length && Object.keys(want).every(t => cur[t]);
+    const sameCh = Object.keys(chutes).length === Object.keys(curCh).length && Object.keys(chutes).every(k => curCh[k] && Math.abs(curCh[k].len - chutes[k].len) < 0.002);
+    if(sameUse && sameCh) return;
+    change(id, d => {
+      const items = liveItems(d);
+      // barres plus entamées → jeton remis à 0
+      Object.entries(cur).forEach(([t, iid]) => { if(!want[t]){ const it = d.items[iid]; const u = it.uses[t]; it.uses[t] = { n:0, at:tick(u && u.at) }; it.at = tick(it.at); } });
+      Object.entries(want).forEach(([t, w]) => { if(cur[t]) return;
+        const cand = items.filter(it => it.len && Math.abs(it.len * 1000 - w.L) <= 2 && (!w.sec || !it.sec || secN(it.sec) === w.sec));
+        if(!cand.length) return;   // longueur absente des matériaux du chantier : rien à décompter
+        cand.sort((a, b) => leftOf(b) - leftOf(a));
+        const it = d.items[cand[0].id]; it.uses = it.uses || {}; const u = it.uses[t];
+        it.uses[t] = { n:1, at:tick(u && u.at), lot:lot.name || '' }; it.at = tick(it.at); cand[0].uses = it.uses;
+      });
+      Object.entries(curCh).forEach(([cid, c]) => { if(!chutes[cid] && !c.taken){ c.gone = true; c.at = tick(c.at); } });
+      Object.entries(chutes).forEach(([cid, c]) => { const o = d.chutes[cid];
+        if(o && !o.gone && Math.abs(o.len - c.len) < 0.002) return;
+        d.chutes[cid] = Object.assign({}, o || {}, { len:c.len, sec:c.sec, lot:lot.id, lotNm:lot.name || '', by:myName(), date:new Date().toISOString(), gone:false, at:tick(o && o.at) }); });
+    });
+  }
+  const _mc = window._dlMarksChanged;
+  if(typeof _mc === 'function'){ window._dlMarksChanged = function(){ const r = _mc.apply(this, arguments); try{ setTimeout(syncFromLot, 0); }catch(e){} return r; }; }
+  const _ao = window._dlApplyOps;
+  if(typeof _ao === 'function'){ window._dlApplyOps = function(){ const r = _ao.apply(this, arguments); try{ setTimeout(syncFromLot, 50); }catch(e){} return r; }; }
+
+  /* ═══ Infos chantier › 🪵 Matériaux ═══ */
+  let view = { site:null, all:false };
+  const _ih = window._hubInfosHtml;
+  if(typeof _ih === 'function'){ window._hubInfosHtml = function(site){
+    let h = _ih.apply(this, arguments);
+    try{ const d = S0(site.id).d, its = liveItems(d), left = its.reduce((a, it) => a + Math.max(0, leftOf(it)), 0), ch = liveChutes(d).length;
+      setTimeout(() => pull(site.id).then(() => { const b = $('mtInfoSub'); if(b && window._hubScreen === 'infos'){ const d2 = S0(site.id).d, i2 = liveItems(d2); b.textContent = summary(i2, liveChutes(d2).length); } }), 0);
+      h += `<div class="hub-sec">🪵 Matériaux</div><button class="mt-card" onclick="mtOpen('${site.id}')"><span style="font-size:22px;">🪵</span><b>Stock du chantier<small id="mtInfoSub">${esc(summary(its, ch))}</small></b><span>›</span></button>`;
+    }catch(e){}
+    return h; }; }
+  function summary(its, ch){ const left = its.reduce((a, it) => a + Math.max(0, leftOf(it)), 0); return its.length ? its.length + ' référence' + (its.length > 1 ? 's' : '') + ' · ' + left + ' en stock' + (ch ? ' · ♻️ ' + ch + ' chute' + (ch > 1 ? 's' : '') : '') : 'Aucun matériau — ajoute un bon de livraison'; }
+  const _hr = window.hubRender;
+  if(typeof _hr === 'function'){ window.hubRender = function(site){
+    if(window._hubScreen !== 'materiaux') return _hr.apply(this, arguments);
+    window._hubScreen = 'infos'; try{ _hr.apply(this, arguments); } finally { window._hubScreen = 'materiaux'; }
+    const h = $('tsHub'); if(h){ view.site = site.id; h.innerHTML = matHtml(site); pull(site.id).then(() => refreshViews(site.id)); }
+  }; }
+  { const _h2 = window.hubRender; window.hubRender = function(site){ const r = _h2.apply(this, arguments);
+      try{ if(!window._hubScreen){ const box = document.querySelector('#tsHub .nb-li-box') || document.querySelector('#tsHub .hub-g');
+        if(box && !box.querySelector('.mt-hubt')){ const its = liveItems(S0(site.id).d), left = its.reduce((a, it) => a + Math.max(0, leftOf(it)), 0);
+          const sub = its.length ? left + ' en stock · ' + its.length + ' produit' + (its.length > 1 ? 's' : '') : 'Stock du chantier, bons de livraison';
+          const b = document.createElement('button'); b.onclick = () => mtOpen(site.id);
+          if(box.classList.contains('nb-li-box')){ b.className = 'nb-li mt-hubt'; b.innerHTML = `<span style="font-size:24px;width:40px;display:inline-flex;justify-content:center;">🪵</span><span class="nb-txt"><b>Matériaux</b><small>${esc(sub)}</small></span><span class="nb-chev">›</span>`; }
+          else { b.className = 'hub-t mt-hubt'; b.innerHTML = `<span style="font-size:28px;">🪵</span><b>Matériaux</b><small>${esc(sub)}</small>`; }
+          const ref = [...box.children].find(x => /hubOpen\('[^']*','notes'\)/.test(x.getAttribute('onclick') || ''));
+          if(ref) ref.after(b); else box.appendChild(b); } } }catch(e){}
+      return r; }; }
+  window.mtOpen = function(id){ view.all = false; hubOpen(id, 'materiaux'); };
+  window.mtAll = function(v){ view.all = !!v; refreshViews(view.site); };
+  function matHtml(site){
+    const id = site.id, d = S0(id).d, its = liveItems(d), ch = liveChutes(d);
+    const shown = its.filter(it => view.all || leftOf(it) > 0).sort((a, b) => secSort(a.sec, b.sec) || (b.len || 0) - (a.len || 0) || String(a.nm).localeCompare(String(b.nm)));
+    const left = its.reduce((a, it) => a + Math.max(0, leftOf(it)), 0), used = its.reduce((a, it) => a + Math.min(+it.qty || 0, usedOf(it)), 0);
+    const bls = Object.entries(d.bls).filter(([, b]) => b && !b.del).map(([bid, b]) => Object.assign({ id:bid }, b)).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    let groups = {};
+    CATS.forEach(([ck]) => { const l = shown.filter(it => catOf(it) === ck); if(!l.length) return;
+      if(ck === 'bois'){ const by = {}; l.forEach(it => { const k = '🪵 Bois · ' + (it.sec ? it.sec + ' mm' : 'section non précisée'); (by[k] = by[k] || []).push(it); }); Object.keys(by).forEach(k => groups[k] = by[k]); }
+      else groups[CATL(ck)] = l.slice().sort((a, b) => String(a.nm).localeCompare(String(b.nm))); });
+    const itHtml = it => { const u = usedOf(it), l = leftOf(it), q = +it.qty || 0, mine = ((it.uses || {})['m:' + me()] || {}).n || 0;
+      const dl = Object.entries(it.uses || {}).filter(([t, x]) => t.startsWith('dl:') && +x.n > 0).length;
+      return `<div class="mt-it${l <= 0 ? ' done' : ''}"><div class="mt-r"><b>${esc(itemLabel(it))}<small>${esc(itemSub(it))}${it.src === 'bl' ? ' · 📄 BL' : ''}</small></b><div class="mt-left">${l}<small>reste${l > 1 ? 'nt' : ''} / ${q}</small></div></div>
+        <div class="mt-pb"><i style="width:${q ? Math.max(0, Math.min(100, l / q * 100)).toFixed(0) : 0}%"></i></div>
+        <div class="mt-act"><button class="ok" onclick="mtUse('${id}','${it.id}',1)" ${l <= 0 ? 'disabled' : ''}>✓ 1 posé / utilisé</button>${mine ? `<button onclick="mtUse('${id}','${it.id}',-1)">↺</button>` : ''}${canAdmin() ? `<button onclick="mtEdit('${id}','${it.id}')">✏️</button>` : ''}</div>
+        ${u ? `<div class="mt-act"><small>${u} utilisé${u > 1 ? 's' : ''}${dl ? ' · dont ' + dl + ' par la découpe ✂️' : ''}</small></div>` : ''}</div>`; };
+    return `<div class="hub-back"><button class="btn btn-outline btn-sm" onclick="hubOpen('${id}','infos')">← Infos chantier</button><span>🪵 Matériaux</span></div>
+      <div class="mt-sum"><div><b>${left}</b><small>en stock</small></div><div><b>${used}</b><small>utilisés</small></div><div onclick="const e=document.getElementById('mtChH'); if(e) e.scrollIntoView({behavior:'smooth'});" style="cursor:pointer;"><b>${ch.length}</b><small>♻️ chutes +1 m</small></div></div>
+      <div class="mt-bar"><button class="btn btn-primary" onclick="mtBL('${id}')">📷 Scanner un bon</button><button class="btn btn-outline" onclick="mtBLDocs('${id}')">📁 Depuis les documents</button><button class="btn btn-outline" onclick="mtAdd('${id}')">＋ À la main</button></div>
+      <div class="mt-seg"><button class="${view.all ? '' : 'on'}" onclick="mtAll(0)">Stock restant</button><button class="${view.all ? 'on' : ''}" onclick="mtAll(1)">Tout (avec l'utilisé)</button></div>
+      ${shown.length ? Object.entries(groups).map(([k, l]) => `<div class="mt-h">${esc(k)}</div>` + l.map(itHtml).join('')).join('') : `<div class="hint">${its.length ? 'Tout est utilisé 👍 — « Tout » pour revoir la liste.' : 'Aucun matériau. Prends en photo le bon de livraison : l\'appli lit le texte et remplit la liste.'}</div>`}
+      <div class="hint" style="margin-top:8px;">Le bois est regroupé par section ; le reste par catégorie. ✂️ Dans le calcul découpe, une barre de ce chantier est décomptée dès que sa première pièce est marquée « coupée ».</div>
+      ${ch.length ? `<div class="mt-h" id="mtChH">♻️ Chutes de plus de 1 m</div>` + ch.sort((a, b) => b.len - a.len).map(c => chuteHtml(Object.assign({ site:id }, c))).join('') : ''}
+      ${bls.length ? `<div class="mt-h">📄 Bons de livraison</div>` + bls.map(b => `<div class="mt-it"><div class="mt-r"><b>${esc(b.supplier || 'Bon de livraison')}<small>${b.date ? new Date(b.date).toLocaleDateString('fr-FR') : ''} · ${b.n || 0} ligne${(b.n || 0) > 1 ? 's' : ''}${b.by ? ' · ' + esc(b.by) : ''}</small></b>${b.url ? `<button class="hub-go" onclick="window.open('${esc(b.url)}','_blank')">📷</button>` : ''}</div></div>`).join('') : ''}`;
+  }
+  window.mtUse = function(id, iid, dlt){
+    change(id, d => { const it = d.items[iid]; if(!it) return; it.uses = it.uses || {}; const k = 'm:' + me(), u = it.uses[k] || { n:0, at:0 };
+      const n = Math.max(0, (+u.n || 0) + dlt); if(dlt > 0 && leftOf(it) <= 0) return;
+      it.uses[k] = { n, at:tick(u.at), by:myName() }; it.at = tick(it.at); });
+    try{ if(navigator.vibrate) navigator.vibrate(12); }catch(e){}
+  };
+  window.mtAdd = function(id){ itemForm(id, null); };
+  window.mtEdit = function(id, iid){ itemForm(id, iid); };
+  function itemForm(id, iid){
+    const it = iid ? S0(id).d.items[iid] : null;
+    let m = $('modal-mtIt'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-mtIt'; m.className = 'modal-overlay open'; m.style.zIndex = 1300;
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>${it ? '✏️ Matériau' : '＋ Matériau'}</h2><button class="modal-close" onclick="document.getElementById('modal-mtIt').remove()">×</button></div>
+      <div class="field"><label>Nom du produit</label><input type="text" id="mtNm" maxlength="60" value="${esc(it ? it.nm : '')}" placeholder="Ex : Chevron sapin traité" oninput="mtCatAuto()"></div>
+      <div class="field"><label>Catégorie</label><select id="mtCat" onchange="this.dataset.man='1'">${CATS.map(([k, l]) => `<option value="${k}"${(it ? catOf(it) : 'bois') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="bl-f"><input type="text" id="mtSec" value="${esc(it ? it.sec : '')}" placeholder="Section (63×75)" oninput="mtCatAuto()"><input type="text" id="mtLen" inputmode="decimal" value="${it && it.len ? String(it.len).replace('.', ',') : ''}" placeholder="Longueur (m)"></div>
+      <div class="bl-f"><input type="number" id="mtQty" min="0" inputmode="numeric" value="${it ? it.qty : ''}" placeholder="Quantité"><input type="text" id="mtUnit" maxlength="12" value="${esc(it ? it.unit || '' : '')}" placeholder="Unité (pc, boîte…)"></div>
+      <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="mtSave('${id}','${iid || ''}')">Enregistrer</button>
+      ${it ? `<button class="btn btn-outline btn-block" style="margin-top:8px;color:var(--danger,#C75C46);" onclick="mtDel('${id}','${iid}')">🗑 Retirer de la liste</button>` : ''}</div>`;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); }); document.body.appendChild(m);
+  }
+  window.mtCatAuto = function(){ const c = $('mtCat'); if(!c || c.dataset.man) return; c.value = guessCat(($('mtNm') || {}).value, secN(($('mtSec') || {}).value)); };
+  window.mtSave = function(id, iid){
+    const nm = ($('mtNm').value || '').trim(), sec = secN($('mtSec').value), len = parseFloat(String($('mtLen').value || '').replace(',', '.')) || 0, qty = parseInt($('mtQty').value, 10) || 0, unit = ($('mtUnit').value || '').trim();
+    if(!nm){ showToast('Indique le nom du produit'); return; }
+    const cat = ($('mtCat') || {}).value || guessCat(nm, sec);
+    if(sec && !/^\d+(?:[.,]\d+)?×\d+(?:[.,]\d+)?$/.test(sec)){ showToast('Section : écris par ex. 63×75'); return; }
+    change(id, d => { const k = iid || rid('it'), o = d.items[k] || { uses:{}, src:'main', by:myName() };
+      d.items[k] = Object.assign({}, o, { nm, cat, sec, len: len > 0 ? Math.round(len * 1000) / 1000 : 0, qty, unit, at:tick(o.at) }); });
+    const m = $('modal-mtIt'); if(m) m.remove();
+  };
+  window.mtDel = function(id, iid){ if(!confirm('Retirer ce matériau de la liste ?')) return; change(id, d => { const it = d.items[iid]; if(it){ it.del = true; it.at = tick(it.at); } }); const m = $('modal-mtIt'); if(m) m.remove(); };
+
+  /* ═══ Bon de livraison : photo → lecture du texte (sur le téléphone, Tesseract) → lignes modifiables ═══ */
+  let bl = { site:'', fromDc:false, file:null, img:'', rows:[], text:'', supplier:'' };
+  window.mtBL = function(siteId, fromDc){
+    bl = { site: siteId || '', fromDc: !!fromDc, file:null, img:'', rows:[], text:'', supplier:'' };
+    let inp = $('mtBLFile'); if(!inp){ inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.setAttribute('capture', 'environment'); inp.id = 'mtBLFile'; inp.style.display = 'none'; document.body.appendChild(inp); }
+    inp.onchange = () => { const f = inp.files && inp.files[0]; inp.value = ''; if(f) blStart(f); };
+    blModal(true);
+  };
+  function blModal(ask){
+    let m = $('modal-mtBL'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-mtBL'; m.className = 'modal-overlay open'; m.style.zIndex = 1300;
+    const sites = (data.sites || []).filter(s => s && s.status !== 'termine');
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>📄 Bon de livraison</h2><button class="modal-close" onclick="document.getElementById('modal-mtBL').remove()">×</button></div>
+      ${bl.img ? `<img class="bl-img" src="${bl.img}" alt="">` : ''}
+      <div class="bl-st" id="blSt">${ask ? 'Prends le bon en photo, bien à plat et net : l\'appli lit les lignes (désignation, section, longueur, quantité).' : ''}</div>
+      ${ask ? `<button class="btn btn-primary btn-block" onclick="document.getElementById('mtBLFile').click()">📷 Prendre / choisir la photo</button><button class="btn btn-outline btn-block" style="margin-top:8px;" onclick="mtBLManual()">✍️ Saisir sans photo</button>` : `
+      <div class="bl-f"><select id="blSite">${sites.map(s => `<option value="${s.id}"${s.id === bl.site ? ' selected' : ''}>${esc(s.name || 'Chantier')}</option>`).join('')}</select><input type="text" id="blSup" maxlength="40" placeholder="Fournisseur" value="${esc(bl.supplier)}"></div>
+      <div class="bl-hd" style="margin-top:10px;"><span>Qté</span><span>Produit</span><span>Section</span><span>Long. m</span><span></span></div>
+      <div class="bl-rows" id="blRows"></div>
+      <button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="mtBLRow()">＋ Ligne</button>
+      ${bl.fromDc ? `<label class="bl-chk"><input type="checkbox" id="blToDc" checked> Ajouter aussi les longueurs au stock de la découpe</label>` : ''}
+      ${bl.text ? `<details style="margin-top:10px;"><summary style="font-weight:800;font-size:13px;cursor:pointer;">Texte lu sur la photo</summary><textarea class="bl-txt" id="blTxt">${esc(bl.text)}</textarea><button class="btn btn-outline btn-sm" style="margin-top:6px;" onclick="mtBLReparse()">↻ Relire ce texte</button></details>` : ''}
+      <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="mtBLSave()">💾 Enregistrer dans les matériaux</button>`}</div>`;
+    document.body.appendChild(m);
+    if(!ask) rowsUI();
+  }
+  function rowsUI(){
+    const el = $('blRows'); if(!el) return;
+    el.innerHTML = bl.rows.map((r, i) => `<div class="bl-one"><div class="bl-row"><input type="number" min="0" inputmode="numeric" value="${r.qty || ''}" oninput="mtBLSet(${i},'qty',this.value)"><input type="text" value="${esc(r.nm)}" placeholder="Nom du produit" oninput="mtBLSet(${i},'nm',this.value)"><input type="text" value="${esc(r.sec)}" placeholder="63×75" oninput="mtBLSet(${i},'sec',this.value)"><input type="text" inputmode="decimal" value="${r.len ? String(r.len).replace('.', ',') : ''}" oninput="mtBLSet(${i},'len',this.value)"><button onclick="mtBLDel(${i})">✕</button></div>
+      <div class="bl-row"><span></span><select onchange="mtBLSet(${i},'cat',this.value)">${CATS.map(([k, l]) => `<option value="${k}"${(r.cat || guessCat(r.nm, secN(r.sec))) === k ? ' selected' : ''}>${l}</option>`).join('')}</select><span></span></div></div>`).join('') || '<div class="hint">Aucune ligne reconnue : ajoute-les avec « ＋ Ligne ».</div>';
+  }
+  window.mtBLSet = (i, k, v) => { const r = bl.rows[i]; if(!r) return; if(k === 'qty') r.qty = parseInt(v, 10) || 0; else if(k === 'len') r.len = parseFloat(String(v).replace(',', '.')) || 0; else r[k] = v; };
+  window.mtBLDel = i => { bl.rows.splice(i, 1); rowsUI(); };
+  window.mtBLRow = () => { bl.rows.push({ qty:1, nm:'', sec:'', len:0 }); rowsUI(); };
+  window.mtBLManual = () => { bl.rows = [{ qty:1, nm:'', sec:'', len:0 }]; blModal(false); };
+  window.mtBLReparse = () => { const t = $('blTxt'); if(t){ bl.text = t.value; bl.rows = parseBL(bl.text); rowsUI(); showToast(bl.rows.length + ' ligne(s) reconnue(s)'); } };
+  async function prep(file){
+    const url = URL.createObjectURL(file);
+    try{
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      const k = Math.min(1, 2200 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      const x = c.getContext('2d'); x.filter = 'grayscale(1) contrast(1.35)'; x.drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.9);
+    } finally { URL.revokeObjectURL(url); }
+  }
+  async function loadTess(){
+    if(window.Tesseract) return;
+    await new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'; s.onload = res; s.onerror = () => rej(new Error('Lecture du texte indisponible (pas de connexion ?)')); document.head.appendChild(s); });
+  }
+  async function blStart(file, keepFile){
+    bl.file = keepFile === false ? null : file;
+    try{ bl.img = await prep(file); }catch(e){ bl.img = ''; }
+    blModal(true);
+    const set = t => { const e = $('blSt'); if(e) e.textContent = t; };
+    try{
+      set('Chargement du lecteur de texte…'); await loadTess();
+      set('Lecture du bon…');
+      const w = await Tesseract.createWorker('fra', 1, { logger: m => { if(m.status === 'recognizing text') set('Lecture du bon… ' + Math.round((m.progress || 0) * 100) + ' %'); } });
+      await w.setParameters({ tessedit_pageseg_mode:'6', preserve_interword_spaces:'1' });
+      const { data:{ text } } = await w.recognize(bl.img || file); await w.terminate();
+      bl.text = (bl.textPre ? bl.textPre + '\n' : '') + String(text || ''); bl.rows = parseBL(bl.text); bl.supplier = bl.supplier || guessSupplier(bl.text);
+      blModal(false);
+      showToast(bl.rows.length ? '📄 ' + bl.rows.length + ' ligne(s) lue(s) — vérifie avant d\'enregistrer' : 'Aucune ligne reconnue — corrige le texte ou ajoute les lignes');
+    }catch(e){
+      bl.rows = [{ qty:1, nm:'', sec:'', len:0 }]; blModal(false);
+      showToast('⚠️ ' + ((e && e.message) || 'Lecture impossible') + ' — saisis les lignes à la main');
+    }
+  }
+  const WOOD = /chevron|bastaing|madrier|planche|liteau|latte|volige|lambourde|poutre|panne|solive|chevêtre|sabli[eè]re|ossature|osb|contrepla|lamell|blc|bmr|kvh|douglas|sapin|[eé]pic[eé]a|m[eé]l[eè]ze|pin\b|ch[eê]ne|bois|bardage|tasseau|lambris|plinthe|aggl|panneau|isolant|laine|pare.?pluie|tuile|ardoise|zinc|goutti[eè]re/i;
+  const SKIP = /total|tva|t\.v\.a|montant|prix|net\s*[àa]\s*payer|remise|iban|siret|rcs|capital|t[eé]l[eé]?phone|fax|page\s*\d|code\s*client|adresse|livr[eé]\s*(?:par|le)|signature|r[eè]glement/i;
+  function parseBL(txt){
+    const out = [];
+    String(txt || '').split(/\r?\n/).forEach(raw => {
+      let l = raw.replace(/[|]/g, ' ').replace(/\s+/g, ' ').trim(); if(l.length < 4 || SKIP.test(l)) return;
+      let sec = '', len = 0, qty = 0;
+      let m = l.match(/(\d{2,3}(?:[.,]\d)?)\s*[xX×*]\s*(\d{2,3}(?:[.,]\d)?)(?:\s*[xX×*]\s*(\d{3,5}|\d{1,2}[.,]\d{1,3}))?/);
+      if(m){ sec = m[1].replace(',', '.') + '×' + m[2].replace(',', '.'); if(m[3]){ const v = parseFloat(m[3].replace(',', '.')); len = v > 100 ? v / 1000 : v; } l = l.replace(m[0], ' '); }
+      if(!len){ const a = l.match(/(?:\bL\s*[=:]?\s*|long(?:ueur)?\.?\s*:?\s*)(\d{1,2}(?:[.,]\d{1,3})?)\s*m?\b/i) || l.match(/\b(\d{1,2}[.,]\d{1,3})\s*(?:m|ml|mL|M)\b/) || l.match(/\b(\d{4,5})\s*mm\b/i);
+        if(a){ const v = parseFloat(a[1].replace(',', '.')); len = v > 100 ? v / 1000 : v; l = l.replace(a[0], ' '); } }
+      if(len && (len < 0.2 || len > 18)) len = 0;
+      const q = l.match(/(?:qt[eé]|quantit[eé]|qte)\s*[:.]?\s*(\d{1,4})/i) || l.match(/\b(\d{1,4})\s*(?:pcs?|pi[eè]ces?|u|ex|barres?|unit[eé]s?)\b/i) || l.match(/^\s*(\d{1,4})\b(?![.,]\d)/);
+      if(q){ qty = parseInt(q[1], 10); l = l.replace(q[0], ' '); }
+      const nm = l.replace(/\b[A-Z]{0,3}\d{4,}\b/g, ' ').replace(/[^A-Za-zÀ-ÿ0-9' -]/g, ' ').replace(/\b\d+([.,]\d+)?\b/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+      const wood = WOOD.test(raw);
+      if(!qty || qty > 2000) return;
+      if(!(sec || len || wood || RX.quinc.test(raw) || RX.couv.test(raw) || RX.isol.test(raw))) return;
+      const nmF = nm ? nm.charAt(0).toUpperCase() + nm.slice(1).toLowerCase() : '';
+      out.push({ qty, nm: nmF, sec, len: len ? Math.round(len * 1000) / 1000 : 0, cat: guessCat(raw, sec) });
+    });
+    return out.slice(0, 60);
+  }
+  function guessSupplier(t){
+    const l = String(t || '').split(/\r?\n/).map(x => x.trim()).filter(x => /[A-Za-z]{3}/.test(x) && x.length < 40);
+    const k = l.find(x => /bois|négoce|negoce|point\.p|gedimat|bigmat|dispano|bmcc|chausson|samse|wolseley|panofrance|réseau|reseau|matériaux|materiaux|scierie/i.test(x));
+    return (k || l[0] || '').replace(/[^A-Za-zÀ-ÿ0-9 &'.-]/g, '').trim().slice(0, 40);
+  }
+  /* v5.98.0 — bon déjà dans les documents du chantier (ou scanné à la réception d'une livraison) */
+  async function urlFile(u){ const r = await fetch(u); if(!r.ok) throw new Error('Photo du bon introuvable'); const b = await r.blob(); return new File([b], 'bon.jpg', { type:b.type || 'image/jpeg' }); }
+  async function blFromUrls(siteId, urls, supplier){
+    bl = { site:siteId, fromDc:false, file:null, img:'', rows:[], text:'', supplier:supplier || '', linked:true };
+    blModal(true); const set = t => { const e = $('blSt'); if(e) e.textContent = t; };
+    let all = '';
+    try{
+      for(let i = 0; i < urls.length; i++){
+        set('Ouverture du bon' + (urls.length > 1 ? ' (page ' + (i + 1) + '/' + urls.length + ')' : '') + '…');
+        const f = await urlFile(urls[i]);
+        bl.textPre = all; await blStart(f, false); all = bl.text;
+      }
+    }catch(e){ bl.rows = bl.rows.length ? bl.rows : [{ qty:1, nm:'', sec:'', len:0 }]; blModal(false); showToast('⚠️ ' + ((e && e.message) || 'Lecture impossible') + ' — saisis les lignes à la main'); }
+    delete bl.textPre;
+  }
+  window.mtBLFromUrls = blFromUrls;
+  const isImg = m => m && m.url && (m.type === 'photo' || /^image\//.test(m.mimeType || '') || /\.(jpe?g|png|webp)(\?|$)/i.test(m.url));
+  window.mtBLDocs = function(siteId){
+    const s = siteOf(siteId); if(!s) return;
+    const md = (s.sharedMedia || []).filter(m => m && m.url && !m.deleted);
+    const isBL = m => (m.tags || []).includes('bon_de_livraison') || /bon de livraison|bon de commande|\bBL\b/i.test(String(m.title || m.name || ''));
+    // documents (pages groupées) d'abord, les bons de livraison en tête
+    const groups = {}; md.forEach(m => { if(!(m.doc || isBL(m))) return; const g = m.docGroup || m.id; (groups[g] = groups[g] || []).push(m); });
+    const docs = Object.values(groups).map(l => l.sort((a, b) => (a.page || 0) - (b.page || 0))).sort((a, b) => (isBL(b[0]) - isBL(a[0])) || String(b[0].uploadedAt || '').localeCompare(String(a[0].uploadedAt || '')));
+    let m = $('modal-mtDocs'); if(m) m.remove();
+    m = document.createElement('div'); m.id = 'modal-mtDocs'; m.className = 'modal-overlay open'; m.style.zIndex = 1300;
+    window._mtDocsL = docs;
+    m.innerHTML = `<div class="modal"><div class="modal-header"><h2>📁 Bon dans les documents</h2><button class="modal-close" onclick="document.getElementById('modal-mtDocs').remove()">×</button></div>
+      <div class="hint">Choisis le bon de livraison : l'appli lit le texte et propose les lignes à ajouter au stock.</div>
+      ${docs.length ? docs.map((l, i) => { const ok = l.some(isImg), f = l[0]; return `<button class="mt-card" ${ok ? `onclick="mtBLDocPick(${i})"` : 'disabled style="opacity:.5"'}>${isImg(f) ? `<img src="${esc(f.thumbUrl || f.url)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;" alt="">` : '<span style="font-size:24px;">📄</span>'}<b>${esc(f.title || f.name || 'Document')}<small>${f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString('fr-FR') : ''}${l.length > 1 ? ' · ' + l.length + ' pages' : ''}${isBL(f) ? ' · 🚚 Bon de livraison' : ''}${ok ? '' : ' · PDF : prends plutôt le bon en photo'}</small></b><span>›</span></button>`; }).join('')
+        : '<div class="hint" style="margin-top:8px;">Aucun document dans ce chantier.</div>'}</div>`;
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); }); document.body.appendChild(m);
+  };
+  window.mtBLDocPick = function(i){ const l = (window._mtDocsL || [])[i]; if(!l) return; const m = $('modal-mtDocs'); if(m) m.remove(); bl.site = view.site;
+    const s = siteOf(view.site) || {}; blFromUrls(view.site || l[0].siteId, l.filter(isImg).map(x => x.url), ''); };
+  window.mtBLSave = async function(){
+    const sid = ($('blSite') || {}).value || bl.site; if(!sid){ showToast('Choisis le chantier'); return; }
+    const sup = (($('blSup') || {}).value || '').trim();
+    const rows = bl.rows.map(r => ({ qty: +r.qty || 0, nm: String(r.nm || '').trim(), sec: secN(r.sec), len: +r.len || 0, cat: r.cat })).filter(r => r.qty > 0 && (r.nm || r.sec || r.len));
+    rows.forEach(r => { if(!r.nm) r.nm = r.sec ? 'Bois ' + r.sec : 'Matériau'; if(!r.cat) r.cat = guessCat(r.nm, r.sec); });
+    if(!rows.length){ showToast('Aucune ligne à enregistrer'); return; }
+    const bad = rows.find(r => r.sec && !/^\d+(?:\.\d+)?×\d+(?:\.\d+)?$/.test(r.sec)); if(bad){ showToast('Section « ' + bad.sec + ' » : écris par ex. 63×75'); return; }
+    const toDc = bl.fromDc && $('blToDc') && $('blToDc').checked;
+    const bid = rid('bl'), file = bl.file;
+    await pull(sid);
+    change(sid, d => {
+      d.bls[bid] = { supplier:sup, date:new Date().toISOString(), n:rows.length, by:myName(), at:tick(0) };
+      rows.forEach(r => {
+        // même désignation / section / longueur déjà dans la liste → on ajoute la quantité
+        const ex = Object.entries(d.items).find(([, it]) => it && !it.del && secN(it.sec) === r.sec && Math.abs((+it.len || 0) - r.len) < 0.002 && String(it.nm || '').toLowerCase() === r.nm.toLowerCase());
+        if(ex){ ex[1].qty = (+ex[1].qty || 0) + r.qty; ex[1].at = tick(ex[1].at); }
+        else d.items[rid('it')] = { nm:r.nm, cat:r.cat, sec:r.sec, len:r.len, qty:r.qty, unit:'', src:'bl', bl:bid, by:myName(), uses:{}, at:tick(0) };
+      });
+    });
+    if(toDc){ rows.filter(r => r.len > 0).forEach(r => _dqPush(_decoupeStock, Object.assign({ len:r.len, qty:r.qty }, r.sec ? { sec:r.sec } : {}))); try{ _decoupeRenderLists(); }catch(e){} }
+    const m = $('modal-mtBL'); if(m) m.remove();
+    showToast('🪵 ' + rows.length + ' ligne(s) ajoutée(s) aux matériaux de « ' + ((siteOf(sid) || {}).name || 'chantier') + ' »');
+    // la photo du bon va dans Photos & Docs du chantier (document)
+    if(file && !bl.linked && typeof addSharedMediaToSite === 'function'){
+      try{ await addSharedMediaToSite(sid, file, { silent:true, meta:{ title:'Bon de livraison' + (sup ? ' ' + sup : '') + ' — ' + new Date().toLocaleDateString('fr-FR'), doc:true } });
+        const s = siteOf(sid), e = s && (s.sharedMedia || []).slice(-1)[0];
+        if(e && e.url) change(sid, d => { if(d.bls[bid]){ d.bls[bid].url = e.url; d.bls[bid].at = tick(d.bls[bid].at); } });
+      }catch(e){}
+    }
+  };
+
+  /* ═══ Calcul découpe : boutons Bon de livraison · Stock du chantier · Chutes ═══ */
+  const dcSite = () => { const ls = window._dlState; const l = ls && ls.cur && (ls.lots || []).find(x => x && x.id === ls.cur); return (l && l.siteId) || (typeof getActiveSiteId === 'function' && getActiveSiteId()) || ''; };
+  function dcTools(){
+    const list = $('decoupeStockList'); if(!list || $('mtDcTools')) return;
+    const d = document.createElement('div'); d.className = 'mt-tools'; d.id = 'mtDcTools';
+    d.innerHTML = `<button onclick="mtBL(mtDcSite(), true)">📄 Bon de livraison</button><button onclick="mtDcImport()">🪵 Stock du chantier</button>`;
+    list.parentNode.insertBefore(d, list);
+  }
+  window.mtDcSite = dcSite;
+  window.mtDcImport = async function(){
+    const sid = dcSite(); if(!sid){ showToast('Associe le lot à un chantier (menu ⋯ du lot)'); return; }
+    await pull(sid);
+    const its = liveItems(S0(sid).d).filter(it => it.len > 0 && leftOf(it) > 0);
+    if(!its.length){ showToast('Aucune longueur en stock pour « ' + ((siteOf(sid) || {}).name || 'ce chantier') + ' »'); return; }
+    if(!confirm('Ajouter au stock de la découpe les ' + its.reduce((a, it) => a + leftOf(it), 0) + ' pièces restantes de « ' + ((siteOf(sid) || {}).name || 'ce chantier') + ' » ?')) return;
+    its.forEach(it => _dqPush(_decoupeStock, Object.assign({ len:it.len, qty:leftOf(it) }, it.sec ? { sec:it.sec } : {})));
+    _decoupeRenderLists(); showToast('🪵 Stock du chantier ajouté');
+  };
+
+  /* ═══ Page ♻️ Chutes : toutes les chutes de plus de 1 m, tous chantiers ═══ */
+  let chF = '';
+  function chuteHtml(c){
+    const s = siteOf(c.site);
+    return `<div class="mt-ch"><div class="ln">${fm(c.len)}</div><div class="in"><b>${esc(c.sec ? c.sec + ' mm' : 'Section ?')}</b>${esc((s && s.name) || 'Chantier')}${c.lotNm ? ' · ✂️ ' + esc(c.lotNm) : ''}${c.date ? ' · ' + new Date(c.date).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) : ''}</div>
+      <div class="bt"><button class="pr" onclick="mtChuteDc('${c.site}','${c.id}')">✂️ En découpe</button><button onclick="mtChuteTake('${c.site}','${c.id}')">✓ Utilisée</button></div></div>`;
+  }
+  window.mtChuteTake = function(sid, cid){ change(sid, d => { const c = d.chutes[cid]; if(c){ c.taken = true; c.takenBy = myName(); c.takenAt = new Date().toISOString(); c.at = tick(c.at); } }); showToast('✓ Chute retirée de la liste'); };
+  window.mtChuteDc = function(sid, cid){
+    const c = S0(sid).d.chutes[cid]; if(!c) return;
+    _dqPush(_decoupeStock, Object.assign({ len:+c.len, qty:1 }, c.sec ? { sec:c.sec } : {}));
+    change(sid, d => { const x = d.chutes[cid]; if(x){ x.taken = true; x.takenBy = myName(); x.takenAt = new Date().toISOString(); x.at = tick(x.at); } });
+    try{ goTo('calcul'); setTimeout(() => { try{ setCalcMode('decoupe'); _decoupeRenderLists(); }catch(e){} }, 60); }catch(e){}
+    showToast('✂️ Chute de ' + fm(c.len) + ' ajoutée au stock de la découpe');
+  };
+  window.mtChuteAdd = function(){
+    const sid = dcSite() || ((data.sites || []).find(s => s && s.status !== 'termine') || {}).id; if(!sid){ showToast('Aucun chantier'); return; }
+    const v = parseFloat(String(prompt('Longueur de la chute (m)', '1,50') || '').replace(',', '.')); if(!(v >= CHUTE_MIN)){ if(v) showToast('Seules les chutes de 1 m et plus sont notées'); return; }
+    const sec = secN(prompt('Section (ex : 63×75) — facultatif', '') || '');
+    change(sid, d => { d.chutes[rid('ch')] = { len:Math.round(v * 1000) / 1000, sec, lotNm:'', by:myName(), date:new Date().toISOString(), gone:false, at:tick(0) }; });
+    showToast('♻️ Chute notée sur « ' + ((siteOf(sid) || {}).name || 'chantier') + ' »');
+  };
+  const _scm = window.setCalcMode;
+  if(typeof _scm === 'function'){ window.setCalcMode = function(mode){ if(mode === 'chutes') mode = 'decoupe'; const r = _scm.call(this, mode); if(mode === 'decoupe') setTimeout(dcTools, 0); return r; }; }
+
+  /* ── rafraîchissement des écrans ouverts ── */
+  function refreshViews(id){
+    if(window._hubScreen === 'materiaux' && view.site === id){ const h = $('tsHub'), s = siteOf(id); if(h && s && !document.querySelector('#modal-mtIt')){ const y = window.scrollY; h.innerHTML = matHtml(s); window.scrollTo(0, y); } }
+  }
+  setInterval(() => { try{ if(document.hidden) return;
+    if(window._hubScreen === 'materiaux' && view.site && $('tsHub') && $('tsHub').offsetParent) pull(view.site).then(() => refreshViews(view.site));
+    }catch(e){} }, 8000);
+  document.addEventListener('DOMContentLoaded', () => setTimeout(() => { try{ dcTools(); }catch(e){} }, 1200));
+  /* ── Réception d'une livraison : le bon scanné peut remplir le stock du chantier ── */
+  { const _ro = window.nbRecvOpen; if(typeof _ro === 'function') window.nbRecvOpen = function(id){ const r = _ro.apply(this, arguments);
+      try{ const box = document.querySelector('#nbRecv #nbRecvScan'); if(box && !$('nbRecvMat')){ const l = document.createElement('label'); l.className = 'bl-chk'; l.id = 'nbRecvMatL';
+        l.innerHTML = '<input type="checkbox" id="nbRecvMat" checked> 🪵 Lire le bon et l\'ajouter au stock matériaux du chantier'; box.appendChild(l); } }catch(e){}
+      return r; }; }
+  { const _rs = window.nbRecvSave; if(typeof _rs === 'function') window.nbRecvSave = async function(){
+      const want = !!($('nbRecvMat') && $('nbRecvMat').checked), t0 = Date.now() - 5000;
+      const before = new Map(); (data.sites || []).forEach(s => before.set(s.id, new Set((s.sharedMedia || []).map(m => m && m.id))));
+      const r = await _rs.apply(this, arguments);
+      if(want) try{
+        let hit = null;
+        (data.sites || []).some(s => { const b = before.get(s.id) || new Set(); const nw = (s.sharedMedia || []).filter(m => m && !b.has(m.id) && (m.tags || []).includes('bon_de_livraison') && m.url && Date.parse(m.uploadedAt || 0) >= t0);
+          if(nw.length){ hit = { s, l:nw.sort((a, b) => (a.page || 0) - (b.page || 0)) }; return true; } return false; });
+        if(hit){ view.site = hit.s.id; setTimeout(() => blFromUrls(hit.s.id, hit.l.filter(isImg).map(x => x.url), ''), 400); }
+      }catch(e){}
+      return r; }; }
+
+  /* ── Nouveau lot de découpe : stock de bois du chantier, sections à choisir avec ce qui reste ── */
+  let pick = { site:'', sel:{} };
+  window._dlMatPickRender = async function(siteId, again){
+    const modal = $('modal-dlNew'); if(!modal) return;
+    let box = $('dlMatPick');
+    if(!box){ box = document.createElement('div'); box.id = 'dlMatPick'; box.className = 'field'; const btn = modal.querySelector('.btn-primary.btn-block'); btn.parentNode.insertBefore(box, btn); }
+    if(pick.site !== siteId){ pick = { site:siteId, sel:{} }; }
+    if(!siteId){ box.innerHTML = ''; return; }
+    const its = liveItems(S0(siteId).d).filter(it => catOf(it) === 'bois' && it.len > 0 && leftOf(it) > 0).sort((a, b) => secSort(a.sec, b.sec) || b.len - a.len);
+    const n = Object.values(pick.sel).reduce((a, v) => a + v, 0);
+    box.innerHTML = `<label>🪵 Stock de bois du chantier${n ? ' · ' + n + ' barre' + (n > 1 ? 's' : '') + ' choisie' + (n > 1 ? 's' : '') : ''}</label>
+      ${its.length ? `<div class="hint" style="margin-bottom:6px;">Choisis les sections à prendre pour ce lot (elles iront dans « Stock disponible »).</div>` + its.map(it => { const v = pick.sel[it.id] || 0, l = leftOf(it);
+        return `<div class="mt-it" style="padding:7px 9px;${v ? 'border-color:var(--wood,#EE8A2E);' : ''}"><div class="mt-r"><b>${esc(it.sec ? it.sec + ' mm' : 'Section ?')} · ${fm(it.len)}<small>${esc(it.nm || '')}</small></b><div class="mt-left" style="font-size:16px;">${l}<small>restant${l > 1 ? 's' : ''}</small></div></div>
+          <div class="mt-act"><button onclick="_dlMatPick('${it.id}',-1)">−</button><b style="min-width:28px;text-align:center;">${v}</b><button onclick="_dlMatPick('${it.id}',1)">＋</button><button onclick="_dlMatPick('${it.id}',${l})">Tout (${l})</button>${v ? `<button onclick="_dlMatPick('${it.id}',-${v})">✕</button>` : ''}</div></div>`; }).join('')
+        : `<div class="hint">${again ? 'Aucun bois en stock pour ce chantier.' : '⏳ Lecture du stock…'} Ajoute un bon de livraison dans Infos chantier › Matériaux.</div>`}`;
+    if(!again){ await pull(siteId); if(pick.site === siteId) window._dlMatPickRender(siteId, true); }
+  };
+  window._dlMatPick = function(iid, d){ const it = S0(pick.site).d.items[iid]; if(!it) return; const l = leftOf(it);
+    pick.sel[iid] = Math.max(0, Math.min(l, (pick.sel[iid] || 0) + d)); if(!pick.sel[iid]) delete pick.sel[iid]; window._dlMatPickRender(pick.site, true); };
+  window._dlMatPickApply = function(){
+    if(!pick.site || !$('modal-dlNew')) return;
+    const d = S0(pick.site).d;
+    Object.entries(pick.sel).forEach(([iid, n]) => { const it = d.items[iid]; if(it && n > 0) _dqPush(_decoupeStock, Object.assign({ len:+it.len, qty:n }, it.sec ? { sec:it.sec } : {})); });
+    if(Object.keys(pick.sel).length){ try{ _decoupeRenderLists(); }catch(e){} }
+    pick = { site:'', sel:{} };
+  };
+
+  window._mt = { S0, pull, push, merge, parseBL, liveItems, liveChutes, leftOf, syncFromLot, st };
+})();
+</script>
+<!-- ═══ fin MODULE v5.97.0 ═══ -->
+
 
 </body>
 </html>
