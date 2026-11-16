@@ -49673,9 +49673,13 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '5.99.5';
+const APP_VERSION = '5.99.6';
 
 const CHANGELOG = [
+  { version:'5.99.6', date:'16/11/2026', entries:[
+    { icon:'🟢', text:'Découpe : la liste des barres non utilisées est maintenant en haut du plan (sous le résumé), toujours visible' },
+    { icon:'↔', text:'Déplacer une ou plusieurs pièces : toutes les barres non utilisées sont proposées (longueur, section, nombre libres, chute)' }
+  ]},
   { version:'5.99.5', date:'16/11/2026', entries:[
     { icon:'↔', text:'Découpe : déplacer plusieurs pièces de même cote d\'un coup (nombre au choix ou « Toutes ») — vers une barre, réparties dans les chutes des autres barres, ou sur des barres neuves du stock' },
     { icon:'🟢', text:'Découpe : sous le plan, les barres non utilisées du stock (longueur, section, nombre) ; « Poser des pièces » pour y mettre des pièces choisies' }
@@ -101039,7 +101043,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       ${manyHtml(idx, j)}
       <h4>Cette pièce seule : la poser dans la chute de</h4>
       ${others || '<div class="hint">Aucune autre barre n\'a assez de place.</div>'}
-      ${fs.length ? `<button class="dcp-b" onclick="_dcMove(-1)"><span>➕ Nouvelle barre — ${_fmtM(fs[0] / 1000)}<small>Prise dans le stock non utilisé</small></span>➜</button>` : ''}
+      ${fs.length ? `<h4>Ou sur une barre non utilisée</h4>` + freeGroups().filter(x => x.len >= p.len).map(x => `<button class="dcp-b" onclick="_dcMove(-1,${x.len})"><span>🟢 Barre neuve — ${_fmtM(x.len / 1000)}${x.sec ? ' · ' + escapeHtml(x.sec) : ''}<small>${x.n} libre${x.n > 1 ? 's' : ''} · chute après : ${_fmtM((x.len - p.len) / 1000)}</small></span>➜</button>`).join('') : '<div class="hint">Aucune barre non utilisée assez longue.</div>'}
     </div>`;
     document.body.appendChild(m);
   };
@@ -101158,7 +101162,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       <div class="hint">${list.length} pièces identiques encore à couper. Combien en déplacer ?</div>
       <div class="dcp-n"><button onclick="_dcManyN(-1)">−</button><input id="dcpN" type="number" inputmode="numeric" min="1" max="${list.length}" value="${list.length}" oninput="_dcManyN(0)"><button onclick="_dcManyN(1)">+</button><button class="all" onclick="_dcManyN(999)">Toutes (${list.length})</button></div>
       <button class="dcp-b on" onclick="_dcMany('spread')"><span>⇢ Répartir dans les chutes des autres barres<small>Chaque pièce va où il reste le moins de place utile</small></span>➜</button>
-      ${fr.length ? `<button class="dcp-b" onclick="_dcMany('new')"><span>➕ Sur des barres neuves du stock non utilisé<small>${fr.length} barre${fr.length > 1 ? 's' : ''} libre${fr.length > 1 ? 's' : ''} assez longue${fr.length > 1 ? 's' : ''}</small></span>➜</button>` : ''}
+      ${fr.length ? freeGroups().filter(x => x.len >= p.len).map(x => `<button class="dcp-b" onclick="_dcMany({newLen:${x.len}})"><span>🟢 Sur des barres neuves de ${_fmtM(x.len / 1000)}${x.sec ? ' · ' + escapeHtml(x.sec) : ''}<small>${x.n} libre${x.n > 1 ? 's' : ''} · ${Math.max(1, Math.floor((x.len + kerf) / (p.len + kerf)))} pièce${Math.floor((x.len + kerf) / (p.len + kerf)) > 1 ? 's' : ''} par barre</small></span>➜</button>`).join('') : '<div class="hint">Aucune barre non utilisée assez longue.</div>'}
       ${nb}`;
   }
   window._dcManyN = function(d){ const i = $('dcpN'); if(!i || !many) return; let v = d === 999 ? many.max : (parseInt(i.value, 10) || 1) + d; v = Math.max(1, Math.min(many.max, v)); i.value = v; many.n = v; };
@@ -101168,12 +101172,15 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
   function freeUI(){
     const res = $('decoupeResult'); if(!res || !last) return;
     let box = $('dcpFree'); if(box) box.remove();
-    const fr = freeList(); if(!fr.length || !last.bars.some(b => !b.overflow)) return;
-    const g = []; fr.forEach(f => { const e = g.find(x => x.len === f.len && x.sec === f.sec); if(e) e.n++; else g.push({ len:f.len, sec:f.sec, n:1 }); });
+    if(!last.bars.some(b => !b.overflow)) return;
+    const fr = freeList(), g = freeGroups();
     box = document.createElement('div'); box.id = 'dcpFree'; box.className = 'dcp-free';
-    box.innerHTML = `<h5>🟢 Barres non utilisées · ${fr.length}</h5>` + g.map(x => `<div class="dcp-fr"><span class="bv" style="flex-basis:${Math.max(30, Math.min(110, x.len / 60))}px"></span><b>${x.n} × ${_fmtM(x.len / 1000)}<small>${x.sec ? escapeHtml(x.sec) + ' · ' : ''}pas encore utilisée${x.n > 1 ? 's' : ''}</small></b><button onclick="_dcFree(${x.len})">Poser des pièces ➜</button></div>`).join('');
-    res.appendChild(box);
+    box.innerHTML = `<h5>🟢 Barres non utilisées · ${fr.length}</h5>` + (g.length ? g.map(x => `<div class="dcp-fr" onclick="_dcFree(${x.len})" style="cursor:pointer;"><span class="bv" style="flex-basis:${Math.max(18, Math.min(52, x.len / 120))}px"></span><b>${x.n} × ${_fmtM(x.len / 1000)}<small>${x.sec ? escapeHtml(x.sec) : 'libre' + (x.n > 1 ? 's' : '')}</small></b><button>Poser des pièces ➜</button></div>`).join('')
+      : '<div class="hint" style="margin:0;">Tout le stock est utilisé : ajoute des barres dans « Stock disponible » pour en avoir de libres.</div>');
+    // en haut du résultat (juste sous le résumé), pour la voir sans descendre tout le plan
+    const first = res.querySelector('.calc-result-card'); if(first && first.nextSibling) res.insertBefore(box, first.nextSibling); else res.insertBefore(box, res.firstChild);
   }
+  function freeGroups(){ const g = []; freeList().forEach(f => { const e = g.find(x => x.len === f.len && x.sec === f.sec); if(e) e.n++; else g.push({ len:f.len, sec:f.sec, n:1 }); }); return g; }
   window._dcFree = function(L){
     if(!last) return;
     const groups = []; last.bars.forEach((b, i) => { if(b.overflow) return; (b.pcs || []).forEach((p, j) => { if(markOf(i, j) === 2 || p.len > L) return; const k = pk(p); let e = groups.find(x => x.key === k); if(!e) groups.push(e = { key:k, p, n:0 }); e.n++; }); });
@@ -101200,14 +101207,14 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     moveMany(src, { newLen:G.L }, src.length);
   };
 
-  window._dcMove = function(to){
+  window._dcMove = function(to, wantLen){
     if(!act || !last) return;
     const kerf = last.kerf;
     const bars = last.bars.filter(b => !b.overflow).map(b => ({ len:b.len, pcs:b.pcs.map(p => ({ len:p.len, k:p.k, nm:p.nm || '' })) }));
     // marques actuelles, rattachées aux pièces
     const mk = last.bars.map((b, idx) => (b.pcs || []).map((p, j) => ({ len:p.len, k:p.k, nm:p.nm || '', mk:(_dcMarks || {})[idx + '-' + j] || 0 })));
     const piece = bars[act.idx].pcs.splice(act.j, 1)[0]; const pm = mk[act.idx].splice(act.j, 1)[0];
-    if(to === -1){ const fs = freeStock().filter(l => l >= piece.len); if(!fs.length) return; bars.push({ len:fs[0], pcs:[piece] }); mk.push([pm]); }
+    if(to === -1){ const fs = freeStock().filter(l => l >= piece.len); if(!fs.length) return; const L = wantLen && fs.includes(wantLen) ? wantLen : fs[0]; bars.push({ len:L, pcs:[piece] }); mk.push([pm]); }
     else { bars[to].pcs.push(piece); mk[to].push(pm); if(barFits(bars[to], kerf) == null){ showToast('Pas assez de place sur cette barre'); return; } }
     // barre vidée : rendue au stock
     const keep = bars.map((b, i) => b.pcs.length ? i : -1).filter(i => i >= 0);
