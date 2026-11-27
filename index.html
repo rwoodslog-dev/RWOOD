@@ -49673,9 +49673,14 @@ function navManagerToggle(view, visible){
    2. Ajouter un objet en tête du tableau CHANGELOG
    ══════════════════════════════════════════════════════ */
 
-const APP_VERSION = '6.2.15';
+const APP_VERSION = '6.2.16';
 
 const CHANGELOG = [
+  { version:'6.2.16', date:'27/11/2026', entries:[
+    { icon:'🛣️', text:'Plan de levage : si un patin empiète sur une route, un trottoir ou un parking, le plan indique de combien (en cm) et propose « Rentrer les patins juste hors voirie »' },
+    { icon:'🧭', text:'Orientation de la grue : boutons − / + (1° par appui, accélère en maintenant) et molette 0–359°' },
+    { icon:'🦵', text:'Patins : rappel fiche Klaas K23-33 — appui 2,85 m mini à 5,05 m maxi, réglage continu patin par patin (3,60 m mini en nacelle)' }
+  ]},
   { version:'6.2.15', date:'27/11/2026', entries:[
     { icon:'🌿', text:'Plan de levage : haie rectangulaire (longueur, largeur, hauteur — ex. 13 × 0,90 × 2,20 m), parallèle à une façade ; « Buisson » reste rond' },
     { icon:'🦵', text:'Patins en manuel : les 4 patins se règlent indépendamment avec des boutons rentrer / sortir (maintenir), « Tout rentrer / Tout sortir » ; sortie comptée depuis le bord de la grue (0 à 1,10 m par côté sur la K23)' }
@@ -106647,6 +106652,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
 .lv-pad button.on{background:#E8A23B}
 .lv-pad button{width:42px;height:38px;padding:0;font-size:22px;line-height:1;flex:0 0 42px}
 .lv-pad b{white-space:nowrap}
+.lv-ang{margin-top:8px}
+.lv-ang input[type=range]{flex:1;min-width:0;accent-color:#E8A23B;height:30px}
+.lv-ang b{flex:0 0 46px}
 </style>
 <script>
 (function(){
@@ -106836,6 +106844,12 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       out.p[k] = w; if(w < mx - 1e-6) out.msg.push('patin ' + nm + ' limité : sorti de ' + fr(sortie(C, w), 2) + ' m sur ' + fr(sortie(C, mx), 2));
     });
     out.wl = Math.min(out.p.gA, out.p.gV); out.wr = Math.min(out.p.dA, out.p.dV);
+    out.sol = []; out.solFix = {};
+    const sols = P.obs.filter(o => o.t === 'sol' && o.k !== 'autre'), onSol = poly => sols.find(o => polyHitsBox(poly, o.x, o.z, o.L / 2, o.l / 2, o.a || 0));
+    if(sols.length && !onSol(bodyPoly(C, x, z, ang))) PADS.forEach(([k, side, bx, nm]) => { const w = out.p[k], so = onSol(pad1(C, x, z, ang, side, bx, w)); if(!so) return;
+      let w2 = w; while(w2 >= mn - 1e-6 && onSol(pad1(C, x, z, ang, side, bx, w2))) w2 = Math.round((w2 - 0.01) * 1000) / 1000;
+      if(w2 < mn - 1e-6){ out.sol.push('patin ' + nm + ' sur ' + solName(so).toLowerCase() + ' même rentré'); out.solFix[k] = mn; }
+      else { out.sol.push('patin ' + nm + ' empiète de ' + Math.round((w - w2) * 100) + ' cm sur ' + solName(so).toLowerCase() + ' → rentrer de ' + Math.round((w - w2) * 100) + ' cm'); out.solFix[k] = w2; } });
     return out;
   }
   // coefficient de capacité selon les patins, côté où se trouve la charge (estimation linéaire, réglable)
@@ -106870,6 +106884,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     const P = L.P, C = P.crane; L.loads = P.loads; L.st = stabFor(P, C.x, C.z, C.ang); L.place = L.st.why;
     const so = P.obs.find(o => { if(o.t !== 'sol') return false; const a = (o.a || 0) * Math.PI / 180, dx = C.x - o.x, dz = C.z - o.z; return Math.abs(dx * Math.cos(a) + dz * Math.sin(a)) <= o.L / 2 + 1.5 && Math.abs(-dx * Math.sin(a) + dz * Math.cos(a)) <= o.l / 2 + 1.5; });
     L.solMsg = so ? '🛣️ Grue sur ' + solName(so).toLowerCase() + ' : autorisation de voirie / balisage' : '';
+    if(L.st.sol && L.st.sol.length) L.solMsg = (L.solMsg ? L.solMsg + ' · ' : '') + '🛣️ ' + L.st.sol.join(' · ');
     L.res = P.loads.map(ld => check(P, ld)); if(L.temp) L.tempRes = check(P, L.temp);
   }
   /* points remarquables (faîtage, égouts, arases) */
@@ -106927,7 +106942,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       + '<div class="lv-seg"><button data-st="plan">Plan</button><button data-st="3d">3D</button></div><button class="lv-rb" data-a="menu">⋯</button></div>'
       + '<div class="lv-hintbar"></div><div class="lv-dock"></div>';
     L.root.onclick = onClick; L.root.onchange = onChange; L.root.oninput = onInput;
-    L.root.onpointerdown = e => { const b = e.target.closest('[data-ph]'); if(!b) return; e.preventDefault(); L.pHold = { k:b.dataset.ph, d:+b.dataset.pd }; b.classList.add('on'); try{ b.setPointerCapture(e.pointerId); }catch(er){} };
+    L.root.onpointerdown = e => { const b = e.target.closest('[data-ph]'); if(!b) return; e.preventDefault(); L.pHold = { k:b.dataset.ph, d:+b.dataset.pd, t0:performance.now() }; if(b.dataset.ph === 'ang'){ const C = L.P.crane; C.ang = Math.round(((C.ang || 0) + +b.dataset.pd + 360) % 360); angShow(); } b.classList.add('on'); try{ b.setPointerCapture(e.pointerId); }catch(er){} };
     const pUp = e => { if(!L.pHold) return; L.pHold = null; L.root.querySelectorAll('[data-ph].on').forEach(b => b.classList.remove('on')); persist(); refresh(); };
     L.root.addEventListener('pointerup', pUp); L.root.addEventListener('pointercancel', pUp);
     init3d(L.root.querySelector('.lv-view'));
@@ -107001,8 +107016,9 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(e.k === 'crane'){
       const st = L.st || {}, dist = houseDist(C.x, C.z);
       h = '<div class="lv-eh"><b>🏗️ Grue</b><small>Pivot à ' + dist.t + '</small></div>'
-        + '<div class="lv-r">' + fld('X (m)', 'crane.x', fr(C.x)) + fld('Z (m)', 'crane.z', fr(C.z)) + fld('Orientation (°)', 'crane.ang', Math.round(C.ang)) + '<button class="lv-b" data-a="rot" style="flex:0 0 auto">⟳ 15°</button></div>'
+        + '<div class="lv-r">' + fld('X (m)', 'crane.x', fr(C.x)) + fld('Z (m)', 'crane.z', fr(C.z)) + '</div><div class="lv-pad lv-ang"><small>Orientation de la grue</small><div><button data-ph="ang" data-pd="-1" title="Tourner −">−</button><input type="range" min="0" max="359" step="1" data-ang value="' + Math.round(((C.ang % 360) + 360) % 360) + '"><b data-pv="ang">' + Math.round(((C.ang % 360) + 360) % 360) + '°</b><button data-ph="ang" data-pd="1" title="Tourner +">+</button></div></div>'
         + '<div class="lv-h">Patins : stabilisation en H ' + fr(C.stabLen || 4.8, 2) + ' × ' + fr(C.stabMin, 2) + ' à ' + fr(C.stabMax, 2) + ' m' + (C.stabOne ? ' (un seul côté sorti : ' + fr(C.stabOne, 2) + ' m)' : '') + '</div><div class="lv-seg2"><button data-sm="auto"' + (C.stabMode !== 'man' ? ' class="on"' : '') + '>Auto (au maxi possible)</button><button data-sm="man"' + (C.stabMode === 'man' ? ' class="on"' : '') + '>Réglage manuel</button></div>'
+        + (st.sol && st.sol.length ? '<div class="lv-res orange" style="margin-top:8px"><b>🛣️ Patins sur la voirie</b><span>' + esc(st.sol.join(' · ')) + '</span></div><button class="lv-b" data-a="padsol" style="width:100%;margin-top:6px">↙ Rentrer les patins juste hors voirie</button>' : '')
         + (C.stabMode === 'man' ? padsUI() : '')
         + stabMsg();
       return '<div class="lv-card lv-edit">' + h + '<div class="lv-r" style="margin-top:8px"><button class="lv-b pri" data-a="eok" style="flex:1">✓ Valider l\'emplacement</button></div></div>';
@@ -107034,10 +107050,14 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       return '<div class="lv-pad"><small>' + nm + '</small><div><button data-ph="' + k + '" data-pd="-1" title="Rentrer">−</button><b data-pv="' + k + '">' + fr(v, 2) + ' m</b><button data-ph="' + k + '" data-pd="1" title="Sortir">+</button></div></div>'; };
     return '<div class="lv-pads"><div class="lv-padh">⬆ côté timon (avant)</div>' + one('gV') + one('dV') + one('gA') + one('dA') + '</div>'
       + '<div class="lv-r" style="margin-top:6px"><button class="lv-b" data-a="padall" data-v="0" style="flex:1">Tout rentrer</button><button class="lv-b" data-a="padall" data-v="1" style="flex:1">Tout sortir</button></div>'
-      + '<div class="lv-hint">Sortie mesurée depuis le bord de la grue : 0 (rentré) à ' + fr(mx, 2) + ' m (sorti à fond) de chaque côté. Maintenez − pour rentrer, + pour sortir.</div>';
+      + '<div class="lv-hint">Sortie mesurée depuis le bord de la grue : 0 (rentré) à ' + fr(mx, 2) + ' m (sorti à fond) de chaque côté. Fiche Klaas : appui ' + fr(C.stabMin, 2) + ' m mini (patins rentrés) à ' + fr(C.stabMax, 2) + ' m maxi, réglage continu et patin par patin ; en mode nacelle, 3,60 m mini (0,38 m par côté). Maintenez − pour rentrer, + pour sortir.</div>';
   }
+  function angShow(){ const C = L.P.crane; runAll(); build3d(); const a = Math.round(((C.ang % 360) + 360) % 360), v = L.root.querySelector('[data-pv="ang"]'), r = L.root.querySelector('[data-ang]'); if(v) v.textContent = a + '°'; if(r && document.activeElement !== r) r.value = a;
+    const hb = L.root.querySelector('.lv-hintbar'); if(hb) hb.innerHTML = L.place ? '<b style="color:#ff8a80">⛔ ' + esc(L.place) + '</b>' : L.solMsg ? esc(L.solMsg) : (L.st.msg.length ? '⚠️ ' + esc(L.st.msg.join(' · ')) : '✅ Patins sortis à fond'); }
   function padStep(dt){
-    const h = L.pHold, C = L.P.crane; if(!h) return; const mn = C.stabMin / 2, mx = C.stabMax / 2; C.pads = C.pads || Object.assign({}, (L.st || {}).p || {});
+    const h = L.pHold, C = L.P.crane; if(!h) return;
+    if(h.k === 'ang'){ h.t = (h.t || 0) + dt; const sp = h.t < 0.6 ? 6 : h.t < 2 ? 20 : 45; C.ang = Math.round((((C.ang || 0) + h.d * sp * dt) % 360 + 360) % 360 * 10) / 10; angShow(); return; }
+    const mn = C.stabMin / 2, mx = C.stabMax / 2; C.pads = C.pads || Object.assign({}, (L.st || {}).p || {});
     const cur = C.pads[h.k] != null ? C.pads[h.k] : mx; C.pads[h.k] = Math.max(mn, Math.min(mx, Math.round((cur + h.d * 0.45 * dt) * 1000) / 1000));
     runAll(); build3d(); L.root.querySelectorAll('[data-pv]').forEach(b => { const w = ((L.st || {}).p || {})[b.dataset.pv]; if(w) b.textContent = fr(sortie(C, w), 2) + ' m'; });
     const hb = L.root.querySelector('.lv-hintbar'); if(hb) hb.innerHTML = L.place ? '<b style="color:#ff8a80">⛔ ' + esc(L.place) + '</b>' : (L.st.msg.length ? '⚠️ ' + esc(L.st.msg.join(' · ')) : '✅ Patins sortis à fond');
@@ -107398,6 +107418,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
       + '<div class="lv-r"><button class="lv-b pri" data-a="tsave" style="flex:2">💾 ' + (t.editId ? 'Mettre à jour' : 'Enregistrer la charge') + '</button></div>';
   }
   function onInput(e){
+    if(e.target.matches && e.target.matches('[data-ang]')){ L.P.crane.ang = +e.target.value; angShow(); persist(); return; }
     const t = e.target.closest('[data-t]'); if(!t || !cur()) return;
     if(L.pc && t.dataset.t === 'kg'){ const v = num(t.value); if(isFinite(v) && v >= 0){ L.pc.kg = v; L.pc.kgAuto = false; } return; }
     if(L.pc && t.dataset.t === 'name'){ L.pc.name = t.value; return; }
@@ -107458,6 +107479,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
     if(A === 'ecrane'){ L.edit = { k:'crane' }; P.crane.lock = false; refresh(); }
     if(A === 'ecrane3'){ setStage('plan'); L.edit = { k:'crane' }; P.crane.lock = false; refresh(); fitView(); }
     if(A === 'rot'){ P.crane.ang = ((P.crane.ang || 0) + 15) % 360; persist(); refresh(); }
+    if(A === 'padsol' && L.st && L.st.solFix){ const C = P.crane; C.stabMode = 'man'; C.pads = Object.assign({}, L.st.p || {}, L.st.solFix); persist(); refresh(); toast('Patins rentrés hors voirie'); return; }
     if(A === 'padall'){ const C = P.crane, w = a.dataset.v === '1' ? C.stabMax / 2 : C.stabMin / 2; C.pads = { gA:w, gV:w, dA:w, dV:w }; persist(); refresh(); return; }
     if(A === 'eok') finishEdit();
     if(A === 'edel') deleteObj(L.edit);
@@ -107970,7 +107992,7 @@ body.rw-nozones.rw-novp .field:has(#pointageCustomZone){ display:none !important
         const R = new T.Vector3().setFromMatrixColumn(L.cam.matrixWorld, 0), U = new T.Vector3().setFromMatrixColumn(L.cam.matrixWorld, 1); R.y = 0; R.normalize(); U.y = 0; if(U.lengthSq() < 1e-6) U.set(0, 0, -1); U.normalize();
         L.orbit.tg.copy(g.tg0).addScaledVector(R, -(m[0] - g.m0[0]) * k).addScaledVector(U, (m[1] - g.m0[1]) * k); L.userZoom = true; need(); return; }
       if(Math.hypot(q[0] - g.q0[0], q[1] - g.q0[1]) > 8){ g.moved = true; clearTimeout(L._lp); } if(!g.moved || g.lp) return;
-      if(g.t === 'drag'){ const p = groundAt(q); if(p){ g.h.set(Math.round(p.x * 20) / 20, Math.round(p.z * 20) / 20); runAll(); build3d(); const hb = L.root.querySelector('.lv-hintbar'); if(hb) hb.innerHTML = L.edit.k === 'crane' ? (L.place ? '<b style="color:#ff8a80">⛔ ' + esc(L.place) + '</b>' : (L.st.msg.length ? '⚠️ ' + esc(L.st.msg.join(' · ')) : '✅ Patins au maxi · ' + esc(houseDist(L.P.crane.x, L.P.crane.z).t))) : '✋ ' + esc((L.aids[0] || {}).t || ''); } return; }
+      if(g.t === 'drag'){ const p = groundAt(q); if(p){ g.h.set(Math.round(p.x * 20) / 20, Math.round(p.z * 20) / 20); runAll(); build3d(); const hb = L.root.querySelector('.lv-hintbar'); if(hb) hb.innerHTML = L.edit.k === 'crane' ? (L.place ? '<b style="color:#ff8a80">⛔ ' + esc(L.place) + '</b>' : (L.solMsg ? esc(L.solMsg) : L.st.msg.length ? '⚠️ ' + esc(L.st.msg.join(' · ')) : '✅ Patins au maxi · ' + esc(houseDist(L.P.crane.x, L.P.crane.z).t))) : '✋ ' + esc((L.aids[0] || {}).t || ''); } return; }
       if(g.t === 'pan'){ const a = groundAt(g.q0), b = groundAt(q); if(a && b){ L.orbit.tg.copy(g.tg0).sub(b.sub(a)); g.q0 = q; g.tg0 = L.orbit.tg.clone(); need(); } return; }
       if(g.t === 'orbit'){ L.orbit.th = g.th0 - (q[0] - g.q0[0]) * 0.008; L.orbit.ph = Math.max(0.12, Math.min(1.45, g.ph0 - (q[1] - g.q0[1]) * 0.006)); need(); } });
     const up = e => { if(!Pt.has(e.pointerId)) return; Pt.delete(e.pointerId); if(!g) return;
